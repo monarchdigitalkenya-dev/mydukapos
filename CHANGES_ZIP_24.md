@@ -1,4 +1,4 @@
-# Zips 24 - 33 — what changed
+# Zips 24 - 39 — what changed
 
 ## Aqua POS (water): each site has its own bulk tank
 * Production and every Shop branch have their own tanks. Refills, sales and bulk orders draw only from their own site.
@@ -100,3 +100,26 @@ If clients on zip 24+ with big shops report reverts, ALSO check the Owner Consol
 * **Internal files are no longer public.** `wrangler pages deploy .` uploads the whole folder, so the live site could serve `tests/`, `src/`, `tools/`, `*.md` (including the design notes),
   `package.json` and `wrangler.toml`. The top-level middleware now answers 404 for them; every app, icon, manifest, service worker and the public site is unaffected (`tests/internal-paths.test.mjs`).
 * Checked with Cloudflare's own bundler: the router Worker (with the ShopStore class) and all Pages Functions compile.
+
+## Zip 36 — Owner Console storage tools
+* **🖼️ Shrink photos** (per shop): the usual reason a shop is huge is product photos stored inside items (a phone photo can be 500 KB+). The Owner Console lists a shop's big photos,
+  shrinks them in the browser (max 400 px, JPEG) and sends only smaller ones back, in small batches; every device accepts them (new stamp) and a stale device can't put the big ones back.
+  Works for single-record and database shops.
+* **🗄️ Move all to database**: moves every single-record shop one after another (each verified, each with a rollback copy); skips shops over 10 MB (shrink photos first) and reports failures without stopping.
+* Data left behind by deleted links is no longer listed in the Storage tab.
+
+## Zip 37
+* Shrink photos is memory-light for very large shops (24 MB+): decoded copies are released early, the write uses KV's own write-time stamp to detect a device push that landed meanwhile (no second
+  24 MB download), and the result is written plain when it fits (no extra gzip copies). Tested, including the "push lands meanwhile -> refuse, never overwrite" case.
+
+## Zip 38
+* Storage tab lists PERMANENT links only: demo links, deleted links (leftover data) and the owner's own account never appear in the list, the alerts, the totals, the rate-limit list or "Move all to database".
+
+## Zip 39
+* **Pharmacy now has the same sign-up as the Shop** (it was the only module still on the old one): full name, business, phone, email and ONE password with Log In / Sign Up on first open, claimed-link
+  auto-login, and one Change Password (sets the till AND management password to the new one). Existing users are untouched: their two stored passwords keep working until they use Change Password.
+  All 8 modules are now checked by a test to have identical sign-up fields and the unified Change Password.
+* **Permanent = database.** A NEW permanent link starts in its own database; a demo link that is confirmed as permanent is moved into the database with all its data (verified, rollback copy kept; if the move
+  fails the link is still made permanent and stays a single record). Demo links stay single records.
+* **Every link is measured automatically** in the Storage tab (idle shops with no size yet are measured in the background, one at a time; active shops record their size on every save).
+* **"Who's logging in?"** list is no longer torn down and rebuilt when the background sync lands and nothing changed.

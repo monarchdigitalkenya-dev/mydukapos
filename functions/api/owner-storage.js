@@ -25,7 +25,7 @@
 // compare-then-write: if a device pushed while we were compressing, we retry once and otherwise refuse rather than
 // risk overwriting that push.
 
-import { requireOwnerAuth } from './_owner-auth.js';
+import { requireOwnerAuth, getOwnerAccount } from './_owner-auth.js';
 import { listClientSummaries } from './_license.js';
 import { RL_HIT_PREFIX } from './_ratelimit.js';
 import {
@@ -33,7 +33,7 @@ import {
   SIZE_ALERT_PREFIX, ARCHIVE_PREFIX, decodeStateText, splitOldHistory, writeArchive, removeFromArchiveIndex,
   MODE_PREFIX, shopMode, shopCall,
 } from './_state-store.js';
-import { MERGE_BY_ID_FIELDS } from './_merge.js';
+import { migrateShopToDatabase } from './_migrate.js';
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const stateKey = (id) => `pos-data:state:${id}`;
@@ -45,6 +45,11 @@ export async function onRequestGet(context) {
   const policy = sizePolicy(env);
   const [sizes, summaries] = await Promise.all([listStateSizes(env), listClientSummaries(env, {})]);
   const byId = new Map(summaries.map((s) => [s.id, s]));
+  // Only real, paying (PERMANENT) links are listed here. Demo links, links that were deleted (their leftover data), and the owner's own
+  // account are not shops anyone needs to watch, so they never appear — not in the list, the alerts, the totals or "Move all".
+  const ownerAccount = await getOwnerAccount(env).catch(() => null);
+  const ownerClientId = ownerAccount && ownerAccount.ownerClientId;
+  const listed = (id) => { const x = byId.get(id); return !!x && x.type === 'permanent' && id !== ownerClientId; };
 
   // Refused pushes (shop over the hard limit) — only relevant while no newer successful write exists.
   const alerts = new Map();
@@ -76,6 +81,7 @@ export async function onRequestGet(context) {
   const shops = [];
   for (const [id, meta] of sizes) {
     const s = byId.get(id);
+    if (!listed(id)) continue;
     const alert = alerts.get(id);
     const rejected = alert && (!meta || !meta.at || alert.at > meta.at) ? alert : null;
     const bytes = meta && Number.isFinite(meta.bytes) ? meta.bytes : null;
@@ -109,6 +115,7 @@ export async function onRequestGet(context) {
       const raw = await env.mydukapos_kv.get(k.name);
       if (!raw) continue;
       const hit = JSON.parse(raw);
+      if (!listed(hit.clientId)) continue;
       const s = byId.get(hit.clientId);
       rateLimited.push({ ...hit, label: s ? (s.businessName || s.label || s.slug || hit.clientId) : hit.clientId });
     }
@@ -175,6 +182,79 @@ export async function onRequestPost(context) {
     return json({ error: 'The shop was busy syncing — nothing was changed. Try again in a moment.' }, 409);
   }
 
+  // ---- Product photos: the usual reason a shop is huge (a phone photo stored inside an item can be 500 KB+). The Owner Console shrinks
+  // them in the browser (it has a canvas; a Worker does not) — these three actions just list, hand out and replace them. ----
+  if (body.action === 'photosList' || body.action === 'photosGet' || body.action === 'photosSet') {
+    const COLS = ['inventory', 'products'];
+    const mode = await shopMode(env, clientId);
+    const load = async () => {
+      if (mode === 'do') return { state: await (await shopCall(env, clientId, 'state', { hotDays: 'all' })).json(), cur: null };
+      const cur = await readStateRaw(env, key);
+      return { state: cur ? JSON.parse(cur.text) : null, cur };
+    };
+    const { state, cur } = await load();
+    if (!state) return json({ error: 'No data stored for this shop yet.' }, 404);
+    // A photo-heavy shop can be ~24 MB, and a Worker has 128 MB in total: let go of the decoded copies as soon as the object exists.
+    if (cur) { cur.text = null; if (cur.meta && cur.meta.at) cur.raw = null; }
+    const recKey = (r) => String(r.code != null ? r.code : r.id);
+    const isPhoto = (r) => r && typeof r.image === 'string' && r.image.startsWith('data:image/');
+
+    if (body.action === 'photosList') {
+      const min = Number(body.minChars) || 60000;                       // ~45 KB: anything smaller is already fine
+      const items = [];
+      for (const col of COLS) for (const r of state[col] || []) if (isPhoto(r) && r.image.length > min) items.push({ col, code: recKey(r), name: r.name || '', chars: r.image.length });
+      items.sort((a, b) => b.chars - a.chars);
+      return json({ items, totalChars: items.reduce((n, i) => n + i.chars, 0) });
+    }
+
+    if (body.action === 'photosGet') {
+      const want = (Array.isArray(body.items) ? body.items : []).slice(0, 6);
+      const images = [];
+      for (const w of want) {
+        const r = (state[w.col] || []).find((x) => isPhoto(x) && recKey(x) === String(w.code));
+        if (r) images.push({ col: w.col, code: String(w.code), image: r.image });
+      }
+      return json({ images });
+    }
+
+    // photosSet: replace images with smaller ones. Each replaced record gets a NEW updatedAt so every device accepts it over its own copy.
+    const incoming = (Array.isArray(body.images) ? body.images : []).slice(0, 12).filter((x) => x && COLS.includes(x.col) && typeof x.image === 'string' && x.image.startsWith('data:image/'));
+    if (!incoming.length) return json({ clientId, updated: 0 });
+    const now = Date.now();
+    const changed = [];
+    for (const inc of incoming) {
+      const list = state[inc.col] || [];
+      const i = list.findIndex((x) => isPhoto(x) && recKey(x) === String(inc.code));
+      if (i < 0 || inc.image.length >= list[i].image.length * 0.9) continue;          // only ever make a photo SMALLER
+      list[i] = { ...list[i], image: inc.image, updatedAt: now };
+      changed.push({ col: inc.col, rec: list[i] });
+    }
+    if (!changed.length) return json({ clientId, updated: 0 });
+    if (mode === 'do') {
+      const byCol = {};
+      for (const c of changed) (byCol[c.col] ||= []).push(c.rec);
+      const res = await shopCall(env, clientId, 'push', { body: byCol, serverNow: now });
+      if (!res.ok) return json({ error: 'The shop database refused the update.' }, 500);
+      return json({ clientId, updated: changed.length });
+    }
+    // single-record shop: compare-then-write, so a device push that lands meanwhile is never overwritten. The check uses the write time KV keeps
+    // in the value's metadata (one tiny list call) instead of downloading the whole shop a second time.
+    let busy;
+    if (cur.meta && cur.meta.at) {
+      const l = await env.mydukapos_kv.list({ prefix: key, limit: 1 });
+      const m = (l.keys || []).find((k) => k.name === key);
+      busy = !m || !m.metadata || m.metadata.at !== cur.meta.at;
+    } else {
+      busy = (await env.mydukapos_kv.get(key)) !== cur.raw;
+    }
+    if (busy) return json({ error: 'The shop was busy syncing — nothing was changed. Try again.' }, 409);
+    state.updatedAt = now;
+    const text = JSON.stringify(state);
+    // Plain when it fits under KV's 25 MiB value limit (no gzip = no extra copies in memory); gzipped only when it would not fit.
+    await writeStateText(env, key, text, { compress: text.length >= 23 * 1048576, bytes: text.length, prevMeta: cur.meta, updatedAt: now });
+    return json({ clientId, updated: changed.length });
+  }
+
   if (body.action === 'migrate' || body.action === 'unmigrate') {
     if (!env.SHOP_STORE) return json({ error: 'The shop database is not set up on this project yet (the SHOP_STORE binding is missing) — see STAGING_SETUP.md.' }, 409);
     const modeKey = MODE_PREFIX + clientId;
@@ -186,19 +266,10 @@ export async function onRequestPost(context) {
     await env.mydukapos_kv.put(modeKey, 'migrating', { expirationTtl: 300 });
     try {
       if (to === 'do') {
-        const cur = await readStateRaw(env, key);
-        const state = cur ? JSON.parse(cur.text) : { updatedAt: 0 };
-        const imp = await shopCall(env, clientId, 'import', { state });
-        if (!imp.ok) throw new Error('import failed');
-        const stats = await (await shopCall(env, clientId, 'stats', {})).json();
-        const have = new Map((stats.collections || []).map((c) => [c.col, c.n]));
-        for (const col of MERGE_BY_ID_FIELDS) {
-          const want = Array.isArray(state[col]) ? state[col].length : 0;
-          if (want && (have.get(col) || 0) < want) throw new Error(`verification failed for ${col} (${have.get(col) || 0} of ${want})`);
-        }
-        const records = (stats.collections || []).reduce((n, c) => n + c.n, 0);
-        await env.mydukapos_kv.put(modeKey, 'do', { metadata: { at: Date.now(), records, bytes: stats.bytes } });
-        return json({ clientId, changed: true, mode: 'db', records, bytes: stats.bytes });
+        // (the mode flag is already 'migrating'; the helper works from 'kv', so hand it back first)
+        await env.mydukapos_kv.delete(modeKey);
+        const r = await migrateShopToDatabase(env, clientId);
+        return json({ clientId, changed: r.changed, mode: 'db', records: r.records, bytes: r.bytes });
       }
       const exp = await shopCall(env, clientId, 'export', {});
       const text = await exp.text();

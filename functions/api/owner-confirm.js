@@ -14,6 +14,7 @@
 
 import { requireOwnerAuth } from './_owner-auth.js';
 import { getLicense, saveLicense, getGroupMainRecord } from './_license.js';
+import { migrateShopToDatabase } from './_migrate.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -89,6 +90,14 @@ export async function onRequestPost(context) {
   record.confirmedAt = Date.now();
   record.branchAllowance = record.branchAllowance || 1;
   await saveLicense(context.env, record);
+
+  // Becoming permanent = moving into its own database, with all the data the demo already has (verified; the old record is kept as a
+  // rollback copy). Done after the reply so the owner is not kept waiting; if it fails the shop simply stays a single record and the
+  // owner can use "Move to database" in the Storage tab.
+  if (context.env.SHOP_STORE) {
+    const move = migrateShopToDatabase(context.env, record.id).catch(() => {});
+    if (typeof context.waitUntil === 'function') context.waitUntil(move); else await move;
+  }
 
   return jsonResponse({ client: record });
 }

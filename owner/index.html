@@ -2724,6 +2724,7 @@
                 <button type="button" class="btn-main settings-small-btn" id="storage-compress-all-btn" onclick="storageCompressAllLarge()">🗜️ Compress all large shops</button>
                 <button type="button" class="btn-main settings-small-btn" id="storage-measure-unknown-btn" onclick="storageMeasureUnknown()">📏 Measure unknown</button>
                 <button type="button" class="settings-small-btn" id="storage-selftest-btn" onclick="storageSelfTest()">🧪 Test the database</button>
+                <button type="button" class="btn-main settings-small-btn" id="storage-migrate-all-btn" onclick="storageMigrateAll()">🗄️ Move all to database</button>
                 <span id="storage-summary" class="settings-msg" style="margin:0;"></span>
             </div>
             <div id="storage-selftest" style="display:none; border:1px solid #ddd; border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:13px;"></div>
@@ -16850,6 +16851,7 @@ async function checkStorageAlert() {
     try {
         storageData = await storageApi('GET');
         storageUpdateBadge();
+        storageAutoMeasure();
     } catch (e) { /* not signed in yet, or offline — nothing to show */ }
 }
 setTimeout(checkStorageAlert, 5000);
@@ -16863,6 +16865,7 @@ async function loadStorage() {
     try {
         storageData = await storageApi('GET');
         renderStorage();
+        setTimeout(storageAutoMeasure, 800);
     } catch (e) {
         summary.textContent = '';
         tbody.innerHTML = `<tr><td colspan="6" class="settings-msg error">${escapeHtml(e.message)}</td></tr>`;
@@ -16880,7 +16883,7 @@ function renderStorage() {
     const known = shops.filter(s => s.bytes != null);
     const total = known.reduce((n, s) => n + s.bytes, 0);
     document.getElementById('storage-summary').textContent =
-        `${shops.length} shop${shops.length === 1 ? '' : 's'} · ${storageFmt(total)} of data` +
+        `${shops.length} permanent shop${shops.length === 1 ? '' : 's'} · ${storageFmt(total)} of data` +
         (known.length ? ` · largest ${storageFmt(known.reduce((m, s) => Math.max(m, s.bytes), 0))}` : '');
 
     const alertEl = document.getElementById('storage-alert');
@@ -16919,6 +16922,7 @@ function renderStorage() {
                 <td style="white-space:nowrap;">
                     ${s.mode === 'db' ? `<button type="button" class="settings-small-btn" onclick="storageMigrate('${escapeHtml(s.id)}', false)">↩︎ Back to single record</button>` : `<button type="button" class="btn-main settings-small-btn" onclick="storageMigrate('${escapeHtml(s.id)}', true)">🗄️ Move to database</button>`}
                     ${s.mode === 'db' ? '' : `<button type="button" class="settings-small-btn" onclick="storageMeasure('${escapeHtml(s.id)}')">📏 Measure</button>`}
+                    <button type="button" class="settings-small-btn" onclick="storageShrinkPhotos('${escapeHtml(s.id)}')" title="Makes big product photos small (the usual reason a shop is huge)">🖼️ Shrink photos</button>
                     ${s.mode === 'db' ? '' : `${s.gz
                         ? `<button type="button" class="settings-small-btn" onclick="storageCompress('${escapeHtml(s.id)}', false)">↩︎ Uncompress</button>`
                         : `<button type="button" class="settings-small-btn" onclick="storageCompress('${escapeHtml(s.id)}', true)">🗜️ Compress</button>`}
@@ -16942,9 +16946,9 @@ function renderStorage() {
               ${r.count} time${r.count === 1 ? '' : 's'} · last ${escapeHtml(new Date(r.last).toLocaleString())}</div>`).join('');
 }
 
-async function storageMeasure(id) {
+async function storageMeasure(id, quiet) {
     const summary = document.getElementById('storage-summary');
-    summary.textContent = 'Measuring…';
+    if (!quiet) summary.textContent = 'Measuring…';
     try {
         storageMeasured[id] = await storageApi('POST', { action: 'measure', clientId: id });
         // show the true size even if the shop hasn't pushed since size tracking began
@@ -16955,10 +16959,23 @@ async function storageMeasure(id) {
             const p = storageData.policy;
             row.level = m.bytes >= p.max * 0.8 ? 'critical' : m.bytes >= p.warn ? 'warn' : 'ok';
         }
-        renderStorage();
+        if (!quiet) renderStorage();
     } catch (e) {
-        summary.textContent = e.message;
+        if (!quiet) summary.textContent = e.message;
     }
+}
+
+// Every shop is measured automatically. A shop that has synced recently already carries its size (recorded on every save); one that has been
+// idle has none yet, so it is measured here in the background, one at a time, whenever the tab loads and every few minutes after that.
+let storageAutoMeasuring = false;
+async function storageAutoMeasure() {
+    if (storageAutoMeasuring || !storageData) return;
+    const targets = storageData.shops.filter(s => s.bytes == null && s.mode !== 'db');
+    if (targets.length === 0) return;
+    storageAutoMeasuring = true;
+    try { for (const t of targets) await storageMeasure(t.id, true); }
+    finally { storageAutoMeasuring = false; }
+    try { renderStorage(); } catch (e) { /* the tab may have been left */ }
 }
 
 async function storageCompress(id, on, quiet) {
@@ -16989,6 +17006,74 @@ async function storageSelfTest() {
         const rows = (r.steps || []).map(st => `<div>${st.ok ? '✅' : (st.soft ? '⚠️' : '❌')} <strong>${escapeHtml(st.name)}</strong>${st.ms != null ? ` <span style="color:#7f8c8d;">(${st.ms} ms)</span>` : ''}${st.detail ? ` — ${escapeHtml(st.detail)}` : ''}</div>`).join('');
         box.innerHTML = `<div style="font-weight:bold; margin-bottom:6px; color:${r.ok ? '#27ae60' : '#c0392b'};">${r.ok ? 'The database works on this Cloudflare account.' : 'The database test found a problem — do NOT move shops yet. Send me this list.'}</div>${rows}`;
     } catch (e) { box.innerHTML = `<span style="color:#c0392b;">${escapeHtml(e.message)}</span>`; }
+}
+
+// ---- Shrink every big product photo of one shop, in this browser (it has a canvas), then send the small ones back ----
+function storageShrinkDataUrl(dataUrl, maxPx) {
+    return new Promise((resolve) => {
+        try {
+            const img = new Image();
+            img.onload = () => {
+                try {
+                    const r = Math.min(1, maxPx / Math.max(img.width, img.height));
+                    const c = document.createElement('canvas');
+                    c.width = Math.max(1, Math.round(img.width * r)); c.height = Math.max(1, Math.round(img.height * r));
+                    const g = c.getContext('2d');
+                    g.fillStyle = '#ffffff'; g.fillRect(0, 0, c.width, c.height);          // (a transparent PNG must not turn black as a JPEG)
+                    g.drawImage(img, 0, 0, c.width, c.height);
+                    resolve(c.toDataURL('image/jpeg', 0.72));
+                } catch (e) { resolve(null); }
+            };
+            img.onerror = () => resolve(null);
+            img.src = dataUrl;
+        } catch (e) { resolve(null); }
+    });
+}
+
+async function storageShrinkPhotos(id) {
+    const summary = document.getElementById('storage-summary');
+    const row = storageData && storageData.shops.find(s => s.id === id);
+    const name = row ? row.label : id;
+    try {
+        summary.textContent = 'Looking for big photos…';
+        const list = await storageApi('POST', { action: 'photosList', clientId: id });
+        if (!list.items.length) { summary.textContent = `“${name}” has no big product photos.`; return; }
+        const mb = (list.totalChars / 1048576).toFixed(1);
+        if (!confirm(`“${name}” has ${list.items.length} big product photos (${mb} MB). Shrink them to about 400 pixels wide?\n\nThe photos stay, just smaller (usually 95% smaller). Every till picks up the smaller ones by itself. This can take a minute.`)) { summary.textContent = ''; return; }
+        let updated = 0, before = 0, after = 0;
+        for (let i = 0; i < list.items.length; i += 4) {
+            const batch = list.items.slice(i, i + 4);
+            summary.textContent = `Shrinking photos… ${i} of ${list.items.length}`;
+            const got = await storageApi('POST', { action: 'photosGet', clientId: id, items: batch.map(b => ({ col: b.col, code: b.code })) });
+            const out = [];
+            for (const g of got.images) {
+                const small = await storageShrinkDataUrl(g.image, 400);
+                if (small && small.length < g.image.length * 0.8) { out.push({ col: g.col, code: g.code, image: small }); before += g.image.length; after += small.length; }
+            }
+            if (out.length) { const r = await storageApi('POST', { action: 'photosSet', clientId: id, images: out }); updated += r.updated || 0; }
+        }
+        await loadStorage();
+        document.getElementById('storage-summary').textContent = `Shrank ${updated} of ${list.items.length} photos for “${name}” — ${(before / 1048576).toFixed(1)} MB became ${(after / 1048576).toFixed(1)} MB.`;
+    } catch (e) { summary.textContent = e.message; }
+}
+
+// ---- Move every shop that is still a single record into its own database, one at a time ----
+async function storageMigrateAll() {
+    if (!storageData) await loadStorage();
+    const LIMIT = 10 * 1048576;
+    const todo = storageData.shops.filter(s => s.mode !== 'db' && !(s.bytes != null && s.bytes > LIMIT));
+    const big = storageData.shops.filter(s => s.mode !== 'db' && s.bytes != null && s.bytes > LIMIT);
+    const summary = document.getElementById('storage-summary');
+    if (todo.length === 0) { summary.textContent = big.length ? `Nothing to move: the ${big.length} shop(s) left are over 10 MB — use “🖼️ Shrink photos” on them first.` : 'Every shop is already in its own database.'; return; }
+    if (!confirm(`Move ${todo.length} shop${todo.length === 1 ? '' : 's'} into their own databases?\n\nOne after another; each is checked before it takes effect, keeps a rollback copy, and tills only pause a few seconds.` + (big.length ? `\n\n${big.length} shop(s) over 10 MB are skipped: ${big.map(b => b.label).join(', ')} (shrink their photos first).` : ''))) return;
+    let ok = 0; const failed = [];
+    for (let i = 0; i < todo.length; i++) {
+        summary.textContent = `Moving ${i + 1} of ${todo.length}: ${todo[i].label}…`;
+        try { const r = await storageApi('POST', { action: 'migrate', clientId: todo[i].id }); if (r.changed !== false) ok++; }
+        catch (e) { failed.push(`${todo[i].label} (${e.message})`); }
+    }
+    await loadStorage();
+    document.getElementById('storage-summary').textContent = `Moved ${ok} shop${ok === 1 ? '' : 's'}.` + (failed.length ? ` ${failed.length} could not be moved and were left as they were: ${failed.join('; ')}.` : '') + (big.length ? ` Skipped ${big.length} over 10 MB.` : '');
 }
 
 async function storageMigrate(id, on) {

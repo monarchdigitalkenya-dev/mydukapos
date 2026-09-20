@@ -198,3 +198,19 @@ test('database self-test: runs the whole life of a shop on a throw-away database
   delete s.env.SHOP_STORE;
   assert.equal((await s.owner({ action: 'dbSelfTest' })).status, 409);
 });
+
+test('photos can be shrunk for a shop that lives in its database too', async () => {
+  const s = await setup();
+  const IMGD = (n) => 'data:image/jpeg;base64,' + 'A'.repeat(n);
+  await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Big', image: IMGD(400000), qty: 1, updatedAt: 1 }] });
+  await s.owner({ action: 'migrate', clientId: 'C1' });
+  const list = await s.owner({ action: 'photosList', clientId: 'C1' });
+  assert.equal(list.items.length, 1);
+  const set = await s.owner({ action: 'photosSet', clientId: 'C1', images: [{ col: 'inventory', code: 'A', image: IMGD(15000) }] });
+  assert.equal(set.updated, 1);
+  const got = await s.pull();
+  assert.equal(got.inventory[0].image.length, IMGD(15000).length);
+  assert.equal(got.inventory[0].qty, 1);
+  await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Big', image: IMGD(400000), qty: 1, updatedAt: 1 }] });      // stale big copy
+  assert.equal((await s.pull()).inventory[0].image.length, IMGD(15000).length);
+});

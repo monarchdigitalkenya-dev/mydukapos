@@ -324,3 +324,93 @@ test('auto-archive: restoring an archive re-opens those ids (the index is update
   const after = JSON.parse(await decodeStateText(kv.data.get(idxKey).value)).salesLog.length;
   assert.equal(after, 0, 'restored ids are no longer treated as archived');
 });
+
+// ---- Owner Console: hidden deleted links, and shrinking product photos remotely ----
+const IMG = (n) => 'data:image/jpeg;base64,' + 'A'.repeat(n);
+
+test('owner list: data left behind by a DELETED link is not shown', async () => {
+  const { kv, call, push } = setup();
+  kv.data.set('owner-session:tok', { value: '1' });
+  await push({ updatedAt: Date.now(), salesLog: [{ id: 'a', timestamp: new Date().toISOString() }] });
+  kv.data.set('pos-data:state:GHOST', { value: '{"updatedAt":1}', metadata: { bytes: 5000000 } });          // no license record for GHOST
+  const list = await (await call('owner-storage.js', 'onRequestGet', '/api/owner-storage', 'GET', undefined, { Authorization: 'Bearer tok' })).json();
+  assert.deepEqual(list.shops.map((s) => s.id), ['C1']);
+});
+
+test('photos: the owner can list, fetch and replace big product photos; only smaller ones are accepted; devices cannot bring the big ones back', async () => {
+  const { kv, call, push, pull } = setup();
+  kv.data.set('owner-session:tok', { value: '1' });
+  const auth = { Authorization: 'Bearer tok' };
+  const t = Date.now();
+  await push({ updatedAt: t, inventory: [
+    { code: 'A', name: 'Big1', image: IMG(500000), qty: 1, updatedAt: t - 1000 },
+    { code: 'B', name: 'Big2', image: IMG(300000), qty: 2, updatedAt: t - 1000 },
+    { code: 'C', name: 'Small', image: IMG(5000), qty: 3, updatedAt: t - 1000 },
+    { code: 'D', name: 'NoPhoto', qty: 4, updatedAt: t - 1000 },
+  ] });
+  const act = async (b) => (await call('owner-storage.js', 'onRequestPost', '/api/owner-storage', 'POST', { clientId: 'C1', ...b }, auth)).json();
+  const list = await act({ action: 'photosList' });
+  assert.deepEqual(list.items.map((i) => i.code), ['A', 'B'], 'only the big ones, biggest first');
+  const got = await act({ action: 'photosGet', items: [{ col: 'inventory', code: 'A' }, { col: 'inventory', code: 'B' }] });
+  assert.equal(got.images.length, 2);
+  assert.equal(got.images[0].image.length, IMG(500000).length);
+
+  const set = await act({ action: 'photosSet', images: [
+    { col: 'inventory', code: 'A', image: IMG(20000) },        // smaller: accepted
+    { col: 'inventory', code: 'B', image: IMG(400000) },       // NOT smaller enough: refused
+    { col: 'inventory', code: 'C', image: 'not an image' },    // invalid: ignored
+  ] });
+  assert.equal(set.updated, 1);
+  const live = await (await pull()).json();
+  const a = live.inventory.find((i) => i.code === 'A'), b = live.inventory.find((i) => i.code === 'B');
+  assert.equal(a.image.length, IMG(20000).length);
+  assert.equal(b.image.length, IMG(300000).length, 'B untouched');
+  assert.equal(live.inventory.find((i) => i.code === 'D').qty, 4, 'everything else untouched');
+  assert.ok(a.updatedAt > t, 'newer stamp, so every device accepts the small photo');
+
+  // a till that still has the OLD big photo (older stamp) pushes: the small photo stays
+  await push({ updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Big1', image: IMG(500000), qty: 1, updatedAt: t - 1000 }] });
+  assert.equal((await (await pull()).json()).inventory.find((i) => i.code === 'A').image.length, IMG(20000).length);
+});
+
+test('photos: a shop that is stored compressed can be shrunk; a push that lands meanwhile is never overwritten', async () => {
+  const { kv, call, push, pull } = setup();
+  kv.data.set('owner-session:tok', { value: '1' });
+  const auth = { Authorization: 'Bearer tok' };
+  const t = Date.now();
+  await push({ updatedAt: t, inventory: [{ code: 'A', name: 'Big', image: IMG(400000), qty: 1, updatedAt: t - 1000 }] });
+  const act = async (b) => (await call('owner-storage.js', 'onRequestPost', '/api/owner-storage', 'POST', { clientId: 'C1', ...b }, auth)).json();
+  await act({ action: 'compress' });
+  assert.ok(kv.data.get('pos-data:state:C1').value.startsWith('gz1:'), 'stored compressed');
+  const set = await act({ action: 'photosSet', images: [{ col: 'inventory', code: 'A', image: IMG(10000) }] });
+  assert.equal(set.updated, 1);
+  const stored = kv.data.get('pos-data:state:C1');
+  assert.ok(stored.value.startsWith('{'), 'written plain (no gzip copies in memory) because it fits');
+  assert.equal((await (await pull()).json()).inventory[0].image.length, IMG(10000).length);
+  // a device pushes between the owner tool's read and its write -> the tool refuses instead of overwriting it
+  const { listBefore } = { listBefore: kv.list };
+  kv.list = async (o) => { await push({ updatedAt: Date.now(), inventory: [{ code: 'Z', name: 'New', qty: 9, updatedAt: Date.now() }] }); return listBefore(o); };
+  const busy = await act({ action: 'photosSet', images: [{ col: 'inventory', code: 'A', image: IMG(500) }] });
+  assert.match(busy.error || '', /busy syncing/);
+  kv.list = listBefore;
+  assert.ok((await (await pull()).json()).inventory.some((i) => i.code === 'Z'), 'the device push survived');
+});
+
+test('owner list: ONLY permanent links appear — no demo links, no deleted links, not the owner\'s own account', async () => {
+  const { kv, call, push } = setup();
+  kv.data.set('owner-session:tok', { value: '1' });
+  seedShop(kv, 'DEMO1', { type: 'demo' });
+  const idx = JSON.parse(kv.data.get('license-index:v1').value);
+  idx.find((e) => e.id === 'DEMO1').type = 'demo';
+  seedShop(kv, 'OWNERSHOP');
+  kv.data.set('license-index:v1', { value: JSON.stringify(idx.concat([{ id: 'OWNERSHOP', slug: 'owner', type: 'permanent', label: 'Owner', businessName: 'Owner POS' }])) });
+  kv.data.set('owner-account:v1', { value: JSON.stringify({ identifier: 'me', ownerClientId: 'OWNERSHOP' }) });
+  const big = { updatedAt: Date.now(), businessName: 'x' };
+  for (const id of ['DEMO1', 'GHOST', 'OWNERSHOP']) kv.data.set(`pos-data:state:${id}`, { value: JSON.stringify(big), metadata: { bytes: 20000000, at: Date.now() } });   // all "huge" on purpose
+  await push({ updatedAt: Date.now(), salesLog: [{ id: 'a', timestamp: new Date().toISOString() }] });                                                                         // the one real permanent shop
+  kv.data.set('ratelimit-hit:sms:DEMO1', { value: JSON.stringify({ name: 'sms', clientId: 'DEMO1', limit: 1, count: 1, first: 1, last: Date.now() }) });
+  const list = await (await call('owner-storage.js', 'onRequestGet', '/api/owner-storage', 'GET', undefined, { Authorization: 'Bearer tok' })).json();
+  assert.deepEqual(list.shops.map((s) => s.id), ['C1'], 'permanent links only');
+  assert.deepEqual(list.rateLimited, [], 'and nothing about demo links anywhere else on the page');
+  assert.ok(!list.shops.some((s) => s.level === 'critical' || s.level === 'refused'), 'the huge demo / deleted / owner entries cannot raise an alert');
+});

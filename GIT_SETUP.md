@@ -10,7 +10,7 @@ The repository already exists at https://github.com/samuelmugwe/mydukapos with h
 git clone https://github.com/samuelmugwe/mydukapos.git C:\dev\mydukapos
 
 # each new zip: unzip it somewhere temporary, e.g. C:\dev\zip31, then mirror it into the clone (keeps .git and node_modules, deletes files that were removed)
-robocopy C:\dev\zip31 C:\dev\mydukapos /MIR /XD .git node_modules /XF package-lock.json
+robocopy C:\dev\zip31 C:\dev\mydukapos /MIR /XD .git node_modules /XF package-lock.json wrangler.staging.toml
 
 cd C:\dev\mydukapos
 git status                      # look at what changed

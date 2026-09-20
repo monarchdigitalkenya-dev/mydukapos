@@ -1,3 +1,4 @@
+import { MODE_PREFIX } from './_state-store.js';
 // functions/api/_license.js — shared helper, NOT a route.
 //
 // Every client link this master POS generates (demo or permanent) is backed
@@ -366,6 +367,11 @@ export async function createClient(env, type, label, product, extra = {}) {
   await env.mydukapos_kv.put(LICENSE_PREFIX + id, JSON.stringify(record));
   await claimSlug(env, slug, id);
   await upsertIndexSummary(env, record);
+  // A brand-new PERMANENT shop starts in its own database (no size ceiling, nothing archived away). Nothing is stored yet, so there is nothing to
+  // import — just the flag. Skipped when the database is not set up on this project. Demo links stay single records until they are made permanent.
+  if (record.type === 'permanent' && env.SHOP_STORE) {
+    try { await env.mydukapos_kv.put(MODE_PREFIX + record.id, 'do', { metadata: { at: Date.now(), records: 0, bytes: 0, auto: true } }); } catch (e) { /* stays a normal shop */ }
+  }
   return record;
 }
 
