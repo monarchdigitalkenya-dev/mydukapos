@@ -37,6 +37,11 @@ export class ShopStore {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS records (
       col TEXT NOT NULL, rk TEXT NOT NULL, ts INTEGER NOT NULL DEFAULT 0, upd INTEGER NOT NULL DEFAULT 0,
       pos INTEGER NOT NULL, seq INTEGER NOT NULL, code TEXT, json TEXT NOT NULL, PRIMARY KEY (col, rk))`);
+    // `del` = 1 for a tombstone (a record a device deleted): kept so a stale copy can't bring it back, but never sent to devices.
+    // Databases created before this column existed get it added in place.
+    if (!this.q('PRAGMA table_info(records)').some((c) => c.name === 'del')) {
+      this.sql.exec('ALTER TABLE records ADD COLUMN del INTEGER NOT NULL DEFAULT 0');
+    }
     this.sql.exec('CREATE INDEX IF NOT EXISTS records_time ON records (col, ts)');
     this.sql.exec('CREATE INDEX IF NOT EXISTS records_seq ON records (seq)');
     this.sql.exec('CREATE INDEX IF NOT EXISTS records_code ON records (col, code)');
@@ -80,13 +85,13 @@ export class ShopStore {
     const code = rec && rec.code != null ? String(rec.code) : null;
     const row = this.getRow(col, rk);
     if (!row) {
-      this.sql.exec('INSERT INTO records (col, rk, ts, upd, pos, seq, code, json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        col, rk, this.timeOf(col, rec), upd, ++this.pos, ++this.seq, code, json);
+      this.sql.exec('INSERT INTO records (col, rk, ts, upd, pos, seq, code, json, del) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        col, rk, this.timeOf(col, rec), upd, ++this.pos, ++this.seq, code, json, rec && rec._deleted === true ? 1 : 0);
       return true;
     }
     if (upd >= (row.upd || 0) && row.json !== json) {
-      this.sql.exec('UPDATE records SET ts = ?, upd = ?, seq = ?, code = ?, json = ? WHERE col = ? AND rk = ?',
-        this.timeOf(col, rec), upd, ++this.seq, code, json, col, rk);
+      this.sql.exec('UPDATE records SET ts = ?, upd = ?, seq = ?, code = ?, json = ?, del = ? WHERE col = ? AND rk = ?',
+        this.timeOf(col, rec), upd, ++this.seq, code, json, rec && rec._deleted === true ? 1 : 0, col, rk);
       return true;
     }
     return false;
@@ -97,6 +102,7 @@ export class ShopStore {
   push(body, serverNow = Date.now(), { preserveUpdatedAt = false } = {}) {
     if (!preserveUpdatedAt) body = correctClockDrift(body, serverNow);
     return this.tx(() => {
+      const prev = this.updatedAt() || 0;              // what the shop's record said BEFORE this push (the device uses it to know if it missed anything)
       const coreText = this.getCoreText();
       const existingCore = {};
       for (const [k, v] of Object.entries(coreText)) { try { existingCore[k] = JSON.parse(v); } catch (e) { /* skip */ } }
@@ -166,7 +172,7 @@ export class ShopStore {
 
       const updatedAt = preserveUpdatedAt && Number(body.updatedAt) ? Number(body.updatedAt) : serverNow;
       this.setCore('updatedAt', updatedAt, coreText.updatedAt);
-      return { updatedAt };
+      return { updatedAt, prev };
     });
   }
 
@@ -181,8 +187,8 @@ export class ShopStore {
     const cutoff = hotDays == null ? null : Date.now() - hotDays * 86400000;
     for (const { col } of this.q('SELECT DISTINCT col FROM records')) {
       const rows = (LOGS.has(col) && cutoff != null)
-        ? this.q('SELECT json FROM records WHERE col = ? AND (ts = 0 OR ts >= ?) ORDER BY pos', col, cutoff)
-        : this.q('SELECT json FROM records WHERE col = ? ORDER BY pos', col);
+        ? this.q('SELECT json FROM records WHERE col = ? AND del = 0 AND (ts = 0 OR ts >= ?) ORDER BY pos', col, cutoff)
+        : this.q('SELECT json FROM records WHERE col = ? AND del = 0 ORDER BY pos', col);
       parts.push(JSON.stringify(col) + ':[' + rows.map((r) => r.json).join(',') + ']');
     }
     if (!parts.some((x) => x.startsWith('"updatedAt":'))) parts.unshift('"updatedAt":0');

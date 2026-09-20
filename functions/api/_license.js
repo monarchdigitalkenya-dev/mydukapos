@@ -248,6 +248,9 @@ function summaryFromRecord(record) {
     agreedAmount: record.agreedAmount || 0,
     paidAmount: record.paidAmount || 0,
     balanceOwed: record.balanceOwed || 0,
+    // The owner's own income bookkeeping for this link (see owner-lock.js 'recordRevenue') and the last payment reminder sent to its admin.
+    revenue: record.revenue || null,
+    notice: record.notice ? { at: record.notice.at, ackAt: record.notice.ackAt || null } : null,
   };
 }
 

@@ -339,3 +339,23 @@ export function correctClockDrift(body, serverNow) {
   return shifted;
 }
 
+
+
+// ---- Deletions ------------------------------------------------------------------------------------------------------------------
+// The merge above is a UNION by id: a record that is simply missing from a push is left as it was ("never treated as a deletion"). That is
+// safe for stale devices, but it meant a record a person DELETED on one device (a bill settled and removed from the open list, a supplier,
+// an item, a debt...) was still on the server and came back the next time any device applied the server's copy. A device now says so
+// explicitly by sending a tombstone — { id | code | token, _deleted: true, updatedAt } — which wins over any OLDER copy of that record
+// (so a stale device can't bring it back) and loses to a NEWER one (the same code deliberately re-added later). The server keeps the
+// tombstone but never hands it to a device: stripTombstones() removes them from every payload the apps receive.
+export function stripTombstones(state) {
+  if (!state || typeof state !== 'object') return state;
+  let out = state;
+  for (const f of MERGE_BY_ID_FIELDS) {
+    const arr = state[f];
+    if (!Array.isArray(arr)) continue;
+    const kept = arr.filter((r) => !(r && r._deleted === true));
+    if (kept.length !== arr.length) { if (out === state) out = { ...state }; out[f] = kept; }
+  }
+  return out;
+}

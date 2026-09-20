@@ -161,6 +161,27 @@ export async function onRequestPost(context) {
     if (typeof body.agreedAmount === 'number') record.agreedAmount = Math.max(0, body.agreedAmount);
     if (typeof body.paidAmount === 'number') record.paidAmount = Math.max(0, body.paidAmount);
     record.balanceOwed = Math.max(0, (record.agreedAmount || 0) - (record.paidAmount || 0));
+  } else if (body.action === 'recordRevenue') {
+    // The owner's toggle under Permanent links: the money AGREED and the money PAID for this link. Recorded once; this is the only thing that
+    // puts a permanent link's income into the owner's sales (making a link permanent adds nothing by itself). Whatever is still owing becomes
+    // a bill in the owner's Bills tab, which the owner settles and reminds from there.
+    if (record.type !== 'permanent') return jsonResponse({ error: 'Income can only be recorded for a permanent link.' }, 400);
+    if (record.revenue) return jsonResponse({ error: 'Income is already recorded for this link.' }, 409);
+    const agreed = Number(body.agreedAmount), paid = Number(body.paidAmount);
+    if (!Number.isFinite(agreed) || agreed <= 0) return jsonResponse({ error: 'Enter the money agreed.' }, 400);
+    if (!Number.isFinite(paid) || paid < 0) return jsonResponse({ error: 'Enter the money paid (0 if nothing yet).' }, 400);
+    if (paid > agreed + 0.004) return jsonResponse({ error: 'The money paid cannot be more than the money agreed.' }, 400);
+    record.agreedAmount = agreed;
+    record.paidAmount = paid;
+    record.balanceOwed = Math.max(0, agreed - paid);
+    record.revenue = { at: Date.now(), agreed, paid, method: body.method === 'cash' ? 'cash' : 'mpesa' };
+  } else if (body.action === 'remind') {
+    // A payment reminder for the admin of this link: shown to them inside their POS the next time it checks in (license-status), until they
+    // dismiss it. One reminder at a time; a new one replaces the last.
+    if (record.type !== 'permanent') return jsonResponse({ error: 'Reminders are for permanent links.' }, 400);
+    const message = String(body.message || '').trim().slice(0, 500);
+    if (!message) return jsonResponse({ error: 'Write the reminder message.' }, 400);
+    record.notice = { id: crypto.randomUUID(), message, at: Date.now(), ackAt: null, balance: Math.max(0, Number(body.balance) || 0) };
   } else {
     return jsonResponse({ error: 'Unknown action.' }, 400);
   }

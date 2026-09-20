@@ -55,5 +55,7 @@ export async function onRequestGet(context) {
     label: record ? record.label : '',
     branchGroupId: record ? record.branchGroupId || null : null,
     isMainBranch: record ? !!record.isMainBranch : false,
+    // A payment reminder from the owner that the admin has not dismissed yet (see owner-notice.js).
+    notice: record && record.notice && !record.notice.ackAt ? { id: record.notice.id, message: record.notice.message, at: record.notice.at, balance: record.notice.balance || 0 } : null,
   });
 }

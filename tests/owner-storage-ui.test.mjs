@@ -221,3 +221,36 @@ test('Storage tab: shops that have no size yet are measured automatically, one a
   assert.deepEqual(errors, []);
   close();
 });
+
+test('Storage tab: "Shrink all photos" goes through every permanent link, skips shops with no big photos, and reports a shop that fails without stopping', async () => {
+  const per = { S1: 3, S2: 0, S3: 5, S4: 2 };                      // big photos per shop; S4 will fail
+  const shrunk = [];
+  const shops = JSON.parse(JSON.stringify(SHOPS));
+  shops.shops = ['S1', 'S2', 'S3', 'S4'].map((id) => ({ id, label: 'Shop ' + id, mode: 'kv', bytes: 100000, level: 'ok', gz: false, writers: [] }));
+  const fetch = async (url, opts = {}) => {
+    const body = opts.body ? JSON.parse(opts.body) : null;
+    if (!String(url).includes('/api/owner-storage')) return { ok: false, status: 404, json: async () => ({}) };
+    if (body && body.action === 'photosList') return { ok: true, status: 200, json: async () => ({ items: Array.from({ length: per[body.clientId] }, (_, i) => ({ col: 'inventory', code: 'P' + i, name: 'x', chars: 400000 })), totalChars: per[body.clientId] * 400000 }) };
+    if (body && body.action === 'photosGet') return body.clientId === 'S4' ? { ok: false, status: 500, json: async () => ({ error: 'shop busy' }) } : { ok: true, status: 200, json: async () => ({ images: body.items.map((x) => ({ ...x, image: 'data:image/jpeg;base64,' + 'A'.repeat(400000) })) }) };
+    if (body && body.action === 'photosSet') { shrunk.push([body.clientId, body.images.length]); return { ok: true, status: 200, json: async () => ({ updated: body.images.length }) }; }
+    return { ok: true, status: 200, json: async () => shops };
+  };
+  const { w, d, errors, close } = await boot('owner/index.html', { fetch, wait: 900 });
+  w.Image = class { set src(v) { this.width = 3000; this.height = 2000; setTimeout(() => this.onload && this.onload(), 0); } };
+  const realCreate = w.document.createElement.bind(w.document);
+  w.document.createElement = (tag) => { if (tag === 'canvas') return { getContext: () => ({ fillRect() {}, drawImage() {} }), toDataURL: () => 'data:image/jpeg;base64,' + 'B'.repeat(20000) }; return realCreate(tag); };
+  let asked = '';
+  w.confirm = (m) => { asked = m; return true; };
+  await w.eval('loadStorage()');
+  assert.ok(d.getElementById('storage-shrink-all-btn'), 'the button exists');
+  await w.eval('storageShrinkAll()');
+  assert.match(asked, /all 4 permanent links/);
+  assert.equal(shrunk.filter(([id]) => id === 'S1').reduce((n, [, k]) => n + k, 0), 3);
+  assert.equal(shrunk.filter(([id]) => id === 'S3').reduce((n, [, k]) => n + k, 0), 5);
+  assert.equal(shrunk.some(([id]) => id === 'S2'), false, 'a shop with no big photos is left alone');
+  const msg = d.getElementById('storage-summary').textContent;
+  assert.match(msg, /Shrank 8 photos in 2 shops/);
+  assert.match(msg, /Shop S4 \(shop busy\)/, 'the failing shop is named and the others still finished');
+  assert.deepEqual(errors, []);
+  close();
+});

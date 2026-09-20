@@ -1,4 +1,4 @@
-# Zips 24 - 39 — what changed
+# Zips 24 - 41 — what changed
 
 ## Aqua POS (water): each site has its own bulk tank
 * Production and every Shop branch have their own tanks. Refills, sales and bulk orders draw only from their own site.
@@ -123,3 +123,25 @@ If clients on zip 24+ with big shops report reverts, ALSO check the Owner Consol
   fails the link is still made permanent and stays a single record). Demo links stay single records.
 * **Every link is measured automatically** in the Storage tab (idle shops with no size yet are measured in the background, one at a time; active shops record their size on every save).
 * **"Who's logging in?"** list is no longer torn down and rebuilt when the background sync lands and nothing changed.
+
+## Zip 40  (DEPLOY THE ROUTER FIRST: `npm run deploy:router`, then `npm run deploy`)
+* **Deleted things stay deleted.** A bill settled and removed from the list, a debt, supplier, inventory item, delivery zone, recurring expense or offer that is deleted on one device
+  is now sent to the server as an explicit deletion marker (tombstone). A stale device can't bring it back, other tills drop it, a brand-new device never sees it, and it survives a refresh.
+  Safety net: a list that suddenly loses most of its records is treated as a reset, never as mass deletions. Existing shop databases are upgraded in place (`del` column).
+* **A push can no longer hide another device's change.** After pushing, a device used to mark itself "up to date" even when the server had merged in a change from another device it had
+  not seen; that change stayed hidden until someone else pushed. The server now reports what it held before the push and the device pulls when it missed something.
+* **Owner Console gets both fixes** (it has its own older sync code): a settled/removed bill stays gone; a push can't hide another device's change.
+* **Owner income model.** Making a link permanent adds nothing to sales or bills (no amount prompt, no placeholder bill). Under each PERMANENT link (open the link's detail) a 💰 toggle opens
+  "Money agreed / Money paid": the paid amount is logged as income; any balance becomes a bill with agreed/paid/balance details, settle in full or in part, and a 🔔 Remind admin button.
+  Recorded once per link (the toggle then shows On and locked).
+* **Payment reminders** reach the admin of that link as a banner in the POS (all 8 apps; admin only; stays until OK), delivered with the license check (~30 s) and acknowledged back to the owner ("seen").
+* **🖼️ Shrink all photos** button in the Storage tab: every permanent link, one after another.
+
+## Zip 41  (Hotel/Restaurant/Bar only — deploy the SITE, no router change)
+* **Dishes always sell.** Ingredient stock / missing recipes never block a dish or mark it out of stock. Ingredient stock may go below zero (shown as "short by X"); a void puts back exactly what was taken.
+* **Inventory "Used" column** (next to Qty Remaining): what dish sales have consumed of each ingredient, from the recipe as it was at the time of the sale. Sales add, voids subtract, never shown below 0.
+* **🍳 Kitchen tab** (right after Sales Counter, assignable to staff): Shelf Life (days, default 1), Servings Prepared (optional batches: log / correct / close out), Servings Sold (automatic, always tracked;
+  today's sales when nothing is prepared), Servings Left (= Prepared - Sold, "Untracked" when nothing prepared). Multi-day batches stay active until they expire or are all sold; a finished pool is closed
+  when new portions are logged. Voids (sale, un-void, whole tab) re-credit Sold, Left, Used and ingredient stock.
+* Stored as small 'kitchen' entries (delta 0) in stockMovementLog: no schema change, syncs between tills like any log, ignored by stock reports and server stock reconciliation.
+* Not backfilled: Used and Sold count from deployment onward.

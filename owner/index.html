@@ -931,7 +931,7 @@
         .balance-pill.owed { background: var(--danger); }
         .balance-pill.settled { background: #95a5a6; }
         .balance-pill.retail { background: var(--secondary, #2980b9); }
-        #bill-settle-modal, #contract-return-modal, #offer-modal, #edit-client-modal, #reset-password-modal,
+        #revenue-modal, #bill-settle-modal, #contract-return-modal, #offer-modal, #edit-client-modal, #reset-password-modal,
         #add-lead-modal-backdrop, #bulk-add-leads-modal-backdrop, #lead-detail-modal-backdrop, #add-meeting-modal-backdrop, #client-detail-modal-backdrop, #manage-staff-modal-backdrop {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(44, 62, 80, 0.95);
@@ -1724,6 +1724,34 @@
          a pending Bill (a "Pay Later" sale) or an outstanding Wholesale Contract
          balance, without leaving whichever tab the cashier is on. Confirming here
          records a normal paid sale dated today and clears the item from Bills. -->
+    <div id="revenue-modal">
+        <div class="popup-modal-box">
+            <h2>💰 Record income</h2>
+            <p id="revenue-modal-sub" style="color:#7f8c8d; font-size:14px; margin-top:-8px;"></p>
+            <div class="form-group">
+                <label>Money agreed (KES)</label>
+                <input type="number" id="revenue-agreed-input" min="0" step="1" placeholder="e.g. 3000" oninput="revenueUpdateBalanceLine()">
+            </div>
+            <div class="form-group">
+                <label>Money paid (KES)</label>
+                <input type="number" id="revenue-paid-input" min="0" step="1" placeholder="e.g. 2000 (0 if nothing yet)" oninput="revenueUpdateBalanceLine()">
+            </div>
+            <div class="form-group">
+                <label>Paid by</label>
+                <div class="popup-pay-toggle" id="revenue-pay-toggle">
+                    <button type="button" class="active" onclick="setRevenuePayMethod('mpesa')">📱 M-Pesa</button>
+                    <button type="button" onclick="setRevenuePayMethod('cash')">💵 Cash</button>
+                </div>
+            </div>
+            <p id="revenue-balance-line" style="font-size:14px; font-weight:bold; min-height:20px;"></p>
+            <p id="revenue-modal-error" style="color:var(--danger); font-size:13px; min-height:16px;"></p>
+            <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:10px;">
+                <button class="btn-main" style="background:#95a5a6;" onclick="closeRevenueModal()">Cancel</button>
+                <button class="btn-main" id="revenue-save-btn" onclick="submitRevenue()">💾 Save</button>
+            </div>
+        </div>
+    </div>
+
     <div id="bill-settle-modal">
         <div class="popup-modal-box">
             <h2>🧾 Settle Bill</h2>
@@ -2725,6 +2753,7 @@
                 <button type="button" class="btn-main settings-small-btn" id="storage-measure-unknown-btn" onclick="storageMeasureUnknown()">📏 Measure unknown</button>
                 <button type="button" class="settings-small-btn" id="storage-selftest-btn" onclick="storageSelfTest()">🧪 Test the database</button>
                 <button type="button" class="btn-main settings-small-btn" id="storage-migrate-all-btn" onclick="storageMigrateAll()">🗄️ Move all to database</button>
+                <button type="button" class="btn-main settings-small-btn" id="storage-shrink-all-btn" onclick="storageShrinkAll()">🖼️ Shrink all photos</button>
                 <span id="storage-summary" class="settings-msg" style="margin:0;"></span>
             </div>
             <div id="storage-selftest" style="display:none; border:1px solid #ddd; border-radius:8px; padding:10px 12px; margin-bottom:12px; font-size:13px;"></div>
@@ -5415,8 +5444,9 @@
                 document.getElementById('link-gen-result').style.display = 'block';
 
                 if (linkGenType === 'permanent') {
-                    addLicenseBill(product, label, data.link);
-                    showToast('Permanent link created — logged as an open bill under 🧾 Bills. Settle it there once you’ve been paid.');
+                    // Nothing is added to sales or bills here. When you are ready to record the money for this link, use the 💰 toggle under
+                    // Permanent links (money agreed + money paid).
+                    showToast('Permanent link created. Record its income with the 💰 toggle under Permanent links.');
                 } else {
                     // Compute the actual granted duration from the record's own
                     // timestamps rather than repeating the configured default —
@@ -5687,6 +5717,7 @@
                 <p class="settings-hint" style="margin:0 0 6px;">${escapeHtml(productLabel)} — ${client.type === 'permanent' ? 'Permanent' : 'Demo'} ${clientStatusBadge(client)}</p>
                 ${sourceLabel ? `<p class="settings-hint" style="margin:0 0 6px;">${sourceLabel}</p>` : ''}
                 ${billingHtml}
+                ${revenueToggleHtml(client, escLabel)}
 
                 <label class="label" style="margin-top:6px;">Link</label>
                 <div class="invite-link-box">
@@ -5923,18 +5954,168 @@
         // first. Same underlying action as the Pending Upgrades panel's
         // "Confirm Payment" button (see confirmDemoUpgrade above and
         // owner-confirm.js, which was already written to work either way).
-        async function requestMakePermanent(clientId, label, product) {
-            const amountRaw = prompt(`Amount received from "${label}" (KES):`, '3000');
-            if (amountRaw === null) return;
-            const amount = parseFloat(amountRaw);
-            if (isNaN(amount) || amount <= 0) {
-                showToast('Enter a valid amount.', true);
-                return;
-            }
-            if (!confirm(`Make "${label}" a permanent link for KES ${amount.toFixed(2)}? This takes effect immediately, whether or not they've clicked anything on their end.`)) {
-                return;
-            }
 
+        // ---------- INCOME FOR A PERMANENT LINK (the 💰 toggle) ----------
+        // Making a link permanent adds nothing to sales. The toggle opens a form: money AGREED and money PAID. The paid amount is what goes into
+        // the sales record; if less was paid than agreed, the rest becomes a bill (with settle + reminder). Recorded once per link.
+        let revenueDraft = null, revenuePayMethod = 'mpesa';
+
+        function revenueToggleHtml(client, escLabel) {
+            if (client.type !== 'permanent') return '';
+            const rec = client.revenue;
+            const fmt = (n) => Number(n || 0).toLocaleString();
+            const summary = rec
+                ? `<div style="font-size:12.5px; color:#555; margin-top:6px;">Recorded ${new Date(rec.at).toLocaleDateString('en-GB')}: agreed KES ${fmt(rec.agreed)}, paid KES ${fmt(rec.paid)}${rec.agreed - rec.paid > 0.004 ? ` — <strong style="color:var(--danger);">KES ${fmt(rec.agreed - rec.paid)} on the 🧾 Bills tab</strong>` : ' — fully paid'}.${client.notice ? ` Last reminder ${new Date(client.notice.at).toLocaleDateString('en-GB')} (${client.notice.ackAt ? 'seen ✓' : 'not seen yet'}).` : ''}</div>`
+                : `<div style="font-size:12.5px; color:#7f8c8d; margin-top:6px;">Off — nothing has been added to your sales for this link. Switch on to record the money agreed and paid.</div>`;
+            return `<div style="margin-top:10px; padding:10px; background:#fff; border:1px solid var(--light); border-radius:6px;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <label class="switch" title="${rec ? 'Recorded' : 'Record income for this link'}"><input type="checkbox" id="revenue-toggle-${escapeHtml(client.id)}" ${rec ? 'checked disabled' : ''} onchange="onRevenueToggle(this, '${escapeQuotes(client.id)}')"><span class="switch-slider"></span></label>
+                    <strong>💰 Income recorded</strong>
+                </div>
+                ${summary}
+            </div>`;
+        }
+
+        function onRevenueToggle(el, clientId) {
+            if (!el.checked) return;
+            const c = unifiedClientsCache.find(x => x.id === clientId);
+            if (!c || c.revenue) { el.checked = !!(c && c.revenue); return; }
+            openRevenueModal(c);
+        }
+
+        function openRevenueModal(client) {
+            revenueDraft = { client };
+            const label = client.businessName || client.label || client.slug || client.id;
+            document.getElementById('revenue-modal-sub').textContent = `${label} — ${WEBSITE_PRODUCT_LABELS[client.product] || client.product}`;
+            document.getElementById('revenue-agreed-input').value = '';
+            document.getElementById('revenue-paid-input').value = '';
+            document.getElementById('revenue-modal-error').textContent = '';
+            document.getElementById('revenue-balance-line').textContent = '';
+            document.getElementById('revenue-save-btn').disabled = false;
+            setRevenuePayMethod('mpesa');
+            document.getElementById('revenue-modal').style.display = 'flex';
+        }
+
+        function setRevenuePayMethod(method) {
+            revenuePayMethod = method === 'cash' ? 'cash' : 'mpesa';
+            document.querySelectorAll('#revenue-pay-toggle button').forEach((btn, idx) => {
+                btn.classList.toggle('active', (idx === 0 && revenuePayMethod === 'mpesa') || (idx === 1 && revenuePayMethod === 'cash'));
+            });
+        }
+
+        function revenueUpdateBalanceLine() {
+            document.getElementById('revenue-modal-error').textContent = '';
+            const agreed = parseFloat(document.getElementById('revenue-agreed-input').value) || 0;
+            const paid = parseFloat(document.getElementById('revenue-paid-input').value) || 0;
+            const line = document.getElementById('revenue-balance-line');
+            if (agreed <= 0) { line.textContent = ''; return; }
+            const bal = agreed - paid;
+            line.style.color = bal > 0.004 ? 'var(--danger)' : '#27ae60';
+            line.textContent = bal > 0.004 ? `Balance owed: KES ${bal.toLocaleString()} — goes to the 🧾 Bills tab` : (bal < -0.004 ? 'Paid is more than agreed.' : 'Fully paid.');
+        }
+
+        async function reopenClientDetail() {
+            const g = clientDetailCurrentGroup;
+            ownerClientsCacheAt = 0;
+            await renderGroupedClientsList('permanent', true);
+            if (g) openGroupedClientDetail(g.key, g.type);
+        }
+
+        function closeRevenueModal() {
+            document.getElementById('revenue-modal').style.display = 'none';
+            revenueDraft = null;
+            const g = clientDetailCurrentGroup;
+            if (g) openGroupedClientDetail(g.key, g.type);        // puts the toggle back to Off if nothing was saved
+        }
+
+        async function submitRevenue() {
+            if (!revenueDraft) return;
+            const errEl = document.getElementById('revenue-modal-error');
+            const agreed = parseFloat(document.getElementById('revenue-agreed-input').value);
+            const paidRaw = document.getElementById('revenue-paid-input').value;
+            const paid = paidRaw === '' ? 0 : parseFloat(paidRaw);
+            if (isNaN(agreed) || agreed <= 0) { errEl.textContent = 'Enter the money agreed.'; return; }
+            if (isNaN(paid) || paid < 0) { errEl.textContent = 'Enter the money paid (0 if nothing yet).'; return; }
+            if (paid > agreed + 0.004) { errEl.textContent = 'The money paid cannot be more than the money agreed.'; return; }
+            const client = revenueDraft.client;
+            const btn = document.getElementById('revenue-save-btn');
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/owner-lock', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() },
+                    body: JSON.stringify({ c: client.id, action: 'recordRevenue', agreedAmount: agreed, paidAmount: paid, method: revenuePayMethod }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.error) { errEl.textContent = data.error || 'Could not save that.'; btn.disabled = false; return; }
+            } catch (e) {
+                errEl.textContent = 'Could not reach the server — check your connection.'; btn.disabled = false; return;
+            }
+            const label = client.businessName || client.label || client.slug || client.id;
+            const productLabel = WEBSITE_PRODUCT_LABELS[client.product] || client.product;
+            const now = new Date().toISOString();
+            if (paid > 0) {
+                salesLog.push({
+                    id: genSaleId(), timestamp: now, servedBy: activeServerName(), customerName: label,
+                    items: [{ name: `License — ${productLabel} (${label})`, price: paid, qty: 1, unit: 'license' }],
+                    paymentMethod: revenuePayMethod, paid: true,
+                    cashAmount: revenuePayMethod === 'cash' ? paid : 0, mpesaAmount: revenuePayMethod === 'mpesa' ? paid : 0,
+                    amountTendered: revenuePayMethod === 'cash' ? paid : 0, change: 0, licenseClientId: client.id,
+                });
+                safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+            }
+            const balance = Math.round((agreed - paid) * 100) / 100;
+            if (balance > 0.004) {
+                bills.push({
+                    id: genSaleId(), timestamp: now, servedBy: activeServerName(), customerName: label, customerPhone: client.phone || null,
+                    items: [{ name: `License balance — ${productLabel} (${label})`, price: balance, qty: 1, unit: 'license' }],
+                    licenseDebt: { clientId: client.id, product: client.product, agreed, paid },
+                    paymentMethod: 'bill', paid: false, updatedAt: Date.now(),
+                });
+                safeSetItem('pos_bills', JSON.stringify(bills));
+            }
+            queuePush();
+            if (typeof renderDailySales === 'function') renderDailySales();
+            if (document.getElementById('bills-table')) renderBillsTab();
+            document.getElementById('revenue-modal').style.display = 'none';
+            revenueDraft = null;
+            showToast(balance > 0.004 ? `Recorded KES ${paid.toLocaleString()} as income. KES ${balance.toLocaleString()} is on the 🧾 Bills tab.` : `Recorded KES ${paid.toLocaleString()} as income.`);
+            await reopenClientDetail();
+        }
+
+        // A license balance on the Bills tab: remind the admin of that link. The reminder appears inside their POS (a banner, admin only)
+        // the next time it checks in — within about 30 seconds if it is open — and stays until they tap OK.
+        async function remindLicenseDebt(billId) {
+            const bill = bills.find(b => String(b.id) === String(billId));
+            if (!bill || !bill.licenseDebt) return;
+            const balance = Math.round((bill.items || []).reduce((s, l) => s + l.price * l.qty, 0) * 100) / 100;
+            const d = bill.licenseDebt;
+            const def = `Payment reminder: KES ${balance.toLocaleString()} is still outstanding for your mydukapos license (agreed KES ${Number(d.agreed).toLocaleString()}, paid KES ${Number(d.paid).toLocaleString()}). Please settle it soon. Thank you!`;
+            const message = prompt('Message to show to the admin of this link:', def);
+            if (message === null) return;
+            try {
+                const res = await fetch('/api/owner-lock', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() },
+                    body: JSON.stringify({ c: d.clientId, action: 'remind', message, balance }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.error) { showToast(data.error || 'Could not send the reminder.', true); return; }
+                d.remindedAt = Date.now();
+                bill.updatedAt = Date.now();
+                safeSetItem('pos_bills', JSON.stringify(bills));
+                queuePush();
+                renderBillsTab();
+                showToast('Reminder sent — their admin will see it the next time their POS checks in.');
+            } catch (e) {
+                showToast('Could not reach the server — check your connection.', true);
+            }
+        }
+
+        async function requestMakePermanent(clientId, label, product) {
+            if (!confirm(`Make "${label}" a permanent link? This takes effect immediately, whether or not they've clicked "I have made this payment" yet.\n\nNo income is recorded by this — use the 💰 toggle under Permanent links to record the money agreed and paid.`)) {
+                return;
+            }
             try {
                 const res = await fetch('/api/owner-confirm', {
                     method: 'POST',
@@ -5946,27 +6127,7 @@
                     showToast(data.error || 'Could not upgrade that link.', true);
                     return;
                 }
-
-                // Logged as revenue the same way confirmDemoUpgrade() does, so
-                // licensing income all lands in Daily Sales regardless of
-                // which of these paths created it.
-                const productLabel = product === 'hotel' ? 'Hotel/Restaurant/Bar' : product === 'hospital' ? 'Hospital' : product === 'school' ? 'School' : product === 'production' ? 'Production' : product === 'pharmacy' ? 'Pharmacy' : product === 'services' ? 'Services (Bookings)' : product === 'water' ? 'Water Refill Station' : 'General Shop';
-                salesLog.push({
-                    id: genSaleId(),
-                    timestamp: new Date().toISOString(),
-                    servedBy: activeServerName(),
-                    items: [{ name: `License Upgrade — ${productLabel} (${label})`, price: amount, qty: 1, unit: 'license' }],
-                    paymentMethod: 'mpesa',
-                    paid: true,
-                    cashAmount: 0,
-                    mpesaAmount: amount,
-                    amountTendered: 0,
-                    change: 0,
-                });
-                safeSetItem('pos_sales_log', JSON.stringify(salesLog));
-                queuePush();
-
-                showToast(`"${label}" is now a permanent link.`);
+                showToast(`"${label}" is now a permanent link. Record its income with the 💰 toggle.`);
                 renderPendingUpgrades(true);
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
             } catch (e) {
@@ -6138,14 +6299,6 @@
         }
 
         async function confirmDemoUpgrade(clientId, label, product) {
-            const amountRaw = prompt(`Amount received from "${label}" (KES):`, '3000');
-            if (amountRaw === null) return;
-            const amount = parseFloat(amountRaw);
-            if (isNaN(amount) || amount <= 0) {
-                showToast('Enter a valid amount.', true);
-                return;
-            }
-
             try {
                 const res = await fetch('/api/owner-confirm', {
                     method: 'POST',
@@ -6157,28 +6310,8 @@
                     showToast(data.error || 'Could not confirm that upgrade.', true);
                     return;
                 }
-
-                // Log it as revenue too, the same way an owner-generated permanent
-                // link's settled bill does — so licensing income all shows up in
-                // one place (Daily Sales) regardless of which of the two paths
-                // (rang up directly, or a demo client self-upgraded) created it.
-                const productLabel = product === 'hotel' ? 'Hotel/Restaurant/Bar' : product === 'hospital' ? 'Hospital' : product === 'school' ? 'School' : product === 'production' ? 'Production' : product === 'pharmacy' ? 'Pharmacy' : product === 'services' ? 'Services (Bookings)' : product === 'water' ? 'Water Refill Station' : 'General Shop';
-                salesLog.push({
-                    id: genSaleId(),
-                    timestamp: new Date().toISOString(),
-                    servedBy: activeServerName(),
-                    items: [{ name: `License Upgrade — ${productLabel} (${label})`, price: amount, qty: 1, unit: 'license' }],
-                    paymentMethod: 'mpesa',
-                    paid: true,
-                    cashAmount: 0,
-                    mpesaAmount: amount,
-                    amountTendered: 0,
-                    change: 0,
-                });
-                safeSetItem('pos_sales_log', JSON.stringify(salesLog));
-                queuePush();
-
-                showToast(`"${label}" is now a permanent link.`);
+                // Making a link permanent adds no income by itself: record the money with the 💰 toggle under Permanent links.
+                showToast(`"${label}" is now a permanent link. Record its income with the 💰 toggle.`);
                 renderPendingUpgrades(true);
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
             } catch (e) {
@@ -6825,6 +6958,7 @@
             safeSetItem('pos_table_states', JSON.stringify(tableStates));
             safeSetItem('pos_room_states', JSON.stringify(roomStates));
             safeSetItem('pos_last_synced_at', String(data.updatedAt || Date.now()));
+            ownerAckKeys();
             businessName = localStorage.getItem('pos_biz_name') || '';
             renderAllViews();
             renderTablesRoomsLists();
@@ -6852,9 +6986,65 @@
             return ok;
         }
 
+        // ---- Deletions and missed changes (the same rules as the shop apps; see src/shared/functions.js) ----
+        // A bill that is settled (and so removed from the list), or any other record removed here, is sent as an explicit "deleted" marker.
+        // Without it the server's union-merge kept the record and it came back on the next sync or refresh.
+        const OWNER_TRACKED = ['inventory', 'bills', 'contracts', 'pendingInvites', 'savedBarcodes'];
+        function ownerKeyOf(r) {
+            return (r && typeof r === 'object') ? (r.id != null ? 'i:' + r.id : r.code != null ? 'c:' + r.code : r.token != null ? 't:' + r.token : null) : null;
+        }
+        function ownerLoadKeyAck() {
+            try {
+                const raw = localStorage.getItem('sync_key_ack_v1:' + location.pathname);
+                if (!raw) return {};
+                const o = JSON.parse(raw), out = {};
+                Object.keys(o).forEach((c) => { if (Array.isArray(o[c])) out[c] = new Set(o[c]); });
+                return out;
+            } catch (e) { return {}; }
+        }
+        function ownerSaveKeyAck() {
+            clearTimeout(window.__keyAckSaveT);
+            window.__keyAckSaveT = setTimeout(() => {
+                try {
+                    const o = {};
+                    Object.keys(window.__keyAck || {}).forEach((c) => { const a = Array.from(window.__keyAck[c]); if (a.length <= 20000) o[c] = a; });
+                    localStorage.setItem('sync_key_ack_v1:' + location.pathname, JSON.stringify(o));
+                } catch (e) { /* housekeeping only */ }
+            }, 2000);
+        }
+        function ownerAckKeys() {
+            if (!window.__keyAck) window.__keyAck = ownerLoadKeyAck();
+            const p = collectSyncPayload();
+            OWNER_TRACKED.forEach((col) => {
+                if (!Array.isArray(p[col])) return;
+                const set = new Set();
+                p[col].forEach((r) => { const k = ownerKeyOf(r); if (k != null) set.add(k); });
+                window.__keyAck[col] = set;
+            });
+            ownerSaveKeyAck();
+        }
+
         async function pushNow() {
             setSyncStatus('syncing');
             const payload = collectSyncPayload();
+            if (!window.__keyAck) window.__keyAck = ownerLoadKeyAck();
+            const keysNow = {};
+            OWNER_TRACKED.forEach((col) => {
+                const arr = payload[col];
+                if (!Array.isArray(arr)) return;
+                const cur = new Set();
+                arr.forEach((r) => { const k = ownerKeyOf(r); if (k != null) cur.add(k); });
+                keysNow[col] = cur;
+                const ackSet = window.__keyAck[col];
+                if (!ackSet) return;
+                const missing = [];
+                ackSet.forEach((k) => { if (!cur.has(k)) missing.push(k); });
+                if (missing.length === 0) return;
+                // if most of a list vanished at once it was replaced (a reset, a bad load), not edited — never turn that into deletions
+                if (missing.length > 20 && missing.length > ackSet.size * 0.5) { window.__keyAck[col] = cur; return; }
+                const at = Date.now();
+                payload[col] = arr.concat(missing.map((k) => ({ ...(k.startsWith('c:') ? { code: k.slice(2) } : k.startsWith('t:') ? { token: k.slice(2) } : { id: k.slice(2) }), _deleted: true, updatedAt: at })));
+            });
             try {
                 const res = await fetch(apiUrl(SYNC_URL), {
                     method: 'POST',
@@ -6863,7 +7053,14 @@
                 });
                 if (res.ok) {
                     const data = await res.json();
-                    safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
+                    Object.keys(keysNow).forEach((c) => { window.__keyAck[c] = keysNow[c]; });
+                    ownerSaveKeyAck();
+                    // "Synced up to <server time>" is only true if the server had nothing newer than what this device held when the push arrived.
+                    // If another device changed something in between, don't move the marker: the next pull fetches that change.
+                    const heldUpTo = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
+                    const missedSomething = typeof data.prev === 'number' && data.prev > heldUpTo && heldUpTo > 0;
+                    if (!missedSomething) safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
+                    else setTimeout(() => { try { pullState(); } catch (e) { /* the poll will */ } }, 50);
                     setSyncStatus('synced');
                     return true;
                 } else {
@@ -15929,13 +16126,18 @@
             bills.forEach(b => {
                 if (b.voided) return; // voided bills are no longer "open" — see requestVoidSale
                 const amount = (b.items || []).reduce((sum, l) => sum + l.price * l.qty, 0);
+                const debt = b.licenseDebt || null;
                 list.push({
                     kind: 'sale',
                     id: b.id,
                     date: b.timestamp,
                     customerLabel: b.customerName || 'Walk-in customer',
-                    detailLabel: (b.items || []).map(l => `${l.name} x${formatQtyDisplay(l.qty, l.unit)}`).join(', '),
-                    amount
+                    detailLabel: debt
+                        ? `License — agreed KES ${Number(debt.agreed).toLocaleString()} · paid KES ${Number(debt.paid).toLocaleString()} · balance KES ${amount.toLocaleString()}`
+                        : (b.items || []).map(l => `${l.name} x${formatQtyDisplay(l.qty, l.unit)}`).join(', '),
+                    amount,
+                    licenseClientId: debt ? debt.clientId : null,
+                    remindedAt: debt ? debt.remindedAt || null : null
                 });
             });
             contracts.forEach(c => {
@@ -15980,11 +16182,12 @@
                     <td>${d.toLocaleDateString('en-GB')}</td>
                     <td>${b.kind === 'contract' ? '📑 Contract' : '🧾 Sale'}</td>
                     <td>${escapeHtml(b.customerLabel)}</td>
-                    <td>${escapeHtml(b.detailLabel || '')}</td>
+                    <td>${escapeHtml(b.detailLabel || '')}${b.remindedAt ? `<div style="font-size:11.5px; color:#7f8c8d; margin-top:3px;">🔔 Last reminded ${new Date(b.remindedAt).toLocaleDateString('en-GB')}</div>` : ''}</td>
                     <td>KES ${b.amount.toFixed(2)}</td>
                     <td>
                         <button class="btn-main" style="padding:6px 12px; font-size:13px;" onclick="openBillSettleModal('${b.kind}', '${escapeQuotes(b.id)}')">💳 Settle</button>
                         ${b.kind === 'sale' ? `<button class="settings-small-btn" style="padding:6px 10px; font-size:12px; background:var(--danger); color:white; margin-left:6px;" onclick="requestVoidSale('${escapeQuotes(b.id)}', 'bills')">🚫 Void</button>` : ''}
+                        ${b.licenseClientId ? `<button class="settings-small-btn" style="padding:6px 10px; font-size:12px; margin-left:6px;" onclick="remindLicenseDebt('${escapeQuotes(b.id)}')">🔔 Remind admin</button>` : ''}
                     </td>
                 </tr>`;
             }).join('');
@@ -16009,9 +16212,16 @@
             // actually paid, entered right here rather than pre-set at generation.
             const billRecord = kind === 'sale' ? bills.find(b => b.id === id) : null;
             const isLicenseSale = !!(billRecord && billRecord.isLicenseSale);
-            document.getElementById('bill-settle-total').style.display = isLicenseSale ? 'none' : 'block';
-            document.getElementById('bill-settle-license-amount-group').style.display = isLicenseSale ? 'block' : 'none';
-            if (isLicenseSale) {
+            const isLicenseDebt = !!(billRecord && billRecord.licenseDebt);
+            const licenseGroup = document.getElementById('bill-settle-license-amount-group');
+            document.getElementById('bill-settle-total').style.display = (isLicenseSale && !isLicenseDebt) ? 'none' : 'block';
+            licenseGroup.style.display = (isLicenseSale || isLicenseDebt) ? 'block' : 'none';
+            const licenseLabel = licenseGroup.querySelector('label');
+            if (licenseLabel) licenseLabel.textContent = isLicenseDebt ? 'Amount paid now (KES) — the full balance, or part of it' : 'Amount Paid (KES)';
+            if (isLicenseDebt) {
+                document.getElementById('bill-settle-license-amount-input').value = entry.amount;
+                document.getElementById('bill-settle-total').textContent = `Balance owed: KES ${entry.amount.toFixed(2)}`;
+            } else if (isLicenseSale) {
                 document.getElementById('bill-settle-license-amount-input').value = '';
             } else {
                 document.getElementById('bill-settle-total').textContent = `Amount Due: KES ${entry.amount.toFixed(2)}`;
@@ -16050,6 +16260,43 @@
                     return;
                 }
                 const bill = bills[idx];
+
+                // A LICENSE BALANCE (from the 💰 toggle: agreed more than paid): pay all of it or part of it. Only the amount paid NOW goes into
+                // sales (the part paid up front was already recorded when the toggle was saved). The bill shrinks, and is gone once nothing is owed.
+                if (bill.licenseDebt) {
+                    const errEl = document.getElementById('bill-settle-modal-error');
+                    const balance = Math.round((bill.items || []).reduce((sum, l) => sum + l.price * l.qty, 0) * 100) / 100;
+                    const amount = parseFloat(document.getElementById('bill-settle-license-amount-input').value);
+                    if (isNaN(amount) || amount <= 0) { errEl.textContent = 'Enter the amount paid now.'; return; }
+                    if (amount > balance + 0.004) { errEl.textContent = `That is more than the balance (KES ${balance.toLocaleString()}).`; return; }
+                    const debt = bill.licenseDebt;
+                    const who = bill.customerName || 'License';
+                    const paidNow = {
+                        id: genSaleId(), timestamp: new Date().toISOString(), servedBy: activeServerName(), customerName: who,
+                        items: [{ name: `License payment — ${who}`, price: amount, qty: 1, unit: 'license' }],
+                        paymentMethod: billSettlePayMethod, paid: true,
+                        cashAmount: billSettlePayMethod === 'cash' ? amount : 0, mpesaAmount: billSettlePayMethod === 'mpesa' ? amount : 0,
+                        mpesaReceiptNumber: billSettlePayMethod === 'mpesa' ? mpesaCode : undefined,
+                        amountTendered: billSettlePayMethod === 'cash' ? amount : 0, change: 0, licenseClientId: debt.clientId,
+                    };
+                    salesLog.push(paidNow);
+                    const remaining = Math.round((balance - amount) * 100) / 100;
+                    debt.paid = Math.round((Number(debt.paid) + amount) * 100) / 100;
+                    if (remaining <= 0.004) { bills.splice(idx, 1); }
+                    else { bill.items[0].price = remaining; bill.updatedAt = Date.now(); }
+                    safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+                    safeSetItem('pos_bills', JSON.stringify(bills));
+                    queuePush();
+                    // keep the link's own billing figures in step (best effort; the Bills tab is the source of truth)
+                    fetch('/api/owner-lock', { method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() }, body: JSON.stringify({ c: debt.clientId, action: 'billing', agreedAmount: debt.agreed, paidAmount: debt.paid }) }).catch(() => {});
+                    closeBillSettleModal();
+                    showToast(remaining <= 0.004 ? 'Balance fully settled.' : `KES ${amount.toLocaleString()} recorded — KES ${remaining.toLocaleString()} still owed.`);
+                    renderReceipt(paidNow);
+                    renderBillsTab();
+                    renderNotifications();
+                    renderDailySales();
+                    return;
+                }
 
                 // License-sale bills (see addLicenseBill) start with a placeholder
                 // price of 0 — the real amount is whatever's typed into the
@@ -17030,6 +17277,24 @@ function storageShrinkDataUrl(dataUrl, maxPx) {
     });
 }
 
+// The work for ONE shop: list its big photos, fetch them a few at a time, shrink each in this browser, send back only the smaller ones.
+async function storageShrinkShop(id, progress) {
+    const list = await storageApi('POST', { action: 'photosList', clientId: id });
+    const r = { found: list.items.length, updated: 0, before: 0, after: 0, totalChars: list.totalChars };
+    for (let i = 0; i < list.items.length; i += 4) {
+        if (progress) progress(i, list.items.length);
+        const batch = list.items.slice(i, i + 4);
+        const got = await storageApi('POST', { action: 'photosGet', clientId: id, items: batch.map(b => ({ col: b.col, code: b.code })) });
+        const out = [];
+        for (const g of got.images) {
+            const small = await storageShrinkDataUrl(g.image, 400);
+            if (small && small.length < g.image.length * 0.8) { out.push({ col: g.col, code: g.code, image: small }); r.before += g.image.length; r.after += small.length; }
+        }
+        if (out.length) { const u = await storageApi('POST', { action: 'photosSet', clientId: id, images: out }); r.updated += u.updated || 0; }
+    }
+    return r;
+}
+
 async function storageShrinkPhotos(id) {
     const summary = document.getElementById('storage-summary');
     const row = storageData && storageData.shops.find(s => s.id === id);
@@ -17040,21 +17305,29 @@ async function storageShrinkPhotos(id) {
         if (!list.items.length) { summary.textContent = `“${name}” has no big product photos.`; return; }
         const mb = (list.totalChars / 1048576).toFixed(1);
         if (!confirm(`“${name}” has ${list.items.length} big product photos (${mb} MB). Shrink them to about 400 pixels wide?\n\nThe photos stay, just smaller (usually 95% smaller). Every till picks up the smaller ones by itself. This can take a minute.`)) { summary.textContent = ''; return; }
-        let updated = 0, before = 0, after = 0;
-        for (let i = 0; i < list.items.length; i += 4) {
-            const batch = list.items.slice(i, i + 4);
-            summary.textContent = `Shrinking photos… ${i} of ${list.items.length}`;
-            const got = await storageApi('POST', { action: 'photosGet', clientId: id, items: batch.map(b => ({ col: b.col, code: b.code })) });
-            const out = [];
-            for (const g of got.images) {
-                const small = await storageShrinkDataUrl(g.image, 400);
-                if (small && small.length < g.image.length * 0.8) { out.push({ col: g.col, code: g.code, image: small }); before += g.image.length; after += small.length; }
-            }
-            if (out.length) { const r = await storageApi('POST', { action: 'photosSet', clientId: id, images: out }); updated += r.updated || 0; }
-        }
+        const r = await storageShrinkShop(id, (i, n) => { summary.textContent = `Shrinking photos… ${i} of ${n}`; });
         await loadStorage();
-        document.getElementById('storage-summary').textContent = `Shrank ${updated} of ${list.items.length} photos for “${name}” — ${(before / 1048576).toFixed(1)} MB became ${(after / 1048576).toFixed(1)} MB.`;
+        document.getElementById('storage-summary').textContent = `Shrank ${r.updated} of ${r.found} photos for “${name}” — ${(r.before / 1048576).toFixed(1)} MB became ${(r.after / 1048576).toFixed(1)} MB.`;
     } catch (e) { summary.textContent = e.message; }
+}
+
+// Every PERMANENT link (the only ones this tab lists), one after another. A shop that fails is reported and skipped; the rest carry on.
+async function storageShrinkAll() {
+    if (!storageData) await loadStorage();
+    const shops = storageData.shops.slice();
+    const summary = document.getElementById('storage-summary');
+    if (shops.length === 0) { summary.textContent = 'There are no permanent links yet.'; return; }
+    if (!confirm(`Shrink the big product photos in all ${shops.length} permanent link${shops.length === 1 ? '' : 's'}?\n\nEach photo is reduced to about 400 pixels wide (usually 95% smaller). Nothing is removed, and every till picks up the smaller photos by itself. Shops with no big photos are left alone. This can take several minutes — keep this page open.`)) return;
+    let updated = 0, found = 0, before = 0, after = 0, touched = 0; const failed = [];
+    for (let i = 0; i < shops.length; i++) {
+        const label = shops[i].label;
+        try {
+            const r = await storageShrinkShop(shops[i].id, (k, n) => { summary.textContent = `Shrinking photos — ${label} (${i + 1} of ${shops.length}): ${k} of ${n}`; });
+            found += r.found; updated += r.updated; before += r.before; after += r.after; if (r.updated) touched++;
+        } catch (e) { failed.push(`${label} (${e.message})`); }
+    }
+    await loadStorage();
+    document.getElementById('storage-summary').textContent = `Shrank ${updated} photos in ${touched} shop${touched === 1 ? '' : 's'} — ${(before / 1048576).toFixed(1)} MB became ${(after / 1048576).toFixed(1)} MB.` + (failed.length ? ` Could not finish: ${failed.join('; ')}.` : '');
 }
 
 // ---- Move every shop that is still a single record into its own database, one at a time ----
