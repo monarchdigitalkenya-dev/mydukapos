@@ -194,16 +194,17 @@ test('the tab sits right next to Sales Counter, can be handed to staff as a role
   b.close();
 });
 
-test('two tills: dish sales and prepared portions from both tills add up on both (the ledger syncs like any other log)', async () => {
+test('two tills: dish sales and prepared portions from both tills add up on both (the ledger syncs like any other log)', { timeout: 120000 }, async () => {
   const s = makeServer();
   const seed = { pos_inventory: INV() };
-  const a = await openDevice(APP, s, seed); a.w.eval("showToast = function () {}");
-  await a.w.eval('pushNow()'); await a.w.eval('pullState()'); await sleep(100);
-  const b = await openDevice(APP, s, deviceStorage(a.w), 1200); b.w.eval("showToast = function () {}");
-  a.w.eval("kitchenAddPrepared('D001', 10); deductEntriesForHotelBill([{ code: 'D001', name: 'Bread', qty: 2, price: 100, isService: true }]); queuePush()");
-  b.w.eval("deductEntriesForHotelBill([{ code: 'D001', name: 'Bread', qty: 3, price: 100, isService: true }]); queuePush()");
-  await sleep(1200);
-  await a.w.eval('pullState()'); await b.w.eval('pullState()'); await sleep(200);
+  const a = await openDevice(APP, s, seed, 2500); a.w.eval("showToast = function () {}");
+  await a.w.eval('pushNow()'); await a.w.eval('pullState()');
+  const b = await openDevice(APP, s, deviceStorage(a.w), 2500); b.w.eval("showToast = function () {}");
+  await b.w.eval('flushThenPull()');
+  a.w.eval("kitchenAddPrepared('D001', 10); deductEntriesForHotelBill([{ code: 'D001', name: 'Bread', qty: 2, price: 100, isService: true }])");
+  b.w.eval("deductEntriesForHotelBill([{ code: 'D001', name: 'Bread', qty: 3, price: 100, isService: true }])");
+  await a.w.eval('pushNow()'); await b.w.eval('pushNow()');
+  await a.w.eval('flushThenPull()'); await b.w.eval('flushThenPull()');
   for (const dev of [a, b]) {
     const st = state(dev.w, 'D001');
     assert.deepEqual([st.prepared, st.sold, st.left], [10, 5, 5], 'both tills agree: 2 + 3 sold, 10 prepared');

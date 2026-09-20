@@ -982,6 +982,10 @@
             padding: 6px; cursor: pointer; opacity: 0.65;
         }
         .phone-picker-btn:hover { opacity: 1; }
+        .cart-dosage-input { display: block; width: 100%; margin-top: 4px; padding: 5px 8px; font-size: 12.5px; border: 1px dashed var(--border-color, #ccc); border-radius: 4px; }
+        .dose-chips, .dose-quick { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+        .dose-chip { border: 1px solid var(--border-color, #ccc); background: #fff; border-radius: 10px; font-size: 11px; padding: 2px 8px; cursor: pointer; }
+        .dose-quick .settings-small-btn { padding: 2px 8px; font-size: 11.5px; }
         .recipe-badge { background: #e67e22; color: white; font-size: 11px; padding: 3px 8px; border-radius: 10px; }
         .dual-unit-badge { background: #16a085; color: white; font-size: 11px; padding: 3px 8px; border-radius: 10px; }
         .contract-badge { background: #8e44ad; color: white; font-size: 11px; padding: 3px 8px; border-radius: 10px; }
@@ -2402,6 +2406,21 @@
                     <input type="number" id="inv-edit-pieceprice-input" min="0" step="0.01" onchange="updateInventoryFieldFromModal('piecePrice', this.value)">
                 </div>
                 <div class="form-group">
+                    <label class="label" style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="inv-edit-allowloose-input" style="width:auto;" onchange="updateInventoryFieldFromModal('allowLooseSale', this.checked)"> Allow selling loose pieces</label>
+                </div>
+                <div class="form-group">
+                    <label class="label">Base unit name</label>
+                    <input type="text" id="inv-edit-baseunit-input" placeholder="e.g. Tablet" onchange="updateInventoryFieldFromModal('baseUnitName', this.value)">
+                </div>
+                <div class="form-group">
+                    <label class="label">Minimum pieces per sale</label>
+                    <input type="number" id="inv-edit-mindose-input" min="1" step="1" onchange="updateInventoryFieldFromModal('minDoseQty', this.value)">
+                </div>
+                <div class="form-group">
+                    <label class="label">Allowed dose packs</label>
+                    <input type="text" id="inv-edit-doseinc-input" placeholder="4, 6, 12, 24  or  Child Dose=4, Full Pack=24" onchange="updateInventoryFieldFromModal('doseIncrements', this.value)">
+                </div>
+                <div class="form-group">
                     <label class="label">Loose Pieces in Stock</label>
                     <input type="number" id="inv-edit-piececount-input" min="0" step="1" onchange="updateInventoryFieldFromModal('pieceQty', this.value)">
                     <button type="button" class="settings-small-btn" style="margin-top:6px;" onclick="openBoxToPieces(inventoryEditModalCode); renderInventoryEditModalFields();">Open a box</button>
@@ -2612,6 +2631,14 @@
     <div id="sales-tab" class="tab-content active">
         <div class="pos-grid">
             <div class="panel">
+                <div id="patient-bill-panel" style="margin-bottom:14px; padding:10px; background:#eef6fb; border:1px solid #cfe3f3; border-radius:8px;">
+                    <label class="label" style="margin:0 0 6px;">🏥 Patient bill — visit reference, patient number or name</label>
+                    <div style="display:flex; gap:6px;">
+                        <input type="text" id="patient-bill-input" placeholder="e.g. V260921-4F2K, PT-10492 or John" autocomplete="off" onkeydown="if (event.key === 'Enter') { event.preventDefault(); loadPatientBillFromInput(); }" style="flex:1;">
+                        <button type="button" class="btn-main" style="width:auto; margin:0; padding:8px 14px;" onclick="loadPatientBillFromInput()">Load bill</button>
+                    </div>
+                    <div id="patient-bill-waiting" class="dose-chips" style="margin-top:8px;"></div>
+                </div>
                 <h3>Product Search</h3>
                 <div class="form-group search-container">
                     <div style="display:flex; gap:6px;">
@@ -3018,6 +3045,14 @@
             <div id="visit-medication-rows"></div>
             <button type="button" style="background:#95a5a6; color:white; font-size:13px; padding:8px 14px; margin-bottom:14px;" onclick="addVisitMedicationRow()">+ Add Medication</button>
 
+            <label class="label">Procedures / Nursing / Other Fees</label>
+            <div id="visit-service-rows"></div>
+            <div style="display:flex; gap:6px; margin-bottom:14px;">
+                <select id="visit-service-select" style="flex:1;"></select>
+                <input type="number" id="visit-service-qty" min="1" step="1" value="1" style="width:70px;">
+                <button type="button" style="background:#95a5a6; color:white; font-size:13px; padding:8px 14px;" onclick="addVisitService()">+ Add</button>
+            </div>
+
             <div class="form-group">
                 <label class="label">Consultation Fee (KES)</label>
                 <input type="number" id="visit-consultation-fee-input" min="0" step="1" placeholder="e.g. 500" value="0">
@@ -3025,10 +3060,11 @@
 
             <label class="label">Bill To</label>
             <div class="type-toggle" id="visit-bill-to-toggle" style="margin-bottom:10px;">
-                <button type="button" id="visit-bill-to-patient-btn" class="type-toggle-btn active" onclick="setVisitBillTo('patient')">👤 Patient (pay now)</button>
+                <button type="button" id="visit-bill-to-patient-btn" class="type-toggle-btn active" onclick="setVisitBillTo('patient')">👤 Patient (pays at the cashier)</button>
                 <button type="button" id="visit-bill-to-institution-btn" class="type-toggle-btn" onclick="setVisitBillTo('institution')">🏥 Institution (add to account)</button>
                 <button type="button" id="visit-bill-to-none-btn" class="type-toggle-btn" onclick="setVisitBillTo('none')">No Charge</button>
             </div>
+            <label id="visit-charge-now-wrap" style="display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:10px; cursor:pointer;"><input type="checkbox" id="visit-charge-now-check" style="width:auto;"> 💵 Take payment now instead (skip the cashier — stock comes out now)</label>
             <div class="form-group" id="visit-institution-select-group" style="display:none;">
                 <label class="label">Institution</label>
                 <select id="visit-institution-select"></select>
@@ -3256,6 +3292,7 @@
                     <tr>
                         <th>Photo</th>
                         <th id="services-table-name-col">Service Name</th>
+                        <th>Department</th>
                         <th>Price (KES)</th>
                         <th>Cost / Buying Price (KES)</th>
                         <th>Charged Per</th>
@@ -3265,7 +3302,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    <tr><td colspan="8" class="empty-state">No services added yet. Add one from the "Add New Items" tab.</td></tr>
+                    <tr><td colspan="9" class="empty-state">No services added yet. Add one from the "Add New Items" tab.</td></tr>
                 </tbody>
             </table>
             </div>
@@ -3559,6 +3596,21 @@
                         <div class="form-group">
                             <label>Individual Piece Price (KES)</label>
                             <input type="number" id="inv-piece-price" min="0" step="0.01" placeholder="0.00">
+                        </div>
+                        <div class="form-group">
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" id="inv-allow-loose" checked style="width:auto;"> Allow selling loose pieces <span style="font-weight:normal; color:#7f8c8d;">(untick = whole boxes/packs only)</span></label>
+                        </div>
+                        <div class="form-group">
+                            <label>Base unit name <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
+                            <input type="text" id="inv-base-unit-name" placeholder="e.g. Tablet, Capsule, ml">
+                        </div>
+                        <div class="form-group">
+                            <label>Minimum pieces per sale <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
+                            <input type="number" id="inv-min-dose" min="1" step="1" placeholder="1">
+                        </div>
+                        <div class="form-group">
+                            <label>Allowed dose packs <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
+                            <input type="text" id="inv-dose-increments" placeholder="e.g. 4, 6, 12, 24   or   Child Dose=4, Full Pack=24">
                         </div>
                         <div class="form-group">
                             <label>Individual Piece Cost / Buying Price (KES) <span style="font-weight:normal; color:#7f8c8d;">optional — defaults to Box Cost ÷ Pieces per Box</span></label>
@@ -13796,16 +13848,24 @@
                 };
                 const o = (hooks.itemCells && hooks.itemCells(l, sale)) || {};
                 const subs = [];
+                if (l.dosage) subs.push('--> Dose: ' + l.dosage);        // a medicine's dosage instruction (1 x 3 for 5 days ...)
                 if (l.offerApplied) subs.push(`Offer: ${l.offerApplied.label} (-KES ${Number(l.offerApplied.amount).toFixed(2)})`);
                 if (Array.isArray(l.componentsUsed)) l.componentsUsed.forEach(c => subs.push(`Uses: ${hasQtyFmt ? formatQtyDisplay(c.qty, c.unit) + unitLabel(c.unit) : c.qty} ${c.name}`));
                 if (hooks.itemSubLines) (hooks.itemSubLines(l, sale) || []).forEach(s => subs.push(s));
-                return { code: l.code || '', vat: l.type === 'payment' ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
+                return { sec: hooks.sectionOf ? (hooks.sectionOf(l, sale) || null) : null, code: l.code || '', vat: l.type === 'payment' ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
             });
 
             const lines = [];
             lines.push(rule);
             lines.push(...thermalItemHeader(cols));
-            rows.forEach(r => {
+            // Optional SECTIONS (hooks.sectionOf): a sale with both kinds of line (hospital fees AND dispensed medicines) lists them
+            // under a heading each. With one kind only, or no hook, the receipt is exactly as before.
+            const secOrder = hooks.sectionOrder ? hooks.sectionOrder.filter(x => rows.some(r => r.sec === x)) : rows.map(r => r.sec).filter((x, i, a) => x && a.indexOf(x) === i);
+            const showSections = secOrder.length > 1;
+            const orderedRows = showSections ? [...rows].sort((a, b) => secOrder.indexOf(a.sec) - secOrder.indexOf(b.sec)) : rows;
+            let textLastSec = null;
+            orderedRows.forEach(r => {
+                if (showSections && r.sec !== textLastSec) { textLastSec = r.sec; lines.push(r.sec || ''); }
                 lines.push(...thermalItemRow(cols, r.text.name, r.code, r.text.qty, r.text.price, r.text.amount, r.vat));
                 r.subs.forEach(s => lines.push('  ' + s));
             });
@@ -13916,7 +13976,9 @@
             const cell = (content, bold, align) => `<td style="padding:3px 2px; text-align:${align || 'right'}; ${bold ? 'font-weight:bold;' : ''}">${content}</td>`;
             let table = `<table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr style="border-bottom:1px solid #000;">` +
                 cell('Item', true, 'left') + cell('Qty', true) + cell('Price', true) + cell('Amount', true) + `</tr></thead><tbody>`;
-            rows.forEach(r => {
+            let htmlLastSec = null;
+            orderedRows.forEach(r => {
+                if (showSections && r.sec !== htmlLastSec) { htmlLastSec = r.sec; table += `<tr><td colspan="4" style="padding:6px 2px 2px; font-weight:bold; text-align:left;">${escapeHtml(r.sec || '')}</td></tr>`; }
                 const nameCell = `<td style="padding:3px 2px; text-align:left;">${escapeHtml(r.html.name)}${r.code ? `<br><span style="font-size:10px; color:#7f8c8d;">#${escapeHtml(r.code)}</span>` : ''}</td>`;
                 table += `<tr>` + nameCell + cell(escapeHtml(r.html.qty)) + cell(escapeHtml(r.html.price)) + cell(escapeHtml(r.html.amount)) + `</tr>`;
                 r.subs.forEach(s => { table += `<tr><td colspan="4" style="padding:0 2px 3px 12px; font-size:10px; color:#7f8c8d; text-align:left;">${escapeHtml(s)}</td></tr>`; });
@@ -14871,7 +14933,7 @@
             const MERGED = new Set(['staff', 'pendingInvites', 'inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers',
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
-                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders']);
+                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
@@ -16231,6 +16293,8 @@
         let appointments = safeJSONParse('pos_appointments', []);
         let labResults = safeJSONParse('pos_lab_results', []);
         let visits = safeJSONParse('pos_visits', []);
+        let patientCharges = safeJSONParse('pos_patient_charges', []);       // unpaid / paid lines of each visit's bill (see createVisitCharges)
+        let currentVisitRef = '', visitServiceDraft = [], visitLabIds = [];
         let patientNotes = safeJSONParse('pos_patient_notes', []);
         // Queue / Triage board: { id, patientId, arrivedAt, triageLevel: 'emergency'|'urgent'|'routine',
         // status: 'waiting'|'in-consult'|'done', vitals: {bp,pulse,temp,spo2,weightKg,heightCm,bmi}, notes }
@@ -18089,6 +18153,7 @@
             });
             safeSetItem('pos_lab_results', JSON.stringify(labResults));
             queuePush();
+            return labResults[labResults.length - 1].id;
         }
 
         function requestLabTest() {
@@ -18097,7 +18162,8 @@
             const testName = nameInput.value.trim();
             if (!testName) { showToast('Enter the test name.', true); return; }
 
-            addLabTestRequest(currentVisitPatientId, testName);
+            const labId = addLabTestRequest(currentVisitPatientId, testName);
+            visitLabIds.push(labId);                                  // billed with this visit when it is saved
             nameInput.value = '';
             renderPatientLabResults(currentVisitPatientId);
             if (typeof renderLaboratoryTab === 'function') renderLaboratoryTab();
@@ -18178,7 +18244,7 @@
                         <div style="font-weight:bold;">${escapeHtml(t.testName)}</div>
                         <div style="font-size:12px; color:#7f8c8d;">
                             Requested ${new Date(t.requestedAt).toLocaleDateString('en-GB')} by ${escapeHtml(t.requestedBy || '?')}
-                            ${t.status === 'completed' ? ` — ${labResultDisplayHtml(t)}` : ' — <span style="color:#e67e22; font-weight:bold;">Pending</span>'}
+                            ${t.status === 'completed' ? ` — ${labResultDisplayHtml(t)}` : ' — <span style="color:#e67e22; font-weight:bold;">Pending</span>'}${labPayBadge(t)}
                         </div>
                     </div>
                     <div style="flex-shrink:0;">
@@ -18218,10 +18284,13 @@
             const testName = nameInput.value.trim();
             if (!testName) { showToast('Enter the test name.', true); return; }
 
-            addLabTestRequest(patientId, testName);
+            const labId = addLabTestRequest(patientId, testName);
+            // A test asked for straight from the Laboratory tab has no visit form: it gets its own reference and goes to the cashier.
+            const labRef = newVisitRef();
+            createVisitCharges({ ref: labRef, id: null }, patient, [], 0, [], [labId]);
             nameInput.value = '';
             renderLaboratoryTab();
-            showToast(`Requested "${testName}" for ${patient.name}.`);
+            showToast(`Requested "${testName}" for ${patient.name} — reference ${labRef}. The patient pays at the cashier.`);
         }
 
         // Shared by the per-patient list (inside the visit modal) and the
@@ -18257,7 +18326,7 @@
                     <td>${new Date(t.requestedAt).toLocaleDateString('en-GB')} · ${escapeHtml(t.requestedBy || '?')}</td>
                     <td>${t.status === 'completed'
                         ? labResultDisplayHtml(t)
-                        : `<span style="color:#e67e22; font-weight:bold;">Pending</span>`}</td>
+                        : `<span style="color:#e67e22; font-weight:bold;">Pending</span>`}${labPayBadge(t)}</td>
                     <td>
                         <button class="settings-small-btn" onclick="openLabResultModal('${escapeJsAttr(t.id)}')">${t.status === 'pending' ? 'Enter Result' : 'Edit'}</button>
                         <button class="settings-small-btn" style="background:var(--danger); color:white;" onclick="deleteLabTest('${escapeJsAttr(t.id)}')">✕</button>
@@ -18288,6 +18357,8 @@
             const group = document.getElementById('visit-institution-select-group');
             if (group) group.style.display = visitBillTo === 'institution' ? 'block' : 'none';
             if (visitBillTo === 'institution' && typeof populateVisitInstitutionSelect === 'function') populateVisitInstitutionSelect();
+            const nowWrap = document.getElementById('visit-charge-now-wrap');
+            if (nowWrap) nowWrap.style.display = visitBillTo === 'patient' ? 'flex' : 'none';
         }
 
         function openPatientVisitModal(patientId) {
@@ -18319,6 +18390,10 @@
             setVisitType('outpatient');
             visitMedicationDraft = [];
             renderVisitMedicationRows();
+            currentVisitRef = newVisitRef(); visitServiceDraft = []; visitLabIds = [];
+            populateVisitServiceSelect(); renderVisitServiceRows();
+            document.getElementById('visit-charge-now-check').checked = false;
+            document.getElementById('patient-visit-modal-sub').textContent += ` · Visit ref ${currentVisitRef}`;
             renderPatientVisitHistory(patientId);
             document.getElementById('lab-test-name-input').value = '';
             renderPatientLabResults(patientId);
@@ -18474,7 +18549,7 @@
                         </span>
                     </div>
                     <div style="font-size:13px; color:#555; margin:4px 0;">${escapeHtml(v.notes || '')}</div>
-                    <div style="font-size:12px; color:#7f8c8d;">Seen by ${escapeHtml(v.seenBy || '?')}${v.medications && v.medications.length ? ' · Meds: ' + v.medications.map(m => escapeHtml(m.name) + ' x' + m.qty + (m.dosage ? ` (${escapeHtml(m.dosage)})` : '')).join(', ') : ''}</div>
+                    <div style="font-size:12px; color:#7f8c8d;">${v.ref ? 'Ref ' + escapeHtml(v.ref) + ' · ' : ''}Seen by ${escapeHtml(v.seenBy || '?')}${v.medications && v.medications.length ? ' · Meds: ' + v.medications.map(m => escapeHtml(m.name) + ' x' + m.qty + (m.dosage ? ` (${escapeHtml(m.dosage)})` : '')).join(', ') : ''}</div>
                 </div>`).join('');
         }
 
@@ -18515,6 +18590,183 @@
             renderPatientVisitHistory(visit.patientId);
         }
 
+        /* ---------- VISIT REFERENCES & THE CASHIER'S BILL (Hospital) ----------
+           Every visit gets a reference (V260921-4F2K). What the visit costs — the consultation fee, procedures and nursing fees, lab tests and the
+           medicines prescribed with their dosage — is filed as UNPAID charges under that reference (patientCharges, one small record per line, so a
+           doctor's till adding lines and the cashier's till taking payment never overwrite each other). The patient goes to the cashier with the
+           reference (or their patient number or name); the Sales Counter loads that bill into the cart; ONE payment (cash, M-Pesa, card, split) pays
+           it all. Stock leaves inventory when the sale is made, not when the doctor prescribes. Off-the-counter sales work exactly as before, and a
+           visit can still be charged on the spot ("Take payment now"). */
+        function savePatientCharges() {
+            safeSetItem('pos_patient_charges', JSON.stringify(patientCharges));
+            queuePush();
+            renderPatientBillWaiting();
+        }
+
+        function newVisitRef() {
+            const d = new Date();
+            const day = String(d.getFullYear()).slice(2) + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
+            for (let i = 0; i < 50; i++) {
+                const ref = 'V' + day + '-' + (Math.random().toString(36) + '0000').slice(2, 6).toUpperCase();
+                if (!patientCharges.some(c => c.ref === ref) && !visits.some(v => v.ref === ref)) return ref;
+            }
+            return 'V' + day + '-' + Date.now().toString(36).toUpperCase().slice(-5);
+        }
+
+        function addPatientCharge(c) {
+            const now = Date.now();
+            const rec = Object.assign({ id: genSaleId(), status: 'unpaid', createdAt: now, createdBy: activeServerName(), updatedAt: now }, c);
+            patientCharges.push(rec);
+            return rec.id;
+        }
+
+        function catalogServiceByName(name) {
+            const n = String(name || '').trim().toLowerCase();
+            return n ? inventory.find(p => p.type === 'service' && String(p.name || '').trim().toLowerCase() === n) : null;
+        }
+
+        // The doctor's side: everything a visit costs becomes unpaid charges under its reference. Nothing is deducted from stock here.
+        function createVisitCharges(visit, patient, meds, fee, services, labIds) {
+            const base = { ref: visit.ref, visitId: visit.id, patientId: patient.id, patientName: patient.name };
+            if (fee > 0) addPatientCharge({ ...base, kind: 'consultation', name: 'Consultation Fee', code: '', qty: 1, price: fee, unit: 'use', isService: true, vatCategory: 'A' });
+            services.forEach(sv => addPatientCharge({ ...base, kind: 'service', name: sv.name, code: sv.code || '', qty: sv.qty, price: sv.price, unit: sv.unit || 'use', isService: true, vatCategory: sv.vatCategory || 'A', department: sv.department || '' }));
+            (labIds || []).forEach(labId => {
+                const t = labResults.find(x => x.id === labId);
+                if (!t) return;
+                const cat = catalogServiceByName(t.testName);
+                const chargeId = addPatientCharge({ ...base, kind: 'lab', name: 'Lab Test: ' + t.testName, code: cat ? cat.code : '', qty: 1, price: cat ? cat.price : 0, unit: 'use', isService: true, vatCategory: (cat && cat.vatCategory) || 'A', labId, department: 'Laboratory', priceNeeded: !cat });
+                t.chargeId = chargeId; t.visitRef = visit.ref; t.payStatus = 'awaiting';
+            });
+            if ((labIds || []).length) safeSetItem('pos_lab_results', JSON.stringify(labResults));
+            meds.forEach(({ product, qty, dosage, saleMode }) => addPatientCharge({
+                ...base, kind: 'medication', name: product.name, code: product.code, qty, price: getEffectivePrice(product, saleMode),
+                unit: saleMode === 'piece' ? 'pcs' : (product.unit || 'pcs'), saleMode: saleMode || null, dosage: dosage || '', isService: false, vatCategory: product.vatCategory || 'A',
+            }));
+            savePatientCharges();
+        }
+
+        function pendingBillGroups(query) {
+            const q = String(query || '').trim().toLowerCase();
+            const groups = new Map();
+            patientCharges.filter(c => c.status === 'unpaid').forEach(c => {
+                if (!groups.has(c.ref)) groups.set(c.ref, { ref: c.ref, patientId: c.patientId, patientName: c.patientName, charges: [], total: 0, createdAt: c.createdAt });
+                const g = groups.get(c.ref);
+                g.charges.push(c);
+                g.total += c.price * c.qty;
+                g.createdAt = Math.min(g.createdAt, c.createdAt);
+            });
+            let list = Array.from(groups.values());
+            if (q) list = list.filter(g => g.ref.toLowerCase() === q || g.ref.toLowerCase().startsWith(q) || String(g.patientId).toLowerCase() === q || String(g.patientId).toLowerCase().includes(q) || String(g.patientName || '').toLowerCase().includes(q));
+            return list.sort((a, b) => a.createdAt - b.createdAt);
+        }
+
+        function renderPatientBillWaiting(groups) {
+            const el = document.getElementById('patient-bill-waiting');
+            if (!el) return;
+            const list = groups || pendingBillGroups('');
+            if (list.length === 0) { el.innerHTML = '<span class="kitchen-sub" style="color:#95a5a6;">No unpaid patient bills right now.</span>'; return; }
+            el.innerHTML = list.slice(0, 8).map(g => `<button type="button" class="dose-chip" title="${escapeHtml(g.patientName || '')}" onclick="loadPatientBill('${escapeJsAttr(g.ref)}')">${escapeHtml(g.ref)} · ${escapeHtml(g.patientName || '?')} · KES ${g.total.toFixed(0)}</button>`).join('')
+                + (list.length > 8 ? `<span class="kitchen-sub">+${list.length - 8} more — search above</span>` : '');
+        }
+
+        function loadPatientBillFromInput() {
+            const input = document.getElementById('patient-bill-input');
+            const q = input ? input.value.trim() : '';
+            if (!q) { renderPatientBillWaiting(); showToast('Type the visit reference, patient number or name.', true); return; }
+            const groups = pendingBillGroups(q);
+            if (groups.length === 0) { showToast(`No unpaid bill found for "${q}".`, true); return; }
+            if (groups.length > 1) { renderPatientBillWaiting(groups); showToast(`${groups.length} unpaid bills match — tap the one you want.`); return; }
+            loadPatientBill(groups[0].ref);
+        }
+
+        function loadPatientBill(ref) {
+            if (Object.keys(currentCart).length > 0) { showToast('The cart isn\u2019t empty — check out or clear it before loading a patient\u2019s bill.', true); return; }
+            const group = pendingBillGroups(ref).find(g => g.ref === ref);
+            if (!group) { showToast('That bill has no unpaid items left.', true); return; }
+            const short = [], noPrice = [];
+            group.charges.forEach(c => {
+                const key = 'charge:' + c.id;
+                const product = c.code ? inventory.find(p => p.code === c.code) : null;
+                const piece = c.saleMode === 'piece', box = c.saleMode === 'box';
+                currentCart[key] = {
+                    code: c.code || '', cartKey: key, name: c.name + (piece ? ' (Piece)' : (box ? ' (Box)' : '')), price: c.price, qty: c.qty,
+                    wholesalePrice: product ? (piece ? (product.pieceWholesalePrice || 0) : getServiceUnitCost(product)) : 0,
+                    unit: c.unit || 'pcs', isService: !!c.isService, vatCategory: c.vatCategory || 'A', saleMode: c.saleMode || undefined,
+                    dosage: c.dosage || undefined, fromCharge: c.id, patientRef: c.ref, patientId: c.patientId, patientName: c.patientName,
+                };
+                if (!c.isService && product) { const avail = getAvailableStock(product, c.saleMode || undefined); if (avail < c.qty) short.push(`${product.name} (${avail <= 0 ? 0 : avail} available)`); }
+                if (!(c.price > 0)) noPrice.push(c.name);
+            });
+            const input = document.getElementById('patient-bill-input'); if (input) input.value = '';
+            renderCart();
+            showToast(`${group.patientName} · ${group.ref}: ${group.charges.length} item(s), KES ${group.total.toFixed(2)} loaded.`);
+            if (short.length) showToast('Not enough stock for: ' + short.join(', ') + '. Reduce or remove before paying.', true);
+            if (noPrice.length) showToast('No price set for: ' + noPrice.join(', ') + ' — add it to the Services list, or quote the total.', true);
+        }
+
+        // After the sale: everything that was loaded from the patient's bill is marked PAID (or BILLED when the cashier put it on a Pay Later bill),
+        // and a lab test that has been paid for is marked ready for sample collection.
+        function settleLoadedCharges(sale, paid) {
+            if (!sale || !Array.isArray(sale.chargeIds) || sale.chargeIds.length === 0) return;
+            const now = Date.now();
+            sale.chargeIds.forEach(id => {
+                const c = patientCharges.find(x => x.id === id);
+                if (!c) return;
+                c.status = paid ? 'paid' : 'billed'; c.paidSaleId = sale.id; c.paidAt = now; c.paidBy = activeServerName(); c.updatedAt = now;
+                if (c.labId) { const t = labResults.find(x => x.id === c.labId); if (t) t.payStatus = paid ? 'paid' : 'billed'; }
+            });
+            safeSetItem('pos_lab_results', JSON.stringify(labResults));
+            savePatientCharges();
+            if (typeof renderLaboratoryTab === 'function' && document.getElementById('laboratory-table')) renderLaboratoryTab();
+        }
+
+        // Voiding a paid patient sale opens its charges again; restoring the sale closes them again.
+        function revertChargesForSale(sale, voided) {
+            if (!sale || !Array.isArray(sale.chargeIds)) return;
+            const now = Date.now();
+            sale.chargeIds.forEach(id => {
+                const c = patientCharges.find(x => x.id === id);
+                if (!c || c.paidSaleId !== sale.id) return;
+                c.status = voided ? 'unpaid' : 'paid'; c.updatedAt = now;
+                if (c.labId) { const t = labResults.find(x => x.id === c.labId); if (t) t.payStatus = voided ? 'awaiting' : 'paid'; }
+            });
+            safeSetItem('pos_lab_results', JSON.stringify(labResults));
+            savePatientCharges();
+        }
+
+        function labPayBadge(t) {
+            if (!t || !t.chargeId) return '';
+            if (t.payStatus === 'paid') return ' <span style="color:#27ae60; font-weight:bold;">💳 Paid — ready for sample</span>';
+            if (t.payStatus === 'billed') return ' <span style="color:#2980b9; font-weight:bold;">🧾 On a bill</span>';
+            return ' <span style="color:#c0392b; font-weight:bold;">⏳ Awaiting payment</span>';
+        }
+
+        // The visit form's "Procedures / nursing / other fees" rows (picked from the Services list).
+        function populateVisitServiceSelect() {
+            const sel = document.getElementById('visit-service-select');
+            if (!sel) return;
+            const services = inventory.filter(p => p.type === 'service').sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+            sel.innerHTML = '<option value="">— pick a service / fee —</option>' + services.map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)} — KES ${Number(p.price).toFixed(2)}</option>`).join('');
+        }
+        function addVisitService() {
+            const sel = document.getElementById('visit-service-select'), qtyEl = document.getElementById('visit-service-qty');
+            const p = inventory.find(x => x.code === (sel && sel.value) && x.type === 'service');
+            const qty = parseFloat(qtyEl && qtyEl.value) || 1;
+            if (!p) { showToast('Pick a service or fee first.', true); return; }
+            if (!(qty > 0)) { showToast('Enter a quantity.', true); return; }
+            visitServiceDraft.push({ code: p.code, name: p.name, price: p.price, qty, unit: p.unit || 'use', vatCategory: p.vatCategory || 'A', department: p.department || '' });
+            sel.value = ''; if (qtyEl) qtyEl.value = '1';
+            renderVisitServiceRows();
+        }
+        function removeVisitService(i) { visitServiceDraft.splice(i, 1); renderVisitServiceRows(); }
+        function renderVisitServiceRows() {
+            const el = document.getElementById('visit-service-rows');
+            if (!el) return;
+            el.innerHTML = visitServiceDraft.map((s, i) => `<div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid var(--light); font-size:13px;">
+                <span>${escapeHtml(s.name)} × ${s.qty} — KES ${(s.price * s.qty).toFixed(2)}</span>
+                <button type="button" class="settings-small-btn" style="background:var(--danger); color:white;" onclick="removeVisitService(${i})">✕</button></div>`).join('');
+        }
+
         function saveVisit() {
             if (!currentVisitPatientId) return;
             const patient = patients.find(p => p.id === currentVisitPatientId);
@@ -18525,6 +18777,10 @@
 
             const notes = document.getElementById('visit-notes-input').value.trim();
             const fee = parseFloat(document.getElementById('visit-consultation-fee-input').value) || 0;
+            // A patient-billed visit is paid at the cashier (unpaid charges under the visit's reference); "Take payment now" keeps the old immediate sale.
+            const counterMode = visitBillTo === 'patient' && !document.getElementById('visit-charge-now-check').checked;
+            const visitRef = currentVisitRef || newVisitRef();
+            const services = visitServiceDraft.map(sv => ({ ...sv }));
 
             let institution = null;
             let policyNo = '', preAuthCode = '', coPay = 0;
@@ -18551,6 +18807,7 @@
                     return;
                 }
                 const saleMode = product.dualUnit ? (row.saleMode === 'box' ? 'box' : 'piece') : undefined;
+                if (saleMode === 'piece') { const problem = doseProblem(product, qty); if (problem) { showToast(problem, true); return; } }
                 const available = getAvailableStock(product, saleMode);
                 if (available < qty) {
                     showToast(`Not enough ${product.name} in stock (${available} ${saleMode === 'piece' ? 'loose piece(s)' : unitLabel(product.unit)} available).`, true);
@@ -18560,11 +18817,15 @@
             }
 
             // Deduct stock now that every row has passed validation.
-            resolvedMeds.forEach(({ product, qty, saleMode }) => deductStockForSaleUnit(product, qty, saleMode));
-            safeSetItem('pos_inventory', JSON.stringify(inventory));
+            // At the cashier's counter the stock comes out when the sale is made, not now.
+            if (!counterMode) {
+                resolvedMeds.forEach(({ product, qty, saleMode }) => deductStockForSaleUnit(product, qty, saleMode));
+                safeSetItem('pos_inventory', JSON.stringify(inventory));
+            }
 
             const medicationCost = resolvedMeds.reduce((sum, { product, qty, saleMode }) => sum + getEffectivePrice(product, saleMode) * qty, 0);
-            const total = fee + medicationCost;
+            const serviceCost = services.reduce((sum, sv) => sum + sv.price * sv.qty, 0);
+            const total = fee + medicationCost + serviceCost;
 
             const queueEntry = pendingQueueCompletion ? queue.find(q => q.id === pendingQueueCompletion) : null;
             const icd10 = parseIcd10Input();
@@ -18581,6 +18842,9 @@
                 notes,
                 medications: resolvedMeds.map(({ product, qty, dosage, saleMode }) => ({ code: product.code, name: product.name, qty, unit: saleMode === 'piece' ? 'pcs' : product.unit, dosage, saleMode: saleMode || null })),
                 consultationFee: fee,
+                ref: visitRef,
+                services: services.map(sv => ({ code: sv.code, name: sv.name, qty: sv.qty, price: sv.price })),
+                chargeMode: counterMode ? 'counter' : 'now',
                 billTo: visitBillTo,
                 institutionId: institution ? institution.id : null,
                 institutionName: institution ? institution.name : null,
@@ -18589,14 +18853,16 @@
             };
             visits.push(visit);
             safeSetItem('pos_visits', JSON.stringify(visits));
+            if (counterMode) createVisitCharges(visit, patient, resolvedMeds, fee, services, visitLabIds);
             logAudit('Visit recorded', patient.name, `${diagnosis || 'No diagnosis noted'}${icd10 ? ' (' + icd10.code + ')' : ''}`);
 
             // Patient billing reuses the exact same salesLog shape every other sale
             // in this app uses — Daily Sales, Profits, and Trends all pick it up
             // with no changes needed, same as License sales do in the Owner Console.
-            if (visitBillTo === 'patient' && total > 0) {
+            if (visitBillTo === 'patient' && !counterMode && total > 0) {
                 const items = [];
-                if (fee > 0) items.push({ name: 'Consultation Fee', price: fee, qty: 1, unit: 'use' });
+                if (fee > 0) items.push({ name: 'Consultation Fee', price: fee, qty: 1, unit: 'use', isService: true });
+                services.forEach(sv => items.push({ name: sv.name, code: sv.code, price: sv.price, qty: sv.qty, unit: sv.unit || 'use', isService: true }));
                 resolvedMeds.forEach(({ product, qty, saleMode }) => {
                     items.push({ name: product.name + (saleMode === 'piece' ? ' (Piece)' : saleMode === 'box' ? ' (Box)' : ''), price: getEffectivePrice(product, saleMode), qty, unit: saleMode === 'piece' ? 'pcs' : product.unit, saleMode: saleMode || null });
                 });
@@ -18703,6 +18969,11 @@
             renderVisitMedicationRows();
             renderPatientVisitHistory(currentVisitPatientId);
             if (typeof renderInventoryTable === 'function') renderInventoryTable();
+            showToast(counterMode && total > 0 ? `Visit saved — reference ${visitRef}. Send the patient to the cashier with it (KES ${total.toFixed(2)}).` : `Visit saved — reference ${visitRef}.`);
+            currentVisitRef = newVisitRef(); visitServiceDraft = []; visitLabIds = [];
+            renderVisitServiceRows();
+            document.getElementById('visit-charge-now-check').checked = false;
+            document.getElementById('patient-visit-modal-sub').textContent = document.getElementById('patient-visit-modal-sub').textContent.replace(/ · Visit ref .*$/, '') + ` · Visit ref ${currentVisitRef}`;
         }
 
         /* ---------- CROSS-DEVICE SYNC (Cloudflare Pages Functions + KV) ---------- */
@@ -18878,6 +19149,7 @@
 
         function renderAllViews() {
             renderCart();
+            renderPatientBillWaiting();
             renderTrendsChart();
             renderInventoryTable();
             renderNotifications();
@@ -19085,6 +19357,7 @@
                 auditLog: auditLog,
                 appointments: appointments,
                 labResults: labResults,
+                patientCharges: patientCharges,
                 institutions: institutions,
                 institutionCharges: institutionCharges,
                 savedBarcodes: savedBarcodes,
@@ -19265,6 +19538,7 @@
             auditLog = Array.isArray(data.auditLog) ? data.auditLog : [];
             appointments = Array.isArray(data.appointments) ? data.appointments : [];
             labResults = Array.isArray(data.labResults) ? data.labResults : [];
+            patientCharges = Array.isArray(data.patientCharges) ? data.patientCharges : patientCharges;
             institutions = Array.isArray(data.institutions) ? data.institutions : [];
             institutionCharges = Array.isArray(data.institutionCharges) ? data.institutionCharges : [];
             savedBarcodes = Array.isArray(data.savedBarcodes) ? data.savedBarcodes : [];
@@ -20299,6 +20573,7 @@
             collapseTabsIfNeeded();
             renderAllBranchSwitchers();
 
+            if (tabId === 'sales-tab') renderPatientBillWaiting();
             if (tabId === 'trends-tab') {
                 renderTrendsChart();
             }
@@ -23834,6 +24109,7 @@
             }
             sale.stockRestoredOnVoid = shouldRestoreStock;
 
+            revertChargesForSale(sale, true);
             sale.voided = true;
             sale.voidReason = pendingVoidReason;
             sale.voidedBy = activeServerName();
@@ -23880,6 +24156,7 @@
             }
             delete sale.stockRestoredOnVoid;
 
+            revertChargesForSale(sale, false);
             sale.voided = false;
             // The reason/who/when are kept on the record rather than erased — a
             // "this was voided by X on Y, then restored" trail is more useful than
@@ -24518,6 +24795,71 @@
         // scarcest ingredient (e.g. 10kg of mince / 0.25kg per burger = 40 burgers possible).
         /* -> shared: getServiceAvailableQty */
 
+        /* ---------- VARIABLE DOSING (loose tablets sold in fixed dose packs) ----------
+           A box/pack item that is also sold by the piece can carry dosing rules:
+             allowLooseSale (default true)  — false = whole boxes/packs only
+             minDoseQty                     — the smallest number of pieces one sale may contain
+             doseIncrements                 — allowed dose packs, "4, 6, 12, 24" or labelled "Child Dose=4, Full Pack=24"
+           A piece quantity is valid when it is at least the minimum and is made up of allowed dose packs (8 = 4+4, 10 = 4+6 ...).
+           Stock is still counted in base units (pieces): selling 6 from a 24-piece box takes 6 pieces (a box is opened as needed). */
+        function parseDoseIncrements(text) {
+            const raw = Array.isArray(text) ? text.map(o => (o && typeof o === 'object') ? `${o.label || ''}=${o.qty}` : String(o)).join(',') : String(text || '');
+            const out = [];
+            for (const part of raw.split(',').map(s => s.trim()).filter(Boolean)) {
+                const m = part.match(/^(?:(.+?)\s*=\s*)?(\d+)$/);
+                if (!m) return null;
+                const qty = parseInt(m[2], 10);
+                if (!(qty >= 1)) return null;
+                out.push({ label: (m[1] || '').trim(), qty });
+            }
+            const seen = new Set();
+            return out.filter(o => (seen.has(o.qty) ? false : (seen.add(o.qty), true))).sort((a, b) => a.qty - b.qty);
+        }
+        function dosePolicy(product) {
+            const options = parseDoseIncrements(product && product.doseIncrements) || [];
+            const allowLoose = !(product && product.allowLooseSale === false);
+            const min = Math.max(1, parseInt(product && product.minDoseQty, 10) || 1);
+            return { allowLoose, min, options, active: !allowLoose || min > 1 || options.length > 0 };
+        }
+        function isValidDoseQty(pol, qty) {
+            if (!Number.isInteger(qty) || qty < pol.min) return false;
+            if (pol.options.length === 0) return true;
+            const reach = new Array(qty + 1).fill(false); reach[0] = true;
+            for (let i = 1; i <= qty; i++) for (const o of pol.options) if (o.qty <= i && reach[i - o.qty]) { reach[i] = true; break; }
+            return reach[qty];
+        }
+        // The next allowed quantity above (dir +1) or below (dir -1) `current`; 0 means "below the minimum: take it out of the cart".
+        function nextDoseQty(pol, current, dir) {
+            if (dir > 0) { let q = Math.floor(current) + 1; while (!isValidDoseQty(pol, q) && q < current + 5000) q++; return q; }
+            let q = Math.ceil(current) - 1;
+            while (q >= pol.min && !isValidDoseQty(pol, q)) q--;
+            return q >= pol.min ? q : 0;
+        }
+        function doseProblem(product, qty) {
+            const pol = dosePolicy(product);
+            if (!pol.active) return null;
+            const unit = unitLabel(product.unit || 'pcs');
+            if (!pol.allowLoose) return `"${product.name}" is sold by the full ${unit} only — loose pieces are not allowed.`;
+            if (isValidDoseQty(pol, qty)) return null;
+            const packs = pol.options.length ? ` Allowed packs: ${pol.options.map(o => o.qty).join(', ')} (or a combination).` : '';
+            return `${qty} is not a valid quantity of "${product.name}" — minimum ${pol.min}.${packs}`;
+        }
+        function setCartLineDosage(key, value) {
+            if (currentCart[key]) currentCart[key].dosage = String(value || '').trim().slice(0, 120);
+        }
+        function cartLineDoseHtml(line) {
+            if (line.isService) return '';
+            const key = escapeJsAttr(line.cartKey || line.code);
+            const product = inventory.find(p => p.code === line.code);
+            let dose = '';
+            if (product && line.saleMode === 'piece') {
+                const pol = dosePolicy(product);
+                if (pol.options.length) dose = `<div class="dose-quick">${pol.options.map(o => `<button type="button" class="settings-small-btn" onclick="setCartQty('${key}', ${o.qty})">${o.label ? escapeHtml(o.label) + ' ' : ''}${o.qty}</button>`).join('')}</div>`;
+            }
+            const chips = ['1 x 3', '1 x 2', '2 x 3', '1 x 1'].map(c => `<button type="button" class="dose-chip" onclick="this.parentNode.previousElementSibling.value = '${c}'; setCartLineDosage('${key}', '${c}')">${c}</button>`).join('');
+            return `${dose}<input type="text" class="cart-dosage-input" maxlength="120" placeholder="Dosage (optional) e.g. 1 x 3 for 5 days" value="${escapeHtml(line.dosage || '')}" onchange="setCartLineDosage('${key}', this.value)"><div class="dose-chips">${chips}</div>`;
+        }
+
         function getAvailableStock(product, mode) {
             if (!product) return 0;
             if (product.type === 'service') {
@@ -24525,6 +24867,7 @@
             }
             if (product.dualUnit) {
                 if (mode === 'piece') {
+                    if (!dosePolicy(product).allowLoose) return 0;          // whole boxes/packs only
                     // Pieces can also be sold out of an unopened box (it auto-opens at
                     // checkout time), so show the full sellable-as-pieces total.
                     return (product.pieceQty || 0) + (product.qty || 0) * (product.unitsPerBox || 1);
@@ -24851,6 +25194,9 @@
                 const pieceQtyRaw = document.getElementById('inv-piece-qty').value.trim();
                 const existingPieceQty = existingIndex >= 0 ? (inventory[existingIndex].pieceQty || 0) : 0;
                 const pieceQty = pieceQtyRaw === '' ? existingPieceQty : Math.max(0, parseInt(pieceQtyRaw, 10) || 0);
+                const doseIncText = document.getElementById('inv-dose-increments').value.trim();
+                const doseParsed = parseDoseIncrements(doseIncText);
+                if (doseParsed === null) { showToast('Allowed dose packs: whole numbers separated by commas (e.g. 4, 6, 12, 24) or labelled (Child Dose=4).', true); return; }
 
                 item.dualUnit = true;
                 item.unitsPerBox = unitsPerBox;
@@ -24858,6 +25204,10 @@
                 item.piecePrice = piecePrice;
                 item.pieceWholesalePrice = pieceWholesalePrice;
                 item.pieceQty = pieceQty;
+                item.allowLooseSale = document.getElementById('inv-allow-loose').checked;
+                item.baseUnitName = document.getElementById('inv-base-unit-name').value.trim();
+                item.minDoseQty = Math.max(1, parseInt(document.getElementById('inv-min-dose').value, 10) || 1);
+                item.doseIncrements = doseParsed.map(o => (o.label ? o.label + '=' : '') + o.qty).join(', ');
             }
 
             if (existingIndex >= 0) {
@@ -24896,6 +25246,10 @@
             document.getElementById('inv-piece-price').value = '';
             document.getElementById('inv-piece-wholesale-price').value = '';
             document.getElementById('inv-piece-qty').value = '';
+            document.getElementById('inv-allow-loose').checked = true;
+            document.getElementById('inv-base-unit-name').value = '';
+            document.getElementById('inv-min-dose').value = '';
+            document.getElementById('inv-dose-increments').value = '';
             updateAddItemUnitHints();
             retakePhoto();
         }
@@ -24974,6 +25328,22 @@
                 }
                 product.pieceQty = pieceQty;
                 showToast(`Loose piece stock for "${product.name}" updated to ${pieceQty}.`);
+            } else if (field === 'allowLooseSale') {
+                product.allowLooseSale = value === true || value === 'true';
+                showToast(`"${product.name}" ${product.allowLooseSale ? 'can now be sold loose.' : 'is now sold by the full box/pack only.'}`);
+            } else if (field === 'baseUnitName') {
+                product.baseUnitName = String(value || '').trim();
+            } else if (field === 'minDoseQty') {
+                const n = parseInt(value, 10);
+                if (!Number.isInteger(n) || n < 1) { showToast('The minimum must be a whole number, 1 or more.', true); renderInventoryTable(); return; }
+                product.minDoseQty = n;
+                showToast(`Minimum sale for "${product.name}" is now ${n} piece(s).`);
+            } else if (field === 'doseIncrements') {
+                const parsed = parseDoseIncrements(value);
+                if (parsed === null) { showToast('Allowed dose packs: whole numbers separated by commas (e.g. 4, 6, 12, 24) or labelled (Child Dose=4).', true); renderInventoryTable(); return; }
+                product.doseIncrements = parsed.map(o => (o.label ? o.label + '=' : '') + o.qty).join(', ');
+            } else if (field === 'department') {
+                product.department = String(value || '').trim();
             } else if (field === 'unitsPerBox') {
                 const unitsPerBox = parseInt(value, 10);
                 if (!Number.isInteger(unitsPerBox) || unitsPerBox < 1) {
@@ -25110,6 +25480,10 @@
                 document.getElementById('inv-edit-unitsperbox-input').value = product.unitsPerBox || 1;
                 document.getElementById('inv-edit-pieceprice-input').value = (product.piecePrice || 0).toFixed(2);
                 document.getElementById('inv-edit-piececount-input').value = product.pieceQty || 0;
+                document.getElementById('inv-edit-allowloose-input').checked = product.allowLooseSale !== false;
+                document.getElementById('inv-edit-baseunit-input').value = product.baseUnitName || '';
+                document.getElementById('inv-edit-mindose-input').value = product.minDoseQty || 1;
+                document.getElementById('inv-edit-doseinc-input').value = product.doseIncrements || '';
             }
 
             document.getElementById('inv-edit-batches-line').innerHTML = (product.batches && product.batches.length)
@@ -26407,7 +26781,7 @@
             const services = inventory.filter(p => p.type === 'service');
 
             if (services.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No services added yet. Add one from the "Add New Items" tab.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9" class="empty-state">No services added yet. Add one from the "Add New Items" tab.</td></tr>`;
                 return;
             }
 
@@ -26443,6 +26817,7 @@
                 <tr>
                     <td><img class="inv-thumb" src="${p.image || "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23eee'/></svg>"}" alt="${escapeHtml(p.name)}" style="cursor:pointer;" title="Click to change image" onclick="triggerInventoryRowImageUpload('${escapeJsAttr(p.code)}')"></td>
                     <td>${escapeHtml(p.name)} <span class="service-badge">SERVICE</span>${hasRecipe ? ' <span class="recipe-badge">🧪 RECIPE</span>' : ''}</td>
+                    <td><select class="inv-edit-input" title="Which hospital unit this fee belongs to" onchange="updateInventoryField('${escapeJsAttr(p.code)}', 'department', this.value)">${['', 'Consultation', 'Laboratory', 'Radiology', 'Procedures', 'Nursing / Ward', 'Dental', 'Pharmacy', 'Other'].map(d => `<option value="${d}" ${(p.department || '') === d ? 'selected' : ''}>${d || '—'}</option>`).join('')}</select></td>
                     <td>
                         <input class="inv-edit-input" type="number" min="0" step="0.01"
                             value="${p.price.toFixed(2)}"
@@ -27568,7 +27943,14 @@
             const saleMode = isDual ? (mode === 'piece' ? 'piece' : 'box') : undefined;
             const key = cartKeyFor(code, saleMode);
             const unit = isDual && saleMode === 'piece' ? 'pcs' : (product.unit || 'pcs');
-            const step = 1; // whole steps only — a decimal only ever comes from typing one directly
+            // Whole steps only — a decimal only ever comes from typing one directly. A dosed item moves by its allowed dose packs
+            // instead (the first piece added is the minimum dose).
+            let step = 1;
+            if (isDual && saleMode === 'piece') {
+                const pol = dosePolicy(product);
+                if (!pol.allowLoose) { showToast(doseProblem(product, 1), true); return; }
+                if (pol.active) { const cur = currentCart[key] ? currentCart[key].qty : 0; step = nextDoseQty(pol, cur, +1) - cur; }
+            }
 
             const price = isDual && saleMode === 'piece' ? (product.piecePrice || 0) : getEffectivePrice(product, saleMode);
             const wholesalePrice = isDual && saleMode === 'piece'
@@ -27664,7 +28046,8 @@
             const line = currentCart[key];
             if (!line) return;
             const product = inventory.find(p => p.code === line.code);
-            const newQty = Math.round((line.qty + delta) * 100) / 100;
+            let newQty = Math.round((line.qty + delta) * 100) / 100;
+            if (product && line.saleMode === 'piece') { const pol = dosePolicy(product); if (pol.active) newQty = nextDoseQty(pol, line.qty, delta > 0 ? 1 : -1); }
 
             if (newQty <= 0) {
                 delete currentCart[key];
@@ -27698,6 +28081,10 @@
             // applied to manual typing too, so it can't be an end-run
             // around the setting.
             if (!isDecimalUnit(line.unit)) qty = Math.round(qty);
+            if (product && line.saleMode === 'piece') {
+                const problem = doseProblem(product, qty);
+                if (problem) { showToast(problem, true); renderCart(); return; }
+            }
             if (product && qty > getAvailableStock(product, line.saleMode)) {
                 const avail = getAvailableStock(product, line.saleMode);
                 const msg = line.isService
@@ -27747,7 +28134,7 @@
                     const step = 1; // whole steps only — a decimal only ever comes from typing one directly
                     return `
                     <tr>
-                        <td>${escapeHtml(line.name)}${line.isService ? ' <span class="service-badge">SERVICE</span>' : ''}</td>
+                        <td>${escapeHtml(line.name)}${line.isService ? ' <span class="service-badge">SERVICE</span>' : ''}${cartLineDoseHtml(line)}</td>
                         <td>
                             <div class="qty-controls">
                                 <button onclick="changeCartQty('${escapeJsAttr(line.cartKey || line.code)}', -${step})">−</button>
@@ -29507,6 +29894,20 @@
                 showToast('Cart is empty. Add products before checking out.', true);
                 return;
             }
+            // The last line of defence for dosing rules, whatever put the quantity in the cart.
+            for (const l of entries) {
+                if (l.saleMode !== 'piece') continue;
+                const dosed = inventory.find(x => x.code === l.code);
+                const problem = dosed && doseProblem(dosed, l.qty);
+                if (problem) { showToast(problem, true); return; }
+            }
+            // Lines loaded from a patient's bill: stock comes out with this sale, so it has to be there.
+            for (const l of entries) {
+                if (!l.fromCharge || l.isService) continue;
+                const p = inventory.find(x => x.code === l.code);
+                const avail = p ? getAvailableStock(p, l.saleMode) : 0;
+                if (p && avail < l.qty) { showToast(`Not enough ${p.name} in stock (${avail <= 0 ? 0 : avail} available) — reduce it or take it off this bill.`, true); return; }
+            }
             const total = cartTotal();
             const isPodDelivery = orderType === 'delivery' && deliveryPaymentMode === 'pod';
 
@@ -29653,8 +30054,15 @@
                     pod: isPodDelivery,
                     freeDelivery: freeDeliveryApplied,
                 } : null,
-                items: entries.map(l => ({ code: l.code, name: l.name, qty: l.qty, price: l.price, wholesalePrice: l.wholesalePrice || 0, unit: l.unit || 'pcs', isService: !!l.isService, vatCategory: l.vatCategory || 'A', saleMode: l.saleMode || null }))
+                items: entries.map(l => ({ code: l.code, name: l.name, qty: l.qty, price: l.price, wholesalePrice: l.wholesalePrice || 0, unit: l.unit || 'pcs', isService: !!l.isService, vatCategory: l.vatCategory || 'A', saleMode: l.saleMode || null, dosage: l.dosage ? String(l.dosage).slice(0, 120) : undefined }))
             };
+            const billedLines = entries.filter(l => l.fromCharge);
+            if (billedLines.length) {
+                saleRecord.patientRef = billedLines[0].patientRef;
+                saleRecord.patientId = billedLines[0].patientId;
+                saleRecord.chargeIds = billedLines.map(l => l.fromCharge);
+                if (!saleRecord.customerName) saleRecord.customerName = `${billedLines[0].patientName} (${billedLines[0].patientId})`;
+            }
             if (mpesaAmount > 0) {
                 saleRecord.mpesaReceiptNumber = mpesaCode;
                 const phoneInput = normalizeKenyanPhone((document.getElementById('mpesa-phone-input').value || '').trim());
@@ -29759,6 +30167,7 @@
             }
             queuePush();
 
+            settleLoadedCharges(saleRecord, paid);
             renderReceipt(saleRecord);
             maybePrintKitchenTicket(saleRecord);
 
@@ -29815,7 +30224,12 @@
         function renderReceipt(sale) {
             // The layout lives ONCE in shared code (buildReceiptDoc) — same on every app, and the preview
             // and the printed copy are built from the same lines.
-            renderSharedReceipt(sale);
+            renderSharedReceipt(sale, {
+                // Fees and dispensed medicines are listed apart on the receipt (only when the sale has both kinds).
+                sectionOf: (l) => (l.type === 'payment' ? null : (l.isService ? 'SERVICES & HOSPITAL FEES:' : 'DISPENSED MEDICATIONS:')),
+                sectionOrder: ['SERVICES & HOSPITAL FEES:', 'DISPENSED MEDICATIONS:'],
+                headerExtra: (sale) => (sale.patientRef ? [`Patient Ref: ${sale.patientRef}`] : []),
+            });
         }
 
         // Reopens the receipt/bill modal for a past sale, e.g. to reprint an unpaid bill.

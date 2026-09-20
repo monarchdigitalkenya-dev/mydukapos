@@ -1,4 +1,4 @@
-# Zips 24 - 41 — what changed
+# Zips 24 - 44 — what changed
 
 ## Aqua POS (water): each site has its own bulk tank
 * Production and every Shop branch have their own tanks. Refills, sales and bulk orders draw only from their own site.
@@ -145,3 +145,31 @@ If clients on zip 24+ with big shops report reverts, ALSO check the Owner Consol
   when new portions are logged. Voids (sale, un-void, whole tab) re-credit Sold, Left, Used and ingredient stock.
 * Stored as small 'kitchen' entries (delta 0) in stockMovementLog: no schema change, syncs between tills like any log, ignored by stock reports and server stock reconciliation.
 * Not backfilled: Used and Sold count from deployment onward.
+
+## Zip 42  (Hospital app: variable dosing + dosage instructions + sectioned receipt. Deploy the SITE only.)
+* **Variable dosing** on a box/pack item that is also sold by the piece (Add item form and the item's edit window): `Allow selling loose pieces`, base unit name, minimum pieces per sale, allowed dose packs
+  ("4, 6, 12, 24" or labelled "Child Dose=4, Full Pack=24"). A quantity is valid when it is at least the minimum and is made of allowed packs (8 = 4+4, 10 = 4+6). The first loose add is the minimum
+  dose, +/- step through allowed quantities, typing an invalid quantity is refused with the allowed packs listed, quick-select dose buttons sit under the item, and checkout re-checks every piece line.
+  "Whole boxes only" removes loose sale entirely. Stock is still counted in base units (6 from a 24-tablet box opens one box and leaves 18 loose).
+* **Dosage instruction** (optional, e.g. "1 x 3 for 5 days") under every stocked item in the cart with quick chips; stored on the sale line and printed as `--> Dose: ...` on the on-screen, printed and
+  USB/Bluetooth receipts (shared receipt builder; only appears when a line has one).
+* **Sectioned receipt**: when a sale has both hospital fees and dispensed items they are listed under "SERVICES & HOSPITAL FEES:" and "DISPENSED MEDICATIONS:" (Hospital only; other apps unchanged).
+* Not in this zip: patient bill aggregation / unified counter payment, lab-test pricing, pharmacy-app parity, dispensing labels, a Department column for services.
+
+## Zip 43  (Hospital: visit references + the cashier's patient bill. DEPLOY THE ROUTER FIRST (`npm run deploy:router`), then the site.)
+* **Tests made deterministic.** The deletion / missed-change / kitchen two-till tests waited fixed times for timers; on a busy machine (the whole suite runs in parallel) they could fail although the app
+  was right, which stopped `npm run deploy`. They now await pushes/pulls directly and poll for the few asynchronous things.
+* **Every hospital visit gets a reference** (V260921-4F2K), shown on the visit form and after saving. A patient-billed visit files what it costs as UNPAID charges under that reference — consultation fee,
+  procedures / nursing / other fees (picked from the Services list, new rows on the visit form), lab tests (priced from the Services list by name) and the medicines prescribed (with dose-pack quantity and
+  dosage). Nothing is charged and no stock moves at the visit. "💵 Take payment now" on the visit form keeps the old immediate sale.
+* **Sales Counter -> 🏥 Patient bill**: type the reference, patient number or name (or tap the waiting list) and the whole bill loads into the cart (dosage, dose packs, fees). One payment (cash, M-Pesa,
+  card, split) pays it all; stock comes out with that sale; every line is marked paid; a paid lab test shows "💳 Paid — ready for sample". Refused if the cart is busy or stock is short. Put on Pay Later
+  the lines are marked billed (not loadable twice). Voiding the sale reopens the bill; restoring it closes it. Receipts carry "Patient Ref:".
+* Tests requested from the Laboratory tab get their own reference and go to the cashier.
+* Services list has a Department column (Consultation, Laboratory, Radiology, Procedures, Nursing / Ward, Dental, Pharmacy, Other).
+* New synced collection `patientCharges` (one small record per line; merged per record on both storage backends).
+* Not built: dispensing labels, insurance split at the counter (institution visits keep their account flow), Pharmacy-app parity.
+
+## Zip 44
+* **Pharmacy Sales Counter now has the dosage box too** (Hospital had it since zip 42): an optional dosage under each stocked item in the cart with quick chips (1 x 3, 1 x 2, 2 x 3, 1 x 1), saved on the
+  sale line and printed as `--> Dose: ...` on the on-screen, printed and USB/Bluetooth receipts. Tested end to end in both apps. (Dose-pack rules and the cashier patient bill remain Hospital-only.)

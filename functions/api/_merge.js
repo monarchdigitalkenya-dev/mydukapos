@@ -123,7 +123,7 @@ export const MERGE_BY_ID_FIELDS = [
   'stockRequests',
   'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits',
   'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
-  'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog',
+  'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'patientCharges',
   // Orders tab: supplier purchase orders. Edited in place (status, per-line receivedQty), so they need the
   // per-record merge. Removal is a `removed: true` tombstone, like staff.
   'purchaseOrders',

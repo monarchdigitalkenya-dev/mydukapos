@@ -11470,16 +11470,24 @@
                 };
                 const o = (hooks.itemCells && hooks.itemCells(l, sale)) || {};
                 const subs = [];
+                if (l.dosage) subs.push('--> Dose: ' + l.dosage);        // a medicine's dosage instruction (1 x 3 for 5 days ...)
                 if (l.offerApplied) subs.push(`Offer: ${l.offerApplied.label} (-KES ${Number(l.offerApplied.amount).toFixed(2)})`);
                 if (Array.isArray(l.componentsUsed)) l.componentsUsed.forEach(c => subs.push(`Uses: ${hasQtyFmt ? formatQtyDisplay(c.qty, c.unit) + unitLabel(c.unit) : c.qty} ${c.name}`));
                 if (hooks.itemSubLines) (hooks.itemSubLines(l, sale) || []).forEach(s => subs.push(s));
-                return { code: l.code || '', vat: l.type === 'payment' ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
+                return { sec: hooks.sectionOf ? (hooks.sectionOf(l, sale) || null) : null, code: l.code || '', vat: l.type === 'payment' ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
             });
 
             const lines = [];
             lines.push(rule);
             lines.push(...thermalItemHeader(cols));
-            rows.forEach(r => {
+            // Optional SECTIONS (hooks.sectionOf): a sale with both kinds of line (hospital fees AND dispensed medicines) lists them
+            // under a heading each. With one kind only, or no hook, the receipt is exactly as before.
+            const secOrder = hooks.sectionOrder ? hooks.sectionOrder.filter(x => rows.some(r => r.sec === x)) : rows.map(r => r.sec).filter((x, i, a) => x && a.indexOf(x) === i);
+            const showSections = secOrder.length > 1;
+            const orderedRows = showSections ? [...rows].sort((a, b) => secOrder.indexOf(a.sec) - secOrder.indexOf(b.sec)) : rows;
+            let textLastSec = null;
+            orderedRows.forEach(r => {
+                if (showSections && r.sec !== textLastSec) { textLastSec = r.sec; lines.push(r.sec || ''); }
                 lines.push(...thermalItemRow(cols, r.text.name, r.code, r.text.qty, r.text.price, r.text.amount, r.vat));
                 r.subs.forEach(s => lines.push('  ' + s));
             });
@@ -11590,7 +11598,9 @@
             const cell = (content, bold, align) => `<td style="padding:3px 2px; text-align:${align || 'right'}; ${bold ? 'font-weight:bold;' : ''}">${content}</td>`;
             let table = `<table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr style="border-bottom:1px solid #000;">` +
                 cell('Item', true, 'left') + cell('Qty', true) + cell('Price', true) + cell('Amount', true) + `</tr></thead><tbody>`;
-            rows.forEach(r => {
+            let htmlLastSec = null;
+            orderedRows.forEach(r => {
+                if (showSections && r.sec !== htmlLastSec) { htmlLastSec = r.sec; table += `<tr><td colspan="4" style="padding:6px 2px 2px; font-weight:bold; text-align:left;">${escapeHtml(r.sec || '')}</td></tr>`; }
                 const nameCell = `<td style="padding:3px 2px; text-align:left;">${escapeHtml(r.html.name)}${r.code ? `<br><span style="font-size:10px; color:#7f8c8d;">#${escapeHtml(r.code)}</span>` : ''}</td>`;
                 table += `<tr>` + nameCell + cell(escapeHtml(r.html.qty)) + cell(escapeHtml(r.html.price)) + cell(escapeHtml(r.html.amount)) + `</tr>`;
                 r.subs.forEach(s => { table += `<tr><td colspan="4" style="padding:0 2px 3px 12px; font-size:10px; color:#7f8c8d; text-align:left;">${escapeHtml(s)}</td></tr>`; });
@@ -12557,7 +12567,7 @@
             const MERGED = new Set(['staff', 'pendingInvites', 'inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers',
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
-                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders']);
+                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
