@@ -1,0 +1,79 @@
+<!-- ERROR REPORTING ----------------------------------------------------------
+     Sends uncaught errors and unhandled promise failures to /api/client-log so they
+     appear in the Owner Console's 🐞 Errors tab. Until now a bug was invisible until a
+     customer phoned. Deliberately tiny and safe: at most 8 distinct reports per page
+     session, known-harmless noise ignored, offline reports queued (max 10) and sent when
+     the connection returns, and nothing here can ever throw into the app.
+     App code can also call window.__reportClientError('what failed') for a handled but
+     important failure. -->
+<script>
+(function () {
+    'use strict';
+    if (window.__errReportInit) return;
+    window.__errReportInit = true;
+
+    var MAX_PER_SESSION = 8, QUEUE_KEY = 'pos_err_queue', sent = 0, seen = {};
+    var IGNORE = /ResizeObserver loop|^Script error\.?$|Non-Error promise rejection|chrome-extension:|moz-extension:|safari-extension:|Failed to fetch|NetworkError when attempting|Load failed|AbortError|The operation was aborted/i;
+
+    function appName() {
+        var p = location.pathname.replace(/\/index\.html$/, '').replace(/^\/|\/$/g, '');
+        return p || 'shop';
+    }
+    function endpoint() {
+        var u = '/api/client-log';
+        try { if (typeof apiUrl === 'function') u = apiUrl(u); } catch (e) {}
+        return u;
+    }
+    function queue(p) {
+        try {
+            var q = JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]');
+            q.push(p);
+            localStorage.setItem(QUEUE_KEY, JSON.stringify(q.slice(-10)));
+        } catch (e) {}
+    }
+    function send(p) {
+        var body = JSON.stringify(p);
+        try {
+            if (navigator.sendBeacon && navigator.sendBeacon(endpoint(), new Blob([body], { type: 'application/json' }))) return;
+        } catch (e) {}
+        try {
+            fetch(endpoint(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body, keepalive: true })
+                .catch(function () { queue(p); });
+        } catch (e) { queue(p); }
+    }
+    function flush() {
+        try {
+            var q = JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]');
+            if (!q.length || navigator.onLine === false) return;
+            localStorage.removeItem(QUEUE_KEY);
+            q.forEach(send);
+        } catch (e) {}
+    }
+    function report(kind, message, stack, source, line, col) {
+        try {
+            message = String(message == null ? '' : message);
+            if (!message || IGNORE.test(message) || (source && IGNORE.test(source))) return;
+            var key = kind + '|' + message + '|' + String(stack || '').split('\n')[1];
+            if (seen[key] || sent >= MAX_PER_SESSION) return;
+            seen[key] = 1; sent++;
+            var p = {
+                kind: kind, app: appName(), message: message.slice(0, 300), stack: String(stack || '').slice(0, 1500),
+                source: (source || '') + (line ? ':' + line + ':' + (col || 0) : ''),
+                path: location.pathname, ua: navigator.userAgent, ts: Date.now()
+            };
+            if (navigator.onLine === false) queue(p); else send(p);
+        } catch (e) {}
+    }
+
+    window.addEventListener('error', function (e) {
+        report('error', e && e.message, e && e.error && e.error.stack, e && e.filename, e && e.lineno, e && e.colno);
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+        var r = e && e.reason;
+        report('promise', (r && r.message) ? r.message : r, r && r.stack);
+    });
+    window.addEventListener('online', flush);
+    setTimeout(flush, 5000);
+    window.__reportClientError = function (message, detail) { report('manual', message, detail); };
+})();
+</script>

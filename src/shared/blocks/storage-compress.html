@@ -1,0 +1,138 @@
+<!-- STORAGE COMPRESSION ---------------------------------------------------
+     The browser only lets each shop keep ~5 MB in localStorage, and a busy shop's sales and stock-movement history
+     (~1.7 KB per sale) used to fill that in a few WEEKS — after which new sales could no longer be saved on the device.
+     This block sits underneath localStorage and transparently stores big values compressed (measured ~10x smaller on real
+     sales data), so the same 5 MB now holds many months. Nothing else in the app changes: getItem() returns exactly the
+     string that was set. How it works:
+       * only values >= 12,000 characters are touched; everything else is stored exactly as before;
+       * a big value is cut into 60,000-character slices, each compressed on its own (key~s0, key~s1 ...) and a small
+         manifest is stored under the real key. A new sale only changes the LAST slice, so a save recompresses ~60 KB
+         (about 8 ms), never the whole history;
+       * a failed write is rolled back, so the previously saved value stays intact;
+       * if the browser reports "storage full", the regenerable ':prev' safety copies are dropped and the write retried;
+       * a slice that cannot be read back returns null for the whole value, and the app's existing ':prev' recovery runs.
+     Compression is lz-string (MIT, © Pieroxy), UTF-16-safe output. Self-contained on purpose (same code in every app). -->
+<script>
+(function () {
+    'use strict';
+    if (window.__lsCompressInit) return;
+    window.__lsCompressInit = true;
+    var LZ;
+    try {
+        LZ = (function () {
+            var LZString=function(){var r=String.fromCharCode,o="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=",n="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-$",e={};function t(r,o){if(!e[r]){e[r]={};for(var n=0;n<r.length;n++)e[r][r.charAt(n)]=n}return e[r][o]}var i={compressToBase64:function(r){if(null==r)return"";var n=i._compress(r,6,function(r){return o.charAt(r)});switch(n.length%4){default:case 0:return n;case 1:return n+"===";case 2:return n+"==";case 3:return n+"="}},decompressFromBase64:function(r){return null==r?"":""==r?null:i._decompress(r.length,32,function(n){return t(o,r.charAt(n))})},compressToUTF16:function(o){return null==o?"":i._compress(o,15,function(o){return r(o+32)})+" "},decompressFromUTF16:function(r){return null==r?"":""==r?null:i._decompress(r.length,16384,function(o){return r.charCodeAt(o)-32})},compressToUint8Array:function(r){for(var o=i.compress(r),n=new Uint8Array(2*o.length),e=0,t=o.length;e<t;e++){var s=o.charCodeAt(e);n[2*e]=s>>>8,n[2*e+1]=s%256}return n},decompressFromUint8Array:function(o){if(null==o)return i.decompress(o);for(var n=new Array(o.length/2),e=0,t=n.length;e<t;e++)n[e]=256*o[2*e]+o[2*e+1];var s=[];return n.forEach(function(o){s.push(r(o))}),i.decompress(s.join(""))},compressToEncodedURIComponent:function(r){return null==r?"":i._compress(r,6,function(r){return n.charAt(r)})},decompressFromEncodedURIComponent:function(r){return null==r?"":""==r?null:(r=r.replace(/ /g,"+"),i._decompress(r.length,32,function(o){return t(n,r.charAt(o))}))},compress:function(o){return i._compress(o,16,function(o){return r(o)})},_compress:function(r,o,n){if(null==r)return"";var e,t,i,s={},u={},a="",p="",c="",l=2,f=3,h=2,d=[],m=0,v=0;for(i=0;i<r.length;i+=1)if(a=r.charAt(i),Object.prototype.hasOwnProperty.call(s,a)||(s[a]=f++,u[a]=!0),p=c+a,Object.prototype.hasOwnProperty.call(s,p))c=p;else{if(Object.prototype.hasOwnProperty.call(u,c)){if(c.charCodeAt(0)<256){for(e=0;e<h;e++)m<<=1,v==o-1?(v=0,d.push(n(m)),m=0):v++;for(t=c.charCodeAt(0),e=0;e<8;e++)m=m<<1|1&t,v==o-1?(v=0,d.push(n(m)),m=0):v++,t>>=1}else{for(t=1,e=0;e<h;e++)m=m<<1|t,v==o-1?(v=0,d.push(n(m)),m=0):v++,t=0;for(t=c.charCodeAt(0),e=0;e<16;e++)m=m<<1|1&t,v==o-1?(v=0,d.push(n(m)),m=0):v++,t>>=1}0==--l&&(l=Math.pow(2,h),h++),delete u[c]}else for(t=s[c],e=0;e<h;e++)m=m<<1|1&t,v==o-1?(v=0,d.push(n(m)),m=0):v++,t>>=1;0==--l&&(l=Math.pow(2,h),h++),s[p]=f++,c=String(a)}if(""!==c){if(Object.prototype.hasOwnProperty.call(u,c)){if(c.charCodeAt(0)<256){for(e=0;e<h;e++)m<<=1,v==o-1?(v=0,d.push(n(m)),m=0):v++;for(t=c.charCodeAt(0),e=0;e<8;e++)m=m<<1|1&t,v==o-1?(v=0,d.push(n(m)),m=0):v++,t>>=1}else{for(t=1,e=0;e<h;e++)m=m<<1|t,v==o-1?(v=0,d.push(n(m)),m=0):v++,t=0;for(t=c.charCodeAt(0),e=0;e<16;e++)m=m<<1|1&t,v==o-1?(v=0,d.push(n(m)),m=0):v++,t>>=1}0==--l&&(l=Math.pow(2,h),h++),delete u[c]}else for(t=s[c],e=0;e<h;e++)m=m<<1|1&t,v==o-1?(v=0,d.push(n(m)),m=0):v++,t>>=1;0==--l&&(l=Math.pow(2,h),h++)}for(t=2,e=0;e<h;e++)m=m<<1|1&t,v==o-1?(v=0,d.push(n(m)),m=0):v++,t>>=1;for(;;){if(m<<=1,v==o-1){d.push(n(m));break}v++}return d.join("")},decompress:function(r){return null==r?"":""==r?null:i._decompress(r.length,32768,function(o){return r.charCodeAt(o)})},_decompress:function(o,n,e){var t,i,s,u,a,p,c,l=[],f=4,h=4,d=3,m="",v=[],g={val:e(0),position:n,index:1};for(t=0;t<3;t+=1)l[t]=t;for(s=0,a=Math.pow(2,2),p=1;p!=a;)u=g.val&g.position,g.position>>=1,0==g.position&&(g.position=n,g.val=e(g.index++)),s|=(u>0?1:0)*p,p<<=1;switch(s){case 0:for(s=0,a=Math.pow(2,8),p=1;p!=a;)u=g.val&g.position,g.position>>=1,0==g.position&&(g.position=n,g.val=e(g.index++)),s|=(u>0?1:0)*p,p<<=1;c=r(s);break;case 1:for(s=0,a=Math.pow(2,16),p=1;p!=a;)u=g.val&g.position,g.position>>=1,0==g.position&&(g.position=n,g.val=e(g.index++)),s|=(u>0?1:0)*p,p<<=1;c=r(s);break;case 2:return""}for(l[3]=c,i=c,v.push(c);;){if(g.index>o)return"";for(s=0,a=Math.pow(2,d),p=1;p!=a;)u=g.val&g.position,g.position>>=1,0==g.position&&(g.position=n,g.val=e(g.index++)),s|=(u>0?1:0)*p,p<<=1;switch(c=s){case 0:for(s=0,a=Math.pow(2,8),p=1;p!=a;)u=g.val&g.position,g.position>>=1,0==g.position&&(g.position=n,g.val=e(g.index++)),s|=(u>0?1:0)*p,p<<=1;l[h++]=r(s),c=h-1,f--;break;case 1:for(s=0,a=Math.pow(2,16),p=1;p!=a;)u=g.val&g.position,g.position>>=1,0==g.position&&(g.position=n,g.val=e(g.index++)),s|=(u>0?1:0)*p,p<<=1;l[h++]=r(s),c=h-1,f--;break;case 2:return v.join("")}if(0==f&&(f=Math.pow(2,d),d++),l[c])m=l[c];else{if(c!==h)return null;m=i+i.charAt(0)}v.push(m),l[h++]=i+m.charAt(0),i=m,0==--f&&(f=Math.pow(2,d),d++)}}};return i}();"function"==typeof define&&define.amd?define(function(){return LZString}):"undefined"!=typeof module&&null!=module?module.exports=LZString:"undefined"!=typeof angular&&null!=angular&&angular.module("LZString",[]).factory("LZString",function(){return LZString});
+            return LZString;
+        })();
+        if (!LZ || !LZ.compressToUTF16 || LZ.decompressFromUTF16(LZ.compressToUTF16('ok ✓')) !== 'ok ✓') return;   // self-test failed: leave storage untouched
+    } catch (e) { return; }
+
+    var S = Storage.prototype;
+    var origGet = S.getItem, origSet = S.setItem, origRemove = S.removeItem, origClear = S.clear, origKey = S.key;
+    var MIN = 12000, SLICE = 60000, MAN = '~lz1|';
+    var SLICE_RE = /~s\d+$/;
+    var cache = {};   // base key -> { man, slices: [raw text], stored: [compressed text] }
+    var stats = window.__lsStats = { slicesCompressed: 0, slicesSkipped: 0 };   // for diagnostics and tests
+
+    function isLocal(s) { try { return s === window.localStorage; } catch (e) { return false; } }
+    function sk(key, i) { return key + '~s' + i; }
+    function isQuota(e) { return !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22 || e.code === 1014); }
+
+    // The ':prev' safety copies (see safeSetItem) can always be regenerated; they go first when space runs out.
+    function freeSpace(self) {
+        var doomed = [];
+        for (var i = 0; i < self.length; i++) {
+            var k = origKey.call(self, i);
+            if (k && /:prev(~s\d+)?$/.test(k)) doomed.push(k);
+        }
+        doomed.forEach(function (k) { try { origRemove.call(self, k); } catch (e) {} delete cache[k.replace(SLICE_RE, '')]; });
+        return doomed.length > 0;
+    }
+    function rawSet(self, k, v) {
+        try { origSet.call(self, k, v); }
+        catch (e) {
+            if (isQuota(e) && freeSpace(self)) origSet.call(self, k, v);
+            else throw e;
+        }
+    }
+    function manifestCount(v) {
+        if (typeof v !== 'string' || v.indexOf(MAN) !== 0) return 0;
+        return parseInt(v.split('|')[1], 10) || 0;
+    }
+    function dropSlices(self, k) {
+        var n = manifestCount(origGet.call(self, k));
+        for (var i = 0; i < n; i++) origRemove.call(self, sk(k, i));
+        delete cache[k];
+    }
+
+    function writeSliced(self, k, value) {
+        var n = Math.ceil(value.length / SLICE);
+        var prevN = manifestCount(origGet.call(self, k));
+        var c = cache[k] || { slices: [], stored: [] };
+        var slices = [], stored = [], toWrite = [];
+        for (var i = 0; i < n; i++) {
+            var raw = value.substr(i * SLICE, SLICE);
+            slices.push(raw);
+            if (c.slices[i] === raw && c.stored[i] != null) { stored.push(c.stored[i]); stats.slicesSkipped++; }   // unchanged: nothing to do
+            else { stored.push(LZ.compressToUTF16(raw)); toWrite.push(i); stats.slicesCompressed++; }
+        }
+        var man = MAN + n + '|' + value.length + '|' + SLICE;
+        var done = [];
+        try {
+            toWrite.forEach(function (i) {
+                var old = origGet.call(self, sk(k, i));
+                rawSet(self, sk(k, i), stored[i]);
+                done.push({ i: i, old: old });
+            });
+            rawSet(self, k, man);
+        } catch (e) {
+            done.forEach(function (d) {   // put back what was there, so the last good value survives a failed save
+                try { if (d.old === null) origRemove.call(self, sk(k, d.i)); else origSet.call(self, sk(k, d.i), d.old); } catch (e2) {}
+            });
+            throw e;
+        }
+        for (var j = n; j < prevN; j++) origRemove.call(self, sk(k, j));
+        cache[k] = { man: man, slices: slices, stored: stored };
+    }
+
+    S.setItem = function (key, value) {
+        if (!isLocal(this)) return origSet.call(this, key, value);
+        var k = String(key);
+        var v = typeof value === 'string' ? value : String(value);
+        if (SLICE_RE.test(k)) return rawSet(this, k, v);
+        if (v.length < MIN) {
+            if (cache[k] || manifestCount(origGet.call(this, k))) dropSlices(this, k);     // it used to be big
+            return rawSet(this, k, v);
+        }
+        return writeSliced(this, k, v);
+    };
+
+    S.getItem = function (key) {
+        var v = origGet.call(this, key);
+        if (v === null || typeof v !== 'string' || v.indexOf(MAN) !== 0 || !isLocal(this)) return v;
+        var k = String(key);
+        var c = cache[k];
+        if (c && c.man === v) return c.slices.join('');
+        var p = v.split('|'), n = parseInt(p[1], 10), len = parseInt(p[2], 10);
+        var slices = [], stored = [], out = '';
+        for (var i = 0; i < n; i++) {
+            var st = origGet.call(this, sk(k, i));
+            var raw = st === null ? null : LZ.decompressFromUTF16(st);
+            if (raw === null || raw === undefined) { try { console.error('Compressed storage: slice', i, 'of', k, 'is unreadable'); } catch (e) {} return null; }
+            stored.push(st); slices.push(raw); out += raw;
+        }
+        if (out.length !== len) { try { console.error('Compressed storage: length mismatch for', k); } catch (e) {} return null; }
+        cache[k] = { man: v, slices: slices, stored: stored };
+        return out;
+    };
+
+    S.removeItem = function (key) {
+        if (isLocal(this)) { var k = String(key); if (!SLICE_RE.test(k)) dropSlices(this, k); }
+        return origRemove.call(this, key);
+    };
+    S.clear = function () { if (isLocal(this)) cache = {}; return origClear.call(this); };
+    try { window.addEventListener('storage', function (e) { if (!e.key) cache = {}; else delete cache[e.key.replace(SLICE_RE, '')]; }); } catch (e) {}
+
+    // For the Settings storage meter: what the browser is REALLY holding for a key (compressed), not the logical size.
+    window.__lsRawGet = function (k) { return origGet.call(window.localStorage, k); };
+})();
+</script>

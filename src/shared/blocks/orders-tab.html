@@ -1,0 +1,195 @@
+<!-- ORDERS TAB (purchase orders) ----------------------------------------
+         Record what you've ordered from a supplier (e.g. CCTV cameras a client asked for that you
+         don't stock), follow it Pending -> In Transit -> Arrived, and when it arrives confirm it once:
+         stock is added (new products are created), any Retail/Wholesale price given is saved, cost is
+         logged as a Restock expense, and the order is marked Received. Logic: src/shared/functions.js
+         (every function starting "po", plus renderOrdersTab/renderOrdersList/renderOrdersIfOpen).
+         Self-contained on purpose (own styles, own X button, colour fallbacks) so the identical block
+         works in every app. Data: the app-level `purchaseOrders` array, synced like suppliers. -->
+    <style>
+        #orders-tab input, #orders-tab select { font-size: 16px; padding: 10px 12px; }
+        #orders-tab .po-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+        #orders-tab .po-head h3 { margin: 0; }
+        #orders-tab .po-hint { margin-bottom: 12px; color: #7f8c8d; font-size: 13px; }
+        #orders-tab .po-datetime { padding: 11px 12px; border: 1px dashed var(--border-color, #ddd); border-radius: 4px; font-size: 13px; color: #7f8c8d; background: var(--bg-surface-alt, #f4f6f7); }
+        #orders-tab .po-code-cell { display: flex; gap: 4px; }
+        #orders-tab .po-code-cell input { min-width: 80px; }
+        #orders-tab .po-scan-btn { padding: 0 8px; }
+        #orders-tab .po-del-btn { padding: 4px 10px; font-size: 12px; background: var(--danger, #E74C3C); }
+        #po-rows-table { min-width: 860px; }
+        #po-orders-table { min-width: 820px; }
+        #orders-tab .po-line-total { white-space: nowrap; font-weight: 600; }
+        #orders-tab .po-form-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+        #orders-tab .po-form-actions .btn-main { width: auto; flex: 1 1 200px; margin-top: 0; }
+        #po-filter-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 12px; }
+        .po-chip { padding: 6px 12px; border-radius: 16px; border: 1px solid var(--border-color, #ddd); background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); font-size: 13px; font-weight: 600; cursor: pointer; width: auto; }
+        .po-chip.active { background: var(--accent, #3498DB); border-color: var(--accent, #3498DB); color: #fff; }
+        .po-chip-count { opacity: .8; font-weight: 500; margin-left: 2px; }
+        .po-sub { font-size: 11px; color: #7f8c8d; font-weight: normal; }
+        .po-pill { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; white-space: nowrap; }
+        .po-pill-pending { background: var(--tint-warning-bg, #fff3cd); color: var(--tint-warning-text, #7a5b00); }
+        .po-pill-in_transit { background: var(--tint-info-bg, #EAF4FB); color: var(--accent, #3498DB); }
+        .po-pill-received { background: var(--tint-success-bg, #eafaf1); color: var(--tint-success-text, #1e8449); }
+        .po-pill-cancelled { background: var(--bg-surface-alt, #f4f6f7); color: #7f8c8d; }
+        .po-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+        .po-btn { padding: 5px 10px; font-size: 12px; white-space: nowrap; }
+        .po-btn-transit { background: var(--accent, #3498DB); }
+        .po-btn-arrived { background: var(--success, #2ECC71); }
+        .po-btn-edit, .po-btn-details { background: #95a5a6; }
+        .po-btn-cancel { background: var(--danger, #E74C3C); }
+        .po-details-row td { background: var(--bg-surface-alt, #f4f6f7); }
+        .po-detail-table { min-width: 520px; }
+        .po-note { margin: 4px 0 8px; font-size: 13px; }
+        .po-history { margin: 8px 0 2px; font-size: 12px; color: #7f8c8d; line-height: 1.6; }
+        #orders-arrive-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--overlay-bg, rgba(44, 62, 80, 0.95)); display: none; justify-content: center; align-items: center; z-index: 9999; }
+        #orders-arrive-modal .po-modal-box { position: relative; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); padding: 26px 22px 20px; width: 94%; max-width: 640px; max-height: 90vh; overflow-y: auto; border-radius: 8px; box-shadow: 0 0 20px rgba(0,0,0,0.35); }
+        #orders-arrive-modal h2 { margin: 0 0 4px; padding-right: 36px; font-size: 19px; }
+        #orders-arrive-modal .po-modal-x { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; padding: 0; border: none; border-radius: 50%; background: var(--bg-surface-alt, #f4f6f7); color: var(--dark, #2c3e50); font-size: 16px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        #po-arrive-table { min-width: 460px; }
+        #po-arrive-table td { vertical-align: top; }
+        #po-arrive-table input[type="checkbox"] { width: 20px; height: 20px; }
+        #po-arrive-table .po-arrive-qty { width: 84px; padding: 8px; font-size: 16px; }
+        #po-arrive-table .po-arrive-done td { color: #7f8c8d; }
+        #orders-arrive-modal .po-arrive-expense { display: flex; gap: 8px; align-items: flex-start; margin: 14px 0 6px; font-size: 13px; }
+        #orders-arrive-modal .po-arrive-expense input { width: 18px; height: 18px; margin-top: 2px; flex-shrink: 0; }
+        #orders-arrive-modal .po-modal-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+        #orders-arrive-modal .po-modal-actions .btn-main { width: auto; flex: 1 1 160px; margin-top: 0; }
+        #orders-arrive-modal .po-modal-actions .btn-main:disabled { opacity: .5; cursor: not-allowed; }
+        #orders-tab .po-cell-no { white-space: nowrap; }
+        /* Phones: the wide tables would hide Status/Actions, the item fields and the stock before -> after
+           behind a sideways scroll, so under 700px each row becomes a labelled card instead. */
+        @media (max-width: 700px) {
+            #po-rows-table, #po-orders-table, #po-arrive-table, #orders-tab .po-detail-table { min-width: 0; }
+            #po-rows-table thead, #po-orders-table thead, #po-arrive-table thead, #orders-tab .po-detail-table thead { display: none; }
+            #po-rows-table, #po-rows-table tbody, #po-rows-table tr, #po-rows-table td,
+            #po-orders-table, #po-orders-table tbody, #po-orders-table tr, #po-orders-table td,
+            #orders-tab .po-detail-table, #orders-tab .po-detail-table tbody, #orders-tab .po-detail-table tr, #orders-tab .po-detail-table td { display: block; width: 100%; }
+            #po-rows-table td, #po-orders-table td, #orders-tab .po-detail-table td { border: none; padding: 4px 0; }
+            #po-rows-table td[data-label]::before { content: attr(data-label); display: block; font-size: 12px; font-weight: 600; color: #7f8c8d; margin-bottom: 2px; }
+            #po-rows-table tr, #po-orders-table tr.po-order-row { border: 1px solid var(--border-color, #ddd); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--bg-surface, #fff); }
+            #po-rows-table tr { background: var(--bg-surface-alt, #f4f6f7); }
+            #po-rows-table td.po-line-total { font-size: 15px; }
+            #po-rows-table td > input { width: 100%; }
+            #po-rows-table td.po-cell-del { text-align: right; }
+            #po-orders-table tr.po-order-row td.po-cell-no { font-size: 16px; }
+            #po-orders-table td[data-label] { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; text-align: right; }
+            #po-orders-table td[data-label]::before { content: attr(data-label); flex-shrink: 0; font-size: 12px; font-weight: 600; color: #7f8c8d; text-align: left; }
+            #po-orders-table td.po-cell-actions { padding-top: 8px; }
+            #po-orders-table tr.po-details-row { border: none; padding: 0; margin: -6px 0 12px; background: none; }
+            #po-orders-table tr.po-details-row td { padding: 8px; border-radius: 8px; }
+            #orders-tab .po-detail-table tr { border-bottom: 1px solid var(--border-color, #ddd); padding: 6px 0; }
+            #orders-tab .po-detail-table td:first-child { font-weight: 600; }
+            #orders-tab .po-detail-table td[data-label] { display: flex; justify-content: space-between; gap: 12px; text-align: right; }
+            #orders-tab .po-detail-table td[data-label]::before { content: attr(data-label); font-size: 12px; color: #7f8c8d; text-align: left; }
+            #po-arrive-table tbody tr { display: grid; grid-template-columns: 30px 1fr; gap: 4px 10px; padding: 12px 0; border-bottom: 1px solid var(--border-color, #ddd); }
+            #po-arrive-table td { display: block; border: none; padding: 0; }
+            #po-arrive-table td[data-label] { grid-column: 2; }
+            #po-arrive-table td[data-label]::before { content: attr(data-label) ": "; font-size: 12px; font-weight: 600; color: #7f8c8d; }
+            #po-arrive-table .po-arrive-done td[colspan] { grid-column: 2; }
+        }
+    </style>
+    <div id="orders-tab" class="tab-content">
+        <div class="panel" id="po-form-panel" style="display:none;">
+            <h3 id="po-form-title">🛍️ New Order</h3>
+            <p class="po-hint">List what you're ordering from a supplier. Nothing touches your stock until the order arrives.</p>
+
+            <div class="split-amounts-row">
+                <div class="form-group">
+                    <label>Supplier / Origin <span style="font-weight:normal; color:#7f8c8d;">(optional — pick one or type where it's coming from)</span></label>
+                    <input type="text" id="po-supplier-input" list="po-supplier-list" placeholder="e.g. Hikvision Kenya" autocomplete="off">
+                    <datalist id="po-supplier-list"></datalist>
+                </div>
+                <div class="form-group">
+                    <label>Date &amp; Time</label>
+                    <div id="po-datetime-display" class="po-datetime"></div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Note <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
+                <input type="text" id="po-note-input" placeholder="e.g. For Mr. Otieno — 4 CCTV cameras">
+            </div>
+
+            <datalist id="po-item-names"></datalist>
+            <div class="table-scroll">
+                <table id="po-rows-table">
+                    <thead>
+                        <tr>
+                            <th style="min-width:110px;">Code <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></th>
+                            <th style="min-width:180px;">Item / Product</th>
+                            <th style="min-width:80px;">Unit</th>
+                            <th style="min-width:80px;">Quantity</th>
+                            <th style="min-width:110px;">Cost Price/Unit</th>
+                            <th style="min-width:110px;">Retail Price <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></th>
+                            <th style="min-width:110px;">Wholesale Price <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></th>
+                            <th>Line Total</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="po-rows-tbody"></tbody>
+                </table>
+            </div>
+            <button type="button" class="settings-small-btn" style="margin-top:10px;" onclick="poAddRow()">+ Add Item</button>
+
+            <div class="sales-summary-bar" style="margin-top:16px;">
+                <div class="summary-card">
+                    <div class="label">Items</div>
+                    <div class="value" id="po-item-count">0</div>
+                </div>
+                <div class="summary-card">
+                    <div class="label">Total Cost of Order</div>
+                    <div class="value" id="po-grand-total">KES 0.00</div>
+                </div>
+            </div>
+            <p id="po-form-msg" class="settings-msg"></p>
+            <div class="po-form-actions">
+                <button type="button" class="btn-main" style="background: var(--success);" onclick="poSaveOrder()">💾 Save Order</button>
+                <button type="button" class="btn-main" style="background:#95a5a6;" onclick="poCloseForm()">Cancel</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="po-head">
+                <h3>🛍️ Orders</h3>
+                <button type="button" class="settings-small-btn" onclick="poOpenForm()">➕ New Order</button>
+            </div>
+            <p class="po-hint">Orders you've placed with suppliers. Tap <strong>Arrived</strong> when the goods land to add them to stock.</p>
+            <div id="po-filter-chips">
+                <button type="button" class="po-chip active" data-filter="active" onclick="poSetFilter('active')">Active <span class="po-chip-count">0</span></button>
+                <button type="button" class="po-chip" data-filter="received" onclick="poSetFilter('received')">Received <span class="po-chip-count">0</span></button>
+                <button type="button" class="po-chip" data-filter="cancelled" onclick="poSetFilter('cancelled')">Cancelled <span class="po-chip-count">0</span></button>
+                <button type="button" class="po-chip" data-filter="all" onclick="poSetFilter('all')">All <span class="po-chip-count">0</span></button>
+            </div>
+            <div class="table-scroll">
+                <table id="po-orders-table">
+                    <thead>
+                        <tr><th>Order</th><th>Date &amp; Time</th><th>Supplier</th><th>Total Items</th><th>Total Cost</th><th>Status</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody id="po-orders-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="orders-arrive-modal">
+        <div class="po-modal-box">
+            <button type="button" class="po-modal-x" aria-label="Close" onclick="poCloseArriveModal()">✕</button>
+            <h2 id="po-arrive-title">📦 Confirm Arrival</h2>
+            <p id="po-arrive-summary" style="color:#7f8c8d; font-size:13px; margin-bottom:10px;"></p>
+            <p style="font-size:13px; margin-bottom:10px;">Untick anything that hasn't arrived — it stays on the order. Confirming adds the quantities below to your stock.</p>
+            <div class="table-scroll">
+                <table id="po-arrive-table">
+                    <thead><tr><th></th><th>Item</th><th>Ordered</th><th>Arrived now</th><th>Stock</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <label class="po-arrive-expense">
+                <input type="checkbox" id="po-arrive-expense-check" checked>
+                <span>Record the cost of what arrived (<strong id="po-arrive-expense-amount">KES 0.00</strong>) as a <strong>Restock</strong> expense, the same as the Restock tab does.</span>
+            </label>
+            <p id="po-arrive-msg" class="settings-msg error"></p>
+            <div class="po-modal-actions">
+                <button type="button" id="po-arrive-confirm-btn" class="btn-main" style="background: var(--success);" onclick="poConfirmArrival()">✅ Confirm &amp; Add to Stock</button>
+                <button type="button" class="btn-main" style="background:#95a5a6;" onclick="poCloseArriveModal()">Cancel</button>
+            </div>
+        </div>
+    </div>

@@ -1,0 +1,172 @@
+<!-- HARDWARE QUICK-ACCESS ---------------------------------------------
+         A 🖨️ icon next to the Online/Syncing indicator that opens this
+         device's Hardware settings (receipt printer, barcode scanner, cash
+         drawer, cameras, pole displays) in a popup — so staff, who can't
+         reach Settings, can still connect the hardware on the device
+         they're working on. Every hardware setting is stored on THIS device
+         only (nothing here syncs), so exposing it to staff can't change
+         another device's behaviour. The one shop-wide piece — Print Routing
+         Rules — stays hidden from staff and only shows for the admin.
+         Self-contained on purpose: it re-uses the real Settings → Hardware
+         section (moved into the popup while open, put back on close), so
+         there's no second copy of the controls to drift out of date. -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__hwQuickAccessInit) return;
+        window.__hwQuickAccessInit = true;
+
+        var SECTION_ID = 'settings-section-hardware';
+        var placeholder = null;   // marks where the section lives when the popup is closed
+        var statusTimer = null;
+
+        function injectStyles() {
+            if (document.getElementById('hw-quick-access-styles')) return;
+            var st = document.createElement('style');
+            st.id = 'hw-quick-access-styles';
+            st.textContent = [
+                '.hw-header-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:5px;font-size:15px;line-height:1;padding:6px 10px;border:none;border-radius:20px;cursor:pointer;background:rgba(255,255,255,0.14);color:#fff;transition:background .2s;}',
+                '.hw-header-btn:hover{background:rgba(255,255,255,0.26);}',
+                '.hw-header-btn .hw-dot{display:none;width:9px;height:9px;border-radius:50%;border:1px solid rgba(255,255,255,0.75);}',
+                '.hw-header-btn.hw-connected .hw-dot{display:inline-block;background:#2ecc71;}',
+                '.hw-header-btn.hw-disconnected .hw-dot{display:inline-block;background:#e74c3c;}',
+                '@media (max-width:600px){.hw-header-btn{font-size:13px;padding:5px 9px;}}',
+                '#hardware-modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(44,62,80,0.95);display:none;justify-content:center;align-items:center;z-index:9990;}',
+                '#hardware-modal .hw-modal-box{background:var(--bg-surface,#fff);width:94%;max-width:560px;max-height:90vh;display:flex;flex-direction:column;border-radius:10px;box-shadow:0 0 20px rgba(0,0,0,0.35);overflow:hidden;}',
+                '#hardware-modal .hw-modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 18px;border-bottom:1px solid var(--light,#e4e7ea);}',
+                '#hardware-modal .hw-modal-head h2{margin:0;font-size:18px;color:var(--dark,#2c3e50);}',
+                '#hardware-modal .hw-modal-x{background:transparent;border:none;font-size:22px;line-height:1;padding:2px 8px;cursor:pointer;color:var(--dark,#2c3e50);}',
+                '#hardware-modal .hw-modal-note{margin:0;padding:10px 18px 0;font-size:12.5px;color:#7f8c8d;}',
+                '#hardware-modal-body{padding:12px 18px 16px;overflow-y:auto;flex:1;}',
+                '#hardware-modal-body #' + SECTION_ID + '{display:block !important;max-width:none !important;}',
+                '#hardware-modal .hw-modal-foot{display:flex;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--light,#e4e7ea);}',
+                '.hw-admin-only-hidden{display:none !important;}'
+            ].join('\n');
+            document.head.appendChild(st);
+        }
+
+        function isStaffSession() {
+            // currentServer is set while a staff member is signed in with their own PIN.
+            try { return !!currentServer; } catch (e) { return false; }
+        }
+
+        // 'connected' | 'disconnected' | 'none' (system print dialog — nothing to pair)
+        function printerState() {
+            try {
+                if (printerMode === 'bluetooth') return (btPrinterCharacteristic && btPrinterDevice && btPrinterDevice.gatt && btPrinterDevice.gatt.connected) ? 'connected' : 'disconnected';
+                if (printerMode === 'usb') return (usbPrinterDevice && usbPrinterDevice.opened !== false) ? 'connected' : 'disconnected';
+            } catch (e) { /* variables not ready yet */ }
+            return 'none';
+        }
+
+        function updateStatusDot() {
+            var btn = document.getElementById('hardware-header-btn');
+            if (!btn) return;
+            var s = printerState();
+            btn.classList.toggle('hw-connected', s === 'connected');
+            btn.classList.toggle('hw-disconnected', s === 'disconnected');
+            btn.title = s === 'connected' ? 'Hardware — printer connected on this device'
+                      : s === 'disconnected' ? 'Hardware — printer NOT connected on this device (tap to connect)'
+                      : 'Hardware — connect a printer, scanner or display on this device';
+        }
+
+        function buildModal() {
+            if (document.getElementById('hardware-modal')) return;
+            var m = document.createElement('div');
+            m.id = 'hardware-modal';
+            m.setAttribute('role', 'dialog');
+            m.setAttribute('aria-modal', 'true');
+            m.setAttribute('aria-labelledby', 'hardware-modal-title');
+            m.innerHTML =
+                '<div class="hw-modal-box">' +
+                  '<div class="hw-modal-head"><h2 id="hardware-modal-title">🖨️ Hardware</h2>' +
+                  '<button type="button" class="hw-modal-x" aria-label="Close" title="Close">✕</button></div>' +
+                  '<p class="hw-modal-note">Connect a printer, scanner or display for <strong>this device</strong>. These settings apply to this phone/computer only.</p>' +
+                  '<div id="hardware-modal-body"></div>' +
+                  '<div class="hw-modal-foot"><button type="button" class="btn-main hw-modal-done">Done</button></div>' +
+                '</div>';
+            document.body.appendChild(m);
+            m.addEventListener('click', function (e) { if (e.target === m) closeHardwareModal(); });
+            m.querySelector('.hw-modal-x').addEventListener('click', closeHardwareModal);
+            m.querySelector('.hw-modal-done').addEventListener('click', closeHardwareModal);
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape' && m.style.display === 'flex') closeHardwareModal();
+            });
+        }
+
+        // Print Routing Rules decide where the WHOLE shop's receipts go, so they
+        // stay admin-only. Everything else in the section is per-device.
+        function applyRoleRestrictions(sec) {
+            var staff = isStaffSession();
+            var list = sec.querySelector('#printer-routing-rules-list');
+            if (!list) return;               // this app has no routing rules (e.g. Aqua POS)
+            var form = sec.querySelector('#printer-routing-rule-form');
+            var start = list.previousElementSibling;   // the "Print Routing Rules" label
+            if (!start || !form) return;
+            var n = start;
+            while (n) {
+                n.classList.toggle('hw-admin-only-hidden', staff);
+                if (n === form) break;
+                n = n.nextElementSibling;
+            }
+        }
+
+        function openHardwareModal() {
+            var sec = document.getElementById(SECTION_ID);
+            if (!sec) { if (typeof showToast === 'function') showToast('Hardware settings aren’t available in this app.', true); return; }
+            buildModal();
+            var body = document.getElementById('hardware-modal-body');
+            if (!placeholder && sec.parentNode !== body) {
+                placeholder = document.createComment('hardware-section-home');
+                sec.parentNode.insertBefore(placeholder, sec);
+            }
+            body.appendChild(sec);
+            applyRoleRestrictions(sec);
+
+            // Same refresh Settings does when this section is opened there.
+            try {
+                var modeSel = document.getElementById('pole-display-mode-select');
+                if (modeSel && typeof poleDisplayMode !== 'undefined') modeSel.value = poleDisplayMode;
+                var camToggle = document.getElementById('camera-scan-toggle');
+                if (camToggle && typeof cameraScanEnabled !== 'undefined') camToggle.checked = cameraScanEnabled;
+                if (typeof refreshDeviceNetworkList === 'function') refreshDeviceNetworkList();
+            } catch (e) { /* cosmetic refresh only */ }
+
+            document.getElementById('hardware-modal').style.display = 'flex';
+            body.scrollTop = 0;
+        }
+
+        function closeHardwareModal() {
+            var m = document.getElementById('hardware-modal');
+            var sec = document.getElementById(SECTION_ID);
+            if (sec && placeholder && placeholder.parentNode) {
+                placeholder.parentNode.insertBefore(sec, placeholder);
+            }
+            if (m) m.style.display = 'none';
+            updateStatusDot();
+        }
+
+        function injectHeaderButton() {
+            if (document.getElementById('hardware-header-btn')) return;
+            var sync = document.getElementById('sync-status');
+            if (!sync || !document.getElementById(SECTION_ID)) return;
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.id = 'hardware-header-btn';
+            btn.className = 'hw-header-btn';
+            btn.setAttribute('aria-label', 'Hardware');
+            btn.innerHTML = '<span aria-hidden="true">🖨️</span><span class="hw-dot" aria-hidden="true"></span>';
+            btn.addEventListener('click', openHardwareModal);
+            sync.insertAdjacentElement('afterend', btn);
+            updateStatusDot();
+        }
+
+        window.openHardwareModal = openHardwareModal;
+        window.closeHardwareModal = closeHardwareModal;
+
+        injectStyles();
+        injectHeaderButton();
+        if (!statusTimer) statusTimer = setInterval(updateStatusDot, 2500);
+        document.addEventListener('visibilitychange', function () { if (!document.hidden) updateStatusDot(); });
+    })();
+    </script>

@@ -1,0 +1,488 @@
+<!-- STORAGE & PHOTOS -----------------------------------------------------
+         Everything this app knows lives in the browser's localStorage, which
+         is only ~5 MB per shop, and product photos are the biggest thing in
+         it. This block adds:
+           - one small-JPEG pipeline for every NEW product photo (400px, ~20-40 KB
+             instead of up to 500 KB, or a 480px PNG);
+           - a "Storage & Photos" card at the top of Settings -> Install & Storage:
+             a usage meter, what's using the space, a one-tap "Shrink product
+             photos", and a button to ask the browser not to evict the data;
+           - an automatic quiet clean-up of clearly oversized photos (>150 KB),
+             and a warning at 80% full — BEFORE a save fails, not after.
+         Self-contained on purpose (same code in every app). -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__storageHealthInit) return;
+        window.__storageHealthInit = true;
+
+        var QUOTA_CHARS = 5000000;     // localStorage allows roughly 5 million characters
+        var PHOTO_MAX_PX = 400;
+        var PHOTO_QUALITY = 0.72;
+        var SHRINK_MIN = 60000;        // manual button: data URLs longer than this (~45 KB)
+        var AUTO_MIN = 150000;         // automatic pass: only clearly oversized photos (~110 KB+)
+        var warned = false;
+        var busy = false;
+
+        /* ---------- new-photo helpers (used by the capture/upload code paths) ---------- */
+
+        function fitSize(w, h) {
+            var sc = Math.min(1, PHOTO_MAX_PX / w, PHOTO_MAX_PX / h);
+            return { w: Math.max(1, Math.round(w * sc)), h: Math.max(1, Math.round(h * sc)) };
+        }
+
+        // Draws any drawable (canvas / image) into a small white-backed JPEG.
+        function drawableToSmallJpeg(src, srcW, srcH) {
+            var d = fitSize(srcW, srcH);
+            var c = document.createElement('canvas');
+            c.width = d.w; c.height = d.h;
+            var ctx = c.getContext('2d');
+            ctx.fillStyle = '#ffffff';            // flatten transparency (PNG logos/photos)
+            ctx.fillRect(0, 0, d.w, d.h);
+            ctx.drawImage(src, 0, 0, d.w, d.h);
+            return c.toDataURL('image/jpeg', PHOTO_QUALITY);
+        }
+
+        // Camera capture: the <canvas> holds a full video frame — scale it down before storing.
+        window.canvasToSmallJpeg = function (canvas) {
+            try { return drawableToSmallJpeg(canvas, canvas.width, canvas.height); }
+            catch (e) { return canvas.toDataURL('image/jpeg', 0.6); }
+        };
+
+        // File/Blob -> small JPEG data URL (product photos only; logos/QR keep their PNG path).
+        window.readImageAsProductJpeg = function (file) {
+            return new Promise(function (resolve, reject) {
+                if (!file) { reject(new Error('No file selected.')); return; }
+                if (file.type && !/^image\//.test(file.type)) { reject(new Error('That file isn’t an image.')); return; }
+                var reader = new FileReader();
+                reader.onerror = function () { reject(new Error('Could not read that file.')); };
+                reader.onload = function () {
+                    var img = new Image();
+                    img.onerror = function () { reject(new Error('Could not open that image.')); };
+                    img.onload = function () {
+                        try { resolve(drawableToSmallJpeg(img, img.width, img.height)); }
+                        catch (e) { reject(e); }
+                    };
+                    img.src = reader.result;
+                };
+                reader.readAsDataURL(file);
+            });
+        };
+
+        /* ---------- stored-photo clean-up ---------- */
+
+        function itemSource() {
+            try { if (typeof inventory !== 'undefined' && Array.isArray(inventory)) return { list: inventory, key: 'pos_inventory' }; } catch (e) {}
+            try { if (typeof products !== 'undefined' && Array.isArray(products)) return { list: products, key: 'aqua_products' }; } catch (e) {}
+            return null;
+        }
+
+        function isPhoto(it) {
+            return it && typeof it.image === 'string' && it.image.indexOf('data:image') === 0;
+        }
+
+        function shrinkDataUrl(dataUrl) {
+            return new Promise(function (resolve) {
+                var img = new Image();
+                img.onload = function () {
+                    try {
+                        var out = drawableToSmallJpeg(img, img.width, img.height);
+                        resolve(out.length < dataUrl.length ? out : dataUrl);
+                    } catch (e) { resolve(dataUrl); }
+                };
+                img.onerror = function () { resolve(dataUrl); };
+                img.src = dataUrl;
+            });
+        }
+
+        function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }
+
+        // Shrinks every stored product photo longer than minLen. The new images are
+        // computed first (async), then applied to whatever the CURRENT list is — only
+        // where the photo is still the one we started from — so an edit or a sync
+        // that landed meanwhile is never overwritten by a stale copy.
+        async function shrinkPhotos(minLen, onProgress) {
+            var src = itemSource();
+            if (!src) return { n: 0, saved: 0 };
+            var todo = src.list.filter(function (it) { return isPhoto(it) && it.image.length > minLen; })
+                .map(function (it) { return { code: it.code, before: it.image }; });
+            var results = [];
+            for (var i = 0; i < todo.length; i++) {
+                var out = await shrinkDataUrl(todo[i].before);
+                if (out.length < todo[i].before.length) results.push({ code: todo[i].code, before: todo[i].before, after: out });
+                if (onProgress) onProgress(i + 1, todo.length);
+                if (i % 4 === 3) await tick();
+            }
+            var cur = itemSource();
+            if (!cur) return { n: 0, saved: 0 };
+            var n = 0, saved = 0;
+            results.forEach(function (r) {
+                var it = cur.list.find(function (x) { return x && x.code === r.code && x.image === r.before; });
+                if (it) { it.image = r.after; n++; saved += r.before.length - r.after.length; }
+            });
+            if (n) {
+                if (typeof safeSetItem === 'function') safeSetItem(cur.key, JSON.stringify(cur.list));
+                try { if (typeof queuePush === 'function') queuePush(); } catch (e) {}
+                try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) {}
+                try { if (typeof renderItemImageGrid === 'function') renderItemImageGrid(''); } catch (e) {}
+                try { if (typeof renderAllItemsGrid === 'function') renderAllItemsGrid(); } catch (e) {}
+            }
+            return { n: n, saved: saved };
+        }
+
+        /* ---------- usage numbers ---------- */
+
+        function usage() {
+            var total = 0, rows = [], byKey = {};
+            try {
+                // Real stored size: big values are kept compressed in slices (see STORAGE COMPRESSION), so measure the
+                // raw stored text, and fold "key~s0, key~s1 ..." back under "key".
+                var raw = window.__lsRawGet || function (key) { return localStorage.getItem(key); };
+                for (var i = 0; i < localStorage.length; i++) {
+                    var k = localStorage.key(i);
+                    var n = k.length + (raw(k) || '').length;
+                    total += n;
+                    var base = k.replace(/~s\d+$/, '');
+                    byKey[base] = (byKey[base] || 0) + n;
+                }
+                Object.keys(byKey).forEach(function (base) { rows.push([base, byKey[base]]); });
+            } catch (e) {}
+            rows.sort(function (a, b) { return b[1] - a[1]; });
+            return { total: total, rows: rows };
+        }
+
+        function photoStats() {
+            var src = itemSource();
+            var s = { count: 0, chars: 0, oversized: 0 };
+            if (!src) return s;
+            src.list.forEach(function (it) {
+                if (!isPhoto(it)) return;
+                s.count++; s.chars += it.image.length;
+                if (it.image.length > SHRINK_MIN) s.oversized++;
+            });
+            return s;
+        }
+
+        function mb(chars) { return (chars / 1000000).toFixed(1) + ' MB'; }
+        function pct() { return Math.min(100, Math.round(usage().total / QUOTA_CHARS * 100)); }
+
+        function isStaff() { try { return !!currentServer; } catch (e) { return false; } }
+
+        function toastMsg(text, isError) {
+            try { if (typeof showToast === 'function') showToast(text, !!isError); } catch (e) {}
+        }
+
+        function checkWarning() {
+            // Nobody should ever have to think about storage: at 80% full, old history is moved into this device's archive
+            // automatically (see AUTOMATIC ARCHIVE below) — no warning, no button to press.
+            var p = pct();
+            if (p >= 80 && window.storageAutoArchive) window.storageAutoArchive('check');
+            if (false) {
+                warned = true;
+            }
+        }
+
+        /* ---------- Settings card ---------- */
+
+        function injectStyles() {
+            if (document.getElementById('storage-health-styles')) return;
+            var st = document.createElement('style');
+            st.id = 'storage-health-styles';
+            st.textContent = [
+                '#storage-health-card .sh-bar{height:12px;border-radius:6px;background:var(--light,#e4e7ea);overflow:hidden;margin:8px 0;}',
+                '#storage-health-card .sh-fill{height:100%;width:0;background:#27ae60;transition:width .3s,background .3s;}',
+                '#storage-health-card .sh-fill.warn{background:#f39c12;}',
+                '#storage-health-card .sh-fill.crit{background:#e74c3c;}',
+                '#storage-health-card .sh-top div{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:2px 0;border-bottom:1px dashed var(--light,#e4e7ea);}',
+                '#storage-health-card .sh-top span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}'
+            ].join('\n');
+            document.head.appendChild(st);
+        }
+
+        function buildCard() {
+            var sec = document.getElementById('settings-section-install');
+            if (!sec || document.getElementById('storage-health-card')) return;
+            var card = document.createElement('div');
+            card.id = 'storage-health-card';
+            card.innerHTML =
+                '<h4>💾 Storage &amp; Photos</h4>' +
+                '<p style="font-size:13px;color:#555;margin:0 0 6px;">Everything this app stores on this device (items, sales, customers, photos) shares about 5&nbsp;MB. Product photos are the biggest part — when the space runs out, new changes stop saving.</p>' +
+                '<div class="sh-bar"><div class="sh-fill" id="sh-fill"></div></div>' +
+                '<p id="sh-summary" class="settings-msg" style="margin:0 0 4px;">Calculating…</p>' +
+                '<p id="sh-photos" class="settings-hint" style="margin:0 0 8px;"></p>' +
+                '<button type="button" id="sh-shrink-btn" class="btn-main settings-small-btn">🗜️ Shrink product photos</button> ' +
+                '<button type="button" id="sh-persist-btn" class="settings-small-btn" style="display:none;">🛡️ Protect this data from being cleared</button>' +
+                '<p id="sh-msg" class="settings-msg" style="margin:6px 0 0;"></p>' +
+                '<p id="sh-archives" class="settings-hint" style="margin:6px 0 0;display:none;"></p>' +
+                '<details style="margin-top:8px;"><summary style="cursor:pointer;font-size:13px;color:var(--accent);">What is using the space?</summary>' +
+                '<div id="sh-top" class="sh-top" style="margin-top:6px;"></div></details>' +
+                '<p id="sh-persist" class="settings-hint" style="margin:8px 0 0;"></p>' +
+                '<hr class="settings-divider">';
+            sec.insertBefore(card, sec.firstChild);
+            document.getElementById('sh-shrink-btn').addEventListener('click', onShrinkClick);
+            document.getElementById('sh-persist-btn').addEventListener('click', onPersistClick);
+
+            // Tab label: the section now covers storage as well as installing.
+            var tabBtn = document.querySelector('.settings-subtab-btn[data-section="settings-section-install"]');
+            if (tabBtn && /Install App/.test(tabBtn.textContent)) tabBtn.textContent = '📱 Install & Storage';
+
+            // Refresh whenever the section becomes visible.
+            new MutationObserver(function () { if (sec.classList.contains('active')) refreshCard(); })
+                .observe(sec, { attributes: true, attributeFilter: ['class'] });
+        }
+
+        function refreshCard() {
+            var fill = document.getElementById('sh-fill');
+            if (!fill) return;
+            var u = usage(), p = Math.min(100, Math.round(u.total / QUOTA_CHARS * 100));
+            fill.style.width = p + '%';
+            fill.className = 'sh-fill' + (p >= 90 ? ' crit' : p >= 70 ? ' warn' : '');
+            document.getElementById('sh-summary').textContent = mb(u.total) + ' of about 5 MB used (' + p + '%)' +
+                '. (Older history is moved into this device\u2019s archive automatically when it gets full.)';
+            if (window.storageLocalArchives) window.storageLocalArchives().then(function (list) {
+                var el = document.getElementById('sh-archives');
+                if (!el) return;
+                if (!list.length) { el.style.display = 'none'; return; }
+                var n = list.reduce(function (t, a) { return t + (a.total || 0); }, 0);
+                el.style.display = '';
+                el.innerHTML = '🗄️ Older history (' + n.toLocaleString() + ' records) was moved off the everyday lists automatically to keep this device fast — it is still stored here. ' +
+                    '<button type="button" class="settings-small-btn" id="sh-archive-dl">⬇️ Download</button>';
+                document.getElementById('sh-archive-dl').onclick = function () { window.storageDownloadLocalArchives(); };
+            }).catch(function () {});
+            var ps = photoStats();
+            document.getElementById('sh-photos').textContent = ps.count
+                ? ps.count + ' product photo' + (ps.count === 1 ? '' : 's') + ' use ' + mb(ps.chars) + (ps.oversized ? ' — ' + ps.oversized + ' bigger than they need to be.' : ' — already small.')
+                : 'No product photos stored.';
+            var top = document.getElementById('sh-top');
+            top.innerHTML = u.rows.slice(0, 6).map(function (r) {
+                return '<div><span>' + String(r[0]).replace(/[<>&]/g, '') + '</span><span>' + mb(r[1]) + '</span></div>';
+            }).join('');
+            if (navigator.storage && navigator.storage.persisted) {
+                navigator.storage.persisted().then(function (yes) {
+                    document.getElementById('sh-persist').textContent = yes
+                        ? '🛡️ The browser has agreed to keep this app’s data even when the device is low on space.'
+                        : 'The browser may clear this app’s data if the device runs very low on space.';
+                    document.getElementById('sh-persist-btn').style.display = yes ? 'none' : '';
+                }).catch(function () {});
+            }
+        }
+
+        async function onShrinkClick() {
+            if (busy) return;
+            busy = true;
+            var btn = document.getElementById('sh-shrink-btn'), msg = document.getElementById('sh-msg');
+            btn.disabled = true; msg.className = 'settings-msg'; msg.textContent = 'Working…';
+            try {
+                var r = await shrinkPhotos(SHRINK_MIN, function (i, n) { msg.textContent = 'Shrinking photo ' + i + ' of ' + n + '…'; });
+                msg.textContent = r.n ? 'Done — ' + r.n + ' photo' + (r.n === 1 ? '' : 's') + ' shrunk, ' + mb(r.saved) + ' freed.' : 'Nothing to shrink — your photos are already small.';
+            } catch (e) {
+                msg.className = 'settings-msg error'; msg.textContent = 'Couldn’t shrink the photos: ' + (e && e.message ? e.message : e);
+            }
+            btn.disabled = false; busy = false;
+            refreshCard();
+        }
+
+        function onPersistClick() {
+            if (!navigator.storage || !navigator.storage.persist) return;
+            navigator.storage.persist().then(function (granted) {
+                var msg = document.getElementById('sh-msg');
+                msg.className = 'settings-msg';
+                msg.textContent = granted ? 'Done — the browser will now protect this data.' : 'The browser declined. Installing the app to the home screen usually makes it agree.';
+                refreshCard();
+            }).catch(function () {});
+        }
+
+        /* ---------- start-up ---------- */
+
+        function autoClean() {
+            if (busy || document.hidden) return;
+            var src = itemSource();
+            if (!src || !src.list.some(function (it) { return isPhoto(it) && it.image.length > AUTO_MIN; })) return;
+            busy = true;
+            shrinkPhotos(AUTO_MIN).then(function (r) {
+                busy = false;
+                refreshCard();      // quiet: photo tidying is housekeeping, not news for the cashier
+            }).catch(function () { busy = false; });
+        }
+
+        injectStyles();
+        buildCard();
+
+        // Installed PWAs are usually granted "persistent" storage silently; ask only there,
+        // so a plain browser tab never pops a permission prompt at the till.
+        try {
+            if (navigator.storage && navigator.storage.persist && window.matchMedia && matchMedia('(display-mode: standalone)').matches) {
+                navigator.storage.persist();
+            }
+        } catch (e) {}
+
+        setTimeout(autoClean, 15000);
+        setTimeout(checkWarning, 20000);
+        setInterval(function () { checkWarning(); }, 300000);
+    })();
+    </script>
+
+    <!-- AUTOMATIC ARCHIVE ---------------------------------------------------------------------------------------------
+         When this device's storage reaches 80%, the oldest sales / stock-movement / expense ... records are moved into an
+         archive kept in the browser's IndexedDB (far larger than localStorage), the everyday lists are saved without them,
+         and nobody is told or asked - storage is never the cashier's problem. Keeps the newest 180 days if that is enough,
+         else 120, 90, 60, 30, 14, 7. The archive is written FIRST; records are only removed once it is safely stored, and if
+         IndexedDB is not available nothing is removed. Also runs the moment a save fails for lack of space (the save is then
+         repeated). Server-side, the shop does the same at 80% of its own limit (functions/api/_state-store.js). -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__autoArchiveInit) return;
+        window.__autoArchiveInit = true;
+
+        var QUOTA = 5000000, TRIGGER = 0.8, TARGET = 0.6;
+        var KEEP_STEPS = [180, 120, 90, 60, 30, 14, 7];
+        var FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'];
+        var DB = 'pos_local_archive', STORE = 'archives';
+        var running = false, lastRun = 0;
+
+        // The app's own arrays (declared with `let` in the app script, so reachable by name from here).
+        var ARR = {
+            salesLog: function () { return typeof salesLog === 'undefined' ? null : salesLog; },
+            stockMovementLog: function () { return typeof stockMovementLog === 'undefined' ? null : stockMovementLog; },
+            returns: function () { return typeof returns === 'undefined' ? null : returns; },
+            expenses: function () { return typeof expenses === 'undefined' ? null : expenses; },
+            tradeCredits: function () { return typeof tradeCredits === 'undefined' ? null : tradeCredits; },
+            attendanceLog: function () { return typeof attendanceLog === 'undefined' ? null : attendanceLog; },
+            adminActivityLog: function () { return typeof adminActivityLog === 'undefined' ? null : adminActivityLog; },
+            dispatchLog: function () { return typeof dispatchLog === 'undefined' ? null : dispatchLog; }
+        };
+
+        function usedChars() {
+            var raw = window.__lsRawGet || function (k) { return localStorage.getItem(k); };
+            var total = 0;
+            try { for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); total += k.length + (raw(k) || '').length; } } catch (e) {}
+            return total;
+        }
+        window.__storageUsedChars = usedChars;      // read by the older-history fetch so it never fills a device
+        function recordTime(r) {
+            if (!r || typeof r !== 'object') return NaN;
+            var f = ['timestamp', 'date', 'createdAt', 'clockIn', 'at'];
+            for (var i = 0; i < f.length; i++) {
+                var v = r[f[i]];
+                if (v == null) continue;
+                var t = typeof v === 'number' ? v : Date.parse(v);
+                if (isFinite(t)) return t;
+            }
+            return NaN;
+        }
+
+        /* ---- IndexedDB ---- */
+        function hasIDB() { try { return !!window.indexedDB; } catch (e) { return false; } }
+        function openDb() {
+            return new Promise(function (resolve, reject) {
+                var req = indexedDB.open(DB, 1);
+                req.onupgradeneeded = function () { req.result.createObjectStore(STORE, { keyPath: 'id' }); };
+                req.onsuccess = function () { resolve(req.result); };
+                req.onerror = function () { reject(req.error); };
+            });
+        }
+        function idb(mode, fn) {
+            return openDb().then(function (db) {
+                return new Promise(function (resolve, reject) {
+                    var tx = db.transaction(STORE, mode), out;
+                    tx.oncomplete = function () { db.close(); resolve(out); };
+                    tx.onerror = tx.onabort = function () { db.close(); reject(tx.error); };
+                    out = fn(tx.objectStore(STORE), tx);
+                });
+            });
+        }
+        function putArchive(rec) { return idb('readwrite', function (st) { st.put(rec); }); }
+        function readAll() {
+            return idb('readonly', function (st) {
+                var holder = { rows: [] };
+                var req = st.getAll();
+                req.onsuccess = function () { holder.rows = req.result || []; };
+                return holder;
+            }).then(function (h) { return h.rows; });
+        }
+
+        window.storageLocalArchives = function () {
+            if (!hasIDB()) return Promise.resolve([]);
+            return readAll().then(function (rows) {
+                return rows.map(function (a) {
+                    var total = 0; Object.keys(a.counts || {}).forEach(function (f) { total += a.counts[f]; });
+                    return { id: a.id, at: a.at, keepDays: a.keepDays, counts: a.counts, total: total };
+                });
+            });
+        };
+        window.storageDownloadLocalArchives = function () {
+            readAll().then(function (rows) {
+                var blob = new Blob([JSON.stringify({ exportedAt: Date.now(), archives: rows })], { type: 'application/json' });
+                var a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'older-history-' + new Date().toISOString().slice(0, 10) + '.json';
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+            }).catch(function () {});
+        };
+
+        /* ---- the archive itself ---- */
+        function splitOld(cutoff) {
+            var out = {}, moved = 0;
+            FIELDS.forEach(function (f) {
+                var a = ARR[f](), old = [];
+                if (!Array.isArray(a)) return;
+                for (var i = 0; i < a.length; i++) { var t = recordTime(a[i]); if (isFinite(t) && t < cutoff) old.push(a[i]); }
+                if (old.length) { out[f] = old; moved += old.length; }
+            });
+            return { fields: out, moved: moved };
+        }
+        function removeFromLive(fields) {
+            Object.keys(fields).forEach(function (f) {
+                var a = ARR[f](), gone = new Set(fields[f]);      // by object identity: anything added meanwhile is untouched
+                if (!Array.isArray(a)) return;
+                var keep = a.filter(function (r) { return !gone.has(r); });
+                a.length = 0;
+                for (var i = 0; i < keep.length; i++) a.push(keep[i]);
+            });
+        }
+        function persistLogs() {
+            var keys = window.__LOG_KEYS || {};
+            Object.keys(keys).forEach(function (f) {
+                var a = ARR[f] && ARR[f]();
+                if (Array.isArray(a)) { try { localStorage.setItem(keys[f], JSON.stringify(a)); } catch (e) {} }
+            });
+        }
+
+        // reason: 'check' (periodic / at start-up) or 'write-failed' (a save just ran out of room)
+        window.storageAutoArchive = async function (reason) {
+            if (running) return false;
+            var now = Date.now();
+            if (reason !== 'write-failed' && (usedChars() < QUOTA * TRIGGER || now - lastRun < 10 * 60 * 1000)) return false;
+            if (reason === 'write-failed' && now - lastRun < 20 * 1000) return false;
+            if (!hasIDB() || !window.__LOG_KEYS) return false;             // nowhere safe to put it: remove nothing
+            running = true;
+            var freed = false;
+            try {
+                for (var i = 0; i < KEEP_STEPS.length; i++) {
+                    var keepDays = KEEP_STEPS[i];
+                    var split = splitOld(Date.now() - keepDays * 86400000);
+                    if (!split.moved) continue;
+                    var counts = {}; Object.keys(split.fields).forEach(function (f) { counts[f] = split.fields[f].length; });
+                    await putArchive({ id: Date.now() + '-' + keepDays, at: Date.now(), keepDays: keepDays, counts: counts, fields: split.fields });
+                    removeFromLive(split.fields);          // only after the archive is safely stored
+                    persistLogs();
+                    freed = true;
+                    if (usedChars() <= QUOTA * TARGET) break;
+                }
+            } catch (e) {
+                try { console.warn('automatic archive failed', e); } catch (e2) {}
+            }
+            running = false; lastRun = Date.now();
+            // Last resort only: still no room and nothing left to archive. Tell the ADMIN (never a cashier); the data is still in memory.
+            if (reason === 'write-failed' && !freed) {
+                try { if (typeof isAdminServing === 'function' && isAdminServing() && typeof showToast === 'function') showToast('This device is out of space. Open Settings > Install & Storage to free some.', true); } catch (e) {}
+            }
+            return freed;
+        };
+
+        setTimeout(function () { window.storageAutoArchive('check'); }, 8000);
+        setInterval(function () { window.storageAutoArchive('check'); }, 2 * 60 * 1000);
+    })();
+    </script>
