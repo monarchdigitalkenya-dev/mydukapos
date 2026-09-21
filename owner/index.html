@@ -5222,8 +5222,43 @@
         // authenticated owner session is confirmed AND clientToken is set to
         // their own license — the caller uses this to decide whether to show
         // the sign-up/sign-in screen or proceed into the app.
+        function authWatchInstall() {
+            // Remembers, for this page, that someone has logged in (or signed up): the sign-in / sign-up screen was showing and has been closed.
+            // The start-up code used to re-open the "who's logging in?" picker when its first sync finished if it could not tell that — on a slow
+            // connection that put the login popup back over an app somebody was already using ("sometimes, when I tap More").
+            if (window.__authWatch) return;
+            window.__authWatch = true;
+            if (!window.MutationObserver) return;
+            ['login-screen', 'registration-screen'].forEach((id) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const shown = () => !!el.style.display && el.style.display !== 'none';
+                let was = shown();
+                new MutationObserver(() => { const now = shown(); if (was && !now) window.__adminAuthed = true; was = now; }).observe(el, { attributes: true, attributeFilter: ['style'] });
+            });
+        }
+
         async function initOwnerConsole() {
             const screen = document.getElementById('owner-auth-screen');
+
+            // STAFF ARE NOT THE OWNER. A staff member opening the invite link or their own staff link (or a phone that already did) signs in with their
+            // PIN — not with the owner's email/phone and password, which used to be asked first. Their link carries the shop it belongs to (?c=).
+            {
+                const qp = new URLSearchParams(location.search);
+                const staffFlow = qp.has('invite') || qp.has('staff');
+                const savedStaffClient = localStorage.getItem('pos_console_staff_client');
+                if (!ownerSessionToken && (staffFlow || savedStaffClient)) {
+                    const cid = qp.get('c') || savedStaffClient || localStorage.getItem('pos_owner_client_id');
+                    if (cid) {
+                        clientToken = cid;
+                        myClientId = cid;
+                        ownerSignedIn = false;
+                        safeSetItem('pos_console_staff_client', cid);
+                        if (screen) screen.style.display = 'none';
+                        return true;
+                    }
+                }
+            }
 
             if (ownerSessionToken) {
                 try {
@@ -7629,6 +7664,7 @@
             // success it sets clientToken to the owner's own permanent license and
             // re-invokes startLicensePolling()/decideAuthScreen() itself (see
             // submitOwnerAuth), so this early-return is correct either way.
+            authWatchInstall();
             const ownerReady = await initOwnerConsole();
             if (!ownerReady) return;
 
@@ -7655,7 +7691,7 @@
                     checkForInviteToken();
                 } else if (document.getElementById('login-screen').style.display !== 'none') {
                     renderLoginPicker();
-                } else if (!hasStaffLinkFlow && !currentServer) {
+                } else if (!hasStaffLinkFlow && !currentServer && !window.__adminAuthed) {
                     decideAuthScreen();
                 }
             });
@@ -9282,7 +9318,7 @@
         // account — no shop/management password needed — and it stays valid indefinitely
         // (until they're removed from staff), so they can save/bookmark it for every shift.
         async function copyStaffLoginLink(id, name) {
-            const link = `${window.location.origin}${window.location.pathname}?staff=${id}`;
+            const link = `${window.location.origin}${window.location.pathname}?${clientToken ? 'c=' + encodeURIComponent(clientToken) + '&' : ''}staff=${id}`;
             try {
                 await navigator.clipboard.writeText(link);
                 showToast(`Login link for ${name} copied — send it to them to bookmark.`);
@@ -9585,7 +9621,7 @@
             // before the link is shared — otherwise opening it too fast would 404.
             await pushNow();
 
-            const link = `${window.location.origin}${window.location.pathname}?invite=${token}`;
+            const link = `${window.location.origin}${window.location.pathname}?${clientToken ? 'c=' + encodeURIComponent(clientToken) + '&' : ''}invite=${token}`;
             const resultBox = document.getElementById('invite-link-result');
             const linkInput = document.getElementById('invite-link-text');
             linkInput.value = link;
@@ -9662,7 +9698,7 @@
             // The one-time ?invite= link is now spent — replace it in the address bar with
             // this staff member's permanent personal login link (?staff=ID). Bookmarking
             // the page at this point saves that link for every future shift.
-            const staffLoginUrl = `${window.location.origin}${window.location.pathname}?staff=${newStaffId}`;
+            const staffLoginUrl = `${window.location.origin}${window.location.pathname}?${clientToken ? 'c=' + encodeURIComponent(clientToken) + '&' : ''}staff=${newStaffId}`;
             window.history.replaceState({}, document.title, staffLoginUrl);
 
             document.getElementById('invite-screen').style.display = 'none';

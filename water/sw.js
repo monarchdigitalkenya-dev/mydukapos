@@ -123,6 +123,17 @@ self.addEventListener('install', (event) => {
   event.waitUntil(refreshShell().then(() => self.skipWaiting()));
 });
 
+// A friendly page (instead of the browser's "webpage not available") for the one case nothing can be shown: the network is down or too
+// slow AND nothing is cached yet (a first visit, or the device cleared its storage). It retries by itself every few seconds.
+function offlinePage() {
+  const html = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connecting…</title>'
+    + '<body style="font-family:system-ui,sans-serif;text-align:center;padding:12vh 24px;color:#2c3e50">'
+    + '<h2>Waiting for a connection…</h2><p>The app could not be reached right now. It will open by itself as soon as there is internet.</p>'
+    + '<p><button onclick="location.reload()" style="padding:12px 22px;font-size:16px;border:0;border-radius:8px;background:#27ae60;color:#fff">Try again</button></p>'
+    + '<script>setTimeout(function(){location.reload()},6000)<\/script></body>';
+  return new Response(html, { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+}
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
@@ -153,6 +164,7 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith(
     (async () => {
+     try {
       const cache = await currentCache();
 
       // Helper: find the cached page for a navigation, ignoring the query string —
@@ -200,7 +212,9 @@ self.addEventListener('fetch', (event) => {
           // Offline, or slower than the timeout.
           const fallback = await cachedPage();
           if (fallback) return fallback;
-          throw e; // nothing cached yet — let the browser show its offline page
+          // Nothing cached yet (a first visit, or cleared storage). Do NOT give up on the first slow answer — that is what showed the
+          // browser's "webpage not available" on a slow connection: try again with no time limit; only if that fails too, show a friendly page.
+          try { return await fetch(req); } catch (e2) { return offlinePage(); }
         }
       }
 
@@ -215,9 +229,13 @@ self.addEventListener('fetch', (event) => {
           }
           return res;
         })
-        .catch(() => cached);
+        .catch(() => cached || Response.error());
 
       return cached || networkFetch;
+     } catch (err) {
+      // The cache itself failed (storage full, blocked, corrupted): never turn that into an error page — just use the network.
+      try { return await fetch(req); } catch (e3) { return isNavigation ? offlinePage() : Response.error(); }
+     }
     })()
   );
 });

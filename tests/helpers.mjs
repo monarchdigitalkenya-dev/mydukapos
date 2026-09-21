@@ -27,7 +27,7 @@ export async function boot(app, opts = {}) {
   const vc = new VirtualConsole();
   vc.on('jsdomError', (e) => errors.push(String(e.message).slice(0, 160)));
   const dom = new JSDOM(html, {
-    url: 'https://demo.mydukapos.store/', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: vc,
+    url: opts.url || 'https://demo.mydukapos.store/', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: vc,
     beforeParse(w) {
       Object.entries(opts.storage || {}).forEach(([k, v]) => w.localStorage.setItem(k, v));
       w.fetch = opts.fetch || (() => Promise.reject(new Error('offline')));

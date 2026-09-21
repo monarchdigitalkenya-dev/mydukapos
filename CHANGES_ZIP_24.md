@@ -1,4 +1,4 @@
-# Zips 24 - 51 — what changed
+# Zips 24 - 52 — what changed
 
 ## Aqua POS (water): each site has its own bulk tank
 * Production and every Shop branch have their own tanks. Refills, sales and bulk orders draw only from their own site.
@@ -239,3 +239,15 @@ Fixes
 ## Zip 51  (tools only — no change to the apps)
 * The bug scan (`tools/lint-globals.mjs`, run by `npm test` and `npm run lint`) built its file paths from `URL.pathname`, which on Windows is `/C:/dev/...` and became `C:\C:\dev\...`, so its 9 tests
   failed there (549 of 558 passed on Windows; everything else was green). It now uses `fileURLToPath`.
+
+## Zip 52  (includes 50 and 51; DEPLOY THE ROUTER FIRST: `npm run deploy:router`, then `npm run deploy`)
+* **Aqua POS — sales that never showed in Daily Sales**: a sale / payment / batch made while "Both sites" was selected was stored against a site called "both", which no single-site view matches. It is now stored against the
+  Shop site, and old records stored as "both" are shown with the Shop. (Shop / Hotel / Pharmacy: every payment method is recorded and shown; Pay Later bills stay out of Daily Sales until paid, by design.)
+* **Print is one print per receipt**: taps while a print is going are ignored (auto-print + a tap prints once); when the print worked the preview closes; the sale remembers `printedAt` / `printCount`; printing the same
+  receipt again asks "already printed at HH:MM — print another copy?"; a failed print keeps the preview open. On a computer the cursor goes back to the search box after the preview closes.
+* **Aqua POS — adding a refill size** now shows in the Refill Prices list at once, is saved on the device, and a duplicate size is refused.
+* **Owner Console — staff are not asked for the owner's email**: a staff invite / staff link opens the PIN sign-in (links now carry the shop `?c=`); copy fresh links for existing staff. The owner still signs in as before.
+* **"Webpage not available"**: every service worker now waits for a slow network when nothing is cached, shows a friendly self-retrying page when fully offline, and falls back to the network if the Cache API fails.
+* **The login popup no longer reappears** over a running session when the first sync finishes late.
+* **"Customer N"** above the reference number on every receipt, restarting each day (Pay Later customers count; payments on old bills and past-day records do not).
+* **Restock and Order name boxes** drop down your inventory as you type (pick to fill code, unit and last cost; a new name stays typed).

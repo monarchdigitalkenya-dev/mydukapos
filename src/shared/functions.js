@@ -1019,6 +1019,11 @@ function closePromoOfferModal() {
 //@fn closeReceipt
 function closeReceipt() {
             document.getElementById('receipt-modal').style.display = 'none';
+            try {
+                const tab = document.getElementById('sales-tab');
+                const search = document.getElementById('sales-search');
+                if (search && tab && tab.classList.contains('active') && !('ontouchstart' in window) && !(navigator.maxTouchPoints > 0)) search.focus();
+            } catch (e) { /* cosmetic */ }
         }
 
 //@fn closeReceiptAfterPrint
@@ -9468,10 +9473,10 @@ function buildReceiptDoc(sale, hooks) {
                 footerLines.push(rule);
                 footerNotes.split('\n').forEach(n => { if (n.trim()) footerLines.push(n.trim()); });
             }
-            if (showRef) {
-                footerLines.push(rule);
-                footerLines.push(`Ref: ${sale.refNumber}`);
-            }
+            const customerNo = assignCustomerNo(sale);                    // "Customer 12": how many customers were served today
+            if (showRef || customerNo) footerLines.push(rule);
+            if (customerNo) footerLines.push(`Customer ${customerNo}`);
+            if (showRef) footerLines.push(`Ref: ${sale.refNumber}`);
 
             // ---- on-screen version: same content, real table ----
             const linesToHtml = (arr) => arr.map(l => /^-+$/.test(l) ? '<hr style="border:none; border-top:1px solid #000; margin:4px 0;">' : escapeHtml(l)).join('<br>')
@@ -9894,7 +9899,7 @@ function poRenderRows() {
                 return `
                 <tr>
                     <td data-label="Code (optional)"><div class="po-code-cell"><input type="text" id="po-row-${r.rowId}-code" placeholder="optional" value="${escapeHtml(r.code)}" oninput="poUpdateRowField(${r.rowId}, 'code', this.value)">${canScan ? `<button type="button" class="settings-small-btn po-scan-btn" title="Scan barcode" onclick="openBarcodeScanModal(code => setFieldAndFireInput('po-row-${r.rowId}-code', code))">📷</button>` : ''}</div></td>
-                    <td data-label="Item / Product"><input type="text" id="po-row-${r.rowId}-name" list="po-item-names" placeholder="e.g. Hikvision 4MP Dome Camera" value="${escapeHtml(r.name)}" oninput="poUpdateRowField(${r.rowId}, 'name', this.value)" onchange="poFillRowFromProduct(${r.rowId})"></td>
+                    <td data-label="Item / Product"><input type="text" id="po-row-${r.rowId}-name" data-suggest="po" data-row="${r.rowId}" autocomplete="off" placeholder="Type a name — pick from your items, or type a new one" value="${escapeHtml(r.name)}" oninput="poUpdateRowField(${r.rowId}, 'name', this.value)" onchange="poFillRowFromProduct(${r.rowId})"></td>
                     <td data-label="Unit"><select id="po-row-${r.rowId}-unit" onchange="poUpdateRowField(${r.rowId}, 'unit', this.value)">${units.map(u => `<option value="${u}" ${r.unit === u ? 'selected' : ''}>${u}</option>`).join('')}</select></td>
                     <td data-label="Quantity"><input type="text" inputmode="decimal" id="po-row-${r.rowId}-qty" placeholder="e.g. 4" value="${escapeHtml(r.qty)}" oninput="poUpdateRowField(${r.rowId}, 'qty', this.value)"></td>
                     <td data-label="Cost Price / Unit"><input type="number" min="0" step="0.01" id="po-row-${r.rowId}-cost" value="${escapeHtml(r.cost)}" oninput="poUpdateRowField(${r.rowId}, 'cost', this.value)"></td>
@@ -11067,8 +11072,42 @@ async function performRestoreBackup(date) {
         }
 
 //@fn printReceipt
-function printReceipt() {
-            return queuePrintJob(printReceiptJob);
+async function printReceipt() {
+            // ONE print per tap, and one per receipt. A second tap while the first is still going (the old Print button stayed open and was easy to hit
+            // twice, especially with auto-print on) used to queue a second copy. Now: taps during a print are ignored; a receipt that was already
+            // printed asks before printing another copy; and when the print worked the preview closes, so there is nothing left to tap twice.
+            if (window.__receiptPrinting) return;
+            const sale = currentReceiptSale;
+            if (sale && sale.printedAt) {
+                const at = new Date(sale.printedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+                if (!confirm(`This receipt was already printed at ${at}. Print another copy?`)) return;
+            }
+            window.__receiptPrinting = true;
+            window.__lastPrintOk = null;                                   // set to false by the USB / Bluetooth printers when a print fails
+            try {
+                await queuePrintJob(printReceiptJob);
+                if (window.__lastPrintOk === false) return;                // failed: the printer already said so; the preview stays for another try
+                markReceiptPrinted(sale);
+                closeReceiptAfterPrint();
+            } catch (e) {
+                showToast('The receipt could not be printed. Try again.', true);
+            } finally {
+                window.__receiptPrinting = false;
+            }
+        }
+
+//@fn markReceiptPrinted
+function markReceiptPrinted(sale) {
+            // Remembers on the sale itself (so every till knows) that its receipt has been printed, and how many times.
+            if (!sale || !sale.id) return;
+            const stored = (typeof salesLog !== 'undefined' && salesLog.find((s) => s && s.id === sale.id)) || (typeof bills !== 'undefined' && bills.find((b) => b && b.id === sale.id));
+            if (!stored) return;
+            const now = new Date().toISOString();
+            stored.printedAt = now; stored.printCount = (stored.printCount || 0) + 1;
+            sale.printedAt = now; sale.printCount = stored.printCount;
+            if (typeof salesLog !== 'undefined' && salesLog.includes(stored)) safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+            else if (typeof bills !== 'undefined') safeSetItem('pos_bills', JSON.stringify(bills));
+            queuePush();
         }
 
 //@fn printStoreReport
@@ -11815,7 +11854,9 @@ function hwWrapPrinting() {
                     // The printer was switched on a moment ago and nobody has reconnected it yet: look for it before saying "not connected".
                     window[printName] = async function (...args) {
                         if (!hwIsReady(kind)) await hwEnsureReady(kind);
-                        return busy(() => origPrint.apply(this, args));
+                        const result = await busy(() => origPrint.apply(this, args));
+                        if (result === false) window.__lastPrintOk = false;                       // printReceipt() keeps the preview open after a failed print
+                        return result;
                     };
                 }
                 if (typeof origSend === 'function') {
@@ -12473,5 +12514,179 @@ function pruneClosedBills(days) {
             safeSetItem('pos_bills', JSON.stringify(bills));
             queuePush();
             return n;
+        }
+
+//@fn authWatchInstall
+function authWatchInstall() {
+            // Remembers, for this page, that someone has logged in (or signed up): the sign-in / sign-up screen was showing and has been closed.
+            // The start-up code used to re-open the "who's logging in?" picker when its first sync finished if it could not tell that — on a slow
+            // connection that put the login popup back over an app somebody was already using ("sometimes, when I tap More").
+            if (window.__authWatch) return;
+            window.__authWatch = true;
+            if (!window.MutationObserver) return;
+            ['login-screen', 'registration-screen'].forEach((id) => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                const shown = () => !!el.style.display && el.style.display !== 'none';
+                let was = shown();
+                new MutationObserver(() => { const now = shown(); if (was && !now) window.__adminAuthed = true; was = now; }).observe(el, { attributes: true, attributeFilter: ['style'] });
+            });
+        }
+
+//@fn dayKeyOf
+function dayKeyOf(ts) {
+            const d = new Date(ts);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        }
+
+//@fn assignCustomerNo
+function assignCustomerNo(sale) {
+            // "Customer 12" on the receipt, just above the reference number: how many customers were served today, so printing the last receipt
+            // of the day tells you. It starts again at 1 each day. The number is given the first time a receipt is made for a real sale of TODAY
+            // and is then kept on the sale (so a reprint, or another till, shows the same number).
+            if (!sale) return null;
+            if (sale.customerNo) return sale.customerNo;
+            if (sale.recordedLate || typeof salesLog === 'undefined') return null;
+            const items = Array.isArray(sale.items) ? sale.items : [];
+            if (!items.length || items.every((i) => i && (i.unit === 'payment' || i.isPayment))) return null;      // a payment on an old bill is not a new customer
+            const today = dayKeyOf(Date.now());
+            if (dayKeyOf(sale.timestamp) !== today) return null;
+            const inBills = typeof bills !== 'undefined' && Array.isArray(bills) && bills.some((b) => b && b.id === sale.id);
+            const stored = salesLog.find((s) => s && s.id === sale.id) || (inBills ? bills.find((b) => b && b.id === sale.id) : null);
+            if (!stored) return null;                                                        // only a saved sale takes a number (a preview does not use one up)
+            if (stored.customerNo) { sale.customerNo = stored.customerNo; return sale.customerNo; }
+            let max = 0;
+            const scan = (arr) => { if (Array.isArray(arr)) arr.forEach((s) => { if (s && s.customerNo && dayKeyOf(s.timestamp) === today) max = Math.max(max, Number(s.customerNo) || 0); }); };
+            scan(salesLog); if (typeof bills !== 'undefined') scan(bills);
+            stored.customerNo = max + 1;
+            sale.customerNo = stored.customerNo;
+            safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+            if (inBills) safeSetItem('pos_bills', JSON.stringify(bills));
+            queuePush();
+            return sale.customerNo;
+        }
+
+//@fn itemSuggestMatches
+function itemSuggestMatches(query) {
+            const q = String(query || '').trim().toLowerCase();
+            const stock = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
+            let list;
+            if (!q) list = stock.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+            else {
+                const starts = [], has = [];
+                stock.forEach((p) => {
+                    const n = String(p.name || '').toLowerCase(), c = String(p.code || '').toLowerCase();
+                    if (n.startsWith(q) || c === q) starts.push(p); else if (n.includes(q) || c.includes(q)) has.push(p);
+                });
+                list = starts.concat(has);
+            }
+            return list.slice(0, 30);
+        }
+
+//@fn itemSuggestBox
+function itemSuggestBox() {
+            let box = document.getElementById('item-suggest-box');
+            if (box) return box;
+            const st = document.createElement('style');
+            st.textContent = '#item-suggest-box{position:fixed;z-index:100001;background:var(--bg-surface,#fff);color:var(--dark,#2c3e50);border:1px solid var(--border-color,#ccd1d6);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.25);max-height:260px;overflow-y:auto;display:none;font-size:14px}'
+                + '#item-suggest-box .is-opt{padding:9px 12px;border-bottom:1px solid var(--light,#eef0f2);cursor:pointer}#item-suggest-box .is-opt:last-child{border-bottom:none}'
+                + '#item-suggest-box .is-opt.on,#item-suggest-box .is-opt:hover{background:var(--tint-info-bg,#EAF4FB)}#item-suggest-box .is-sub{font-size:12px;color:#7f8c8d}'
+                + '#item-suggest-box .is-new{padding:9px 12px;font-size:12px;color:#7f8c8d;background:var(--bg-surface-alt,#f7f9fa)}';
+            document.head.appendChild(st);
+            box = document.createElement('div');
+            box.id = 'item-suggest-box';
+            document.body.appendChild(box);
+            return box;
+        }
+
+//@fn itemSuggestShow
+function itemSuggestShow(input) {
+            // A drop-down under the "item name" box of a restock / order line: it lists what you stock as you type. Pick one to fill in its code, unit
+            // and last cost; or just keep typing a name that is not in the list — it is a new item.
+            const box = itemSuggestBox();
+            const kind = input.dataset.suggest, rowId = Number(input.dataset.row);
+            const list = itemSuggestMatches(input.value);
+            const typed = input.value.trim();
+            const exact = typed && list.some((p) => String(p.name || '').trim().toLowerCase() === typed.toLowerCase());
+            box.dataset.kind = kind; box.dataset.row = String(rowId); box._input = input; box._idx = -1;
+            box.innerHTML = list.map((p, i) => `<div class="is-opt" data-code="${escapeHtml(p.code)}" data-i="${i}"><strong>${escapeHtml(p.name)}</strong><div class="is-sub">${escapeHtml(p.code || '')} · in stock ${formatQtyDisplay(p.qty || 0, p.unit || 'pcs')}${Number(p.wholesalePrice) > 0 ? ` · last cost KES ${Number(p.wholesalePrice).toLocaleString('en-US')}` : ''}</div></div>`).join('')
+                + (typed && !exact ? `<div class="is-new">➕ “${escapeHtml(typed)}” is not in your inventory — keep typing to add it as a new item</div>` : '');
+            if (!list.length && !typed) { box.style.display = 'none'; return; }
+            const r = input.getBoundingClientRect();
+            const w = Math.max(r.width, 260);
+            box.style.left = Math.max(4, Math.min(r.left, (window.innerWidth || 800) - w - 4)) + 'px';
+            box.style.width = w + 'px';
+            const below = (window.innerHeight || 700) - r.bottom;
+            if (below < 200 && r.top > below) { box.style.top = 'auto'; box.style.bottom = ((window.innerHeight || 700) - r.top + 2) + 'px'; }
+            else { box.style.bottom = 'auto'; box.style.top = (r.bottom + 2) + 'px'; }
+            box.style.display = 'block';
+        }
+
+//@fn itemSuggestHide
+function itemSuggestHide() {
+            const box = document.getElementById('item-suggest-box');
+            if (box) box.style.display = 'none';
+        }
+
+//@fn itemSuggestPick
+function itemSuggestPick(kind, rowId, code) {
+            const p = inventory.find((x) => x.code === code);
+            if (!p) return;
+            let focusEl = null;
+            if (kind === 'po') {
+                const row = poState().draft.find((r) => r.rowId === rowId);
+                if (!row) return;
+                row.name = p.name; row.code = p.code || ''; row.autoCode = row.code; row.unit = p.unit || 'pcs';
+                if (Number(p.wholesalePrice) > 0) row.cost = String(p.wholesalePrice);
+                poRenderRows();
+                focusEl = document.getElementById(`po-row-${rowId}-qty`);
+            } else {
+                const row = restockDraft.find((r) => r.rowId === rowId);
+                if (!row) return;
+                Object.assign(row, { code: p.code || '', name: p.name, unit: p.unit || 'pcs' });
+                if (Number(p.wholesalePrice) > 0) row.cost = String(p.wholesalePrice);
+                renderRestockRows();
+                const tr = document.querySelectorAll('#restock-rows-tbody tr')[restockDraft.indexOf(row)];
+                focusEl = tr ? tr.querySelector('input[inputmode="decimal"]') : null;
+            }
+            itemSuggestHide();
+            if (focusEl) { try { focusEl.focus(); if (focusEl.select) focusEl.select(); } catch (e) { /* cosmetic */ } }
+            if (typeof renderLowStockStrip === 'function') { try { renderLowStockStrip(kind); } catch (e) { /* extra */ } }
+        }
+
+//@fn itemSuggestInstall
+function itemSuggestInstall() {
+            if (window.__itemSuggestInstalled) return;
+            window.__itemSuggestInstalled = true;
+            const isField = (el) => el && el.matches && el.matches('input[data-suggest]');
+            document.addEventListener('input', (e) => { if (isField(e.target)) itemSuggestShow(e.target); });
+            document.addEventListener('focusin', (e) => { if (isField(e.target)) itemSuggestShow(e.target); });
+            document.addEventListener('keydown', (e) => {
+                const box = document.getElementById('item-suggest-box');
+                if (!isField(e.target) || !box || box.style.display === 'none') return;
+                const opts = Array.from(box.querySelectorAll('.is-opt'));
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    if (!opts.length) return;
+                    box._idx = (box._idx + (e.key === 'ArrowDown' ? 1 : -1) + opts.length) % opts.length;
+                    opts.forEach((o, i) => o.classList.toggle('on', i === box._idx));
+                    opts[box._idx].scrollIntoView({ block: 'nearest' });
+                    e.preventDefault();
+                } else if (e.key === 'Enter' && box._idx >= 0 && opts[box._idx]) {
+                    e.preventDefault();
+                    itemSuggestPick(box.dataset.kind, Number(box.dataset.row), opts[box._idx].dataset.code);
+                } else if (e.key === 'Escape' || e.key === 'Tab') itemSuggestHide();
+            }, true);
+            const pick = (e) => {
+                const opt = e.target.closest && e.target.closest('#item-suggest-box .is-opt');
+                if (!opt) return;
+                e.preventDefault();                                            // keep the typing box focused until the pick lands
+                const box = document.getElementById('item-suggest-box');
+                itemSuggestPick(box.dataset.kind, Number(box.dataset.row), opt.dataset.code);
+            };
+            document.addEventListener('mousedown', pick, true);
+            document.addEventListener('touchstart', pick, { capture: true, passive: false });
+            document.addEventListener('click', (e) => { if (!isField(e.target) && !(e.target.closest && e.target.closest('#item-suggest-box'))) itemSuggestHide(); }, true);
+            window.addEventListener('scroll', (e) => { if (!(e.target && e.target.closest && e.target.closest('#item-suggest-box'))) itemSuggestHide(); }, true);
+            window.addEventListener('resize', itemSuggestHide);
         }
 
