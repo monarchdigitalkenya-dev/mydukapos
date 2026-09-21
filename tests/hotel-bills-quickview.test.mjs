@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boot } from './helpers.mjs';
+import { boot, until } from './helpers.mjs';
 
 // Hotel Sales Counter -> inline "Bills" panel: just two boxes.
 //   green = money actually received on bills, red = money still owed on bills.
@@ -84,9 +84,11 @@ test('hotel: boxes update live when a bill is paid on another device (synced in)
   // Another device settles part of the bill; the change arrives through the normal sync path (poll / WebSocket push).
   const remote = JSON.stringify({ updatedAt: Date.now() + 1000, bills: [BILL('a', 'Jane', 'Ann', 500, 200)] });
   w.eval(`applyRemotePayload(${remote})`);
+  await until(() => boxes(d).paid === 'KES 200.00');                            // (redraws that come in a burst are folded into one a moment later)
   assert.deepEqual(boxes(d), { paid: 'KES 200.00', unpaid: 'KES 300.00' });
   const remote2 = JSON.stringify({ updatedAt: Date.now() + 2000, bills: [BILL('a', 'Jane', 'Ann', 500, 500), BILL('n', 'Jane', 'New', 100)] });
   w.eval(`applyRemotePayload(${remote2})`);
+  await until(() => boxes(d).paid === 'KES 500.00');
   assert.deepEqual(boxes(d), { paid: 'KES 500.00', unpaid: 'KES 100.00' });
   assert.deepEqual(errors, []);
   close();

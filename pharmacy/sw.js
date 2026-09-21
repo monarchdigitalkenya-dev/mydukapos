@@ -195,14 +195,30 @@ self.addEventListener('fetch', (event) => {
         try {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), NAVIGATION_NETWORK_TIMEOUT_MS);
+          // 'no-cache' = ask the server "has it changed?" (a tiny conditional request, answered 304 when nothing changed) and use the browser's
+          // stored copy if not. It used to be 'reload', which downloaded the WHOLE page (1-2 MB) on every single open — the main reason the apps
+          // were slow to start on a phone's data connection. A new deployment still arrives at once (the server says it changed).
           const res = await fetch(new Request(req.url, {
-            cache: 'reload',
+            cache: 'no-cache',
             signal: controller.signal,
             credentials: 'same-origin',
           }));
           clearTimeout(timer);
+          const copy = res && res.ok ? res.clone() : null;
           if (res && res.ok) {
-            cache.put('./index.html', res.clone()).catch(() => { /* quota — not fatal */ });
+            // Rewrite the offline copy only when the page really changed (its ETag): writing 1-2 MB to Cache Storage on every open was pure waste.
+            (async () => {
+              try {
+                const tag = res.headers.get('etag') || res.headers.get('last-modified') || '';
+                const pointer = await caches.open(POINTER_CACHE);
+                const prev = await pointer.match('https://sw-internal/page-etag');
+                const prevTag = prev ? await prev.text() : null;
+                if (!tag || tag !== prevTag) {
+                  await cache.put('./index.html', copy);
+                  if (tag) await pointer.put('https://sw-internal/page-etag', new Response(tag));
+                }
+              } catch (e) { /* quota — not fatal */ }
+            })();
             return res;
           }
           // Server answered but with an error (502/404/etc) — a cached working

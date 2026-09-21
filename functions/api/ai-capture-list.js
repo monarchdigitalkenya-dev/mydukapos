@@ -50,6 +50,7 @@
 
 import { requireValidLicense } from './_license.js';
 import { getGeminiCaptureKeys } from './gemini-capture-config.js';
+import { shapeCaptureResult } from './_capture-shape.js';
 
 const GEMINI_MODEL = 'gemini-3.6-flash';
 const SHOP_CONFIG_PREFIX = 'ai-capture-shop-config:';
@@ -732,7 +733,8 @@ If the sheet has multiple stock-like blocks, extract all of them together into t
   // unlabelled rows rather than requiring a table. Kept as data (not code)
   // so it's easy to tune later without touching the parsing/response logic
   // below.
-  const SYSTEM_PROMPT = `You are reading a shop document for a point-of-sale system's inventory intake — either a photograph/scan of a paper document, or the plain-text rows extracted from a spreadsheet file (columns separated by " | ", one row per line). First decide which of two kinds of document this is, then extract it accordingly.
+  const MENU_HINT = body.mode === 'menu' ? `\n\nThe person uploading this file says it is a MENU / price list of dishes to sell — treat it as KIND 3 (document_type "menu") unless it plainly is not.` : '';
+  const SYSTEM_PROMPT = `You are reading a shop document for a point-of-sale system's inventory intake — either a photograph/scan of a paper document, or the plain-text rows extracted from a spreadsheet file (columns separated by " | ", one row per line). First decide which of three kinds of document this is, then extract it accordingly.
 
 KIND 1 — an invoice, a handwritten stock note, a printed delivery sheet, or a receipt listing goods bought/delivered. Set document_type to "items".
 
@@ -757,9 +759,11 @@ KIND 2 — a recipe / dish-costing sheet: a dish or menu-item name (e.g. "Chapat
   - quantity: the total amount of that ingredient used for the whole batch (the Quantity column) — NOT divided by yield.
   - unit_cost: the per-unit price for that ingredient (the Unit Price column), if shown.
 
-If a document is ambiguous between the two kinds, prefer "recipe" only when there's a clear dish-name heading above an ingredient table with a Unit column — a plain price list of foods with no such structure is still "items".
+KIND 3 — a MENU: a restaurant, hotel or cafe menu or price list of dishes, meals, snacks and drinks, usually in sections (e.g. "Hot Beverages", "Cold Beverages", "Snacks", "Meals"), each line being a dish name followed by ONE price (often "KSH 150", "150/=" or "Kshs 150") and NO quantity. Set document_type to "menu". Put every dish/drink in the top-level "items" array (leave "recipes" empty) with: detected_name = the dish name exactly as printed (tidy the spacing); retail_price = the printed price — on a menu the price is what the CUSTOMER PAYS, NOT the shop's buying cost, so do NOT put it in unit_cost; unit_cost = 0; wholesale_price = 0; quantity = 0; category = the section heading the line sits under (e.g. "Hot Beverages"), or "" if there are no sections. Skip the restaurant's name, slogans, phone numbers, addresses and pictures. Include EVERY dish line, even if a price is hard to read (then use your best guess and a lower confidence_score).
 
-Respond with a JSON object matching the schema exactly. For "items" lines, every entry must have at least one of detected_name or detected_code — omit or leave blank ("") whichever one genuinely isn't present, rather than guessing. confidence_score is your own confidence (0.0–1.0) that a line/ingredient was read correctly. If the document contains no readable item lines or recipe at all, respond with document_type "items" and an empty items array.`;
+If a document is ambiguous between the kinds, prefer "recipe" only when there's a clear dish-name heading above an ingredient table with a Unit column; a list of foods/drinks with one selling price each and no quantities is a "menu"; anything else with quantities or buying costs is "items".
+
+Respond with a JSON object matching the schema exactly. For "items" lines, every entry must have at least one of detected_name or detected_code — omit or leave blank ("") whichever one genuinely isn't present, rather than guessing. confidence_score is your own confidence (0.0–1.0) that a line/ingredient was read correctly. If the document contains no readable item lines or recipe at all, respond with document_type "items" and an empty items array.` + MENU_HINT;
 
   // responseMimeType + responseSchema below force Gemini to return exactly
   // this shape as the text part — no markdown fences, no commentary — so
@@ -767,7 +771,7 @@ Respond with a JSON object matching the schema exactly. For "items" lines, every
   const RESPONSE_SCHEMA = {
     type: 'OBJECT',
     properties: {
-      document_type: { type: 'STRING' }, // 'items' | 'recipe'
+      document_type: { type: 'STRING' }, // 'items' | 'recipe' | 'menu'
       items: {
         type: 'ARRAY',
         items: {
@@ -775,6 +779,7 @@ Respond with a JSON object matching the schema exactly. For "items" lines, every
           properties: {
             detected_name: { type: 'STRING' },
             detected_code: { type: 'STRING' },
+            category: { type: 'STRING' },
             quantity: { type: 'NUMBER' },
             unit_cost: { type: 'NUMBER' },
             retail_price: { type: 'NUMBER' },
@@ -833,50 +838,8 @@ Respond with a JSON object matching the schema exactly. For "items" lines, every
       contextLabel: sourceKind === 'image' ? 'image' : 'spreadsheet',
     });
     if (!result.ok) return result.response;
-    const parsed = result.data;
-
-    // A line is usable as long as it has a name OR a code — a delivery
-    // sheet that only lists SKUs (no description) is just as valid a line
-    // as one with only a name, so neither field alone gates inclusion.
-    const items = Array.isArray(parsed.items) ? parsed.items
-      .filter(it => it && typeof it === 'object' && (String(it.detected_name || '').trim() || String(it.detected_code || '').trim()))
-      .map(it => ({
-        detected_name: String(it.detected_name || '').trim().slice(0, 200),
-        detected_code: String(it.detected_code || '').trim().slice(0, 100),
-        quantity: Number.isFinite(Number(it.quantity)) ? Number(it.quantity) : 0,
-        unit_cost: Number.isFinite(Number(it.unit_cost)) ? Number(it.unit_cost) : 0,
-        retail_price: Number.isFinite(Number(it.retail_price)) ? Number(it.retail_price) : 0,
-        wholesale_price: Number.isFinite(Number(it.wholesale_price)) ? Number(it.wholesale_price) : 0,
-        confidence_score: Number.isFinite(Number(it.confidence_score)) ? Math.max(0, Math.min(1, Number(it.confidence_score))) : 0.5,
-      })) : [];
-
-    // Same "at least a name" gate for recipe ingredients — an ingredient
-    // line with no name at all isn't usable, unlike an items line which
-    // can lean on a code instead.
-    const recipes = Array.isArray(parsed.recipes) ? parsed.recipes
-      .filter(r => r && typeof r === 'object' && String(r.dish_name || '').trim())
-      .map(r => ({
-        dish_name: String(r.dish_name || '').trim().slice(0, 200),
-        yield_qty: Number.isFinite(Number(r.yield_qty)) ? Number(r.yield_qty) : 0,
-        selling_price: Number.isFinite(Number(r.selling_price)) ? Number(r.selling_price) : 0,
-        ingredients: Array.isArray(r.ingredients) ? r.ingredients
-          .filter(ing => ing && typeof ing === 'object' && String(ing.name || '').trim())
-          .map(ing => ({
-            name: String(ing.name || '').trim().slice(0, 200),
-            unit: String(ing.unit || '').trim().slice(0, 20),
-            quantity: Number.isFinite(Number(ing.quantity)) ? Number(ing.quantity) : 0,
-            unit_cost: Number.isFinite(Number(ing.unit_cost)) ? Number(ing.unit_cost) : 0,
-            confidence_score: Number.isFinite(Number(ing.confidence_score)) ? Math.max(0, Math.min(1, Number(ing.confidence_score))) : 0.5,
-          })) : [],
-      }))
-      .filter(r => r.ingredients.length > 0) : [];
-
-    // Trust the presence of usable recipes over the model's own
-    // document_type label — a stray/misclassified label shouldn't hide a
-    // recipe that was otherwise read out correctly, and vice versa.
-    const document_type = recipes.length > 0 ? 'recipe' : 'items';
-
-    return jsonResponse({ document_type, items, recipes });
+    // The rules that turn the AI's answer into the reply live in _capture-shape.js (menus, recipes, plain item lists).
+    return jsonResponse(shapeCaptureResult(result.data, { menu: body.mode === 'menu' }));
   } catch (err) {
     return jsonResponse({ error: err.message || 'Unexpected error contacting the AI service.' }, 500);
   }

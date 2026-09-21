@@ -1,4 +1,4 @@
-# Zips 24 - 52 — what changed
+# Zips 24 - 55 — what changed
 
 ## Aqua POS (water): each site has its own bulk tank
 * Production and every Shop branch have their own tanks. Refills, sales and bulk orders draw only from their own site.
@@ -251,3 +251,38 @@ Fixes
 * **The login popup no longer reappears** over a running session when the first sync finishes late.
 * **"Customer N"** above the reference number on every receipt, restarting each day (Pay Later customers count; payments on old bills and past-day records do not).
 * **Restock and Order name boxes** drop down your inventory as you type (pick to fill code, unit and last cost; a new name stays typed).
+
+## Zip 53  (Hotel POS + the AI reader; includes 50 - 52. If those are not deployed yet: `npm run deploy:router` first, then `npm run deploy`)
+* **A menu becomes Dishes.** Hotel POS only.
+  * *Excel / CSV* (Inventory ⬆️ Import from Excel/CSV): an **Item Type** column (Dish / Item, per row) is understood; a sheet with only names and prices defaults to Dishes; a stock sheet with quantities stays Items. The review has a new
+    **"Add these as: Items / Dishes"** choice (Dishes hide Qty / Cost / Wholesale and show Price); Dishes are created with no stock (they sell by price), keep their Category, and re-importing updates prices instead of duplicating.
+    A dish with no price is refused with the names listed.
+  * *Photo* (Add New Items ▸ 📸 Capture List): the AI reader now recognises a **menu** (dishes, each with one price, no quantities) and reads the printed price as the SELLING price (a "KSH 50" used to be read as a buying cost) and the
+    section heading as the Category; there is a **"This is a menu / price list — add it as Dishes"** tick to tell it so. Restock captures are unchanged.
+  * Server: `functions/api/_capture-shape.js` (new) shapes the AI's answer (items / recipe / menu); `ai-capture-list.js` prompts for KIND 3 (menu) and accepts `mode: 'menu'`.
+
+## Zip 54  (includes 53; `npm run deploy:router` first if zips 50-53 are not live, then `npm run deploy`)
+Speed
+* **Sales Counter items grid**: "units sold per item" was a full pass over the whole sales log for EVERY item on every redraw (search keystroke, sale, sync); now one remembered pass.
+* **Opening an app no longer re-downloads the whole page** (1-2 MB): the service workers revalidate ('not changed' = a tiny reply) instead of forcing a full reload, and no longer rewrite the offline copy on every open.
+* Bursts of `renderAllViews()` calls fold into one redraw; the customer-number scan skips old sales cheaply.
+New
+* **📊 Reports tab** (all shop-type apps): Sales, Business insights (busiest hour / day, best-earning hour, best worker, sales by hour and weekday, daily / weekly / monthly trend lines), Staff performance, Stock,
+  Bills & debts, Expenses & profit — any period, Print / PDF and CSV for Excel, shortcuts to the detailed screens.
+* **Hotel: cash tendered is optional but recommended** (empty = exact amount; a typed amount must still cover the total).
+* **Importing a file**: a "please wait" banner while it works; headers the app already knows skip the AI (instant, works offline); the AI column reader is capped at 8 s. Re-importing a menu turns dishes that were
+  imported as ordinary items into Dishes (same codes, no duplicates).
+* **WhatsApp → Leads (Meta ads only)**: `api/whatsapp-webhook.js` (+ `_whatsapp.js`) files people who START a chat from a Meta Click-to-WhatsApp ad (Meta marks those messages with a `referral`) as a lead on the Leads tab, with the ad's headline;
+  follow-ups from that person are added to the same lead; ordinary texts from anyone else are dropped and never stored. See WHATSAPP_SETUP.md (needs a Meta app + two secrets; business number +254 791 598 506).
+Fixes
+* **Staff listed twice on "Who's logging in?"**: a double tap on "Create my account" (or the same invite on two phones) made two records. The staff id now comes from the invite (one invite = one person), taps are handled
+  one at a time, and exact duplicates already saved (same name AND same PIN) are merged deterministically on every device (the larger id is retired, its shifts move). Owner Console included.
+* Share receipt: on browsers that cannot hand a file to another app the PDF is saved (by design); the message now says so clearly.
+
+## Zip 55  (includes 54; `npm run deploy:router` first if zips 50-54 are not live, then `npm run deploy`)
+* **📖 User guides — one per module** (Shop, Hotel, Hospital, Pharmacy, School, Production, Services, Aqua, Owner Console): getting started, first setup, adding items, making a sale, payments, receipts, bills, restock / orders / stock take,
+  reports, staff and access, connecting printers, offline / backups, troubleshooting, plus module chapters (hospital patient journey, hotel dishes / kitchen / tabs, school fees, Aqua tanks and sites, hiring, service jobs, owner links / leads / errors)
+  and "Every tab at a glance". Open from the 📖 button in the header, Settings ▸ Guide, or Settings ▸ Install App ▸ Version. Searchable, printable.
+  Text: `tools/build-guides.mjs` (`npm run guides`, then `npm run sync`); viewer: `src/shared/blocks/guide-ui.html`; per-module data: `src/shared/blocks/guide-data/<module>.html` (the sync tool now supports per-module block content).
+* **Settings ▸ Install App ▸ Version** reads **Version 1.0.0 — The best software in existence.** (the build line stays underneath).
+* Test: `tests/guides.test.mjs` (every tab of every app is described in its guide; opens three ways; search; print; each guide is about its own module).

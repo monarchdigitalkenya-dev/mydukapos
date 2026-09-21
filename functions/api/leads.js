@@ -29,6 +29,7 @@
 
 import { requireOwnerAuth } from './_owner-auth.js';
 import { createClient, clientLink, listProducts, getLicense, saveLicense } from './_license.js';
+import { INBOX_KEY, readInbox, mergeInboxIntoLeads } from './_whatsapp.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -178,6 +179,20 @@ export async function onRequestPost(context) {
       }
       leads = carried;
       await putSheet(env, date, leads);
+    }
+
+    // People who messaged the business WhatsApp number since the last look (see whatsapp-webhook.js) join this sheet as leads — after the
+    // carry-forward above, so yesterday's uncontacted leads are never lost, and a returning number updates its lead instead of duplicating it.
+    // Only when the sheet asked for is TODAY's (a past day's sheet is history and is left alone).
+    const today = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);   // Nairobi date
+    if (date === today) {
+      const inbox = await readInbox(env);
+      if (inbox.length) {
+        const merged = mergeInboxIntoLeads(leads, inbox, new Date().toISOString());
+        leads = merged.leads;
+        await putSheet(env, date, leads);
+        await env.mydukapos_kv.put(INBOX_KEY, '[]');
+      }
     }
 
     return jsonResponse({ date, leads });

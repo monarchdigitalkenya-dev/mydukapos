@@ -1,0 +1,135 @@
+<!-- GUIDE UI ------------------------------------------------------------------
+         The 📖 user guide: a full-screen, searchable "how to use this app" for THIS module. The text lives in the guide-data block
+         (src/shared/blocks/guide-data/<module>.html, built by tools/build-guides.mjs); this block only draws it. Opened from the 📖 button in the header,
+         from Settings ▸ Guide, and from Settings ▸ Install App ▸ Version. -->
+    <style>
+        #guide-modal { position: fixed; inset: 0; z-index: 100002; background: rgba(44,62,80,0.92); display: none; padding: 0; }
+        #guide-box { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); width: 100%; max-width: 900px; height: 100%; margin: 0 auto; display: flex; flex-direction: column; }
+        #guide-head { padding: 12px 16px 8px; border-bottom: 1px solid #e5e8eb; }
+        #guide-head h2 { margin: 0; font-size: 20px; }
+        #guide-tag { color: #7f8c8d; font-size: 13px; margin: 2px 0 8px; }
+        #guide-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        #guide-tools input[type=search] { flex: 1; min-width: 160px; padding: 9px 12px; font-size: 15px; border: 1px solid #ccd1d6; border-radius: 8px; }
+        #guide-toc { display: flex; gap: 6px; overflow-x: auto; padding: 8px 16px; border-bottom: 1px solid #e5e8eb; }
+        #guide-toc button { white-space: nowrap; padding: 6px 12px; border-radius: 16px; border: 1px solid #ccd1d6; background: #f7f9fa; color: #2c3e50; font-size: 13px; cursor: pointer; }
+        #guide-body { flex: 1; overflow-y: auto; padding: 8px 16px 40px; -webkit-overflow-scrolling: touch; }
+        #guide-body details { border: 1px solid #e5e8eb; border-radius: 10px; margin: 10px 0; background: #fff; }
+        #guide-body summary { padding: 12px 14px; font-weight: 700; font-size: 16px; cursor: pointer; }
+        #guide-body .g-inner { padding: 0 16px 14px; font-size: 14.5px; line-height: 1.55; }
+        #guide-body h5 { margin: 14px 0 4px; font-size: 14.5px; color: #E67E22; }
+        #guide-body ol, #guide-body ul { margin: 4px 0 8px 20px; padding: 0; }
+        #guide-body li { margin: 4px 0; }
+        #guide-body .g-tip { background: #FEF5E7; border-left: 4px solid #E67E22; padding: 8px 12px; border-radius: 6px; margin: 8px 0; font-size: 14px; }
+        #guide-body table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+        #guide-body td { padding: 6px 8px; border-bottom: 1px solid #eef0f2; vertical-align: top; }
+        #guide-body td:first-child { white-space: nowrap; font-weight: 600; }
+        #guide-body code { background: #eef0f2; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+        #guide-btn-small { padding: 8px 12px; border-radius: 8px; border: 1px solid #ccd1d6; background: #fff; color: #2c3e50; cursor: pointer; font-size: 14px; }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__guideUiLoaded) return;
+        window.__guideUiLoaded = true;
+        function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+        function md(s) { return esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`(.+?)`/g, '<code>$1</code>'); }
+        function list(tag, arr) { return arr && arr.length ? '<' + tag + '>' + arr.map(function (x) { return '<li>' + md(x) + '</li>'; }).join('') + '</' + tag + '>' : ''; }
+        function chapterBody(c) {
+            var h = c.intro ? '<p>' + md(c.intro) + '</p>' : '';
+            h += list('ol', c.steps);
+            (c.sections || []).forEach(function (s) { h += '<h5>' + md(s.title) + '</h5>' + (s.text ? '<p>' + md(s.text) + '</p>' : '') + list('ol', s.steps) + list('ul', s.points); });
+            if (c.tabs) h += '<table>' + c.tabs.map(function (t) { return '<tr><td>' + md(t[0]) + '</td><td>' + md(t[1]) + '</td></tr>'; }).join('') + '</table>';
+            (c.tips || []).forEach(function (t) { h += '<div class="g-tip">💡 ' + md(t) + '</div>'; });
+            return h;
+        }
+        function chapterText(c) {
+            return [c.title, c.intro].concat(c.steps || [], (c.tips || []), (c.tabs || []).map(function (t) { return t.join(' '); }),
+                (c.sections || []).reduce(function (a, s) { return a.concat([s.title, s.text || ''], s.steps || [], s.points || []); }, [])).join(' ').toLowerCase();
+        }
+        function data() { return window.__GUIDE_DATA || null; }
+        function ensureModal() {
+            var m = document.getElementById('guide-modal');
+            if (m) return m;
+            m = document.createElement('div');
+            m.id = 'guide-modal';
+            m.innerHTML = '<div id="guide-box"><div id="guide-head"><div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;"><div><h2 id="guide-title"></h2><div id="guide-tag"></div></div>'
+                + '<button type="button" id="guide-btn-small" onclick="guideClose()" aria-label="Close the guide">✕ Close</button></div>'
+                + '<div id="guide-tools"><input type="search" id="guide-search" placeholder="Search the guide… (e.g. printer, refund, staff)" oninput="guideSearch(this.value)">'
+                + '<button type="button" id="guide-btn-small" onclick="guidePrint()">🖨️ Print</button></div></div>'
+                + '<div id="guide-toc"></div><div id="guide-body"></div></div>';
+            document.body.appendChild(m);
+            return m;
+        }
+        window.guideOpen = function (chapterId) {
+            var g = data();
+            if (!g) { if (typeof showToast === 'function') showToast('The guide is not available here.', true); return; }
+            var m = ensureModal();
+            document.getElementById('guide-title').textContent = '📖 ' + g.title;
+            document.getElementById('guide-tag').textContent = g.tagline || '';
+            document.getElementById('guide-search').value = '';
+            renderAll('', chapterId);
+            m.style.display = 'block';
+            if (chapterId) setTimeout(function () { var el = document.getElementById('guide-ch-' + chapterId); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' }); }, 50);
+        };
+        window.guideClose = function () { var m = document.getElementById('guide-modal'); if (m) m.style.display = 'none'; };
+        function renderAll(query, openId) {
+            var g = data(), words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+            var shown = g.chapters.filter(function (c) { var t = chapterText(c); return words.every(function (w) { return t.indexOf(w) !== -1; }); });
+            document.getElementById('guide-toc').innerHTML = g.chapters.map(function (c) {
+                return '<button type="button" onclick="guideJump(\'' + c.id + '\')">' + esc(c.icon || '') + ' ' + esc(c.title) + '</button>';
+            }).join('');
+            document.getElementById('guide-body').innerHTML = shown.length
+                ? (words.length ? '<p style="color:#7f8c8d;">' + shown.length + ' chapter' + (shown.length === 1 ? '' : 's') + ' match.</p>' : '') + shown.map(function (c) {
+                    return '<details id="guide-ch-' + c.id + '"' + ((words.length || c.id === openId) ? ' open' : '') + '><summary>' + esc(c.icon || '') + ' ' + esc(c.title) + '</summary><div class="g-inner">' + chapterBody(c) + '</div></details>';
+                }).join('')
+                : '<p style="color:#7f8c8d;">Nothing matches that. Try one word, like <em>printer</em>, <em>refund</em> or <em>staff</em>.</p>';
+        }
+        window.guideSearch = function (q) { renderAll(q); };
+        window.guideJump = function (id) {
+            var el = document.getElementById('guide-ch-' + id);
+            if (!el) { document.getElementById('guide-search').value = ''; renderAll('', id); el = document.getElementById('guide-ch-' + id); }
+            if (el) { el.open = true; if (el.scrollIntoView) el.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+        };
+        window.guidePrint = function () {
+            var g = data(); if (!g) return;
+            var html = '<h1>' + esc(g.title) + '</h1><p>' + esc(g.tagline || '') + '</p>' + g.chapters.map(function (c) { return '<h2>' + esc(c.icon || '') + ' ' + esc(c.title) + '</h2>' + chapterBody(c); }).join('');
+            var w = window.open('', '_blank');
+            if (!w) { if (typeof showToast === 'function') showToast('Allow pop-ups to print the guide.', true); return; }
+            w.document.write('<html><head><title>' + esc(g.title) + '</title><style>body{font-family:Arial,sans-serif; padding:18px; line-height:1.5; font-size:13px;} h1{font-size:22px;} h2{font-size:16px; border-bottom:2px solid #E67E22; padding-bottom:3px; margin-top:20px; page-break-after:avoid;} h5{margin:10px 0 2px; color:#E67E22;} td{padding:3px 6px; border-bottom:1px solid #ddd; vertical-align:top;} table{border-collapse:collapse; width:100%;} .g-tip{background:#FEF5E7; padding:5px 8px; margin:5px 0;}</style></head><body>' + html + '</body></html>');
+            w.document.close(); w.focus(); setTimeout(function () { w.print(); }, 300);
+        };
+        function install() {
+            try {
+                // 📖 in the header, next to the sync dot (everyone who is logged in can use it)
+                if (!document.getElementById('guide-header-btn')) {
+                    var anchor = document.getElementById('sync-status');
+                    if (anchor && anchor.parentNode) {
+                        var b = document.createElement('button');
+                        b.id = 'guide-header-btn'; b.type = 'button'; b.textContent = '📖'; b.title = 'User guide — how to use this app'; b.setAttribute('aria-label', 'User guide');
+                        b.style.cssText = 'margin:0 4px; padding:2px 8px; border-radius:14px; border:1px solid rgba(255,255,255,0.7); background:transparent; color:inherit; font-size:15px; cursor:pointer; line-height:1.2;';
+                        b.onclick = function () { window.guideOpen(); };
+                        anchor.parentNode.insertBefore(b, anchor.nextSibling);
+                    }
+                }
+                // the Settings ▸ Guide section and the Version card lead to the full guide too
+                var sec = document.getElementById('settings-section-guide');
+                if (sec && !document.getElementById('guide-open-settings-btn')) {
+                    var h = sec.querySelector('h4');
+                    var bt = document.createElement('button');
+                    bt.id = 'guide-open-settings-btn'; bt.type = 'button'; bt.className = 'btn-main settings-small-btn'; bt.style.cssText = 'margin:6px 0 12px; background:#E67E22;';
+                    bt.textContent = '📖 Open the full user guide for this app'; bt.onclick = function () { window.guideOpen(); };
+                    if (h) h.parentNode.insertBefore(bt, h.nextSibling); else sec.insertBefore(bt, sec.firstChild);
+                }
+                var stamp = document.getElementById('app-build-stamp');
+                if (stamp && !document.getElementById('guide-open-version-btn')) {
+                    var bv = document.createElement('button');
+                    bv.id = 'guide-open-version-btn'; bv.type = 'button'; bv.className = 'settings-small-btn'; bv.style.cssText = 'margin:0 0 10px;';
+                    bv.textContent = '📖 How to use this app'; bv.onclick = function () { window.guideOpen(); };
+                    stamp.parentNode.insertBefore(bv, stamp.nextSibling);
+                }
+            } catch (e) { /* the guide is an extra */ }
+        }
+        install();
+        document.addEventListener('DOMContentLoaded', install);
+    })();
+    </script>

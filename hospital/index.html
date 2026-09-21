@@ -2646,6 +2646,7 @@
         <button class="tab-link" data-tab="restock-tab" onclick="guardedSwitchTab(event, &#39;restock-tab&#39;)">📥 Restock</button>
         <button id="orders-tab-btn" class="tab-link" data-tab="orders-tab" onclick="guardedSwitchTab(event, &#39;orders-tab&#39;)">🛍️ Orders</button>
         <button id="stock-take-tab-btn" class="tab-link" data-tab="stock-take-tab" onclick="guardedSwitchTab(event, &#39;stock-take-tab&#39;)">📋 Stock Take</button>
+        <button id="reports-tab-btn" class="tab-link" data-tab="reports-tab" onclick="guardedSwitchTab(event, &#39;reports-tab&#39;)">📊 Reports</button>
         <button id="store-tab-btn" class="tab-link" data-tab="store-tab" onclick="guardedSwitchTab(event, &#39;store-tab&#39;)">🏬 Store</button>
         <button class="tab-link" data-tab="barcode-tab" onclick="guardedSwitchTab(event, &#39;barcode-tab&#39;)">🔖 Barcode</button>
         <button id="tables-rooms-tab-btn" class="tab-link" data-tab="tables-rooms-tab" onclick="guardedSwitchTab(event, &#39;tables-rooms-tab&#39;)">🏥🛏️ Wards &amp; Beds</button>
@@ -5192,6 +5193,60 @@
     </div>
 <!-- @shared-block:stock-take:end -->
 
+    <!-- @shared-block:reports-tab:begin -->
+<!-- REPORTS TAB ---------------------------------------------------------------
+         "📊 Reports": one place to generate the business's reports for any period — sales, business insights (busiest hours and days, best
+         workers, daily / weekly / monthly trend lines), staff performance, stock, bills & debts, expenses & profit — with Print and Excel (CSV).
+         Logic: src/shared/functions.js (report*, reports*). Drawn with plain SVG so it works offline. -->
+    <style>
+        #reports-tab .report-kind-btn { padding: 10px 14px; border-radius: 10px; border: 1px solid #ccd1d6; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); font-weight: 600; cursor: pointer; }
+        #reports-tab .report-kind-btn.active { background: #E67E22; color: #fff; border-color: #E67E22; }
+        #reports-tab h4 { margin: 16px 0 6px; }
+    </style>
+    <div id="reports-tab" class="tab-content">
+        <div class="panel">
+            <h3>📊 Reports</h3>
+            <p class="settings-hint" style="margin-top:-6px;">Pick a period, then a report. Print it, or download it for Excel.</p>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0;">
+                <label for="reports-range-select" style="margin:0; font-weight:600;">Period:</label>
+                <select id="reports-range-select" onchange="reportsRangeChanged()" style="max-width:220px;">
+                    <option value="today">Today</option><option value="yesterday">Yesterday</option><option value="week">This week</option><option value="last7">Last 7 days</option>
+                    <option value="month">This month</option><option value="last30" selected>Last 30 days</option><option value="last90">Last 90 days</option><option value="year">This year</option><option value="custom">Custom…</option>
+                </select>
+                <span id="reports-custom-range" style="display:none; gap:6px; align-items:center;"><input type="date" id="reports-from-input" onchange="reportsRangeChanged()"> to <input type="date" id="reports-to-input" onchange="reportsRangeChanged()"></span>
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin:10px 0;">
+                <button type="button" class="report-kind-btn" data-kind="sales" onclick="reportsGenerate('sales')">💰 Sales</button>
+                <button type="button" class="report-kind-btn" data-kind="insights" onclick="reportsGenerate('insights')">📈 Business insights</button>
+                <button type="button" class="report-kind-btn" data-kind="staff" onclick="reportsGenerate('staff')">👥 Staff performance</button>
+                <button type="button" class="report-kind-btn" data-kind="stock" onclick="reportsGenerate('stock')">📦 Stock</button>
+                <button type="button" class="report-kind-btn" data-kind="bills" onclick="reportsGenerate('bills')">🧾 Bills &amp; debts</button>
+                <button type="button" class="report-kind-btn" data-kind="expenses" onclick="reportsGenerate('expenses')">💸 Expenses &amp; profit</button>
+            </div>
+            <div id="reports-actions" style="display:none; gap:8px; margin:6px 0 10px;">
+                <button type="button" class="settings-small-btn" onclick="reportsPrint()">🖨️ Print / Save as PDF</button>
+                <button type="button" class="settings-small-btn" onclick="reportsCsv()">⬇️ Download for Excel (CSV)</button>
+            </div>
+            <div id="reports-output"><p class="settings-hint">Choose a report above.</p></div>
+        </div>
+        <div class="panel" id="reports-more-links">
+            <h4 style="margin:0 0 8px;">More detailed reports in this app</h4>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button type="button" class="settings-small-btn" data-goto="daily-sales-tab" onclick="reportsGoto('daily-sales-tab')">Daily sales</button>
+                <button type="button" class="settings-small-btn" data-goto="stock-report-tab" onclick="reportsGoto('stock-report-tab')">Stock movement report</button>
+                <button type="button" class="settings-small-btn" data-goto="profits-tab" onclick="reportsGoto('profits-tab')">Profits &amp; expenses</button>
+                <button type="button" class="settings-small-btn" data-goto="trends-tab" onclick="reportsGoto('trends-tab')">Trends</button>
+                <button type="button" class="settings-small-btn" data-goto="bills-tab" onclick="reportsGoto('bills-tab')">Bills</button>
+                <button type="button" class="settings-small-btn" data-goto="debts-tab" onclick="reportsGoto('debts-tab')">Debts</button>
+                <button type="button" class="settings-small-btn" data-goto="attendance-tab" onclick="reportsGoto('attendance-tab')">Attendance</button>
+                <button type="button" class="settings-small-btn" data-goto="customers-tab" onclick="reportsGoto('customers-tab')">Customers</button>
+                <button type="button" class="settings-small-btn" data-goto="returns-tab" onclick="reportsGoto('returns-tab')">Returns</button>
+                <button type="button" class="settings-small-btn" data-goto="kitchen-tab" onclick="reportsGoto('kitchen-tab')">Kitchen</button>
+            </div>
+        </div>
+    </div>
+<!-- @shared-block:reports-tab:end -->
+
     <!-- TAB: CONTRACTS (agents / resellers who carry stock out) -->
     <div id="contracts-tab" class="tab-content">
         <div class="pos-grid">
@@ -6156,6 +6211,8 @@
             <!-- INSTALL / ADD TO HOME SCREEN -->
             <div class="settings-section-content" id="settings-section-install">
                 <h4>🏷️ Version</h4>
+                <p style="font-size:28px; font-weight:800; margin:2px 0 0; color:#E67E22;">Version 1.0.0</p>
+                <p style="font-size:16px; color:#2c3e50; margin:0 0 10px; font-weight:600;">The best software in existence.</p>
                 <p style="font-size:13px; color:#555; margin:0 0 8px;">Use this to confirm a redeploy actually reached this device. If you've just deployed an update and this still shows the old build, tap "Re-download for Offline Use" further down, then reload.</p>
                 <p class="settings-msg" id="app-build-stamp" style="font-family:monospace;"></p>
 
@@ -6861,7 +6918,7 @@
 
     <!-- APP ENGINE SCRIPTS -->
     <script>
-    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addBulkRow,addComboRow,addContractRow,addCrossBranchExchangeItem,addDeliveryAgent,addDeliveryZone,addLoyaltyTier,addRecipeCaptureIngredient,addRecipeRow,addSameItemAsReplacement,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyScannedCodeToContract,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,autoGenerateBarcodeValue,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,broadcastCustomerDisplayChange,buildAlignedRow,buildDrawerKickAsciiString,buildDrawerKickBytes,buildInventoryItemName,buildPoleDisplayBytes,buildReceiptCanvas,buildSystemPrintCopies,cancelCartTotalQuote,captureReviewInventoryOptions,captureScanModalNow,cellLooksNumeric,changeCartPrice,checkAiCaptureStatus,checkBillReminders,checkEtimsStatus,checkExistingContractMatch,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,checkPrintRelayAvailable,claimLicensePayment,clearAuthUrlParams,clearInventorySearch,clearMpesaPayerFields,clearSystemPrintCopies,closeAddCustomerModal,closeAddPrintRoutingRule,closeAttendanceClockModal,closeBarcodeScanModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeContractReturnModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeDemoPurgeModal,closeKitchenTicket,closeKitchenTicketAfterPrint,closeReceipt,closeReceiptAfterPrint,closeRecipeCaptureReviewModal,closeRecordBillModal,closeRecordPastSaleModal,closeSalesReport,closeStoreImportFromInventoryModal,closeTabsOverflowMenu,closeUpgradeScreen,completeBarcodeScanModal,computeStaffStats,computeTokensEarned,connectPoleDisplay,contractRowLineTotal,contractRowProduct,contractRowUnitPrice,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,createBillNotification,csvEscape,currentActiveTabId,currentAdminSettingsRestriction,currentNotifViewerId,currentStockValueTotals,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,daysUntilExpiry,debtBalance,debtPaidSoFar,decimalToFraction,defaultDeviceName,deleteBarcode,deleteBranch,deleteInventoryItem,deletePrintRoutingRule,deleteWebAuthnCredential,detectOnceFromScanModal,dismissCustomerDisplayDetectBanner,dismissNotificationPromptBanner,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureSaleIds,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchAndAttachLookupImage,fetchBranchDetail,fetchBranchesSummary,fetchReceiptSettingsSharing,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findInventoryByName,findSaleForVoid,flagWithinImportIngredientDuplicates,focusContractField,formatFileSize,formatHours,formatPickedPhone,formatQty,formatQtyDisplay,formatRemaining,formatShiftTime,formatShortDate,fuzzyMatchInventory,generateItemCode,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getEffectivePrice,getExchangeNetPayable,getExchangeReplacementTotal,getExpiringItems,getFaultyReturns,getLocState,getLowStockRecipeServices,getOrCreateDeviceId,getServiceAvailableQty,getServiceUnitCost,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleImageUpload,handleSplitAmountChange,heartbeatDeviceNetwork,ingredientOptionsHtml,initBulkAddForm,initCamera,initCameraScanOnLoad,initCustomerDisplayMode,initDeviceNetworkUI,initLoyaltySettingsUI,initPasswordToggles,initPhonebookPickers,invCellKey,isAdminServing,isBillNotifRelevant,isExpired,isExpiringSoon,isIngredientProduct,isKeyboardTypeable,isOfferActive,isPhoneField,isRecipeComponent,isRunningStandalone,isSellableProduct,isServiceProduct,isStaffLockedToday,itemTotalSold,jpegBytesToPdfBlob,jumpToSaleByRef,kbBackspace,kbEnter,kbInsertText,kbKeyTap,kbResolveTarget,kbSwitchMode,kbToggleShift,kitchenTicketPrintJob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadContractForMoreItems,loadNotifiedToday,loadPrintRoutingRules,loadRecoveryStatus,loadSheetJsOnce,loadStoreItems,loadUpgradePromptContent,logStockMovementDated,looksLikeRowNumberColumn,lookupBarcode,markAllBillNotificationsRead,markBillNotificationRead,markDeliveryNotificationsRead,markTillPaymentMatched,maybeAutoDetectCustomerDisplay,maybeFetchAutoImage,maybeOfferNotificationPrompt,maybeSendBillCreatedSms,maybeSendThankYouSms,maybeShowExpiryNudge,migrateIngredientsToItems,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,onBillUpfrontAmountChange,onBulkCategoryChanged,onBulkRowCodeInput,onBulkRowFieldInput,onBulkRowNameInput,onRecordBillUpfrontChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAttendanceClockModal,openBoxToPieces,openCartTotalQuoteEditor,openCashDrawer,openContractReturnModal,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openLicenseWhatsapp,openOfferModal,openPoleDisplayPort,openRecordBillModal,openRecordPastSaleModal,openSettingsSection,openWebAuthnDb,padPoleLine,parseHexBytes,parseQtyInput,performBulkDeclareOpeningStock,performCartTotalQuote,performEditOpeningStock,performResetExceptInventory,persistPrintRoutingRules,pickPhoneForField,populateServerFilter,previewBarcode,printAttendanceSheet,printBarcodeSheet,printDebtsStatement,printHTMLDirect,printItemSalesRecordFromModal,printKitchenTicket,printKitchenTicketManualJob,printOneBarcode,printReceiptInNewWindow,printRelayHasRealPrinter,printReportInNewWindow,printRoutingDestinationLabel,printSystemDrawerKickTest,printViaSystemDialog,productType,profitPeriodLabel,promptAppInstall,pruneOrphanedLocStates,pullState,pushNewStockAlerts,pushNow,pushSharedReceiptSettingsIfNeeded,qtyInputHint,queuePrintJob,receiptImageWidthPx,recipeIngredientMatchOptions,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeBulkRow,removeComboRow,removeContractRow,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,removeOffer,removeRecipeCaptureDish,removeRecipeCaptureIngredient,removeRecipeRow,removeRoom,removeTable,renderAdminActivityLog,renderAndPrintBarcodes,renderAttendanceHistory,renderAttendanceRosterTable,renderBarcodeLinkOptions,renderBarcodesTab,renderBillNotifyStaffList,renderBillsTabScoped,renderBizImportReviewTables,renderCameraScanTorchButton,renderComboRows,renderContractTotals,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderInvEditableCell,renderInventoryPager,renderInventoryTableScoped,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderProfitsTabScoped,renderRecipeRows,renderRestockTotals,renderStockValuationSummary,renderTillPayments,reportFilenameBase,reprintExchangeReceipt,requestBulkDeclareOpeningStock,requestEditOpeningStock,requestResetExceptInventory,requestSetOpeningStock,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetMpesaState,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,restockRowLineTotal,restoreStockForSaleUnit,retakePhoto,round2,runBackgroundCameraScanTick,runQueuedSystemPrint,runScanModalTick,safeJSONParse,safeSetItem,saleHasServices,salesTablePeriodLabel,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveAttendanceLocal,saveContract,saveDebtsLocal,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveNotifiedToday,savePrintRoutingRule,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,searchOtherBranchesForExchange,selectLoginAdmin,selectLoginStaff,selectPastSaleItem,selectServerToLogin,selectUnavailableItem,sendBillReminderSms,sendToPoleDisplay,setAddItemMode,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBarcodeScanModalStatus,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setComboRowMode,setContractType,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setDeviceName,setDeviceStation,setEtimsLogPeriod,setExchangeTopupMethod,setFieldAndFireInput,setImageSource,setLocStatus,setOfferType,setOrderType,setPoleDisplayMode,setProfitPeriod,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSalesTablePeriod,setShowItemImageGrid,setSmsProvider,setStockReportPeriod,setTabReadOnly,setupPoleDisplayConnectListener,showAuthStep,showCustomerDisplayDetectBanner,showLoginPickerStep,showNotificationPromptBanner,showRecoverySignInStep,showUpgradeScreen,slugifyServiceName,snapCaptureListPhoto,snapPhoto,snapshotExtraSyncedFields,snapshotInventorySync,soldQtyAfter,soldQtyWithinRange,staffShiftsFor,stampDirtyExtraSyncedFields,stampDirtyInventory,startAdminShiftIfNeeded,startBackgroundCameraScan,startDeviceNetworkHeartbeat,startInvCellEdit,startLicensePolling,startNewContract,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,stopBackgroundCameraScan,stopCamera,stopInvCellEdit,submitBarcodeScanManual,submitDemoPurgeConfirm,submitPrintRelayJob,supplierOptionsHtml,switchTab,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAutoOpenDrawer,toggleBillNotifyStaff,toggleCameraScanTorch,toggleChangePinPanel,toggleComboBuilder,toggleFloatingKeyboard,toggleInteractivePricing,toggleInventorySearchClear,toggleKitchenTicket,toggleNewStaffRole,toggleOfferCustomDate,togglePrintRoutingRule,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScanModalTorch,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleStoreManualForm,toggleUnavailableExchangeForm,triggerAutoPrintReceipt,triggerAutoPrintReport,triggerInventoryRowImageUpload,tryAutoReconnectPoleDisplay,unitLabel,unlinkRecoveryEmail,unreadBillNotifications,updateAttendanceRosterExpectedTime,updateBarcodeCopies,updateBillReminderDays,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateCameraScanStatusText,updateComboRowCode,updateComboRowCustomName,updateComboRowQty,updateContractRowField,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateLicenseLockHintText,updateLocReservationField,updateLowStockDescText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updatePrintRelaySectionVisibility,updateRecipeCaptureDish,updateRecipeCaptureIngredient,updateRecipeCaptureIngredientMatch,updateRecipeRowIngredient,updateRecipeRowQty,updateRecipeSummary,updateRestockRowField,updateServerBtnLabel,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,getPaperCols,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,usbPrinterNameKey,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,poState,poNewRow,poRound3,poFormatDateTime,poStatusMeta,poLineOutstanding,poOrderStats,poIsOpen,poCanEdit,poFindProduct,poSave,poNextOrderNo,poActor,poRefreshFormLists,poOpenForm,poCloseForm,poAddRow,poRemoveRow,poRowLineTotal,poRenderTotals,poRenderRows,poUpdateRowField,poFillRowFromProduct,poEnsureSupplier,poSaveOrder,poSetFilter,poVisibleOrders,poToggleDetails,poActionsHtml,poDetailsHtml,renderOrdersList,renderOrdersTab,renderOrdersIfOpen,poMarkInTransit,poCancelOrder,poRemoveOrder,poCloseShort,poOpenArriveModal,poCloseArriveModal,poRenderArriveModal,poArriveToggleLine,poArriveQtyChange,poArriveRefresh,poApplyArrivedLine,poConfirmArrival,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,applyPriceSelectTier,attendanceRosterList,buildBillOwedMessage,cellLooksLikeCurrency,collapseTabsIfNeeded,commitRecipeCaptureReview,confirmBillSettle,detectCsvColumnsAI,editBillDueDate,etimsLogPeriodRange,genSaleId,importInventoryCsv,levenshteinDistance,openBarcodeScanModal,performRestoreBackup,printReceipt,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,salesTablePeriodRange,saveRecordBillModal,sendPendingExchangeSms,stopCaptureListCamera,toggleRecipeBuilder,toggleTabsOverflowMenu,updateCaptureReviewField,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice,markSync,probeServer,pullStateOnce,hwKey,hwStatus,hwIsReady,hwSingleFlight,hwUsbReconnect,hwBtFindCharacteristic,hwBtAttach,hwBtWatch,hwBtReconnect,hwEnsureReady,hwLinkLost,hwWrapPrinting,hwKeeperStart,hwKick,hwSchedule,hwTick,claimUsbPrinterEndpointOnce,hwWithTimeout,heldSaleKey,heldSaleGet,heldSalePanel,heldSaleFields,holdCurrentSale,resumeHeldSale,renderHeldSaleBar,heldSaleInstall,pastSalePaymentChanged,pastSalePaymentDetails,pastSaleStore,lowStockItems,lowStockInDraft,renderLowStockStrip,lowStockAdd,lowStockAddAll,lowStockInstall,poSupplierRecord,poOrderTotal,poOrderText,poSendOrder,stockTakeState,stockTakeItems,stockTakeDiff,stockTakeValueOf,stockTakeSet,stockTakeFillDiffCell,stockTakeRenderSummary,renderStockTake,stockTakeMatches,stockTakeClear,stockTakeApply,stockTakeHistoryGet,renderStockTakeHistory,stockTakeInstall,setKitchenPrintPage,pruneClosedBills,authWatchInstall,dayKeyOf,assignCustomerNo,itemSuggestMatches,itemSuggestBox,itemSuggestShow,itemSuggestHide,itemSuggestPick,itemSuggestInstall,markReceiptPrinted */
+    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addBulkRow,addComboRow,addContractRow,addCrossBranchExchangeItem,addDeliveryAgent,addDeliveryZone,addLoyaltyTier,addRecipeCaptureIngredient,addRecipeRow,addSameItemAsReplacement,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyScannedCodeToContract,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,autoGenerateBarcodeValue,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,broadcastCustomerDisplayChange,buildAlignedRow,buildDrawerKickAsciiString,buildDrawerKickBytes,buildInventoryItemName,buildPoleDisplayBytes,buildReceiptCanvas,buildSystemPrintCopies,cancelCartTotalQuote,captureReviewInventoryOptions,captureScanModalNow,cellLooksNumeric,changeCartPrice,checkAiCaptureStatus,checkBillReminders,checkEtimsStatus,checkExistingContractMatch,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,checkPrintRelayAvailable,claimLicensePayment,clearAuthUrlParams,clearInventorySearch,clearMpesaPayerFields,clearSystemPrintCopies,closeAddCustomerModal,closeAddPrintRoutingRule,closeAttendanceClockModal,closeBarcodeScanModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeContractReturnModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeDemoPurgeModal,closeKitchenTicket,closeKitchenTicketAfterPrint,closeReceipt,closeReceiptAfterPrint,closeRecipeCaptureReviewModal,closeRecordBillModal,closeRecordPastSaleModal,closeSalesReport,closeStoreImportFromInventoryModal,closeTabsOverflowMenu,closeUpgradeScreen,completeBarcodeScanModal,computeStaffStats,computeTokensEarned,connectPoleDisplay,contractRowLineTotal,contractRowProduct,contractRowUnitPrice,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,createBillNotification,csvEscape,currentActiveTabId,currentAdminSettingsRestriction,currentNotifViewerId,currentStockValueTotals,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,daysUntilExpiry,debtBalance,debtPaidSoFar,decimalToFraction,defaultDeviceName,deleteBarcode,deleteBranch,deleteInventoryItem,deletePrintRoutingRule,deleteWebAuthnCredential,detectOnceFromScanModal,dismissCustomerDisplayDetectBanner,dismissNotificationPromptBanner,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureSaleIds,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchAndAttachLookupImage,fetchBranchDetail,fetchBranchesSummary,fetchReceiptSettingsSharing,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findInventoryByName,findSaleForVoid,flagWithinImportIngredientDuplicates,focusContractField,formatFileSize,formatHours,formatPickedPhone,formatQty,formatQtyDisplay,formatRemaining,formatShiftTime,formatShortDate,fuzzyMatchInventory,generateItemCode,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getEffectivePrice,getExchangeNetPayable,getExchangeReplacementTotal,getExpiringItems,getFaultyReturns,getLocState,getLowStockRecipeServices,getOrCreateDeviceId,getServiceAvailableQty,getServiceUnitCost,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleImageUpload,handleSplitAmountChange,heartbeatDeviceNetwork,ingredientOptionsHtml,initBulkAddForm,initCamera,initCameraScanOnLoad,initCustomerDisplayMode,initDeviceNetworkUI,initLoyaltySettingsUI,initPasswordToggles,initPhonebookPickers,invCellKey,isAdminServing,isBillNotifRelevant,isExpired,isExpiringSoon,isIngredientProduct,isKeyboardTypeable,isOfferActive,isPhoneField,isRecipeComponent,isRunningStandalone,isSellableProduct,isServiceProduct,isStaffLockedToday,itemTotalSold,jpegBytesToPdfBlob,jumpToSaleByRef,kbBackspace,kbEnter,kbInsertText,kbKeyTap,kbResolveTarget,kbSwitchMode,kbToggleShift,kitchenTicketPrintJob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadContractForMoreItems,loadNotifiedToday,loadPrintRoutingRules,loadRecoveryStatus,loadSheetJsOnce,loadStoreItems,loadUpgradePromptContent,logStockMovementDated,looksLikeRowNumberColumn,lookupBarcode,markAllBillNotificationsRead,markBillNotificationRead,markDeliveryNotificationsRead,markTillPaymentMatched,maybeAutoDetectCustomerDisplay,maybeFetchAutoImage,maybeOfferNotificationPrompt,maybeSendBillCreatedSms,maybeSendThankYouSms,maybeShowExpiryNudge,migrateIngredientsToItems,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,onBillUpfrontAmountChange,onBulkCategoryChanged,onBulkRowCodeInput,onBulkRowFieldInput,onBulkRowNameInput,onRecordBillUpfrontChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAttendanceClockModal,openBoxToPieces,openCartTotalQuoteEditor,openCashDrawer,openContractReturnModal,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openLicenseWhatsapp,openOfferModal,openPoleDisplayPort,openRecordBillModal,openRecordPastSaleModal,openSettingsSection,openWebAuthnDb,padPoleLine,parseHexBytes,parseQtyInput,performBulkDeclareOpeningStock,performCartTotalQuote,performEditOpeningStock,performResetExceptInventory,persistPrintRoutingRules,pickPhoneForField,populateServerFilter,previewBarcode,printAttendanceSheet,printBarcodeSheet,printDebtsStatement,printHTMLDirect,printItemSalesRecordFromModal,printKitchenTicket,printKitchenTicketManualJob,printOneBarcode,printReceiptInNewWindow,printRelayHasRealPrinter,printReportInNewWindow,printRoutingDestinationLabel,printSystemDrawerKickTest,printViaSystemDialog,productType,profitPeriodLabel,promptAppInstall,pruneOrphanedLocStates,pullState,pushNewStockAlerts,pushNow,pushSharedReceiptSettingsIfNeeded,qtyInputHint,queuePrintJob,receiptImageWidthPx,recipeIngredientMatchOptions,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeBulkRow,removeComboRow,removeContractRow,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,removeOffer,removeRecipeCaptureDish,removeRecipeCaptureIngredient,removeRecipeRow,removeRoom,removeTable,renderAdminActivityLog,renderAndPrintBarcodes,renderAttendanceHistory,renderAttendanceRosterTable,renderBarcodeLinkOptions,renderBarcodesTab,renderBillNotifyStaffList,renderBillsTabScoped,renderBizImportReviewTables,renderCameraScanTorchButton,renderComboRows,renderContractTotals,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderInvEditableCell,renderInventoryPager,renderInventoryTableScoped,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderProfitsTabScoped,renderRecipeRows,renderRestockTotals,renderStockValuationSummary,renderTillPayments,reportFilenameBase,reprintExchangeReceipt,requestBulkDeclareOpeningStock,requestEditOpeningStock,requestResetExceptInventory,requestSetOpeningStock,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetMpesaState,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,restockRowLineTotal,restoreStockForSaleUnit,retakePhoto,round2,runBackgroundCameraScanTick,runQueuedSystemPrint,runScanModalTick,safeJSONParse,safeSetItem,saleHasServices,salesTablePeriodLabel,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveAttendanceLocal,saveContract,saveDebtsLocal,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveNotifiedToday,savePrintRoutingRule,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,searchOtherBranchesForExchange,selectLoginAdmin,selectLoginStaff,selectPastSaleItem,selectServerToLogin,selectUnavailableItem,sendBillReminderSms,sendToPoleDisplay,setAddItemMode,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBarcodeScanModalStatus,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setComboRowMode,setContractType,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setDeviceName,setDeviceStation,setEtimsLogPeriod,setExchangeTopupMethod,setFieldAndFireInput,setImageSource,setLocStatus,setOfferType,setOrderType,setPoleDisplayMode,setProfitPeriod,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSalesTablePeriod,setShowItemImageGrid,setSmsProvider,setStockReportPeriod,setTabReadOnly,setupPoleDisplayConnectListener,showAuthStep,showCustomerDisplayDetectBanner,showLoginPickerStep,showNotificationPromptBanner,showRecoverySignInStep,showUpgradeScreen,slugifyServiceName,snapCaptureListPhoto,snapPhoto,snapshotExtraSyncedFields,snapshotInventorySync,soldQtyAfter,soldQtyWithinRange,staffShiftsFor,stampDirtyExtraSyncedFields,stampDirtyInventory,startAdminShiftIfNeeded,startBackgroundCameraScan,startDeviceNetworkHeartbeat,startInvCellEdit,startLicensePolling,startNewContract,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,stopBackgroundCameraScan,stopCamera,stopInvCellEdit,submitBarcodeScanManual,submitDemoPurgeConfirm,submitPrintRelayJob,supplierOptionsHtml,switchTab,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAutoOpenDrawer,toggleBillNotifyStaff,toggleCameraScanTorch,toggleChangePinPanel,toggleComboBuilder,toggleFloatingKeyboard,toggleInteractivePricing,toggleInventorySearchClear,toggleKitchenTicket,toggleNewStaffRole,toggleOfferCustomDate,togglePrintRoutingRule,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScanModalTorch,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleStoreManualForm,toggleUnavailableExchangeForm,triggerAutoPrintReceipt,triggerAutoPrintReport,triggerInventoryRowImageUpload,tryAutoReconnectPoleDisplay,unitLabel,unlinkRecoveryEmail,unreadBillNotifications,updateAttendanceRosterExpectedTime,updateBarcodeCopies,updateBillReminderDays,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateCameraScanStatusText,updateComboRowCode,updateComboRowCustomName,updateComboRowQty,updateContractRowField,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateLicenseLockHintText,updateLocReservationField,updateLowStockDescText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updatePrintRelaySectionVisibility,updateRecipeCaptureDish,updateRecipeCaptureIngredient,updateRecipeCaptureIngredientMatch,updateRecipeRowIngredient,updateRecipeRowQty,updateRecipeSummary,updateRestockRowField,updateServerBtnLabel,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,getPaperCols,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,usbPrinterNameKey,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,poState,poNewRow,poRound3,poFormatDateTime,poStatusMeta,poLineOutstanding,poOrderStats,poIsOpen,poCanEdit,poFindProduct,poSave,poNextOrderNo,poActor,poRefreshFormLists,poOpenForm,poCloseForm,poAddRow,poRemoveRow,poRowLineTotal,poRenderTotals,poRenderRows,poUpdateRowField,poFillRowFromProduct,poEnsureSupplier,poSaveOrder,poSetFilter,poVisibleOrders,poToggleDetails,poActionsHtml,poDetailsHtml,renderOrdersList,renderOrdersTab,renderOrdersIfOpen,poMarkInTransit,poCancelOrder,poRemoveOrder,poCloseShort,poOpenArriveModal,poCloseArriveModal,poRenderArriveModal,poArriveToggleLine,poArriveQtyChange,poArriveRefresh,poApplyArrivedLine,poConfirmArrival,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,applyPriceSelectTier,attendanceRosterList,buildBillOwedMessage,cellLooksLikeCurrency,collapseTabsIfNeeded,commitRecipeCaptureReview,confirmBillSettle,detectCsvColumnsAI,editBillDueDate,etimsLogPeriodRange,genSaleId,importInventoryCsv,levenshteinDistance,openBarcodeScanModal,performRestoreBackup,printReceipt,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,salesTablePeriodRange,saveRecordBillModal,sendPendingExchangeSms,stopCaptureListCamera,toggleRecipeBuilder,toggleTabsOverflowMenu,updateCaptureReviewField,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice,markSync,probeServer,pullStateOnce,hwKey,hwStatus,hwIsReady,hwSingleFlight,hwUsbReconnect,hwBtFindCharacteristic,hwBtAttach,hwBtWatch,hwBtReconnect,hwEnsureReady,hwLinkLost,hwWrapPrinting,hwKeeperStart,hwKick,hwSchedule,hwTick,claimUsbPrinterEndpointOnce,hwWithTimeout,heldSaleKey,heldSaleGet,heldSalePanel,heldSaleFields,holdCurrentSale,resumeHeldSale,renderHeldSaleBar,heldSaleInstall,pastSalePaymentChanged,pastSalePaymentDetails,pastSaleStore,lowStockItems,lowStockInDraft,renderLowStockStrip,lowStockAdd,lowStockAddAll,lowStockInstall,poSupplierRecord,poOrderTotal,poOrderText,poSendOrder,stockTakeState,stockTakeItems,stockTakeDiff,stockTakeValueOf,stockTakeSet,stockTakeFillDiffCell,stockTakeRenderSummary,renderStockTake,stockTakeMatches,stockTakeClear,stockTakeApply,stockTakeHistoryGet,renderStockTakeHistory,stockTakeInstall,setKitchenPrintPage,pruneClosedBills,authWatchInstall,dayKeyOf,assignCustomerNo,itemSuggestMatches,itemSuggestBox,itemSuggestShow,itemSuggestHide,itemSuggestPick,itemSuggestInstall,markReceiptPrinted,soldTotalsMap,showBusyBanner,hideBusyBanner,nextPaint,reportMoney,reportShort,reportsRange,reportSales,reportSaleTotal,reportSaleCost,reportBarSvg,reportLineSvg,reportTable,reportCards,reportBuildSales,reportBuildInsights,reportBuildStaff,reportBuildStock,reportBuildBillsDebts,reportBuildExpenses,reportsGenerate,reportsRangeChanged,reportsCsv,reportsPrint,reportsInstall,reportsGoto,perfInstall,dedupeStaff */
         /* GENERATED from src/shared/functions.js by tools/sync-shared.mjs - do not edit here; edit the library and run `npm run sync`. */
         function _codeMatches(code, q){
         if(!q) return false;
@@ -8971,12 +9028,7 @@
         }
 
         function itemTotalSold(code) {
-            let sum = 0;
-            salesLog.forEach(s => {
-                if (s.voided) return;
-                (s.items || []).forEach(it => { if (it.code === code) sum += (it.qty || 0); });
-            });
-            return sum;
+            return soldTotalsMap()[code] || 0;
         }
 
         function jpegBytesToPdfBlob(jpegBytes, pxWidth, pxHeight, opts) {
@@ -14141,7 +14193,8 @@
                 }
             }
             downloadBlob(blob, fileName);
-            showToast('Receipt PDF saved — attach it in WhatsApp, email or any other app.');
+            // This browser cannot hand a file to WhatsApp / other apps directly (most computers and some phone browsers can't), so the PDF is saved instead.
+            showToast('Receipt PDF saved to your Downloads — this browser can’t share files directly, so attach it in WhatsApp, email or any app. (On a phone, Share opens your apps.)');
         }
 
         function buildCode39RasterBytes(value, maxDots) {
@@ -15263,6 +15316,8 @@
         }
 
         async function detectCsvColumnsAI(rows) {
+            const aiAbort = new AbortController();
+            const aiTimer = setTimeout(() => aiAbort.abort(), 8000);        // a slow AI call must not hold the import up: the offline column detection takes over
             try {
                 const headerRow = rows[0] || [];
                 const sampleRows = rows.slice(1, 9);
@@ -15272,6 +15327,7 @@
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ inventoryColumns: { headerRow, sampleRows } }),
+                    signal: aiAbort.signal,
                 });
                 const data = await res.json();
                 if (!res.ok || !data || typeof data.mapping !== 'object') return null;
@@ -15292,6 +15348,8 @@
                 };
             } catch (err) {
                 return null; // network hiccup / AI Capture List not enabled — offline tiers take over
+            } finally {
+                clearTimeout(aiTimer);
             }
         }
 
@@ -15357,23 +15415,29 @@
 
         function importInventoryCsv(file) {
             if (!file) return;
+            showBusyBanner(`⏳ Reading "${file.name}"… please wait — a big file or a slow connection can take up to a minute.`);
             const ext = fileExt(file.name);
 
             if (ext === 'xlsx' || ext === 'xls') {
                 const reader = new FileReader();
                 reader.onload = async (e) => {
                     try {
+                        showBusyBanner('⏳ Loading the Excel reader… (needs internet the first time — please wait)');
+                        await nextPaint();
                         await loadSheetJs();
+                        showBusyBanner('⏳ Reading the rows…');
+                        await nextPaint();
                         const workbook = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
                         const sheet = workbook.Sheets[workbook.SheetNames[0]];
                         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' })
                             .map(r => r.map(c => (c === null || c === undefined) ? '' : String(c)));
                         beginInventoryFileImport(rows, file.name);
                     } catch (err) {
+                        hideBusyBanner();
                         showToast(err.message || 'Could not read that Excel file.', true);
                     }
                 };
-                reader.onerror = () => showToast('Could not read that file.', true);
+                reader.onerror = () => { hideBusyBanner(); showToast('Could not read that file.', true); };
                 reader.readAsArrayBuffer(file);
                 return;
             }
@@ -15384,12 +15448,13 @@
                 try {
                     rows = parseCsvText(String(e.target.result));
                 } catch (err) {
+                    hideBusyBanner();
                     showToast('Could not read that file — is it a valid CSV/Excel export?', true);
                     return;
                 }
                 beginInventoryFileImport(rows, file.name);
             };
-            reader.onerror = () => showToast('Could not read that file.', true);
+            reader.onerror = () => { hideBusyBanner(); showToast('Could not read that file.', true); };
             reader.readAsText(file);
         }
 
@@ -17170,7 +17235,10 @@
             if (!stored) return null;                                                        // only a saved sale takes a number (a preview does not use one up)
             if (stored.customerNo) { sale.customerNo = stored.customerNo; return sale.customerNo; }
             let max = 0;
-            const scan = (arr) => { if (Array.isArray(arr)) arr.forEach((s) => { if (s && s.customerNo && dayKeyOf(s.timestamp) === today) max = Math.max(max, Number(s.customerNo) || 0); }); };
+            // Only sales from the last day and a half can be from today, and ISO times compare as text — so most of a big log is skipped with one
+            // cheap comparison instead of a Date for every sale.
+            const cutoff = new Date(Date.now() - 36 * 3600000).toISOString();
+            const scan = (arr) => { if (Array.isArray(arr)) for (let i = arr.length - 1; i >= 0; i--) { const s = arr[i]; if (s && s.customerNo && String(s.timestamp) >= cutoff && dayKeyOf(s.timestamp) === today) max = Math.max(max, Number(s.customerNo) || 0); } };
             scan(salesLog); if (typeof bills !== 'undefined') scan(bills);
             stored.customerNo = max + 1;
             sale.customerNo = stored.customerNo;
@@ -17309,6 +17377,419 @@
             if (typeof salesLog !== 'undefined' && salesLog.includes(stored)) safeSetItem('pos_sales_log', JSON.stringify(salesLog));
             else if (typeof bills !== 'undefined') safeSetItem('pos_bills', JSON.stringify(bills));
             queuePush();
+        }
+
+        function soldTotalsMap() {
+            // Units sold per item code, counted in ONE pass over the sales log and remembered. This used to be a full pass over every sale for every
+            // item, every time the Sales Counter's items grid was drawn (each keystroke in the search box, each sale, each sync): with 1,500 items and
+            // 6,000 sales that is millions of comparisons per redraw — the main reason a busy shop's till "hung". Remembered until the sales change
+            // (or 20 s pass, which also picks up a void).
+            const c = window.__soldCache;
+            if (c && c.ref === salesLog && c.len === salesLog.length && Date.now() - c.at < 20000) return c.map;
+            const map = Object.create(null);
+            for (let i = 0; i < salesLog.length; i++) {
+                const sale = salesLog[i];
+                if (!sale || sale.voided || !sale.items) continue;
+                for (let j = 0; j < sale.items.length; j++) {
+                    const it = sale.items[j];
+                    if (it && it.code != null) map[it.code] = (map[it.code] || 0) + (it.qty || 0);
+                }
+            }
+            window.__soldCache = { ref: salesLog, len: salesLog.length, at: Date.now(), map };
+            return map;
+        }
+
+        function showBusyBanner(message) {
+            // A visible "please wait" for anything slow (reading a big Excel file, loading the spreadsheet reader...): nothing on screen used to say
+            // the app was working, so people tapped again or thought it had frozen.
+            let el = document.getElementById('busy-banner');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'busy-banner';
+                el.setAttribute('role', 'status');
+                el.style.cssText = 'position:fixed; top:0; left:0; right:0; z-index:200000; background:#2c3e50; color:#fff; padding:12px 16px; font-size:15px; font-weight:600; text-align:center; box-shadow:0 2px 12px rgba(0,0,0,.35); display:none;';
+                document.body.appendChild(el);
+            }
+            el.textContent = message;
+            el.style.display = 'block';
+        }
+
+        function hideBusyBanner() {
+            const el = document.getElementById('busy-banner');
+            if (el) el.style.display = 'none';
+        }
+
+        function nextPaint() {
+            // Lets the browser draw what was just shown (e.g. the busy banner) before heavy work blocks the page.
+            return new Promise((resolve) => { const raf = window.requestAnimationFrame || ((f) => setTimeout(f, 16)); raf(() => setTimeout(resolve, 0)); });
+        }
+
+        function reportMoney(n) {
+            return 'KES ' + Math.round(Number(n) || 0).toLocaleString('en-US');
+        }
+
+        function reportShort(n) {
+            n = Number(n) || 0;
+            if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+            return String(Math.round(n));
+        }
+
+        function reportsRange() {
+            const preset = (document.getElementById('reports-range-select') || {}).value || 'last30';
+            const now = new Date();
+            const sod = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+            const eod = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+            const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+            let from = sod(now), to = eod(now), label = 'Today';
+            if (preset === 'yesterday') { from = sod(addDays(now, -1)); to = eod(addDays(now, -1)); label = 'Yesterday'; }
+            else if (preset === 'week') { const dow = (now.getDay() + 6) % 7; from = sod(addDays(now, -dow)); label = 'This week'; }
+            else if (preset === 'last7') { from = sod(addDays(now, -6)); label = 'Last 7 days'; }
+            else if (preset === 'month') { from = new Date(now.getFullYear(), now.getMonth(), 1); label = 'This month'; }
+            else if (preset === 'last30') { from = sod(addDays(now, -29)); label = 'Last 30 days'; }
+            else if (preset === 'last90') { from = sod(addDays(now, -89)); label = 'Last 90 days'; }
+            else if (preset === 'year') { from = new Date(now.getFullYear(), 0, 1); label = 'This year'; }
+            else if (preset === 'custom') {
+                const f = (document.getElementById('reports-from-input') || {}).value, t = (document.getElementById('reports-to-input') || {}).value;
+                if (f) from = sod(new Date(f + 'T00:00:00'));
+                if (t) to = eod(new Date(t + 'T00:00:00'));
+                label = 'Custom';
+            }
+            if (from > to) { const x = from; from = sod(to); to = eod(x); }
+            const fmt = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+            return { from, to, label, text: from.toDateString() === to.toDateString() ? fmt(from) : `${fmt(from)} – ${fmt(to)}` };
+        }
+
+        function reportSales(range) {
+            return salesLog.filter((s) => { if (!s || s.voided) return false; const t = new Date(s.timestamp); return t >= range.from && t <= range.to; });
+        }
+
+        function reportSaleTotal(s) {
+            return (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => sum + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
+        }
+
+        function reportSaleCost(s) {
+            return (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => {
+                if (it.unit === 'payment' || it.isPayment) return sum;
+                let cost = Number(it.wholesalePrice);
+                if (!(cost > 0) && it.code != null) { const p = inventory.find((x) => x.code === it.code); cost = p ? Number(p.wholesalePrice) || 0 : 0; }
+                return sum + (cost || 0) * (Number(it.qty) || 0);
+            }, 0);
+        }
+
+        function reportBarSvg(labels, values, color) {
+            const W = 640, H = 220, pl = 44, pr = 8, pt = 10, pb = 26;
+            const max = Math.max(1, ...values);
+            const bw = (W - pl - pr) / Math.max(1, values.length);
+            let g = '';
+            for (let i = 0; i <= 4; i++) {
+                const y = pt + (H - pt - pb) * (1 - i / 4);
+                g += `<line x1="${pl}" x2="${W - pr}" y1="${y}" y2="${y}" stroke="#e5e8eb"/><text x="${pl - 5}" y="${y + 3}" font-size="9" text-anchor="end" fill="#7f8c8d">${reportShort(max * i / 4)}</text>`;
+            }
+            const step = Math.max(1, Math.ceil(labels.length / 12));
+            values.forEach((v, i) => {
+                const h = (v / max) * (H - pt - pb);
+                g += `<rect x="${(pl + i * bw + bw * 0.15).toFixed(1)}" y="${(H - pb - h).toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" height="${h.toFixed(1)}" fill="${color || '#E67E22'}" rx="2"><title>${escapeHtml(labels[i])}: ${escapeHtml(reportMoney(v))}</title></rect>`;
+                if (i % step === 0) g += `<text x="${(pl + i * bw + bw / 2).toFixed(1)}" y="${H - 9}" font-size="9" text-anchor="middle" fill="#7f8c8d">${escapeHtml(labels[i])}</text>`;
+            });
+            return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; max-width:640px; height:auto;" role="img">${g}</svg>`;
+        }
+
+        function reportLineSvg(labels, values, color) {
+            const W = 640, H = 220, pl = 44, pr = 12, pt = 10, pb = 26;
+            const max = Math.max(1, ...values);
+            const n = values.length;
+            const x = (i) => pl + (n <= 1 ? (W - pl - pr) / 2 : (i / (n - 1)) * (W - pl - pr));
+            const y = (v) => pt + (H - pt - pb) * (1 - v / max);
+            let g = '';
+            for (let i = 0; i <= 4; i++) {
+                const yy = pt + (H - pt - pb) * (1 - i / 4);
+                g += `<line x1="${pl}" x2="${W - pr}" y1="${yy}" y2="${yy}" stroke="#e5e8eb"/><text x="${pl - 5}" y="${yy + 3}" font-size="9" text-anchor="end" fill="#7f8c8d">${reportShort(max * i / 4)}</text>`;
+            }
+            const pts = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+            g += `<polyline points="${pts}" fill="none" stroke="${color || '#2980b9'}" stroke-width="2.5" stroke-linejoin="round"/>`;
+            const step = Math.max(1, Math.ceil(n / 10));
+            values.forEach((v, i) => {
+                g += `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="3" fill="${color || '#2980b9'}"><title>${escapeHtml(labels[i])}: ${escapeHtml(reportMoney(v))}</title></circle>`;
+                if (i % step === 0 || i === n - 1) g += `<text x="${x(i).toFixed(1)}" y="${H - 9}" font-size="9" text-anchor="middle" fill="#7f8c8d">${escapeHtml(labels[i])}</text>`;
+            });
+            return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; max-width:640px; height:auto;" role="img">${g}</svg>`;
+        }
+
+        function reportTable(head, rows, opts) {
+            opts = opts || {};
+            const right = new Set(opts.right || []);
+            const th = head.map((h, i) => `<th style="text-align:${right.has(i) ? 'right' : 'left'}; padding:6px 8px; border-bottom:2px solid #2c3e50; font-size:12px;">${escapeHtml(h)}</th>`).join('');
+            const body = rows.length ? rows.map((r) => `<tr>${r.map((c, i) => `<td style="text-align:${right.has(i) ? 'right' : 'left'}; padding:5px 8px; border-bottom:1px solid #e5e8eb; font-size:13px;">${escapeHtml(String(c))}</td>`).join('')}</tr>`).join('')
+                : `<tr><td colspan="${head.length}" style="padding:10px; color:#7f8c8d;">Nothing to show for this period.</td></tr>`;
+            return `<div class="table-scroll"><table style="width:100%; border-collapse:collapse;"><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table></div>`;
+        }
+
+        function reportCards(cards) {
+            return `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:10px 0 14px;">${cards.map((c) => `<div style="border:1px solid #e5e8eb; border-radius:10px; padding:10px 12px;"><div style="font-size:12px; color:#7f8c8d;">${escapeHtml(c[0])}</div><div style="font-size:19px; font-weight:700;">${escapeHtml(String(c[1]))}</div>${c[2] ? `<div style="font-size:12px; color:#7f8c8d;">${escapeHtml(String(c[2]))}</div>` : ''}</div>`).join('')}</div>`;
+        }
+
+        function reportBuildSales(range) {
+            const sales = reportSales(range);
+            const total = sales.reduce((s, x) => s + reportSaleTotal(x), 0);
+            const methods = {};
+            sales.forEach((s) => { const m = s.paymentMethod || 'other'; methods[m] = methods[m] || { n: 0, v: 0 }; methods[m].n++; methods[m].v += reportSaleTotal(s); });
+            const items = {};
+            sales.forEach((s) => (s.items || []).forEach((it) => { if (it.unit === 'payment' || it.isPayment) return; const k = it.name || it.code || '?'; items[k] = items[k] || { q: 0, v: 0 }; items[k].q += Number(it.qty) || 0; items[k].v += (Number(it.price) || 0) * (Number(it.qty) || 0); }));
+            const top = Object.entries(items).sort((a, b) => b[1].v - a[1].v);
+            const days = new Set(sales.map((s) => dayKeyOf(s.timestamp))).size;
+            const cards = [['Total sales', reportMoney(total)], ['Number of sales', sales.length], ['Average sale', reportMoney(sales.length ? total / sales.length : 0)], ['Days with sales', days, days ? 'avg ' + reportMoney(total / days) + ' / day' : '']];
+            const mRows = Object.entries(methods).sort((a, b) => b[1].v - a[1].v).map(([m, x]) => [m, x.n, reportMoney(x.v), total ? Math.round(x.v / total * 100) + '%' : '0%']);
+            const iRows = top.map(([n, x]) => [n, Math.round(x.q * 100) / 100, reportMoney(x.v), total ? Math.round(x.v / total * 1000) / 10 + '%' : '0%']);
+            const html = reportCards(cards) + '<h4>By payment method</h4>' + reportTable(['Method', 'Sales', 'Amount', 'Share'], mRows, { right: [1, 2, 3] })
+                + '<h4>Items sold (best first)</h4>' + reportTable(['Item', 'Qty', 'Amount', 'Share'], iRows.slice(0, 60), { right: [1, 2, 3] });
+            return { title: 'Sales Report', html, csv: [['Item', 'Qty', 'Amount']].concat(top.map(([n, x]) => [n, x.q, Math.round(x.v)])) };
+        }
+
+        function reportBuildInsights(range) {
+            const sales = reportSales(range);
+            const hours = Array.from({ length: 24 }, () => ({ n: 0, v: 0 }));
+            const dows = Array.from({ length: 7 }, () => ({ n: 0, v: 0 }));
+            const staffMap = {};
+            sales.forEach((s) => {
+                const d = new Date(s.timestamp), t = reportSaleTotal(s);
+                hours[d.getHours()].n++; hours[d.getHours()].v += t;
+                dows[d.getDay()].n++; dows[d.getDay()].v += t;
+                const w = s.servedBy || 'Unknown'; staffMap[w] = staffMap[w] || { n: 0, v: 0 }; staffMap[w].n++; staffMap[w].v += t;
+            });
+            const dowNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const bestHour = hours.reduce((b, h, i) => (h.v > hours[b].v ? i : b), 0);
+            const busyHour = hours.reduce((b, h, i) => (h.n > hours[b].n ? i : b), 0);
+            const bestDow = dows.reduce((b, h, i) => (h.v > dows[b].v ? i : b), 0);
+            const staffSorted = Object.entries(staffMap).sort((a, b) => b[1].v - a[1].v);
+            const hh = (h) => `${String(h).padStart(2, '0')}:00–${String((h + 1) % 24).padStart(2, '0')}:00`;
+            // trend series: DAILY over the chosen period; WEEKLY over the last 12 weeks; MONTHLY over the last 12 months (independent of the period so a line means something)
+            const trendMode = window.__reportsTrend || 'daily';
+            const bucket = (mode) => {
+                const labels = [], values = [];
+                const now = new Date();
+                if (mode === 'daily') {
+                    const map = {}; sales.forEach((s) => { const k = dayKeyOf(s.timestamp); map[k] = (map[k] || 0) + reportSaleTotal(s); });
+                    for (let d = new Date(range.from); d <= range.to; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) { labels.push(d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })); values.push(map[dayKeyOf(d)] || 0); }
+                } else if (mode === 'weekly') {
+                    const monday = (d) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7)); return x; };
+                    const start = monday(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7 * 11));
+                    const sums = new Array(12).fill(0);
+                    salesLog.forEach((s) => { if (!s || s.voided) return; const t = new Date(s.timestamp); if (t < start) return; const i = Math.floor((monday(t) - start) / (7 * 86400000)); if (i >= 0 && i < 12) sums[i] += reportSaleTotal(s); });
+                    sums.forEach((v, i) => { const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7 * i); labels.push('Wk ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })); values.push(v); });
+                } else {
+                    const start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+                    const sums = new Array(12).fill(0);
+                    salesLog.forEach((s) => { if (!s || s.voided) return; const t = new Date(s.timestamp); const i = (t.getFullYear() - start.getFullYear()) * 12 + t.getMonth() - start.getMonth(); if (i >= 0 && i < 12) sums[i] += reportSaleTotal(s); });
+                    sums.forEach((v, i) => { const d = new Date(start.getFullYear(), start.getMonth() + i, 1); labels.push(d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })); values.push(v); });
+                }
+                return { labels, values };
+            };
+            const tr = bucket(trendMode);
+            const trendBtn = (m, t) => `<button type="button" class="settings-small-btn" style="${trendMode === m ? 'background:#2980b9; color:#fff;' : ''}" onclick="window.__reportsTrend='${m}'; reportsGenerate('insights')">${t}</button>`;
+            const summary = sales.length === 0 ? '<p>No sales in this period.</p>'
+                : `<ul style="line-height:1.8;"><li><strong>Busiest hour:</strong> ${hh(busyHour)} (${hours[busyHour].n} sales)</li><li><strong>Best-earning hour:</strong> ${hh(bestHour)} (${reportMoney(hours[bestHour].v)})</li><li><strong>Best day of the week:</strong> ${dowNames[bestDow]} (${reportMoney(dows[bestDow].v)})</li>`
+                + (staffSorted.length ? `<li><strong>Best worker:</strong> ${escapeHtml(staffSorted[0][0])} (${reportMoney(staffSorted[0][1].v)} from ${staffSorted[0][1].n} sales)</li>` : '') + '</ul>';
+            const html = reportCards([['Total sales', reportMoney(sales.reduce((s, x) => s + reportSaleTotal(x), 0))], ['Sales', sales.length]])
+                + summary
+                + '<h4>Sales by hour of the day</h4>' + reportBarSvg(hours.map((_, i) => String(i)), hours.map((h) => h.v), '#E67E22')
+                + '<h4>Sales by day of the week</h4>' + reportBarSvg(dowNames.map((d) => d.slice(0, 3)), dows.map((d) => d.v), '#16a085')
+                + `<h4>Sales trend</h4><div style="display:flex; gap:6px; margin-bottom:6px;">${trendBtn('daily', 'Daily (this period)')}${trendBtn('weekly', 'Weekly (12 weeks)')}${trendBtn('monthly', 'Monthly (12 months)')}</div>` + reportLineSvg(tr.labels, tr.values, '#2980b9')
+                + '<h4>Workers</h4>' + reportTable(['Worker', 'Sales', 'Amount', 'Average sale'], staffSorted.map(([n, x]) => [n, x.n, reportMoney(x.v), reportMoney(x.n ? x.v / x.n : 0)]), { right: [1, 2, 3] });
+            const csv = [['Hour', 'Sales', 'Amount']].concat(hours.map((h, i) => [hh(i), h.n, Math.round(h.v)])).concat([[], ['Day', 'Sales', 'Amount']]).concat(dows.map((d, i) => [dowNames[i], d.n, Math.round(d.v)])).concat([[], ['Trend (' + trendMode + ')', 'Amount']]).concat(tr.labels.map((l, i) => [l, Math.round(tr.values[i])]));
+            return { title: 'Business Insights', html, csv };
+        }
+
+        function reportBuildStaff(range) {
+            const sales = reportSales(range);
+            const map = {};
+            sales.forEach((s) => { const w = s.servedBy || 'Unknown'; map[w] = map[w] || { n: 0, v: 0, hours: 0 }; map[w].n++; map[w].v += reportSaleTotal(s); });
+            const now = Date.now();
+            (typeof staffShifts !== 'undefined' ? staffShifts : []).forEach((sh) => {
+                if (!sh) return;
+                const a = Math.max(sh.clockIn || 0, range.from.getTime()), b = Math.min(sh.clockOut || now, range.to.getTime());
+                if (b > a) { const w = sh.name || 'Unknown'; map[w] = map[w] || { n: 0, v: 0, hours: 0 }; map[w].hours += (b - a) / 3600000; }
+            });
+            const total = Object.values(map).reduce((s, x) => s + x.v, 0);
+            const rows = Object.entries(map).sort((a, b) => b[1].v - a[1].v).map(([n, x]) => [n, x.n, reportMoney(x.v), reportMoney(x.n ? x.v / x.n : 0), total ? Math.round(x.v / total * 100) + '%' : '0%', x.hours ? (Math.round(x.hours * 10) / 10) + ' h' : '—', x.hours ? reportMoney(x.v / x.hours) + ' / h' : '—']);
+            const html = reportCards([['Total sales', reportMoney(total)], ['Workers', rows.length]]) + reportTable(['Worker', 'Sales', 'Amount', 'Average sale', 'Share', 'Hours worked', 'Sales per hour'], rows, { right: [1, 2, 3, 4, 5, 6] });
+            return { title: 'Staff Performance', html, csv: [['Worker', 'Sales', 'Amount', 'Average sale', 'Share', 'Hours', 'Per hour']].concat(rows) };
+        }
+
+        function reportBuildStock(range) {
+            const limit = typeof LOW_STOCK_THRESHOLD !== 'undefined' ? LOW_STOCK_THRESHOLD : 3;
+            const stock = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
+            const sold = {}; reportSales(range).forEach((s) => (s.items || []).forEach((it) => { if (it.code != null) sold[it.code] = (sold[it.code] || 0) + (Number(it.qty) || 0); }));
+            const cost = stock.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0), 0);
+            const retail = stock.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.price) || 0), 0);
+            const low = stock.filter((p) => (Number(p.qty) || 0) > 0 && (Number(p.qty) || 0) <= limit);
+            const out = stock.filter((p) => (Number(p.qty) || 0) <= 0);
+            const dead = stock.filter((p) => (Number(p.qty) || 0) > 0 && !sold[p.code]);
+            const row = (p) => [p.name, p.code || '', p.category || '', `${Math.round((Number(p.qty) || 0) * 100) / 100} ${p.unit || ''}`, reportMoney((Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0)), reportMoney((Number(p.qty) || 0) * (Number(p.price) || 0)), sold[p.code] || 0];
+            const head = ['Item', 'Code', 'Category', 'In stock', 'Value (cost)', 'Value (retail)', 'Sold in period'];
+            const all = stock.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+            const html = reportCards([['Items stocked', stock.length], ['Stock value (cost)', reportMoney(cost)], ['Stock value (retail)', reportMoney(retail)], ['Low stock', low.length], ['Out of stock', out.length]])
+                + '<h4>Low stock (' + low.length + ')</h4>' + reportTable(head, low.map(row), { right: [4, 5, 6] })
+                + '<h4>Out of stock (' + out.length + ')</h4>' + reportTable(head, out.slice(0, 200).map(row), { right: [4, 5, 6] })
+                + '<h4>Not sold in this period (' + dead.length + ')</h4>' + reportTable(head, dead.slice(0, 200).map(row), { right: [4, 5, 6] })
+                + '<h4>Full stock list</h4>' + reportTable(head, all.slice(0, 500).map(row), { right: [4, 5, 6] });
+            return { title: 'Stock Report', html, csv: [head].concat(all.map(row)) };
+        }
+
+        function reportBuildBillsDebts() {
+            const now = Date.now();
+            const openBills = (typeof bills !== 'undefined' ? bills : []).filter((b) => b && !b.closed && !b.voided);
+            const owed = (b) => Math.max(0, (b.items || []).reduce((s, l) => s + (Number(l.price) || 0) * (Number(l.qty) || 0), 0) - (Number(b.amountPaid) || 0));
+            const age = (t) => Math.max(0, Math.floor((now - new Date(t).getTime()) / 86400000));
+            const bRows = openBills.map((b) => [b.customerName || 'Customer', new Date(b.timestamp).toLocaleDateString('en-GB'), reportMoney((b.items || []).reduce((s, l) => s + (Number(l.price) || 0) * (Number(l.qty) || 0), 0)), reportMoney(b.amountPaid || 0), reportMoney(owed(b)), age(b.timestamp) + ' d']).sort((a, b) => parseInt(b[5]) - parseInt(a[5]));
+            const debtList = (typeof debts !== 'undefined' ? debts : []).filter((d) => d && !d.removed);
+            const dOwed = (d) => Math.max(0, (Number(d.amount) || 0) - (Number(d.paidAmount) || 0) - (Array.isArray(d.payments) ? d.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0));
+            const dRows = debtList.filter((d) => dOwed(d) > 0).map((d) => [d.customerName || d.name || 'Customer', new Date(d.createdAt || d.timestamp || now).toLocaleDateString('en-GB'), reportMoney(d.amount), reportMoney(dOwed(d)), age(d.createdAt || d.timestamp || now) + ' d']);
+            const billTotal = openBills.reduce((s, b) => s + owed(b), 0), debtTotal = debtList.reduce((s, d) => s + dOwed(d), 0);
+            const buckets = [0, 0, 0]; openBills.forEach((b) => { const a = age(b.timestamp); buckets[a <= 7 ? 0 : a <= 30 ? 1 : 2] += owed(b); });
+            const html = reportCards([['Open bills', openBills.length, reportMoney(billTotal) + ' owed'], ['Debts owed', dRows.length, reportMoney(debtTotal) + ' owed'], ['Bills 0–7 days', reportMoney(buckets[0])], ['Bills 8–30 days', reportMoney(buckets[1])], ['Bills over 30 days', reportMoney(buckets[2])]])
+                + '<h4>Open bills (oldest first)</h4>' + reportTable(['Customer', 'Date', 'Total', 'Paid', 'Owing', 'Age'], bRows, { right: [2, 3, 4, 5] })
+                + '<h4>Debts</h4>' + reportTable(['Customer', 'Date', 'Amount', 'Owing', 'Age'], dRows, { right: [2, 3, 4] });
+            return { title: 'Bills & Debts', html, csv: [['Customer', 'Date', 'Total', 'Paid', 'Owing', 'Age']].concat(bRows) };
+        }
+
+        function reportBuildExpenses(range) {
+            const sales = reportSales(range);
+            const revenue = sales.reduce((s, x) => s + reportSaleTotal(x), 0);
+            const cogs = sales.reduce((s, x) => s + reportSaleCost(x), 0);
+            const exp = (typeof expenses !== 'undefined' ? expenses : []).filter((e) => { if (!e || e.removed) return false; const t = new Date(e.timestamp || e.date); return t >= range.from && t <= range.to; });
+            const expTotal = exp.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+            const cat = {}; exp.forEach((e) => { const k = e.category || 'Other'; cat[k] = (cat[k] || 0) + (Number(e.amount) || 0); });
+            const gross = revenue - cogs, net = gross - expTotal;
+            const rows = Object.entries(cat).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, reportMoney(v), expTotal ? Math.round(v / expTotal * 100) + '%' : '0%']);
+            const html = reportCards([['Sales', reportMoney(revenue)], ['Cost of goods sold', reportMoney(cogs)], ['Gross profit', reportMoney(gross), revenue ? Math.round(gross / revenue * 100) + '% margin' : ''], ['Expenses', reportMoney(expTotal)], ['Net profit', reportMoney(net)]])
+                + '<p style="font-size:12px; color:#7f8c8d;">Cost of goods uses each line\u2019s buying price when recorded, otherwise the item\u2019s current buying price; lines without a buying price count as zero cost.</p>'
+                + '<h4>Expenses by category</h4>' + reportTable(['Category', 'Amount', 'Share'], rows, { right: [1, 2] })
+                + '<h4>Expense list</h4>' + reportTable(['Date', 'Category', 'Description', 'Amount'], exp.slice().sort((a, b) => new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)).map((e) => [new Date(e.timestamp || e.date).toLocaleDateString('en-GB'), e.category || '', e.description || '', reportMoney(e.amount)]), { right: [3] });
+            return { title: 'Expenses & Profit', html, csv: [['Date', 'Category', 'Description', 'Amount']].concat(exp.map((e) => [new Date(e.timestamp || e.date).toLocaleDateString('en-GB'), e.category || '', e.description || '', Number(e.amount) || 0])) };
+        }
+
+        function reportsGenerate(kind) {
+            const out = document.getElementById('reports-output');
+            if (!out) return;
+            const range = reportsRange();
+            const builders = { sales: reportBuildSales, insights: reportBuildInsights, staff: reportBuildStaff, stock: reportBuildStock, bills: reportBuildBillsDebts, expenses: reportBuildExpenses };
+            const fn = builders[kind];
+            if (!fn) return;
+            window.__reportKind = kind;
+            let rep;
+            try { rep = fn(range); }
+            catch (e) { out.innerHTML = '<p style="color:#c0392b;">This report could not be built: ' + escapeHtml(e.message || String(e)) + '</p>'; return; }
+            window.__reportCsv = rep.csv || [];
+            window.__reportTitle = rep.title;
+            const noRange = kind === 'bills';
+            out.innerHTML = `<div class="report-head" style="margin-bottom:8px;"><h3 style="margin:0;">${escapeHtml(rep.title)}</h3><div style="color:#7f8c8d; font-size:13px;">${escapeHtml(typeof businessName !== 'undefined' ? businessName : '')}${noRange ? ' — as at today' : ' — ' + escapeHtml(range.text)} · generated ${escapeHtml(new Date().toLocaleString('en-GB'))}</div></div>${rep.html}`;
+            document.querySelectorAll('#reports-tab .report-kind-btn').forEach((b) => b.classList.toggle('active', b.dataset.kind === kind));
+            const act = document.getElementById('reports-actions'); if (act) act.style.display = 'flex';
+        }
+
+        function reportsRangeChanged() {
+            const custom = (document.getElementById('reports-range-select') || {}).value === 'custom';
+            const c = document.getElementById('reports-custom-range'); if (c) c.style.display = custom ? 'flex' : 'none';
+            if (window.__reportKind) reportsGenerate(window.__reportKind);
+        }
+
+        function reportsCsv() {
+            const rows = window.__reportCsv || [];
+            if (!rows.length) { showToast('Generate a report first.', true); return; }
+            const esc = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+            const blob = new Blob(['\ufeff' + rows.map((r) => r.map(esc).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${String(window.__reportTitle || 'report').replace(/\W+/g, '-').toLowerCase()}-${dayKeyOf(Date.now())}.csv`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        }
+
+        function reportsPrint() {
+            if (!window.__reportKind) { showToast('Generate a report first.', true); return; }
+            // A4 for a report (the page size a receipt set earlier would make it 80 mm wide), restored afterwards.
+            const pageStyle = document.getElementById('print-page-style');
+            const previous = pageStyle ? pageStyle.textContent : '';
+            if (pageStyle) pageStyle.textContent = '@page { size: A4; margin: 12mm; }';
+            let restored = false;
+            const restore = () => { if (restored) return; restored = true; if (pageStyle) pageStyle.textContent = previous; window.removeEventListener('afterprint', restore); };
+            window.addEventListener('afterprint', restore);
+            setTimeout(restore, 10000);
+            const css = 'table{width:100%; border-collapse:collapse;} svg{max-width:100%; height:auto;} h3,h4{margin:8px 0 4px;} .table-scroll{overflow:visible;}';
+            const html = document.getElementById('reports-output').innerHTML;
+            if (typeof printHTMLDirect === 'function' && document.getElementById('aqua-pos-print-area')) { printHTMLDirect(html, css); return; }
+            // (apps without the in-page print area: print from a fresh window)
+            const win = window.open('', '_blank');
+            if (!win) { showToast('Allow pop-ups to print the report.', true); restore(); return; }
+            win.document.write(`<html><head><title>${escapeHtml(window.__reportTitle || 'Report')}</title><style>body{font-family:Arial,sans-serif; padding:16px;} ${css}</style></head><body>${html}</body></html>`);
+            win.document.close(); win.focus();
+            setTimeout(() => win.print(), 300);
+        }
+
+        function reportsInstall() {
+            if (window.__reportsInstalled) return;
+            window.__reportsInstalled = true;
+            const btn = document.getElementById('reports-tab-btn');
+            if (btn) btn.addEventListener('click', () => setTimeout(() => { try { reportsGenerate(window.__reportKind || 'sales'); } catch (e) { /* the tab is an extra */ } }, 60));
+            // shortcuts to the app's own detailed screens: only the ones this app has
+            document.querySelectorAll('#reports-more-links [data-goto]').forEach((b2) => { if (!document.querySelector('.tabs .tab-link[data-tab="' + b2.dataset.goto + '"]')) b2.style.display = 'none'; });
+        }
+
+        function reportsGoto(tabId) {
+            const b = document.querySelector('.tabs .tab-link[data-tab="' + tabId + '"]');
+            if (b) b.click();
+        }
+
+        function perfInstall() {
+            // renderAllViews() redraws every table in the app; it is called after each sale and each sync, often several times within a moment (a sync
+            // applying data, then the sale's own refresh...). Calls that come within 250 ms of the previous one are folded into ONE redraw a moment
+            // later, so a burst costs a single redraw instead of a redraw each. The first call is immediate; the last one is never lost.
+            if (window.__perfInstalled) return;
+            window.__perfInstalled = true;
+            const orig = window.renderAllViews;
+            if (typeof orig !== 'function') return;
+            let last = 0, timer = null;
+            window.renderAllViews = function (...args) {
+                const now = Date.now();
+                if (now - last >= 250 && !timer) { last = now; return orig.apply(this, args); }
+                if (timer) return undefined;
+                timer = setTimeout(() => { timer = null; last = Date.now(); try { orig.apply(window, args); } catch (e) { /* the next redraw will try again */ } }, Math.max(20, 250 - (now - last)));
+                return undefined;
+            };
+        }
+
+        function dedupeStaff() {
+            // The same person listed twice on "Who's logging in?": a double tap on "Create my account" (or the same invite opened on two phones) made two staff
+            // records, one per tap. Records that are identical in the ways that matter — same name AND same PIN — are one person: every device keeps the
+            // record with the smallest id (so they all pick the same one), the other is retired (`removed`, like any removed staff member, so it syncs) and its
+            // shifts move to the one kept. Two different people who happen to share a name have different PINs and are left alone.
+            let changed = false;
+            const groups = new Map();
+            staff.forEach((s) => {
+                if (!s || s.removed || !s.pinHash) return;
+                const key = String(s.name || '').trim().toLowerCase() + '|' + s.pinHash;
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(s);
+            });
+            groups.forEach((list) => {
+                if (list.length < 2) return;
+                list.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+                const keep = list[0];
+                list.slice(1).forEach((dup) => {
+                    if (typeof staffShifts !== 'undefined') staffShifts.forEach((sh) => { if (sh && sh.staffId === dup.id) sh.staffId = keep.id; });
+                    if (Array.isArray(dup.roles) && Array.isArray(keep.roles)) dup.roles.forEach((r) => { if (!keep.roles.includes(r)) keep.roles.push(r); });
+                    dup.removed = true;
+                    dup.updatedAt = Date.now();
+                    changed = true;
+                });
+            });
+            if (changed) {
+                safeSetItem(hwKey('staff'), JSON.stringify(staff));
+                if (typeof staffShifts !== 'undefined') safeSetItem(hwKey('staff_shifts'), JSON.stringify(staffShifts));
+                queuePush();
+            }
+            return changed;
         }
         /* @shared:end */
 
@@ -21019,6 +21500,7 @@
         let pendingLoginStaffId = null;
 
         function renderLoginPicker() {
+            if (typeof dedupeStaff === 'function') dedupeStaff();
             const list = document.getElementById('login-picker-list');
             if (!list) return;
 
@@ -24326,6 +24808,12 @@
         /* -> shared: checkForInviteToken */
 
         async function submitStaffInvite() {
+            if (window.__inviteSubmitting) return;               // one tap at a time
+            window.__inviteSubmitting = true;
+            try { await submitStaffInviteInner(); } finally { window.__inviteSubmitting = false; }
+        }
+
+        async function submitStaffInviteInner() {
             const token = document.getElementById('invite-screen').dataset.token;
             const invite = pendingInvites.find(i => i.token === token);
             const errorEl = document.getElementById('invite-error');
@@ -24347,9 +24835,9 @@
             }
 
             const pinHash = await hashPassword(pin);
-            const newStaffId = generateToken();
+            const newStaffId = 'st-' + token;     // the same invite always gives the same id, so a double tap (or two phones) cannot make two people
             const newMember = { id: newStaffId, name: invite.name, pinHash, roles: Array.isArray(invite.roles) ? invite.roles : [], lockedDates: [], isManager: !!invite.isManager, clinicalRole: invite.clinicalRole || '', updatedAt: Date.now() };
-            staff.push(newMember);
+            if (!staff.some(s => s.id === newStaffId)) staff.push(newMember);
             pendingInvites = pendingInvites.filter(i => i.token !== token);
             safeSetItem('pos_staff', JSON.stringify(staff));
             safeSetItem('pos_pending_invites', JSON.stringify(pendingInvites));
@@ -24602,6 +25090,7 @@
         }
 
         function renderServerPickList() {
+            if (typeof dedupeStaff === 'function') dedupeStaff();
             const list = document.getElementById('server-pick-list');
             if (!list) return;
             const activeStaff = staff.filter(s => !s.removed);
@@ -24786,6 +25275,7 @@
             { id: 'restock-tab', label: '📥 Restock' },
             { id: 'orders-tab', label: '🛍️ Orders' },
             { id: 'stock-take-tab', label: '📋 Stock Take' },
+            { id: 'reports-tab', label: '📊 Reports' },
             { id: 'contracts-tab', label: '🏥 Insurance / Institutions' },
             { id: 'staff-tab', label: '👥 Staff' },
             { id: 'attendance-tab', label: '🕐 Attendance' },
@@ -27292,11 +27782,19 @@
 
         // Shared by both the CSV and .xlsx/.xls paths above once each has
         // produced the same shape: an array of arrays of cell strings.
-        async function beginInventoryFileImport(rows, filename) {
+        async function beginInventoryFileImportInner(rows, filename) {
             document.getElementById('inventory-import-file-input').value = '';
             if (!rows || rows.length === 0) { showToast('That file has no data rows.', true); return; }
 
+            // Headers this app already recognises (Name + a price / cost / quantity column) need no AI: it is instant and works offline.
+            const known = detectCsvColumns(rows[0] || []);
+            if (known.name !== -1 && (known.price !== -1 || known.wholesale !== -1 || known.qty !== -1)) {
+                finishInventoryFileImport(rows.slice(1), known, filename);
+                return;
+            }
+            showBusyBanner('⏳ Working out the columns…');
             const ai = await detectCsvColumnsAI(rows);
+            hideBusyBanner();
             if (ai) {
                 const dataRows = ai.headerIsData ? rows : rows.slice(1);
                 finishInventoryFileImport(dataRows, ai.mapping, filename);
@@ -27325,6 +27823,13 @@
                 const idxManual = { name: mapping.name, code: -1, category: -1, price: -1, wholesaleSelling: -1, wholesale: mapping.cost, qty: mapping.qty, unit: -1, location: -1, vat: -1, expiry: -1, dual: -1, unitsPerBox: -1, piecePrice: -1, pieceWholesale: -1, image: -1 };
                 finishInventoryFileImport(rows, idxManual, filename);
             });
+        }
+
+        async function beginInventoryFileImport(rows, filename) {
+            showBusyBanner('⏳ Checking your file…');
+            await nextPaint();
+            try { await beginInventoryFileImportInner(rows, filename); }
+            finally { hideBusyBanner(); }
         }
 
 
@@ -34995,15 +35500,160 @@
         'use strict';
         try { if (typeof heldSaleInstall === 'function') heldSaleInstall(); } catch (e) { /* holding a sale is optional */ }
         // (also here: the ⚠️ low-stock buttons on Restock and Orders refresh when those tabs are opened)
+        try { if (typeof perfInstall === 'function') perfInstall(); } catch (e) { /* only an optimisation */ }
         try { if (typeof authWatchInstall === 'function') authWatchInstall(); } catch (e) { /* only a helper */ }
         try { if (typeof itemSuggestInstall === 'function') itemSuggestInstall(); } catch (e) { /* the drop-down is an extra */ }
         try { if (typeof lowStockInstall === 'function') lowStockInstall(); } catch (e) { /* the buttons are an extra */ }
+        try { if (typeof reportsInstall === 'function') reportsInstall(); } catch (e) { /* the Reports tab is an extra */ }
         try { if (typeof stockTakeInstall === 'function') stockTakeInstall(); } catch (e) { /* the Stock Take tab is an extra */ }
         // settled bills are kept (closed); the ones closed more than 90 days ago are tidied away a few seconds after start-up
         setTimeout(function () { try { if (typeof pruneClosedBills === 'function') pruneClosedBills(90); } catch (e) { /* housekeeping only */ } }, 8000);
     })();
     </script>
 <!-- @shared-block:hold-sale:end -->
+
+<!-- @shared-block:guide-ui:begin -->
+<!-- GUIDE UI ------------------------------------------------------------------
+         The 📖 user guide: a full-screen, searchable "how to use this app" for THIS module. The text lives in the guide-data block
+         (src/shared/blocks/guide-data/<module>.html, built by tools/build-guides.mjs); this block only draws it. Opened from the 📖 button in the header,
+         from Settings ▸ Guide, and from Settings ▸ Install App ▸ Version. -->
+    <style>
+        #guide-modal { position: fixed; inset: 0; z-index: 100002; background: rgba(44,62,80,0.92); display: none; padding: 0; }
+        #guide-box { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); width: 100%; max-width: 900px; height: 100%; margin: 0 auto; display: flex; flex-direction: column; }
+        #guide-head { padding: 12px 16px 8px; border-bottom: 1px solid #e5e8eb; }
+        #guide-head h2 { margin: 0; font-size: 20px; }
+        #guide-tag { color: #7f8c8d; font-size: 13px; margin: 2px 0 8px; }
+        #guide-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        #guide-tools input[type=search] { flex: 1; min-width: 160px; padding: 9px 12px; font-size: 15px; border: 1px solid #ccd1d6; border-radius: 8px; }
+        #guide-toc { display: flex; gap: 6px; overflow-x: auto; padding: 8px 16px; border-bottom: 1px solid #e5e8eb; }
+        #guide-toc button { white-space: nowrap; padding: 6px 12px; border-radius: 16px; border: 1px solid #ccd1d6; background: #f7f9fa; color: #2c3e50; font-size: 13px; cursor: pointer; }
+        #guide-body { flex: 1; overflow-y: auto; padding: 8px 16px 40px; -webkit-overflow-scrolling: touch; }
+        #guide-body details { border: 1px solid #e5e8eb; border-radius: 10px; margin: 10px 0; background: #fff; }
+        #guide-body summary { padding: 12px 14px; font-weight: 700; font-size: 16px; cursor: pointer; }
+        #guide-body .g-inner { padding: 0 16px 14px; font-size: 14.5px; line-height: 1.55; }
+        #guide-body h5 { margin: 14px 0 4px; font-size: 14.5px; color: #E67E22; }
+        #guide-body ol, #guide-body ul { margin: 4px 0 8px 20px; padding: 0; }
+        #guide-body li { margin: 4px 0; }
+        #guide-body .g-tip { background: #FEF5E7; border-left: 4px solid #E67E22; padding: 8px 12px; border-radius: 6px; margin: 8px 0; font-size: 14px; }
+        #guide-body table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+        #guide-body td { padding: 6px 8px; border-bottom: 1px solid #eef0f2; vertical-align: top; }
+        #guide-body td:first-child { white-space: nowrap; font-weight: 600; }
+        #guide-body code { background: #eef0f2; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+        #guide-btn-small { padding: 8px 12px; border-radius: 8px; border: 1px solid #ccd1d6; background: #fff; color: #2c3e50; cursor: pointer; font-size: 14px; }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__guideUiLoaded) return;
+        window.__guideUiLoaded = true;
+        function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+        function md(s) { return esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`(.+?)`/g, '<code>$1</code>'); }
+        function list(tag, arr) { return arr && arr.length ? '<' + tag + '>' + arr.map(function (x) { return '<li>' + md(x) + '</li>'; }).join('') + '</' + tag + '>' : ''; }
+        function chapterBody(c) {
+            var h = c.intro ? '<p>' + md(c.intro) + '</p>' : '';
+            h += list('ol', c.steps);
+            (c.sections || []).forEach(function (s) { h += '<h5>' + md(s.title) + '</h5>' + (s.text ? '<p>' + md(s.text) + '</p>' : '') + list('ol', s.steps) + list('ul', s.points); });
+            if (c.tabs) h += '<table>' + c.tabs.map(function (t) { return '<tr><td>' + md(t[0]) + '</td><td>' + md(t[1]) + '</td></tr>'; }).join('') + '</table>';
+            (c.tips || []).forEach(function (t) { h += '<div class="g-tip">💡 ' + md(t) + '</div>'; });
+            return h;
+        }
+        function chapterText(c) {
+            return [c.title, c.intro].concat(c.steps || [], (c.tips || []), (c.tabs || []).map(function (t) { return t.join(' '); }),
+                (c.sections || []).reduce(function (a, s) { return a.concat([s.title, s.text || ''], s.steps || [], s.points || []); }, [])).join(' ').toLowerCase();
+        }
+        function data() { return window.__GUIDE_DATA || null; }
+        function ensureModal() {
+            var m = document.getElementById('guide-modal');
+            if (m) return m;
+            m = document.createElement('div');
+            m.id = 'guide-modal';
+            m.innerHTML = '<div id="guide-box"><div id="guide-head"><div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;"><div><h2 id="guide-title"></h2><div id="guide-tag"></div></div>'
+                + '<button type="button" id="guide-btn-small" onclick="guideClose()" aria-label="Close the guide">✕ Close</button></div>'
+                + '<div id="guide-tools"><input type="search" id="guide-search" placeholder="Search the guide… (e.g. printer, refund, staff)" oninput="guideSearch(this.value)">'
+                + '<button type="button" id="guide-btn-small" onclick="guidePrint()">🖨️ Print</button></div></div>'
+                + '<div id="guide-toc"></div><div id="guide-body"></div></div>';
+            document.body.appendChild(m);
+            return m;
+        }
+        window.guideOpen = function (chapterId) {
+            var g = data();
+            if (!g) { if (typeof showToast === 'function') showToast('The guide is not available here.', true); return; }
+            var m = ensureModal();
+            document.getElementById('guide-title').textContent = '📖 ' + g.title;
+            document.getElementById('guide-tag').textContent = g.tagline || '';
+            document.getElementById('guide-search').value = '';
+            renderAll('', chapterId);
+            m.style.display = 'block';
+            if (chapterId) setTimeout(function () { var el = document.getElementById('guide-ch-' + chapterId); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' }); }, 50);
+        };
+        window.guideClose = function () { var m = document.getElementById('guide-modal'); if (m) m.style.display = 'none'; };
+        function renderAll(query, openId) {
+            var g = data(), words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+            var shown = g.chapters.filter(function (c) { var t = chapterText(c); return words.every(function (w) { return t.indexOf(w) !== -1; }); });
+            document.getElementById('guide-toc').innerHTML = g.chapters.map(function (c) {
+                return '<button type="button" onclick="guideJump(\'' + c.id + '\')">' + esc(c.icon || '') + ' ' + esc(c.title) + '</button>';
+            }).join('');
+            document.getElementById('guide-body').innerHTML = shown.length
+                ? (words.length ? '<p style="color:#7f8c8d;">' + shown.length + ' chapter' + (shown.length === 1 ? '' : 's') + ' match.</p>' : '') + shown.map(function (c) {
+                    return '<details id="guide-ch-' + c.id + '"' + ((words.length || c.id === openId) ? ' open' : '') + '><summary>' + esc(c.icon || '') + ' ' + esc(c.title) + '</summary><div class="g-inner">' + chapterBody(c) + '</div></details>';
+                }).join('')
+                : '<p style="color:#7f8c8d;">Nothing matches that. Try one word, like <em>printer</em>, <em>refund</em> or <em>staff</em>.</p>';
+        }
+        window.guideSearch = function (q) { renderAll(q); };
+        window.guideJump = function (id) {
+            var el = document.getElementById('guide-ch-' + id);
+            if (!el) { document.getElementById('guide-search').value = ''; renderAll('', id); el = document.getElementById('guide-ch-' + id); }
+            if (el) { el.open = true; if (el.scrollIntoView) el.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+        };
+        window.guidePrint = function () {
+            var g = data(); if (!g) return;
+            var html = '<h1>' + esc(g.title) + '</h1><p>' + esc(g.tagline || '') + '</p>' + g.chapters.map(function (c) { return '<h2>' + esc(c.icon || '') + ' ' + esc(c.title) + '</h2>' + chapterBody(c); }).join('');
+            var w = window.open('', '_blank');
+            if (!w) { if (typeof showToast === 'function') showToast('Allow pop-ups to print the guide.', true); return; }
+            w.document.write('<html><head><title>' + esc(g.title) + '</title><style>body{font-family:Arial,sans-serif; padding:18px; line-height:1.5; font-size:13px;} h1{font-size:22px;} h2{font-size:16px; border-bottom:2px solid #E67E22; padding-bottom:3px; margin-top:20px; page-break-after:avoid;} h5{margin:10px 0 2px; color:#E67E22;} td{padding:3px 6px; border-bottom:1px solid #ddd; vertical-align:top;} table{border-collapse:collapse; width:100%;} .g-tip{background:#FEF5E7; padding:5px 8px; margin:5px 0;}</style></head><body>' + html + '</body></html>');
+            w.document.close(); w.focus(); setTimeout(function () { w.print(); }, 300);
+        };
+        function install() {
+            try {
+                // 📖 in the header, next to the sync dot (everyone who is logged in can use it)
+                if (!document.getElementById('guide-header-btn')) {
+                    var anchor = document.getElementById('sync-status');
+                    if (anchor && anchor.parentNode) {
+                        var b = document.createElement('button');
+                        b.id = 'guide-header-btn'; b.type = 'button'; b.textContent = '📖'; b.title = 'User guide — how to use this app'; b.setAttribute('aria-label', 'User guide');
+                        b.style.cssText = 'margin:0 4px; padding:2px 8px; border-radius:14px; border:1px solid rgba(255,255,255,0.7); background:transparent; color:inherit; font-size:15px; cursor:pointer; line-height:1.2;';
+                        b.onclick = function () { window.guideOpen(); };
+                        anchor.parentNode.insertBefore(b, anchor.nextSibling);
+                    }
+                }
+                // the Settings ▸ Guide section and the Version card lead to the full guide too
+                var sec = document.getElementById('settings-section-guide');
+                if (sec && !document.getElementById('guide-open-settings-btn')) {
+                    var h = sec.querySelector('h4');
+                    var bt = document.createElement('button');
+                    bt.id = 'guide-open-settings-btn'; bt.type = 'button'; bt.className = 'btn-main settings-small-btn'; bt.style.cssText = 'margin:6px 0 12px; background:#E67E22;';
+                    bt.textContent = '📖 Open the full user guide for this app'; bt.onclick = function () { window.guideOpen(); };
+                    if (h) h.parentNode.insertBefore(bt, h.nextSibling); else sec.insertBefore(bt, sec.firstChild);
+                }
+                var stamp = document.getElementById('app-build-stamp');
+                if (stamp && !document.getElementById('guide-open-version-btn')) {
+                    var bv = document.createElement('button');
+                    bv.id = 'guide-open-version-btn'; bv.type = 'button'; bv.className = 'settings-small-btn'; bv.style.cssText = 'margin:0 0 10px;';
+                    bv.textContent = '📖 How to use this app'; bv.onclick = function () { window.guideOpen(); };
+                    stamp.parentNode.insertBefore(bv, stamp.nextSibling);
+                }
+            } catch (e) { /* the guide is an extra */ }
+        }
+        install();
+        document.addEventListener('DOMContentLoaded', install);
+    })();
+    </script>
+<!-- @shared-block:guide-ui:end -->
+
+<!-- @shared-block:guide-data:begin -->
+<!-- GUIDE DATA (hospital) — generated by tools/build-guides.mjs; edit that file, not this one. -->
+<script>window.__GUIDE_DATA = {"key":"hospital","title":"Hospital POS — User Guide","tagline":"Clinics and hospitals — registration, queue, consultation charges, laboratory, pharmacy, wards and beds, insurance and reports.","module":"Hospital POS","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Hospital POS works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"setup","icon":"🧭","title":"Set up your business (first 20 minutes)","intro":"Do these once, in this order, as the Admin:","steps":["**⚙️ Settings ▸ General** — business name, logo, phone and address. They print on every receipt.","**Settings ▸ 🧾 Receipt Settings** — header and footer lines, paper width (58 mm or 80 mm), how many copies, whether to print the reference number and its barcode.","**Settings ▸ 🧾 Tax & Alerts** — VAT rates, and the **low-stock level** (items at or below it are flagged and offered as buttons when you restock).","**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Paystack, or Safaricom Daraja with your Till/Paybill) so you can send payment prompts to customers.","**Settings ▸ 🖨️ Hardware** — connect your receipt printer (see the **Printers & hardware** chapter).","Add your medications and supplies (see **➕ Add Medication**), then **Settings ▸ 👥 Staff Accounts** to invite your staff.","**Settings ▸ 🗄️ Backups** — check that backups are on. **Settings ▸ 📥 Data Import** brings in data from another system."],"tips":["Settings ▸ 🔒 Security & Access lets the Admin lock tabs behind the management password.","Settings ▸ 🧾 eTIMS (KRA) is only for businesses registered for KRA eTIMS — leave it off otherwise."]},{"id":"flow","icon":"🏥","title":"The patient journey, step by step","steps":["**Register:** **🛎️ Reception / Registration** ▸ fill full name, age, sex, phone, next of kin and any **known allergies** ▸ **Register Patient**. The patient gets a **patient number**.","**Queue:** **🚦 Queue / Triage** ▸ pick the patient, choose **🔴 Emergency / 🟠 Urgent / 🟢 Routine** ▸ **Add to Queue**. Vitals can be recorded once they are on the board. (Or book ahead in **📅 Appointments**.)","**Consultation:** open the patient’s profile ▸ **New Visit**: record the diagnosis and file what the visit involves — consultation, procedures/nursing (from your Services list), **lab tests** and **medicines with their dosage** ▸ **Save Visit**.","Saving the visit gives it a **visit reference** (like `V260921-4F2K`) and files all the charges as an **unpaid bill**. **No stock moves and no money is taken yet.**","**Pay & dispense:** at **💊 Dispense / Bill** the cashier types the **visit reference, patient number or name** in the \"Patient bill\" box ▸ **Load bill**. Everything appears in the cart. Take **one payment** — the medicines come out of stock, the lab tests show \"Paid — ready for sample\", the receipt prints.","**Prefer to take payment at the doctor’s desk?** Tick **Take payment now instead (skip the cashier — stock comes out now)** on the visit."],"tips":["If a paid sale is voided, the bill opens again and the lab test goes back to awaiting payment.","Bills put on Pay Later are marked so they cannot be loaded twice."]},{"id":"meds","icon":"💊","title":"Adding medications and services","steps":["Open **➕ Add Medication**. Type the name, selling price, buying price, quantity, unit and **expiry date**. Choose **Service** for fees that are not stocked (consultation, dressing, nursing) and give it a **department**.","**Tablets sold loose from a pack:** set a **minimum dose** and the **allowed pack sizes** (for example 4, 6, 12, 24) in the medication’s dosing settings. The counter then works in valid doses only (quick-select buttons; anything else is refused) and counts stock in tablets, so 6 tablets from a 24-tablet box leaves 18 loose.","Watch expiry in **💊 Pharmacy** (**Expiry Horizon**) and stock value under **Stock Valuation**. **📥 Restock** adds deliveries; low-stock buttons make it quick."]},{"id":"dispense","icon":"💊","title":"Dispensing and the dosage box","steps":["On **💊 Dispense / Bill** you can also sell straight to a walk-in: search a medication, add to the cart.","Under every medication in the cart there is a **Dosage** box: type the instruction (for example \"1 x 3 for 5 days\"). It is saved on the sale and printed under the medicine.","The receipt is **sectioned**: **SERVICES & HOSPITAL FEES** and **DISPENSED MEDICATIONS**.","Payment: cash, M-Pesa, split or Bill (Pay Later); or bill an **institution** (below)."]},{"id":"lab","icon":"🧪","title":"Laboratory","steps":["Request a test from **🧪 Laboratory** (**+ Request**) or from inside a patient’s visit; it gets its own reference and goes to the cashier.","Once paid it shows **Paid — ready for sample**. Enter the result when ready; filter by Pending / Completed / All."]},{"id":"wards","icon":"🛏️","title":"Wards and beds (inpatients)","steps":["In **🏥🛏️ Wards & Beds** type how many wards and beds you have and tap **Generate Wards** / **Generate Beds** (10 gives Ward 01–10).","**Admit Patient:** choose the patient and bed, type the admission diagnosis, **deposit collected**, the **daily bed rate** and **daily nursing rate**.","Active admissions show under **Active Admissions**; discharging bills the stay, and it appears in **Discharge History**."]},{"id":"insurance","icon":"🏢","title":"Insurance and institutions","steps":["In **🏥 Insurance / Institutions** ▸ **Register Institution**: NHIF, an insurer or an employer, with a contact person and phone.","A visit can then be billed to the institution’s **account** instead of the patient. Track what each owes under **Institution Accounts** and **Insurance Claims**, and settle it when they pay."]},{"id":"hreport","icon":"📊","title":"Hospital report and audit","steps":["**📊 Hospital Report** shows illness statistics, the top illnesses by month, **ICD-10 coded diagnoses** (print the ICD-10 report), doctor consultation volumes, and the audit log."]},{"id":"payments","icon":"💳","title":"Taking payment: cash, M-Pesa, card, split, Pay Later","intro":"Choose the payment method under the cart, then complete the sale.","steps":["**Cash** — type the amount the customer gave; the change due shows at once. The amount must cover the total.","**M-Pesa** — enter the customer’s number and tap **Send M-Pesa Prompt** (the customer approves on their phone), or type the M-Pesa code if they paid to your till. The sale completes once it is confirmed.","**Card** — take the card payment on your machine, optionally type the slip reference, and complete.","**Split** — part cash, part M-Pesa: type both amounts. They must add up to the total exactly, or the sale is refused.","**Bill (Pay Later)** — for customers who pay later: type the customer’s name (and phone), optionally an amount paid now. The sale becomes a **bill** that you settle later from the **Bills** tab; it only counts in Daily Sales as money is paid."],"sections":[{"title":"Hold a sale (customer not ready to pay)","steps":["Build the customer’s cart, then tap **⏸️ Hold sale**. The cart clears so you can serve the next person; **one** sale can be held at a time.","When the customer is ready, finish the sale you are on, then tap the **held sale** button that appears where Hold sale was — the held cart comes back exactly as it was."]},{"title":"Record a past sale (forgot to record it)","steps":["On the Sales Counter tap **Record a Past Sale**, pick the item, date and time, quantity, price and payment method (cash, M-Pesa, card, split or Bill).","It is saved on that date and takes the stock off, like a normal sale."]}],"tips":["Nothing is deducted from stock while a sale is only being built or held.","A wrong sale can be **voided** from Daily Sales (stock comes back)."]},{"id":"receipts","icon":"🧾","title":"Receipts: print, share, reprint","steps":["When a sale completes a **receipt preview** opens. Tap **🖨️ Print** — it prints **once**, and the preview closes so it cannot be printed twice by accident.","Every receipt of the day carries a **Customer number** (Customer 1, 2, 3…) just above the reference number. It starts again at 1 each day, so the last receipt of the day tells you how many customers you served.","To print the same receipt again later, open it from **Daily Sales** and tap Print — the app asks \"already printed at 14:32 — print another copy?\" so copies are always deliberate.","**📤 Share** sends the receipt as a **PDF** (WhatsApp shows it as a document). On a phone it opens your apps. On computers and some browsers that cannot hand a file to another app, the PDF is **saved to Downloads** instead — attach it in WhatsApp or email yourself.","**⬇️ Download** always saves the PDF."],"tips":["If the print fails (printer off, paper out) the preview stays open so you can try again — the sale is already saved.","Settings ▸ 🧾 Receipt Settings controls what appears on the receipt."]},{"id":"bills","icon":"📒","title":"Bills (Pay Later) and Debts","steps":["A **Bill (Pay Later)** sale appears in the **🧾 Bills** tab with what is owed. Tap **Settle** to take a full or part payment (cash, M-Pesa, card or split). A partial payment reduces the balance; the bill stays open.","When a bill is paid in full it becomes **closed** and moves out of the open list. Tick **Show closed bills** to see paid bills too (closed bills are tidied away after 90 days).","**Save (no receipt)** in the settle window records the payment without printing a receipt.","**📒 Debts** is for money customers owe you outside a bill — add a debt with the customer’s name and amount, and settle it in parts or in full.","The Sales Counter has a small **Bills** panel for staff: green = money they collected on bills, red = still owed."],"tips":["Pay-Later sales are not counted as sales until money is paid on them."]},{"id":"stock","icon":"📥","title":"Restock, Orders and Stock Take","sections":[{"title":"📥 Restock: record stock you received","steps":["Open **📥 Restock**. Tap a **⚠️ low-stock button** to add that medication to the form (with its last buying price), or start typing a name — a drop-down of your medications and supplies appears; pick one to fill the code, unit and buying price, or keep typing a new name.","Enter the quantity and the buying price, then save. Stock goes up and an expense is logged automatically."]},{"title":"🛍️ Orders: order from suppliers","steps":["Open **Orders** ▸ **New Order**. Tap low-stock buttons to add what is running out, or type names (same drop-down). Enter quantities and prices and choose or type the supplier.","Tap **💬 Save & send on WhatsApp** to save the order and open WhatsApp addressed to the supplier with the order written out (their number is asked once and remembered). Or **Save Order** now and press **💬 WhatsApp** on it later.","Mark it **In Transit** when the supplier dispatches, and **Arrived** when the goods come — that adds the stock."]},{"title":"📋 Stock Take: correct the system to the shelf","steps":["Open **Stock Take**, count each item on the shelf and type the number next to it. Only items you type a count for are touched.","The screen shows each difference and its value at cost. Tap **✔ Update stock to my counts** — every change is recorded as a \"Stock take\" adjustment."]}],"tips":["Do a stock take after a stock delivery day or at the end of the month.","↩️ **Returned Goods** puts returned items back on the shelf (or into the faulty register) and can refund the customer."]},{"id":"reports","icon":"📊","title":"Reports and Daily Sales","steps":["**🧾 Daily Sales** lists every sale for Today, a Week, a Month or a Custom range, filtered by payment method. Print the day’s report from there, or void a wrong sale.","**📦 Stock Report** shows stock movement (opening, received, sold, closing) with values at cost and retail.","**💰 Profits & Expenses** — add expenses (rent, fuel, wages…) and see gross and net profit.","**📊 Reports** is the one place to generate everything: pick a **period** (Today … Last 90 days … Custom), then a report."],"sections":[{"title":"The reports in 📊 Reports","points":["**Sales** — total, number of sales, average sale, by payment method and the items sold, best first.","**Business insights** — busiest hour, best-earning hour, best day of the week, best worker; charts of sales by hour and by weekday; and a **trend line** you can switch between **daily, weekly (12 weeks) and monthly (12 months)**.","**Staff performance** — sales, average sale, share and sales per hour worked for each person.","**Stock** — stock value at cost and retail, low stock, out of stock and items that did not sell in the period.","**Bills & debts** — who owes what, oldest first, with ageing.","**Expenses & profit** — sales, cost of goods, gross profit, expenses by category and net profit."]}],"tips":["Every report can be **🖨️ printed / saved as PDF** or **⬇️ downloaded for Excel (CSV)**.","**📊 Dashboard** gives today’s figures the moment you open the app."]},{"id":"people","icon":"👥","title":"Staff, access and security","steps":["Open **⚙️ Settings ▸ 👥 Staff Accounts** (or the **👥 Staff** tab) and add a staff member’s name. Tick the tabs they may use (the Sales Counter is always allowed). Tap **Generate invite link**.","Send the link to them. They open it, choose a **PIN** (4+ characters) and they are in — no shop password needed. The link then turns into their personal login link: they should bookmark it.","A staff member is listed once: a double tap on \"Create my account\" cannot make two copies.","**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.","**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.","**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.","**👤 My Customers** keeps your customers and their purchases; **🎟️ Loyalty Tokens** (Settings) rewards repeat customers where enabled."],"tips":["To remove a staff member, remove them under Staff Accounts — their old sales stay in the records.","If someone forgets the Admin password, use **Forgot it? Email me a reset link** on the login screen (needs the recovery email set up)."]},{"id":"hardware","icon":"🖨️","title":"Printers & hardware","intro":"Open **⚙️ Settings ▸ 🖨️ Hardware** (or tap the small printer icon at the top). There are three ways to print:","sections":[{"title":"1. System print dialog (works with any installed printer)","steps":["Set **Printer mode** to **System print dialog**.","Print a receipt: the device’s print window opens — choose your receipt printer once. The receipt prints on a slip only as long as its lines (paper is not wasted).","Browsers never allow silent printing, so this mode always shows that window. Use Bluetooth or USB to avoid it."]},{"title":"2. USB thermal printer (computer or Android)","steps":["Plug the printer in and switch it on.","Set **Printer mode** to **USB**, tap **Connect USB Printer**, choose your printer and allow access.","From then on the app **reconnects by itself** whenever the printer is switched off and on, unplugged and replugged, or the app is reopened — it keeps checking every few seconds and prints the moment the printer is back. You do not go back to Settings."]},{"title":"3. Bluetooth thermal printer (phones and tablets)","steps":["Switch the printer on and pair it in the phone’s Bluetooth settings if it asks.","Set **Printer mode** to **Bluetooth**, tap **Connect Bluetooth Printer** and pick it from the list (once).","After a power cut or the printer going out of range, the app reopens the same printer by itself (no chooser). Some browsers cannot reopen a remembered Bluetooth printer after the page reloads — the screen then says **Tap Connect once**."]},{"title":"Paper, copies and the cash drawer","steps":["**Receipt Settings** sets the paper width (58 or 80 mm) and the number of copies.","The **cash drawer** plugs into the **printer** (RJ11/RJ12 port), not the computer; turn on \"open drawer on print\" in Hardware settings.","To check paper width and the drawer, print a small sale receipt, or reprint one from Daily Sales."]},{"title":"Barcode scanners","steps":["A USB or Bluetooth **scanner** works like a keyboard: click the search box on the Sales Counter and scan.","The 📷 button next to search scans with the phone camera."]}],"tips":["Printing waits up to 4 seconds for a printer that has just been switched on before saying it is not connected.","If a print fails half-way the receipt is **not** sent again automatically (so you never get a doubled half-receipt) — reprint from Daily Sales."]},{"id":"offline","icon":"📶","title":"Offline, sync, backups and importing data","steps":["**Offline:** the app keeps working with no internet. Sales, stock and receipts are saved on the device.","**Sync:** when the internet returns the dot turns green and every device catches up. Several tills can work at once — stock changes from each add up correctly.","**If the dot stays black** with internet, wait a few seconds (it checks the server itself and recovers without a refresh). If it stays black, check the device’s connection.","**Backups:** ⚙️ Settings ▸ 🗄️ Backups. Your data is also stored on the server, so a lost phone does not lose your business — log in on another device.","**Importing from Excel/CSV:** on the Inventory tab tap **⬆️ Import from Excel/CSV**. A \"please wait\" bar shows while the file is read. Check the review list, then **Batch Commit**. Tap **⬇️ Download Excel/CSV** to export.","**More than one branch:** Settings ▸ 🏢 Branches links branches so items and cross-branch sales work."],"tips":["Use **Settings ▸ Install App ▸ 🔄 Re-download for Offline Use** after an update if the app ever fails to open offline."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**Printer does not print:** check paper and power, then Settings ▸ Hardware ▸ status. Switch it off and on — the app finds it again by itself. As a fallback use the system print dialog.","**\"Only 0 available\" when selling:** the item has no stock. Record it in Restock, or run a Stock Take.","**A sale is missing from Daily Sales:** Pay-Later bills only count when paid; check Bills. In Aqua POS check the site selected at the top.","**The login window appears again:** just log in; it will not reappear over a running session.","**Forgot the password:** tap **Forgot the password?** on the login screen and use **Email me a reset link**.","**Something looks out of date on a device:** wait for the green dot, then reload the page once.","**Still stuck:** the Owner sees errors from every shop in the Owner Console ▸ Errors tab — tell your provider what you were doing and roughly when."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Hospital POS, in the order they appear:","tabs":[["Dispense / Bill","The cashier’s counter: load a patient’s bill, dispense medicines with dosage, take payment, print."],["Reception / Registration","Register patients (details, next of kin, allergies) and open a patient’s profile and visits."],["Appointments","Schedule patients ahead; mark completed, cancelled or no-show."],["Queue / Triage","Today’s queue: add a patient with a triage level (Emergency / Urgent / Routine) and record vitals."],["Laboratory","Every lab test requested, with results; requests get their own reference."],["Pharmacy","The medication stock list: valuation, expiry horizon, current inventory and services."],["Add Medication","Add medications (with dosing rules) and services (consultation, procedures, nursing)."],["Restock","Record stock you received: quantity and buying price; low-stock buttons add items for you."],["Orders","Purchase orders to suppliers: create, send on WhatsApp, mark in transit, receive (stock goes up on arrival)."],["Stock Take","Count the shelf, type the counts, and correct the system to what is really there."],["Reports","Generate sales, insights (busiest hours, best workers, trends), staff, stock, bills & debts, expenses & profit reports."],["Store","A separate warehouse list (not your selling stock); take items from it into inventory."],["Barcode","Save, generate and print barcodes for your items."],["Wards & Beds","Set up wards and beds; admit patients, collect deposits, charge bed and nursing rates, discharge."],["Returned Goods","Customer returns and exchanges: refund, swap, faulty items."],["Deliveries","Delivery orders assigned to drivers: picked up, on route, delivered."],["Daily Sales","Every sale for a day / week / month / range, by payment method, with printing."],["Stock Report","Stock movement over a period: opening, received, sold, closing, with values."],["Profits & Expenses","Record expenses and see gross and net profit for any period."],["Medication Demand","Which medications sell most and when."],["Patient Bills","Bills waiting to be paid (Pay Later) and outstanding balances; settle them here."],["Debts","Money customers owe you outside of bills; record and settle."],["Hospital Report","Illness statistics, ICD-10 coded diagnoses, doctor consultation volumes and the audit log."],["My Customers","Your customer list with purchase history and loyalty."],["Insurance / Institutions","Register NHIF, insurers and employers; bill visits to their account and track claims."],["Staff","Add staff, choose which tabs each can use, send invite links, see who is serving."],["Attendance","Staff clock in / out and hours worked."],["Settings","Business details, receipts, tax, hardware, security, backups and more."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
+<!-- @shared-block:guide-data:end -->
 
 <!-- @shared-block:hardware-quick-access:begin -->
 <!-- HARDWARE QUICK-ACCESS ---------------------------------------------

@@ -89,6 +89,9 @@ export const SHARED_BLOCKS = {
   'hardware-quick-access': { startMarker: '<!-- HARDWARE QUICK-ACCESS' },
   'hold-sale': { startMarker: '<!-- HOLD SALE' },
   'stock-take': { startMarker: '<!-- STOCK TAKE TAB', skip: ['water/index.html'] },
+  'reports-tab': { startMarker: '<!-- REPORTS TAB', skip: ['water/index.html'] },
+  'guide-ui': { startMarker: '<!-- GUIDE UI', owner: true },
+  'guide-data': { startMarker: '<!-- GUIDE DATA', owner: true, perModule: true },      // the per-module user guide text (src/shared/blocks/guide-data/<module>.html, built by tools/build-guides.mjs)
   'storage-and-photos': { startMarker: '<!-- STORAGE & PHOTOS' },
   'storage-compress': { startMarker: '<!-- STORAGE COMPRESSION', owner: true },   // must come first in <head>: everything below reads localStorage through it
   'error-reporting': { startMarker: '<!-- ERROR REPORTING', owner: true },   // also goes into the owner console

@@ -2753,12 +2753,28 @@ function itemOffers(code) {
 
 //@fn itemTotalSold
 function itemTotalSold(code) {
-            let sum = 0;
-            salesLog.forEach(s => {
-                if (s.voided) return;
-                (s.items || []).forEach(it => { if (it.code === code) sum += (it.qty || 0); });
-            });
-            return sum;
+            return soldTotalsMap()[code] || 0;
+        }
+
+//@fn soldTotalsMap
+function soldTotalsMap() {
+            // Units sold per item code, counted in ONE pass over the sales log and remembered. This used to be a full pass over every sale for every
+            // item, every time the Sales Counter's items grid was drawn (each keystroke in the search box, each sale, each sync): with 1,500 items and
+            // 6,000 sales that is millions of comparisons per redraw — the main reason a busy shop's till "hung". Remembered until the sales change
+            // (or 20 s pass, which also picks up a void).
+            const c = window.__soldCache;
+            if (c && c.ref === salesLog && c.len === salesLog.length && Date.now() - c.at < 20000) return c.map;
+            const map = Object.create(null);
+            for (let i = 0; i < salesLog.length; i++) {
+                const sale = salesLog[i];
+                if (!sale || sale.voided || !sale.items) continue;
+                for (let j = 0; j < sale.items.length; j++) {
+                    const it = sale.items[j];
+                    if (it && it.code != null) map[it.code] = (map[it.code] || 0) + (it.qty || 0);
+                }
+            }
+            window.__soldCache = { ref: salesLog, len: salesLog.length, at: Date.now(), map };
+            return map;
         }
 
 //@fn jpegBytesToPdfBlob
@@ -4335,6 +4351,25 @@ function pruneOrphanedLocStates(kind, currentLabels) {
             const valid = new Set(currentLabels);
             Object.keys(map).forEach((label) => { if (!valid.has(label)) delete map[label]; });
             safeSetItem(kind === 'table' ? 'pos_table_states' : 'pos_room_states', JSON.stringify(map));
+        }
+
+//@fn perfInstall
+function perfInstall() {
+            // renderAllViews() redraws every table in the app; it is called after each sale and each sync, often several times within a moment (a sync
+            // applying data, then the sale's own refresh...). Calls that come within 250 ms of the previous one are folded into ONE redraw a moment
+            // later, so a burst costs a single redraw instead of a redraw each. The first call is immediate; the last one is never lost.
+            if (window.__perfInstalled) return;
+            window.__perfInstalled = true;
+            const orig = window.renderAllViews;
+            if (typeof orig !== 'function') return;
+            let last = 0, timer = null;
+            window.renderAllViews = function (...args) {
+                const now = Date.now();
+                if (now - last >= 250 && !timer) { last = now; return orig.apply(this, args); }
+                if (timer) return undefined;
+                timer = setTimeout(() => { timer = null; last = Date.now(); try { orig.apply(window, args); } catch (e) { /* the next redraw will try again */ } }, Math.max(20, 250 - (now - last)));
+                return undefined;
+            };
         }
 
 //@fn markSync
@@ -9634,7 +9669,8 @@ async function shareReceiptNative() {
                 }
             }
             downloadBlob(blob, fileName);
-            showToast('Receipt PDF saved — attach it in WhatsApp, email or any other app.');
+            // This browser cannot hand a file to WhatsApp / other apps directly (most computers and some phone browsers can't), so the PDF is saved instead.
+            showToast('Receipt PDF saved to your Downloads — this browser can’t share files directly, so attach it in WhatsApp, email or any app. (On a phone, Share opens your apps.)');
         }
 
 //@fn buildCode39RasterBytes
@@ -10731,6 +10767,8 @@ function currentOfferTargets() {
 
 //@fn detectCsvColumnsAI
 async function detectCsvColumnsAI(rows) {
+            const aiAbort = new AbortController();
+            const aiTimer = setTimeout(() => aiAbort.abort(), 8000);        // a slow AI call must not hold the import up: the offline column detection takes over
             try {
                 const headerRow = rows[0] || [];
                 const sampleRows = rows.slice(1, 9);
@@ -10740,6 +10778,7 @@ async function detectCsvColumnsAI(rows) {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ inventoryColumns: { headerRow, sampleRows } }),
+                    signal: aiAbort.signal,
                 });
                 const data = await res.json();
                 if (!res.ok || !data || typeof data.mapping !== 'object') return null;
@@ -10760,6 +10799,8 @@ async function detectCsvColumnsAI(rows) {
                 };
             } catch (err) {
                 return null; // network hiccup / AI Capture List not enabled — offline tiers take over
+            } finally {
+                clearTimeout(aiTimer);
             }
         }
 
@@ -10836,23 +10877,29 @@ function generateRandomStaffPin() {
 //@fn importInventoryCsv
 function importInventoryCsv(file) {
             if (!file) return;
+            showBusyBanner(`⏳ Reading "${file.name}"… please wait — a big file or a slow connection can take up to a minute.`);
             const ext = fileExt(file.name);
 
             if (ext === 'xlsx' || ext === 'xls') {
                 const reader = new FileReader();
                 reader.onload = async (e) => {
                     try {
+                        showBusyBanner('⏳ Loading the Excel reader… (needs internet the first time — please wait)');
+                        await nextPaint();
                         await loadSheetJs();
+                        showBusyBanner('⏳ Reading the rows…');
+                        await nextPaint();
                         const workbook = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
                         const sheet = workbook.Sheets[workbook.SheetNames[0]];
                         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' })
                             .map(r => r.map(c => (c === null || c === undefined) ? '' : String(c)));
                         beginInventoryFileImport(rows, file.name);
                     } catch (err) {
+                        hideBusyBanner();
                         showToast(err.message || 'Could not read that Excel file.', true);
                     }
                 };
-                reader.onerror = () => showToast('Could not read that file.', true);
+                reader.onerror = () => { hideBusyBanner(); showToast('Could not read that file.', true); };
                 reader.readAsArrayBuffer(file);
                 return;
             }
@@ -10863,12 +10910,13 @@ function importInventoryCsv(file) {
                 try {
                     rows = parseCsvText(String(e.target.result));
                 } catch (err) {
+                    hideBusyBanner();
                     showToast('Could not read that file — is it a valid CSV/Excel export?', true);
                     return;
                 }
                 beginInventoryFileImport(rows, file.name);
             };
-            reader.onerror = () => showToast('Could not read that file.', true);
+            reader.onerror = () => { hideBusyBanner(); showToast('Could not read that file.', true); };
             reader.readAsText(file);
         }
 
@@ -12556,7 +12604,10 @@ function assignCustomerNo(sale) {
             if (!stored) return null;                                                        // only a saved sale takes a number (a preview does not use one up)
             if (stored.customerNo) { sale.customerNo = stored.customerNo; return sale.customerNo; }
             let max = 0;
-            const scan = (arr) => { if (Array.isArray(arr)) arr.forEach((s) => { if (s && s.customerNo && dayKeyOf(s.timestamp) === today) max = Math.max(max, Number(s.customerNo) || 0); }); };
+            // Only sales from the last day and a half can be from today, and ISO times compare as text — so most of a big log is skipped with one
+            // cheap comparison instead of a Date for every sale.
+            const cutoff = new Date(Date.now() - 36 * 3600000).toISOString();
+            const scan = (arr) => { if (Array.isArray(arr)) for (let i = arr.length - 1; i >= 0; i--) { const s = arr[i]; if (s && s.customerNo && String(s.timestamp) >= cutoff && dayKeyOf(s.timestamp) === today) max = Math.max(max, Number(s.customerNo) || 0); } };
             scan(salesLog); if (typeof bills !== 'undefined') scan(bills);
             stored.customerNo = max + 1;
             sale.customerNo = stored.customerNo;
@@ -12688,5 +12739,406 @@ function itemSuggestInstall() {
             document.addEventListener('click', (e) => { if (!isField(e.target) && !(e.target.closest && e.target.closest('#item-suggest-box'))) itemSuggestHide(); }, true);
             window.addEventListener('scroll', (e) => { if (!(e.target && e.target.closest && e.target.closest('#item-suggest-box'))) itemSuggestHide(); }, true);
             window.addEventListener('resize', itemSuggestHide);
+        }
+
+//@fn showBusyBanner
+function showBusyBanner(message) {
+            // A visible "please wait" for anything slow (reading a big Excel file, loading the spreadsheet reader...): nothing on screen used to say
+            // the app was working, so people tapped again or thought it had frozen.
+            let el = document.getElementById('busy-banner');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'busy-banner';
+                el.setAttribute('role', 'status');
+                el.style.cssText = 'position:fixed; top:0; left:0; right:0; z-index:200000; background:#2c3e50; color:#fff; padding:12px 16px; font-size:15px; font-weight:600; text-align:center; box-shadow:0 2px 12px rgba(0,0,0,.35); display:none;';
+                document.body.appendChild(el);
+            }
+            el.textContent = message;
+            el.style.display = 'block';
+        }
+
+//@fn hideBusyBanner
+function hideBusyBanner() {
+            const el = document.getElementById('busy-banner');
+            if (el) el.style.display = 'none';
+        }
+
+//@fn nextPaint
+function nextPaint() {
+            // Lets the browser draw what was just shown (e.g. the busy banner) before heavy work blocks the page.
+            return new Promise((resolve) => { const raf = window.requestAnimationFrame || ((f) => setTimeout(f, 16)); raf(() => setTimeout(resolve, 0)); });
+        }
+
+//@fn reportMoney
+function reportMoney(n) {
+            return 'KES ' + Math.round(Number(n) || 0).toLocaleString('en-US');
+        }
+
+//@fn reportShort
+function reportShort(n) {
+            n = Number(n) || 0;
+            if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+            return String(Math.round(n));
+        }
+
+//@fn reportsRange
+function reportsRange() {
+            const preset = (document.getElementById('reports-range-select') || {}).value || 'last30';
+            const now = new Date();
+            const sod = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+            const eod = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+            const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+            let from = sod(now), to = eod(now), label = 'Today';
+            if (preset === 'yesterday') { from = sod(addDays(now, -1)); to = eod(addDays(now, -1)); label = 'Yesterday'; }
+            else if (preset === 'week') { const dow = (now.getDay() + 6) % 7; from = sod(addDays(now, -dow)); label = 'This week'; }
+            else if (preset === 'last7') { from = sod(addDays(now, -6)); label = 'Last 7 days'; }
+            else if (preset === 'month') { from = new Date(now.getFullYear(), now.getMonth(), 1); label = 'This month'; }
+            else if (preset === 'last30') { from = sod(addDays(now, -29)); label = 'Last 30 days'; }
+            else if (preset === 'last90') { from = sod(addDays(now, -89)); label = 'Last 90 days'; }
+            else if (preset === 'year') { from = new Date(now.getFullYear(), 0, 1); label = 'This year'; }
+            else if (preset === 'custom') {
+                const f = (document.getElementById('reports-from-input') || {}).value, t = (document.getElementById('reports-to-input') || {}).value;
+                if (f) from = sod(new Date(f + 'T00:00:00'));
+                if (t) to = eod(new Date(t + 'T00:00:00'));
+                label = 'Custom';
+            }
+            if (from > to) { const x = from; from = sod(to); to = eod(x); }
+            const fmt = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+            return { from, to, label, text: from.toDateString() === to.toDateString() ? fmt(from) : `${fmt(from)} – ${fmt(to)}` };
+        }
+
+//@fn reportSales
+function reportSales(range) {
+            return salesLog.filter((s) => { if (!s || s.voided) return false; const t = new Date(s.timestamp); return t >= range.from && t <= range.to; });
+        }
+
+//@fn reportSaleTotal
+function reportSaleTotal(s) {
+            return (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => sum + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
+        }
+
+//@fn reportSaleCost
+function reportSaleCost(s) {
+            return (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => {
+                if (it.unit === 'payment' || it.isPayment) return sum;
+                let cost = Number(it.wholesalePrice);
+                if (!(cost > 0) && it.code != null) { const p = inventory.find((x) => x.code === it.code); cost = p ? Number(p.wholesalePrice) || 0 : 0; }
+                return sum + (cost || 0) * (Number(it.qty) || 0);
+            }, 0);
+        }
+
+//@fn reportBarSvg
+function reportBarSvg(labels, values, color) {
+            const W = 640, H = 220, pl = 44, pr = 8, pt = 10, pb = 26;
+            const max = Math.max(1, ...values);
+            const bw = (W - pl - pr) / Math.max(1, values.length);
+            let g = '';
+            for (let i = 0; i <= 4; i++) {
+                const y = pt + (H - pt - pb) * (1 - i / 4);
+                g += `<line x1="${pl}" x2="${W - pr}" y1="${y}" y2="${y}" stroke="#e5e8eb"/><text x="${pl - 5}" y="${y + 3}" font-size="9" text-anchor="end" fill="#7f8c8d">${reportShort(max * i / 4)}</text>`;
+            }
+            const step = Math.max(1, Math.ceil(labels.length / 12));
+            values.forEach((v, i) => {
+                const h = (v / max) * (H - pt - pb);
+                g += `<rect x="${(pl + i * bw + bw * 0.15).toFixed(1)}" y="${(H - pb - h).toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" height="${h.toFixed(1)}" fill="${color || '#E67E22'}" rx="2"><title>${escapeHtml(labels[i])}: ${escapeHtml(reportMoney(v))}</title></rect>`;
+                if (i % step === 0) g += `<text x="${(pl + i * bw + bw / 2).toFixed(1)}" y="${H - 9}" font-size="9" text-anchor="middle" fill="#7f8c8d">${escapeHtml(labels[i])}</text>`;
+            });
+            return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; max-width:640px; height:auto;" role="img">${g}</svg>`;
+        }
+
+//@fn reportLineSvg
+function reportLineSvg(labels, values, color) {
+            const W = 640, H = 220, pl = 44, pr = 12, pt = 10, pb = 26;
+            const max = Math.max(1, ...values);
+            const n = values.length;
+            const x = (i) => pl + (n <= 1 ? (W - pl - pr) / 2 : (i / (n - 1)) * (W - pl - pr));
+            const y = (v) => pt + (H - pt - pb) * (1 - v / max);
+            let g = '';
+            for (let i = 0; i <= 4; i++) {
+                const yy = pt + (H - pt - pb) * (1 - i / 4);
+                g += `<line x1="${pl}" x2="${W - pr}" y1="${yy}" y2="${yy}" stroke="#e5e8eb"/><text x="${pl - 5}" y="${yy + 3}" font-size="9" text-anchor="end" fill="#7f8c8d">${reportShort(max * i / 4)}</text>`;
+            }
+            const pts = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+            g += `<polyline points="${pts}" fill="none" stroke="${color || '#2980b9'}" stroke-width="2.5" stroke-linejoin="round"/>`;
+            const step = Math.max(1, Math.ceil(n / 10));
+            values.forEach((v, i) => {
+                g += `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="3" fill="${color || '#2980b9'}"><title>${escapeHtml(labels[i])}: ${escapeHtml(reportMoney(v))}</title></circle>`;
+                if (i % step === 0 || i === n - 1) g += `<text x="${x(i).toFixed(1)}" y="${H - 9}" font-size="9" text-anchor="middle" fill="#7f8c8d">${escapeHtml(labels[i])}</text>`;
+            });
+            return `<svg viewBox="0 0 ${W} ${H}" style="width:100%; max-width:640px; height:auto;" role="img">${g}</svg>`;
+        }
+
+//@fn reportTable
+function reportTable(head, rows, opts) {
+            opts = opts || {};
+            const right = new Set(opts.right || []);
+            const th = head.map((h, i) => `<th style="text-align:${right.has(i) ? 'right' : 'left'}; padding:6px 8px; border-bottom:2px solid #2c3e50; font-size:12px;">${escapeHtml(h)}</th>`).join('');
+            const body = rows.length ? rows.map((r) => `<tr>${r.map((c, i) => `<td style="text-align:${right.has(i) ? 'right' : 'left'}; padding:5px 8px; border-bottom:1px solid #e5e8eb; font-size:13px;">${escapeHtml(String(c))}</td>`).join('')}</tr>`).join('')
+                : `<tr><td colspan="${head.length}" style="padding:10px; color:#7f8c8d;">Nothing to show for this period.</td></tr>`;
+            return `<div class="table-scroll"><table style="width:100%; border-collapse:collapse;"><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table></div>`;
+        }
+
+//@fn reportCards
+function reportCards(cards) {
+            return `<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:10px 0 14px;">${cards.map((c) => `<div style="border:1px solid #e5e8eb; border-radius:10px; padding:10px 12px;"><div style="font-size:12px; color:#7f8c8d;">${escapeHtml(c[0])}</div><div style="font-size:19px; font-weight:700;">${escapeHtml(String(c[1]))}</div>${c[2] ? `<div style="font-size:12px; color:#7f8c8d;">${escapeHtml(String(c[2]))}</div>` : ''}</div>`).join('')}</div>`;
+        }
+
+//@fn reportBuildSales
+function reportBuildSales(range) {
+            const sales = reportSales(range);
+            const total = sales.reduce((s, x) => s + reportSaleTotal(x), 0);
+            const methods = {};
+            sales.forEach((s) => { const m = s.paymentMethod || 'other'; methods[m] = methods[m] || { n: 0, v: 0 }; methods[m].n++; methods[m].v += reportSaleTotal(s); });
+            const items = {};
+            sales.forEach((s) => (s.items || []).forEach((it) => { if (it.unit === 'payment' || it.isPayment) return; const k = it.name || it.code || '?'; items[k] = items[k] || { q: 0, v: 0 }; items[k].q += Number(it.qty) || 0; items[k].v += (Number(it.price) || 0) * (Number(it.qty) || 0); }));
+            const top = Object.entries(items).sort((a, b) => b[1].v - a[1].v);
+            const days = new Set(sales.map((s) => dayKeyOf(s.timestamp))).size;
+            const cards = [['Total sales', reportMoney(total)], ['Number of sales', sales.length], ['Average sale', reportMoney(sales.length ? total / sales.length : 0)], ['Days with sales', days, days ? 'avg ' + reportMoney(total / days) + ' / day' : '']];
+            const mRows = Object.entries(methods).sort((a, b) => b[1].v - a[1].v).map(([m, x]) => [m, x.n, reportMoney(x.v), total ? Math.round(x.v / total * 100) + '%' : '0%']);
+            const iRows = top.map(([n, x]) => [n, Math.round(x.q * 100) / 100, reportMoney(x.v), total ? Math.round(x.v / total * 1000) / 10 + '%' : '0%']);
+            const html = reportCards(cards) + '<h4>By payment method</h4>' + reportTable(['Method', 'Sales', 'Amount', 'Share'], mRows, { right: [1, 2, 3] })
+                + '<h4>Items sold (best first)</h4>' + reportTable(['Item', 'Qty', 'Amount', 'Share'], iRows.slice(0, 60), { right: [1, 2, 3] });
+            return { title: 'Sales Report', html, csv: [['Item', 'Qty', 'Amount']].concat(top.map(([n, x]) => [n, x.q, Math.round(x.v)])) };
+        }
+
+//@fn reportBuildInsights
+function reportBuildInsights(range) {
+            const sales = reportSales(range);
+            const hours = Array.from({ length: 24 }, () => ({ n: 0, v: 0 }));
+            const dows = Array.from({ length: 7 }, () => ({ n: 0, v: 0 }));
+            const staffMap = {};
+            sales.forEach((s) => {
+                const d = new Date(s.timestamp), t = reportSaleTotal(s);
+                hours[d.getHours()].n++; hours[d.getHours()].v += t;
+                dows[d.getDay()].n++; dows[d.getDay()].v += t;
+                const w = s.servedBy || 'Unknown'; staffMap[w] = staffMap[w] || { n: 0, v: 0 }; staffMap[w].n++; staffMap[w].v += t;
+            });
+            const dowNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const bestHour = hours.reduce((b, h, i) => (h.v > hours[b].v ? i : b), 0);
+            const busyHour = hours.reduce((b, h, i) => (h.n > hours[b].n ? i : b), 0);
+            const bestDow = dows.reduce((b, h, i) => (h.v > dows[b].v ? i : b), 0);
+            const staffSorted = Object.entries(staffMap).sort((a, b) => b[1].v - a[1].v);
+            const hh = (h) => `${String(h).padStart(2, '0')}:00–${String((h + 1) % 24).padStart(2, '0')}:00`;
+            // trend series: DAILY over the chosen period; WEEKLY over the last 12 weeks; MONTHLY over the last 12 months (independent of the period so a line means something)
+            const trendMode = window.__reportsTrend || 'daily';
+            const bucket = (mode) => {
+                const labels = [], values = [];
+                const now = new Date();
+                if (mode === 'daily') {
+                    const map = {}; sales.forEach((s) => { const k = dayKeyOf(s.timestamp); map[k] = (map[k] || 0) + reportSaleTotal(s); });
+                    for (let d = new Date(range.from); d <= range.to; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) { labels.push(d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })); values.push(map[dayKeyOf(d)] || 0); }
+                } else if (mode === 'weekly') {
+                    const monday = (d) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7)); return x; };
+                    const start = monday(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7 * 11));
+                    const sums = new Array(12).fill(0);
+                    salesLog.forEach((s) => { if (!s || s.voided) return; const t = new Date(s.timestamp); if (t < start) return; const i = Math.floor((monday(t) - start) / (7 * 86400000)); if (i >= 0 && i < 12) sums[i] += reportSaleTotal(s); });
+                    sums.forEach((v, i) => { const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7 * i); labels.push('Wk ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })); values.push(v); });
+                } else {
+                    const start = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+                    const sums = new Array(12).fill(0);
+                    salesLog.forEach((s) => { if (!s || s.voided) return; const t = new Date(s.timestamp); const i = (t.getFullYear() - start.getFullYear()) * 12 + t.getMonth() - start.getMonth(); if (i >= 0 && i < 12) sums[i] += reportSaleTotal(s); });
+                    sums.forEach((v, i) => { const d = new Date(start.getFullYear(), start.getMonth() + i, 1); labels.push(d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })); values.push(v); });
+                }
+                return { labels, values };
+            };
+            const tr = bucket(trendMode);
+            const trendBtn = (m, t) => `<button type="button" class="settings-small-btn" style="${trendMode === m ? 'background:#2980b9; color:#fff;' : ''}" onclick="window.__reportsTrend='${m}'; reportsGenerate('insights')">${t}</button>`;
+            const summary = sales.length === 0 ? '<p>No sales in this period.</p>'
+                : `<ul style="line-height:1.8;"><li><strong>Busiest hour:</strong> ${hh(busyHour)} (${hours[busyHour].n} sales)</li><li><strong>Best-earning hour:</strong> ${hh(bestHour)} (${reportMoney(hours[bestHour].v)})</li><li><strong>Best day of the week:</strong> ${dowNames[bestDow]} (${reportMoney(dows[bestDow].v)})</li>`
+                + (staffSorted.length ? `<li><strong>Best worker:</strong> ${escapeHtml(staffSorted[0][0])} (${reportMoney(staffSorted[0][1].v)} from ${staffSorted[0][1].n} sales)</li>` : '') + '</ul>';
+            const html = reportCards([['Total sales', reportMoney(sales.reduce((s, x) => s + reportSaleTotal(x), 0))], ['Sales', sales.length]])
+                + summary
+                + '<h4>Sales by hour of the day</h4>' + reportBarSvg(hours.map((_, i) => String(i)), hours.map((h) => h.v), '#E67E22')
+                + '<h4>Sales by day of the week</h4>' + reportBarSvg(dowNames.map((d) => d.slice(0, 3)), dows.map((d) => d.v), '#16a085')
+                + `<h4>Sales trend</h4><div style="display:flex; gap:6px; margin-bottom:6px;">${trendBtn('daily', 'Daily (this period)')}${trendBtn('weekly', 'Weekly (12 weeks)')}${trendBtn('monthly', 'Monthly (12 months)')}</div>` + reportLineSvg(tr.labels, tr.values, '#2980b9')
+                + '<h4>Workers</h4>' + reportTable(['Worker', 'Sales', 'Amount', 'Average sale'], staffSorted.map(([n, x]) => [n, x.n, reportMoney(x.v), reportMoney(x.n ? x.v / x.n : 0)]), { right: [1, 2, 3] });
+            const csv = [['Hour', 'Sales', 'Amount']].concat(hours.map((h, i) => [hh(i), h.n, Math.round(h.v)])).concat([[], ['Day', 'Sales', 'Amount']]).concat(dows.map((d, i) => [dowNames[i], d.n, Math.round(d.v)])).concat([[], ['Trend (' + trendMode + ')', 'Amount']]).concat(tr.labels.map((l, i) => [l, Math.round(tr.values[i])]));
+            return { title: 'Business Insights', html, csv };
+        }
+
+//@fn reportBuildStaff
+function reportBuildStaff(range) {
+            const sales = reportSales(range);
+            const map = {};
+            sales.forEach((s) => { const w = s.servedBy || 'Unknown'; map[w] = map[w] || { n: 0, v: 0, hours: 0 }; map[w].n++; map[w].v += reportSaleTotal(s); });
+            const now = Date.now();
+            (typeof staffShifts !== 'undefined' ? staffShifts : []).forEach((sh) => {
+                if (!sh) return;
+                const a = Math.max(sh.clockIn || 0, range.from.getTime()), b = Math.min(sh.clockOut || now, range.to.getTime());
+                if (b > a) { const w = sh.name || 'Unknown'; map[w] = map[w] || { n: 0, v: 0, hours: 0 }; map[w].hours += (b - a) / 3600000; }
+            });
+            const total = Object.values(map).reduce((s, x) => s + x.v, 0);
+            const rows = Object.entries(map).sort((a, b) => b[1].v - a[1].v).map(([n, x]) => [n, x.n, reportMoney(x.v), reportMoney(x.n ? x.v / x.n : 0), total ? Math.round(x.v / total * 100) + '%' : '0%', x.hours ? (Math.round(x.hours * 10) / 10) + ' h' : '—', x.hours ? reportMoney(x.v / x.hours) + ' / h' : '—']);
+            const html = reportCards([['Total sales', reportMoney(total)], ['Workers', rows.length]]) + reportTable(['Worker', 'Sales', 'Amount', 'Average sale', 'Share', 'Hours worked', 'Sales per hour'], rows, { right: [1, 2, 3, 4, 5, 6] });
+            return { title: 'Staff Performance', html, csv: [['Worker', 'Sales', 'Amount', 'Average sale', 'Share', 'Hours', 'Per hour']].concat(rows) };
+        }
+
+//@fn reportBuildStock
+function reportBuildStock(range) {
+            const limit = typeof LOW_STOCK_THRESHOLD !== 'undefined' ? LOW_STOCK_THRESHOLD : 3;
+            const stock = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
+            const sold = {}; reportSales(range).forEach((s) => (s.items || []).forEach((it) => { if (it.code != null) sold[it.code] = (sold[it.code] || 0) + (Number(it.qty) || 0); }));
+            const cost = stock.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0), 0);
+            const retail = stock.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.price) || 0), 0);
+            const low = stock.filter((p) => (Number(p.qty) || 0) > 0 && (Number(p.qty) || 0) <= limit);
+            const out = stock.filter((p) => (Number(p.qty) || 0) <= 0);
+            const dead = stock.filter((p) => (Number(p.qty) || 0) > 0 && !sold[p.code]);
+            const row = (p) => [p.name, p.code || '', p.category || '', `${Math.round((Number(p.qty) || 0) * 100) / 100} ${p.unit || ''}`, reportMoney((Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0)), reportMoney((Number(p.qty) || 0) * (Number(p.price) || 0)), sold[p.code] || 0];
+            const head = ['Item', 'Code', 'Category', 'In stock', 'Value (cost)', 'Value (retail)', 'Sold in period'];
+            const all = stock.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+            const html = reportCards([['Items stocked', stock.length], ['Stock value (cost)', reportMoney(cost)], ['Stock value (retail)', reportMoney(retail)], ['Low stock', low.length], ['Out of stock', out.length]])
+                + '<h4>Low stock (' + low.length + ')</h4>' + reportTable(head, low.map(row), { right: [4, 5, 6] })
+                + '<h4>Out of stock (' + out.length + ')</h4>' + reportTable(head, out.slice(0, 200).map(row), { right: [4, 5, 6] })
+                + '<h4>Not sold in this period (' + dead.length + ')</h4>' + reportTable(head, dead.slice(0, 200).map(row), { right: [4, 5, 6] })
+                + '<h4>Full stock list</h4>' + reportTable(head, all.slice(0, 500).map(row), { right: [4, 5, 6] });
+            return { title: 'Stock Report', html, csv: [head].concat(all.map(row)) };
+        }
+
+//@fn reportBuildBillsDebts
+function reportBuildBillsDebts() {
+            const now = Date.now();
+            const openBills = (typeof bills !== 'undefined' ? bills : []).filter((b) => b && !b.closed && !b.voided);
+            const owed = (b) => Math.max(0, (b.items || []).reduce((s, l) => s + (Number(l.price) || 0) * (Number(l.qty) || 0), 0) - (Number(b.amountPaid) || 0));
+            const age = (t) => Math.max(0, Math.floor((now - new Date(t).getTime()) / 86400000));
+            const bRows = openBills.map((b) => [b.customerName || 'Customer', new Date(b.timestamp).toLocaleDateString('en-GB'), reportMoney((b.items || []).reduce((s, l) => s + (Number(l.price) || 0) * (Number(l.qty) || 0), 0)), reportMoney(b.amountPaid || 0), reportMoney(owed(b)), age(b.timestamp) + ' d']).sort((a, b) => parseInt(b[5]) - parseInt(a[5]));
+            const debtList = (typeof debts !== 'undefined' ? debts : []).filter((d) => d && !d.removed);
+            const dOwed = (d) => Math.max(0, (Number(d.amount) || 0) - (Number(d.paidAmount) || 0) - (Array.isArray(d.payments) ? d.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0));
+            const dRows = debtList.filter((d) => dOwed(d) > 0).map((d) => [d.customerName || d.name || 'Customer', new Date(d.createdAt || d.timestamp || now).toLocaleDateString('en-GB'), reportMoney(d.amount), reportMoney(dOwed(d)), age(d.createdAt || d.timestamp || now) + ' d']);
+            const billTotal = openBills.reduce((s, b) => s + owed(b), 0), debtTotal = debtList.reduce((s, d) => s + dOwed(d), 0);
+            const buckets = [0, 0, 0]; openBills.forEach((b) => { const a = age(b.timestamp); buckets[a <= 7 ? 0 : a <= 30 ? 1 : 2] += owed(b); });
+            const html = reportCards([['Open bills', openBills.length, reportMoney(billTotal) + ' owed'], ['Debts owed', dRows.length, reportMoney(debtTotal) + ' owed'], ['Bills 0–7 days', reportMoney(buckets[0])], ['Bills 8–30 days', reportMoney(buckets[1])], ['Bills over 30 days', reportMoney(buckets[2])]])
+                + '<h4>Open bills (oldest first)</h4>' + reportTable(['Customer', 'Date', 'Total', 'Paid', 'Owing', 'Age'], bRows, { right: [2, 3, 4, 5] })
+                + '<h4>Debts</h4>' + reportTable(['Customer', 'Date', 'Amount', 'Owing', 'Age'], dRows, { right: [2, 3, 4] });
+            return { title: 'Bills & Debts', html, csv: [['Customer', 'Date', 'Total', 'Paid', 'Owing', 'Age']].concat(bRows) };
+        }
+
+//@fn reportBuildExpenses
+function reportBuildExpenses(range) {
+            const sales = reportSales(range);
+            const revenue = sales.reduce((s, x) => s + reportSaleTotal(x), 0);
+            const cogs = sales.reduce((s, x) => s + reportSaleCost(x), 0);
+            const exp = (typeof expenses !== 'undefined' ? expenses : []).filter((e) => { if (!e || e.removed) return false; const t = new Date(e.timestamp || e.date); return t >= range.from && t <= range.to; });
+            const expTotal = exp.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+            const cat = {}; exp.forEach((e) => { const k = e.category || 'Other'; cat[k] = (cat[k] || 0) + (Number(e.amount) || 0); });
+            const gross = revenue - cogs, net = gross - expTotal;
+            const rows = Object.entries(cat).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, reportMoney(v), expTotal ? Math.round(v / expTotal * 100) + '%' : '0%']);
+            const html = reportCards([['Sales', reportMoney(revenue)], ['Cost of goods sold', reportMoney(cogs)], ['Gross profit', reportMoney(gross), revenue ? Math.round(gross / revenue * 100) + '% margin' : ''], ['Expenses', reportMoney(expTotal)], ['Net profit', reportMoney(net)]])
+                + '<p style="font-size:12px; color:#7f8c8d;">Cost of goods uses each line\u2019s buying price when recorded, otherwise the item\u2019s current buying price; lines without a buying price count as zero cost.</p>'
+                + '<h4>Expenses by category</h4>' + reportTable(['Category', 'Amount', 'Share'], rows, { right: [1, 2] })
+                + '<h4>Expense list</h4>' + reportTable(['Date', 'Category', 'Description', 'Amount'], exp.slice().sort((a, b) => new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)).map((e) => [new Date(e.timestamp || e.date).toLocaleDateString('en-GB'), e.category || '', e.description || '', reportMoney(e.amount)]), { right: [3] });
+            return { title: 'Expenses & Profit', html, csv: [['Date', 'Category', 'Description', 'Amount']].concat(exp.map((e) => [new Date(e.timestamp || e.date).toLocaleDateString('en-GB'), e.category || '', e.description || '', Number(e.amount) || 0])) };
+        }
+
+//@fn reportsGenerate
+function reportsGenerate(kind) {
+            const out = document.getElementById('reports-output');
+            if (!out) return;
+            const range = reportsRange();
+            const builders = { sales: reportBuildSales, insights: reportBuildInsights, staff: reportBuildStaff, stock: reportBuildStock, bills: reportBuildBillsDebts, expenses: reportBuildExpenses };
+            const fn = builders[kind];
+            if (!fn) return;
+            window.__reportKind = kind;
+            let rep;
+            try { rep = fn(range); }
+            catch (e) { out.innerHTML = '<p style="color:#c0392b;">This report could not be built: ' + escapeHtml(e.message || String(e)) + '</p>'; return; }
+            window.__reportCsv = rep.csv || [];
+            window.__reportTitle = rep.title;
+            const noRange = kind === 'bills';
+            out.innerHTML = `<div class="report-head" style="margin-bottom:8px;"><h3 style="margin:0;">${escapeHtml(rep.title)}</h3><div style="color:#7f8c8d; font-size:13px;">${escapeHtml(typeof businessName !== 'undefined' ? businessName : '')}${noRange ? ' — as at today' : ' — ' + escapeHtml(range.text)} · generated ${escapeHtml(new Date().toLocaleString('en-GB'))}</div></div>${rep.html}`;
+            document.querySelectorAll('#reports-tab .report-kind-btn').forEach((b) => b.classList.toggle('active', b.dataset.kind === kind));
+            const act = document.getElementById('reports-actions'); if (act) act.style.display = 'flex';
+        }
+
+//@fn reportsRangeChanged
+function reportsRangeChanged() {
+            const custom = (document.getElementById('reports-range-select') || {}).value === 'custom';
+            const c = document.getElementById('reports-custom-range'); if (c) c.style.display = custom ? 'flex' : 'none';
+            if (window.__reportKind) reportsGenerate(window.__reportKind);
+        }
+
+//@fn reportsCsv
+function reportsCsv() {
+            const rows = window.__reportCsv || [];
+            if (!rows.length) { showToast('Generate a report first.', true); return; }
+            const esc = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+            const blob = new Blob(['\ufeff' + rows.map((r) => r.map(esc).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${String(window.__reportTitle || 'report').replace(/\W+/g, '-').toLowerCase()}-${dayKeyOf(Date.now())}.csv`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        }
+
+//@fn reportsPrint
+function reportsPrint() {
+            if (!window.__reportKind) { showToast('Generate a report first.', true); return; }
+            // A4 for a report (the page size a receipt set earlier would make it 80 mm wide), restored afterwards.
+            const pageStyle = document.getElementById('print-page-style');
+            const previous = pageStyle ? pageStyle.textContent : '';
+            if (pageStyle) pageStyle.textContent = '@page { size: A4; margin: 12mm; }';
+            let restored = false;
+            const restore = () => { if (restored) return; restored = true; if (pageStyle) pageStyle.textContent = previous; window.removeEventListener('afterprint', restore); };
+            window.addEventListener('afterprint', restore);
+            setTimeout(restore, 10000);
+            const css = 'table{width:100%; border-collapse:collapse;} svg{max-width:100%; height:auto;} h3,h4{margin:8px 0 4px;} .table-scroll{overflow:visible;}';
+            const html = document.getElementById('reports-output').innerHTML;
+            if (typeof printHTMLDirect === 'function' && document.getElementById('aqua-pos-print-area')) { printHTMLDirect(html, css); return; }
+            // (apps without the in-page print area: print from a fresh window)
+            const win = window.open('', '_blank');
+            if (!win) { showToast('Allow pop-ups to print the report.', true); restore(); return; }
+            win.document.write(`<html><head><title>${escapeHtml(window.__reportTitle || 'Report')}</title><style>body{font-family:Arial,sans-serif; padding:16px;} ${css}</style></head><body>${html}</body></html>`);
+            win.document.close(); win.focus();
+            setTimeout(() => win.print(), 300);
+        }
+
+//@fn reportsInstall
+function reportsInstall() {
+            if (window.__reportsInstalled) return;
+            window.__reportsInstalled = true;
+            const btn = document.getElementById('reports-tab-btn');
+            if (btn) btn.addEventListener('click', () => setTimeout(() => { try { reportsGenerate(window.__reportKind || 'sales'); } catch (e) { /* the tab is an extra */ } }, 60));
+            // shortcuts to the app's own detailed screens: only the ones this app has
+            document.querySelectorAll('#reports-more-links [data-goto]').forEach((b2) => { if (!document.querySelector('.tabs .tab-link[data-tab="' + b2.dataset.goto + '"]')) b2.style.display = 'none'; });
+        }
+
+//@fn reportsGoto
+function reportsGoto(tabId) {
+            const b = document.querySelector('.tabs .tab-link[data-tab="' + tabId + '"]');
+            if (b) b.click();
+        }
+
+//@fn dedupeStaff
+function dedupeStaff() {
+            // The same person listed twice on "Who's logging in?": a double tap on "Create my account" (or the same invite opened on two phones) made two staff
+            // records, one per tap. Records that are identical in the ways that matter — same name AND same PIN — are one person: every device keeps the
+            // record with the smallest id (so they all pick the same one), the other is retired (`removed`, like any removed staff member, so it syncs) and its
+            // shifts move to the one kept. Two different people who happen to share a name have different PINs and are left alone.
+            let changed = false;
+            const groups = new Map();
+            staff.forEach((s) => {
+                if (!s || s.removed || !s.pinHash) return;
+                const key = String(s.name || '').trim().toLowerCase() + '|' + s.pinHash;
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(s);
+            });
+            groups.forEach((list) => {
+                if (list.length < 2) return;
+                list.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+                const keep = list[0];
+                list.slice(1).forEach((dup) => {
+                    if (typeof staffShifts !== 'undefined') staffShifts.forEach((sh) => { if (sh && sh.staffId === dup.id) sh.staffId = keep.id; });
+                    if (Array.isArray(dup.roles) && Array.isArray(keep.roles)) dup.roles.forEach((r) => { if (!keep.roles.includes(r)) keep.roles.push(r); });
+                    dup.removed = true;
+                    dup.updatedAt = Date.now();
+                    changed = true;
+                });
+            });
+            if (changed) {
+                safeSetItem(hwKey('staff'), JSON.stringify(staff));
+                if (typeof staffShifts !== 'undefined') safeSetItem(hwKey('staff_shifts'), JSON.stringify(staffShifts));
+                queuePush();
+            }
+            return changed;
         }
 
