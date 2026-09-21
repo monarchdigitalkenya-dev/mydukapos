@@ -22,6 +22,9 @@ export const SAMPLE_SALE = {
 };
 
 export async function boot(app, opts = {}) {
+  // The whole suite runs in parallel, so on a busy machine every timer in the app runs many times slower than on a quiet one. Measure how
+  // late a 40 ms timer fires BEFORE any heavy work of our own and stretch the settle time by that much (1x when quiet, up to 8x when starved).
+  const lag = await (async () => { const t = Date.now(); await new Promise((r) => setTimeout(r, 40)); return Math.min(8, Math.max(1, (Date.now() - t - 3) / 40)); })();
   const html = fs.readFileSync(path.join(ROOT, app), 'utf8');
   const errors = [];
   const vc = new VirtualConsole();
@@ -44,15 +47,16 @@ export async function boot(app, opts = {}) {
       w.navigator.serviceWorker = { register: () => Promise.resolve({}), addEventListener() {}, ready: Promise.resolve({}) };
       if (opts.indexedDB) w.indexedDB = opts.indexedDB;   // jsdom has none; tests pass a fake-indexeddb factory
       if (opts.usb) Object.defineProperty(w.navigator, 'usb', { value: typeof opts.usb === 'function' ? opts.usb(w) : opts.usb, configurable: true });
+      if (opts.bluetooth) Object.defineProperty(w.navigator, 'bluetooth', { value: typeof opts.bluetooth === 'function' ? opts.bluetooth(w) : opts.bluetooth, configurable: true });
     },
   });
   // Wait for the page to finish loading, then a short settle for the app's own async start-up (failed fetches, timers).
   // Was a flat 1200 ms per boot — about half of every test's time. A test that needs longer passes `wait` explicitly.
-  if (opts.wait != null) await new Promise((r) => setTimeout(r, opts.wait));
+  if (opts.wait != null) await new Promise((r) => setTimeout(r, Math.round(opts.wait * lag)));
   else {
     const t0 = Date.now();
-    while (dom.window.document.readyState !== 'complete' && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));
-    await new Promise((r) => setTimeout(r, 450));
+    while (dom.window.document.readyState !== 'complete' && Date.now() - t0 < 3000 * lag) await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, Math.round(450 * lag)));
   }
   return { w: dom.window, d: dom.window.document, errors, close: () => dom.window.close() };
 }
@@ -75,3 +79,6 @@ export function decodeEscPos(bytes) {
   const has = (seq) => { for (let i = 0; i <= arr.length - seq.length; i++) { if (seq.every((v, j) => arr[i + j] === v)) return true; } return false; };
   return { text, nonAscii, rasters, centred: has([0x1B, 0x61, 1]), bold: has([0x1B, 0x45, 1]), fontA: arr.slice(0, 5).join() === '27,64,27,77,0' };
 }
+
+// Poll a condition instead of sleeping a fixed time: a busy machine (the whole suite runs in parallel) can be many times slower than a quiet one.
+export const until = async (fn, ms = 60000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await fn()) return true; await new Promise((r) => setTimeout(r, 50)); } return false; };

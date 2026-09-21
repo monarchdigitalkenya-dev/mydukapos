@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeServer, openDevice, deviceStorage, sleep } from './e2e-harness.mjs';
+import { until } from './helpers.mjs';
 
 // "I changed something, refreshed, and it was back." Reproduced end to end: a REAL app talking to the REAL server code.
 const ITEMS = [{ code: '00001', type: 'item', name: 'Widget', price: 100, wholesaleSellingPrice: 80, wholesalePrice: 50, qty: 50, unit: 'pcs', vatCategory: 'A' }];
 const price = (w) => w.eval("inventory.find(p => p.code === '00001').price");
 const quiet = (w) => w.eval('showToast = function () {}');
+// A push the app queued (300 ms debounce) has finished, successfully or not — polled, not slept for.
+const settled = (dev) => until(() => !dev.w.eval('window.__pushQueued') && !(dev.w.eval('window.__pushInFlight') > 0));
 
 test('an edit survives a refresh: normal, refreshed at once, server unreachable, or pushes refused', async () => {
   for (const mode of ['online', 'immediate', 'offline', 'refused']) {
@@ -16,7 +19,7 @@ test('an edit survives a refresh: normal, refreshed at once, server unreachable,
     if (mode === 'offline') s.state.down = true;
     if (mode === 'refused') s.state.status = 413;
     a.w.eval("updateInventoryField('00001', 'price', '99')");
-    if (mode !== 'immediate') await sleep(700);
+    if (mode !== 'immediate') await settled(a);
     const store = deviceStorage(a.w); a.close();
     s.state.down = false; s.state.status = null;
     const b = await openDevice('index.html', s, store, 1500);
@@ -34,10 +37,10 @@ test('a setting changed on till A is NOT put back by till B, which has not refre
   const b = await openDevice('index.html', s, deviceStorage(a.w), 1200);          // till B starts from the same state
   quiet(a.w); quiet(b.w);
   a.w.eval("receiptFooterNotes = 'Thank you - new footer'; safeSetItem('pos_receipt_footer_notes', receiptFooterNotes); queuePush()");
-  await sleep(900);
+  await settled(a);
   assert.equal(s.serverState().receiptFooterNotes, 'Thank you - new footer');
   b.w.eval("updateInventoryField('00001', 'price', '88')");                        // B saves something unrelated; its payload still carries the OLD footer
-  await sleep(900);
+  await settled(b);
   assert.equal(s.serverState().receiptFooterNotes, 'Thank you - new footer', 'the stale copy did not overwrite the change');
   assert.equal(s.serverState().inventory[0].price, 88, 'B\'s own change still went through');
   // A polls and refreshes: still there
@@ -59,7 +62,7 @@ test('an incoming update from another till landing while my edit is still unsent
   a.w.eval("updateInventoryField('00001', 'price', '99')");                         // edit made, push not fired yet
   const older = s.serverState(); older.updatedAt = Date.now() + 1000;               // another till just pushed something: the server copy is newer but has the OLD price
   await a.w.eval('pullState()');                                                    // the poll fires inside my 300 ms window
-  await sleep(600);
+  await settled(a);
   assert.equal(price(a.w), 99, 'my edit is still here');
   assert.equal(s.serverState().inventory[0].price, 99, 'and it reached the server first');
   a.close();
@@ -72,7 +75,7 @@ test('a change that cannot be sent is kept, retried on the next poll, and delive
   quiet(a.w);
   s.state.status = 500;
   a.w.eval("updateInventoryField('00001', 'price', '55')");
-  await sleep(700);
+  await settled(a);
   await a.w.eval('pullState()');                                                     // poll while the server still refuses pushes
   assert.equal(price(a.w), 55, 'not overwritten by a pull');
   s.state.status = null;
@@ -91,16 +94,16 @@ test('Aqua POS: a setting changed on one till survives another till\'s stale pus
   const b = await openDevice('water/index.html', s, deviceStorage(a.w), 1200);
   quiet(a.w); quiet(b.w);
   a.w.eval("billPaymentDetails = 'Till 123456'; safeSetItem('aqua_bill_payment_details', billPaymentDetails); queuePush()");
-  await sleep(900);
+  await settled(a);
   assert.equal(s.serverState().billPaymentDetails, 'Till 123456');
   b.w.eval("lowStockThreshold = 9; safeSetItem('aqua_low_stock_threshold', '9'); queuePush()");              // B: unrelated change, but its payload still has the old billPaymentDetails
-  await sleep(900);
+  await settled(b);
   assert.equal(s.serverState().billPaymentDetails, 'Till 123456', 'not reverted');
   assert.equal(s.serverState().lowStockThreshold, 9, 'B\'s own change went through');
   // an incoming pull while an edit is unsent
   a.w.eval("billPaymentDetails = 'Till 999'; safeSetItem('aqua_bill_payment_details', billPaymentDetails); queuePush()");
   await a.w.eval('pullFromServer()');                                                                        // fires inside the 300 ms window
-  await sleep(700);
+  await settled(a);
   assert.equal(a.w.eval('billPaymentDetails'), 'Till 999');
   assert.equal(s.serverState().billPaymentDetails, 'Till 999');
   a.close(); b.close();
@@ -113,7 +116,7 @@ test('a shop whose pushes keep failing does not re-send itself on every poll (gr
   quiet(a.w);
   s.state.status = 413;
   a.w.eval("updateInventoryField('00001', 'price', '55')");
-  await sleep(700);
+  await settled(a);
   const posts = () => s.state.log.filter((l) => l.startsWith('POST')).length;
   const before = posts();
   for (let i = 0; i < 6; i++) await a.w.eval('pullState()');                          // six polls in a row

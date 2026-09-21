@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boot, SAMPLE_SALE, decodeEscPos } from './helpers.mjs';
+import { boot, SAMPLE_SALE, decodeEscPos, until } from './helpers.mjs';
 
 test('water: report Download/Share text and attendance-roster edit no longer throw', async () => {
   const { w, d, errors, close } = await boot('water/index.html', {
@@ -41,7 +41,7 @@ test('storage: "Shrink product photos" shrinks oversized photos and leaves small
   d.getElementById('settings-section-install').classList.add('active');
   await new Promise((r) => setTimeout(r, 100));
   d.getElementById('sh-shrink-btn').click();
-  await new Promise((r) => setTimeout(r, 800));
+  await until(() => { try { return JSON.parse(w.localStorage.getItem('pos_inventory'))[0].image.length < 20000; } catch (e) { return false; } });
   const stored = JSON.parse(w.localStorage.getItem('pos_inventory'));
   assert.ok(stored[0].image.length < 20000, 'big photo shrunk');
   assert.equal(stored[1].image, small, 'small photo untouched');

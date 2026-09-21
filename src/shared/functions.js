@@ -2233,10 +2233,13 @@ function getCustomerStatementSales(customer, preset) {
 //@fn getEffectivePrice
 function getEffectivePrice(product, mode) {
             if (mode === 'piece') return product.piecePrice || 0;
-            if (!isOfferActive(product)) return product.price;
+            // Always a number: an item that was saved without a price (an import, an older record) used to make every place that shows its
+            // price throw "Cannot read properties of undefined (reading 'toFixed')".
+            const base = Number(product.price) || 0;
+            if (!isOfferActive(product)) return base;
             return product.offer.type === 'fixed'
-                ? product.offer.value
-                : Math.max(0, product.price * (1 - product.offer.value / 100));
+                ? (Number(product.offer.value) || 0)
+                : Math.max(0, base * (1 - (Number(product.offer.value) || 0) / 100));
         }
 
 //@fn getExchangeNetPayable
@@ -4318,37 +4321,88 @@ function pruneOrphanedLocStates(kind, currentLabels) {
             safeSetItem(kind === 'table' ? 'pos_table_states' : 'pos_room_states', JSON.stringify(map));
         }
 
+//@fn markSync
+function markSync(status) {
+            // Every change of the Online / Syncing / Offline badge goes through here so the app also knows how long it has been in that state.
+            window.__syncStatus = status;
+            window.__syncStatusAt = Date.now();
+            setSyncStatus(status);
+        }
+
+//@fn probeServer
+async function probeServer(ms) {
+            // "Can I reach the server right now?" — a tiny request (the server answers "unchanged" in a few bytes) with its own short timeout.
+            // Returns the HTTP status, or 0 when there was no answer at all (no connection / timed out). navigator.onLine is only a hint and is
+            // often wrong (captive Wi-Fi, a phone that just woke up), so the badge is decided by whether the server actually answers.
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), ms || 6000);
+            try {
+                const res = await fetch(apiUrl(SYNC_URL + '?since=99999999999999'), { method: 'GET', signal: controller.signal, cache: 'no-store' });
+                return res.status || 0;
+            } catch (e) {
+                return 0;
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
 //@fn pullState
 async function pullState() {
-            if (navigator.onLine === false) {
-                setSyncStatus('offline');
+            // One pull at a time: a slow one is not stacked with the next poll.
+            if (window.__pullInFlight && Date.now() - (window.__pullStartedAt || 0) < 120000) return;
+            window.__pullInFlight = true;
+            window.__pullStartedAt = Date.now();
+            try { await pullStateOnce(); }
+            finally { window.__pullInFlight = false; }
+        }
+
+//@fn pullStateOnce
+async function pullStateOnce() {
+            // navigator.onLine === false is only a hint; ask the server before believing it.
+            if (navigator.onLine === false && (await probeServer(4000)) === 0) {
+                markSync('offline');
                 return;
             }
             // Changes made on this device but not yet acknowledged by the server (still in the 300 ms wait, on their way, or that failed)
             // must reach the server BEFORE its copy is applied here — otherwise the older server copy lands on top of them and the edit is
-            // lost for good ("I changed it, refreshed, and it was back"). If they can't be sent, keep them and skip this pull.
+            // lost for good (\"I changed it, refreshed, and it was back\"). If they can't be sent, keep them and skip this pull.
             if (hasUnsyncedWork()) {
                 const sent = await flushPendingPush();
                 if (!sent) return;
             }
-            setSyncStatus('syncing');
+            markSync('syncing');
+            const localUpdatedAt = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
+            // A poll that finds nothing new is a few bytes, but the first pull (or one that finds changes) can be the whole shop, and a cold
+            // server or a slow mobile connection needs more than a few seconds. Each time one runs out of patience while the server IS
+            // reachable the next attempt is allowed twice as long, up to 90 s; a success resets it.
+            const base = window.__pullTimeoutMs || (localUpdatedAt > 0 ? 12000 : 45000);
+            const timeoutMs = Math.min(90000, Math.max(base, window.__pullPatienceMs || 0));
             const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), PULL_TIMEOUT_MS);
+            const timer = setTimeout(() => controller.abort(), timeoutMs);
             try {
-                // ?since= lets the server answer "unchanged" (a few bytes) instead of
+                // ?since= lets the server answer \"unchanged\" (a few bytes) instead of
                 // re-sending the whole shop every poll — see pos-sync.js onRequestGet.
-                const localUpdatedAt = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
                 const res = await fetch(apiUrl(SYNC_URL + (localUpdatedAt > 0 ? '?since=' + localUpdatedAt : '')), { method: 'GET', signal: controller.signal });
-                if (res.status === 403) { checkLicenseStatus(); setSyncStatus('offline'); return; }
-                if (!res.ok) { setSyncStatus('offline'); return; }
+                if (res.status === 403) { checkLicenseStatus(); markSync('offline'); return; }
+                // The server answered, so this is not "Offline": a server that is busy or failing is a sync error and is retried by the poll.
+                if (!res.ok) { markSync(res.status >= 500 || res.status === 429 ? 'error' : 'offline'); return; }
                 const data = await res.json();
-                if (data && data.unchanged) { setSyncStatus('synced'); return; }
+                window.__pullPatienceMs = 0;
+                if (data && data.unchanged) { markSync('synced'); return; }
                 if (data && data.updatedAt && data.updatedAt > localUpdatedAt) {
                     applyRemotePayload(preparePulledPayload(data));
                 }
-                setSyncStatus('synced');
+                markSync('synced');
             } catch (e) {
-                setSyncStatus('offline');
+                // Timed out or failed. Reachable server = just slow: say "Syncing", try again at once with more patience. No answer = Offline.
+                const answered = await probeServer(5000);
+                if (answered > 0) {
+                    window.__pullPatienceMs = Math.min(90000, timeoutMs * 2);
+                    markSync('syncing');
+                    setTimeout(() => { try { pullState(); } catch (e2) { /* the poll will */ } }, 300);
+                } else {
+                    markSync('offline');
+                }
             } finally {
                 clearTimeout(timer);
             }
@@ -4450,14 +4504,19 @@ function preparePulledPayload(data) {
 //@fn pushNow
 async function pushNow() {
             return trackPush(async () => {
-                setSyncStatus('syncing');
+                markSync('syncing');
                 const payload = collectSyncPayload();
                 const slim = slimPayloadForPush(payload);
+                // A push that never gets an answer used to sit at "Syncing…" for as long as the browser cared to wait (minutes), blocking
+                // every later push and pull behind it. It now gives up after 40 s (the poll retries).
+                const pushAbortController = new AbortController();
+                const pushAbortTimer = setTimeout(() => pushAbortController.abort(), window.__pushTimeoutMs || 40000);
                 try {
                     const res = await fetch(apiUrl(SYNC_URL), {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(slim.body)
+                        body: JSON.stringify(slim.body),
+                        signal: pushAbortController.signal
                     });
                     if (res.ok) {
                         slim.commit();
@@ -4473,17 +4532,23 @@ async function pushNow() {
                         else setTimeout(() => { try { pullState(); } catch (e) { /* the poll will */ } }, 50);
                         snapshotInventorySync();
                         snapshotExtraSyncedFields();
-                        setSyncStatus('synced');
+                        window.__pushFails = 0; window.__pushBackoffUntil = 0; window.__pushFailKind = '';
+                        markSync('synced');
                         return true;
                     } else {
+                        window.__pushFailKind = 'http';                     // the server ANSWERED (refused, busy...): the wait is kept
                         if (res.status === 403) checkLicenseStatus();
-                        if (res.status === 413) { notifySyncTooLarge(res); setSyncStatus('offline'); return false; }
-                        setSyncStatus('error');
+                        if (res.status === 413) { notifySyncTooLarge(res); markSync('offline'); return false; }
+                        markSync('error');
                         return false;
                     }
                 } catch (e) {
-                    setSyncStatus('offline');
+                    // no answer / timed out: is there a connection at all?
+                    window.__pushFailKind = 'network';
+                    markSync((await probeServer(5000)) > 0 ? 'error' : 'offline');
                     return false;
+                } finally {
+                    clearTimeout(pushAbortTimer);
                 }
             });
         }
@@ -6533,16 +6598,16 @@ async function searchOtherBranchesForCart(query) {
                         return `
                         <div class="search-item ${boxOut ? 'out-of-stock' : ''}" onclick="${boxOut ? '' : `addCrossBranchItemToCart('${escapeJsAttr(r.branchClientId)}', '${escapeJsAttr(r.branchLabel)}', '${escapeJsAttr(r.code)}', '${escapeJsAttr(r.name)}', ${r.price}, 'box')`}">
                             <span>${escapeHtml(r.name)} (Box) <span class="dual-unit-badge" style="background:#8e44ad;">🔀 ${escapeHtml(r.branchLabel)}</span></span>
-                            <span>${boxOut ? 'Out of stock' : 'KES ' + r.price.toFixed(2) + ' / box'}</span>
+                            <span>${boxOut ? 'Out of stock' : 'KES ' + (Number(r.price) || 0).toFixed(2) + ' / box'}</span>
                         </div>
                         <div class="search-item ${pieceOut ? 'out-of-stock' : ''}" onclick="${pieceOut ? '' : `addCrossBranchItemToCart('${escapeJsAttr(r.branchClientId)}', '${escapeJsAttr(r.branchLabel)}', '${escapeJsAttr(r.code)}', '${escapeJsAttr(r.name)}', ${r.piecePrice}, 'piece')`}">
                             <span>${escapeHtml(r.name)} (Piece) <span class="dual-unit-badge" style="background:#8e44ad;">🔀 ${escapeHtml(r.branchLabel)}</span></span>
-                            <span>${pieceOut ? 'Out of stock' : 'KES ' + r.piecePrice.toFixed(2) + ' / piece'}</span>
+                            <span>${pieceOut ? 'Out of stock' : 'KES ' + (Number(r.piecePrice) || 0).toFixed(2) + ' / piece'}</span>
                         </div>`;
                     }
                     return `<div class="search-item ${boxOut ? 'out-of-stock' : ''}" onclick="${boxOut ? '' : `addCrossBranchItemToCart('${escapeJsAttr(r.branchClientId)}', '${escapeJsAttr(r.branchLabel)}', '${escapeJsAttr(r.code)}', '${escapeJsAttr(r.name)}', ${r.price}, '')`}">
                         <span>${escapeHtml(r.name)} <span class="dual-unit-badge" style="background:#8e44ad;">🔀 ${escapeHtml(r.branchLabel)}</span></span>
-                        <span>${boxOut ? 'Out of stock' : 'KES ' + r.price.toFixed(2)}</span>
+                        <span>${boxOut ? 'Out of stock' : 'KES ' + (Number(r.price) || 0).toFixed(2)}</span>
                     </div>`;
                 }).join('');
 
@@ -7543,7 +7608,7 @@ async function trackPush(fn) {
                 // instead of re-sending the whole shop every few seconds.
                 if (window.__pushFailed) {
                     window.__pushFails = (window.__pushFails || 0) + 1;
-                    window.__pushBackoffUntil = Date.now() + Math.min(60000, 2000 * Math.pow(2, window.__pushFails));
+                    window.__pushBackoffUntil = Date.now() + Math.min(15000, 2000 * Math.pow(2, window.__pushFails));
                 } else { window.__pushFails = 0; window.__pushBackoffUntil = 0; }
             }
         }
@@ -7561,7 +7626,15 @@ async function flushPendingPush() {
                 for (let i = 0; i < 40 && window.__pushInFlight > 0; i++) await new Promise((r) => setTimeout(r, 100));
             }
             if (!hasUnsyncedWork()) return true;
-            if (window.__pushBackoffUntil > Date.now() && window.__pushFailed) return false;      // still waiting out a failed attempt
+            if (window.__pushBackoffUntil > Date.now() && window.__pushFailed) {                  // waiting out a failed attempt...
+                // ...but if it failed because there was NO ANSWER (the connection dropped), the wait ends the moment the server answers again:
+                // ask it (a few bytes) and push now. Before, a short outage could leave the badge on "Offline" for up to a minute after the
+                // internet had returned. A push the server answered and REFUSED (too big, busy) keeps its wait, so it isn't re-sent every poll.
+                if (window.__pushFailKind !== 'network') return false;
+                const status = await probeServer(5000);
+                if (status === 0 || status >= 500) { markSync(status === 0 ? 'offline' : 'error'); return false; }
+                window.__pushBackoffUntil = 0; window.__pushFails = 0;
+            }
             const ok = await (typeof pushNow === 'function' ? pushNow() : (typeof doPush === 'function' ? (await doPush(), !window.__pushFailed) : true));
             return !!ok;
         }
@@ -8685,15 +8758,17 @@ function updatePrintRelaySectionVisibility() {
             const section = document.getElementById('print-relay-server-section');
             if (!section) return;
             const hasPrinter = printRelayHasRealPrinter();
-            section.style.display = hasPrinter ? 'block' : 'none';
-            if (!hasPrinter && printRelayServerEnabled) {
-                // The printer disconnected — turn the relay off too, since
-                // there's nothing left here to print an incoming job on.
+            const wantsPrinter = printerMode === 'bluetooth' || printerMode === 'usb';
+            section.style.display = (hasPrinter || wantsPrinter) ? 'block' : 'none';
+            if (!wantsPrinter && printRelayServerEnabled) {
+                // Switched to the system print dialog: there is no raw printer here to print an incoming job on, so the relay goes off.
                 printRelayServerEnabled = false;
                 safeSetItem('pos_print_relay_server', 'false');
             }
+            // A printer that is merely switched off / out of range does NOT switch the relay off (it used to, and stayed off after the power
+            // came back until someone found the toggle again). The choice stays; polling pauses while there is no printer and resumes by itself.
             const toggle = document.getElementById('print-relay-server-toggle');
-            if (toggle) toggle.checked = printRelayServerEnabled && hasPrinter;
+            if (toggle) toggle.checked = printRelayServerEnabled;
             updatePrintRelayPolling();
             heartbeatDeviceNetwork();
         }
@@ -9095,7 +9170,16 @@ function buildSectionedReceiptBytes(headerText, itemsText, footerText, cutBytes)
 function usbPrinterNameKey() { return 'pos_usb_printer_name'; }
 
 //@fn claimUsbPrinterEndpoint
-async function claimUsbPrinterEndpoint(device, statusEl) {
+function claimUsbPrinterEndpoint(device, statusEl) {
+            // One claim per device at a time (the printer keeper, the "plugged in" event and the Connect button can all ask at once).
+            if (window.__hwClaim && window.__hwClaim.device === device) return window.__hwClaim.promise;
+            const promise = claimUsbPrinterEndpointOnce(device, statusEl).finally(() => { if (window.__hwClaim && window.__hwClaim.device === device) window.__hwClaim = null; });
+            window.__hwClaim = { device, promise };
+            return promise;
+        }
+
+//@fn claimUsbPrinterEndpointOnce
+async function claimUsbPrinterEndpointOnce(device, statusEl) {
             // Opens the device, finds the endpoint the print engine actually listens on, and claims it.
             try { await device.open(); } catch (e) { if (!device.opened) throw e; }   // already open is fine
             if (!device.configuration) await device.selectConfiguration(1);
@@ -9144,6 +9228,7 @@ async function claimUsbPrinterEndpoint(device, statusEl) {
             usbPrinterDevice = device;
             usbPrinterEndpoint = chosen.ep;
             safeSetItem(usbPrinterNameKey(), device.productName || 'USB printer');
+            safeSetItem(hwKey('usb_printer_id'), [device.vendorId, device.productId, device.serialNumber || ''].join(':'));
 
             watchUsbPrinterDisconnect();
 
@@ -9164,7 +9249,7 @@ async function sendBytesViaUSB(bytes) {
             for (let i = 0; i < bytes.length;) {
                 const part = bytes.slice(i, i + chunk);
                 try {
-                    const res = await usbPrinterDevice.transferOut(usbPrinterEndpoint, part);
+                    const res = await hwWithTimeout(usbPrinterDevice.transferOut(usbPrinterEndpoint, part));
                     if (res && res.status === 'stall') {
                         if (++stalls > 3) throw new Error('The printer stopped responding. Switch it off and on, then reconnect it.');
                         await usbPrinterDevice.clearHalt('out', usbPrinterEndpoint);
@@ -9174,6 +9259,7 @@ async function sendBytesViaUSB(bytes) {
                 } catch (e) {
                     if (e && e.name === 'NetworkError' && chunk > 64) { chunk = chunk > 512 ? 512 : 64; continue; }
                     if (e && e.name === 'NotFoundError') { usbPrinterDevice = null; usbPrinterEndpoint = null; }   // unplugged mid-job
+                    try { e.hwWritten = i; } catch (e2) { /* read-only error object */ }                            // how much had already gone out (see hwWrapPrinting)
                     throw e;
                 }
             }
@@ -10912,7 +10998,7 @@ function openSearchPriceChoice(code, anchorEl) {
             const portal = document.getElementById('search-price-choice-portal');
 
             portal.innerHTML = `
-                <div style="padding:8px 12px; cursor:pointer; font-size:13px;" onclick="addToCart('${escapeJsAttr(code)}'); closeSearchPriceChoice();">Retail — KES ${product.price.toFixed(2)}</div>
+                <div style="padding:8px 12px; cursor:pointer; font-size:13px;" onclick="addToCart('${escapeJsAttr(code)}'); closeSearchPriceChoice();">Retail — KES ${(Number(product.price) || 0).toFixed(2)}</div>
                 <div style="padding:8px 12px; cursor:pointer; font-size:13px; border-top:1px solid var(--light);" onclick="addToCart('${escapeJsAttr(code)}', undefined, 'wholesale'); closeSearchPriceChoice();">Wholesale — KES ${(product.wholesaleSellingPrice || 0).toFixed(2)}</div>
             `;
 
@@ -11518,3 +11604,288 @@ async function updateStoreItemQty(storeItemId, value) {
                 renderStoreTab();
             }
         }
+//@fn hwKey
+function hwKey(name) {
+            // Per-app storage key for a remembered-printer detail ("pos_bt_printer_id", or "aqua_bt_printer_id" in Aqua POS).
+            return usbPrinterNameKey().replace('usb_printer_name', name);
+        }
+
+//@fn hwStatus
+function hwStatus(kind, cls, text) {
+            const el = document.getElementById(kind === 'usb' ? 'usb-printer-status' : 'bluetooth-printer-status');
+            if (!el) return;
+            // Only replace what is empty or was written by the connection code itself. A specific message from someone pressing Connect
+            // ("Access denied — Windows already has the printer...") stays until they act on it.
+            window.__hwOwnStatus = window.__hwOwnStatus || {};
+            const cur = el.textContent || '';
+            const routine = !cur || cur === window.__hwOwnStatus[kind] || /^(Not connected|Last connected|Printer unplugged|Printer disconnected|Found |Looking for|Connected:|Choose your printer|Connecting to)/.test(cur);
+            if (!routine) return;
+            el.className = 'settings-msg' + (cls ? ' ' + cls : '');
+            el.textContent = text;
+            window.__hwOwnStatus[kind] = text;
+        }
+
+//@fn hwIsReady
+function hwIsReady(kind) {
+            try {
+                if (kind === 'usb') return !!(usbPrinterDevice && usbPrinterEndpoint !== null && usbPrinterDevice.opened !== false);
+                return !!(btPrinterCharacteristic && btPrinterDevice && btPrinterDevice.gatt && btPrinterDevice.gatt.connected);
+            } catch (e) { return false; }
+        }
+
+//@fn hwWithTimeout
+function hwWithTimeout(promise, ms) {
+            // A printer that has stopped answering (switched off mid-job, out of range) can leave a write pending for ever, which would block
+            // every later print behind it. Give each write a time limit.
+            let timer;
+            const limit = new Promise((_, reject) => {
+                timer = setTimeout(() => { const e = new Error('The printer did not respond.'); e.name = 'TimeoutError'; e.hwTimeout = true; reject(e); }, ms || window.__hwWriteMs || 15000);
+            });
+            return Promise.race([promise, limit]).finally(() => clearTimeout(timer));
+        }
+
+//@fn hwSingleFlight
+function hwSingleFlight(kind, fn) {
+            // Reconnecting is one thing at a time: the background loop, a "print" that finds the printer gone, and the browser's own
+            // "plugged back in" event may all ask at once, and two attempts at the same device would fight each other.
+            window.__hwFlights = window.__hwFlights || {};
+            if (window.__hwFlights[kind]) return window.__hwFlights[kind];
+            const p = Promise.resolve().then(fn).catch(() => false).finally(() => { window.__hwFlights[kind] = null; });
+            window.__hwFlights[kind] = p;
+            return p;
+        }
+
+//@fn hwUsbReconnect
+function hwUsbReconnect() {
+            return hwSingleFlight('usb', async () => {
+                if (!navigator.usb) return false;
+                if (hwIsReady('usb')) return true;
+                if (usbPrinterDevice) { usbPrinterDevice = null; usbPrinterEndpoint = null; }      // a stale handle from before the power cut
+                const devices = await navigator.usb.getDevices();
+                if (!devices.length) return false;
+                const idOf = (d) => [d.vendorId, d.productId, d.serialNumber || ''].join(':');
+                const savedId = localStorage.getItem(hwKey('usb_printer_id'));
+                const savedName = localStorage.getItem(usbPrinterNameKey());
+                // Only the printer that was used last. If it is not attached right now (switched off, unplugged) nothing else is claimed:
+                // another permitted USB device (a scanner, a scale) must never be mistaken for it. With nothing remembered yet, take the first.
+                let device = (savedId && devices.find((d) => idOf(d) === savedId)) || (savedName && devices.find((d) => d.productName === savedName)) || null;
+                if (!device && !savedId && !savedName) device = devices[0];
+                if (!device) return false;
+                try {
+                    hwStatus('usb', '', `Found ${device.productName || 'the printer'} — connecting…`);
+                    await claimUsbPrinterEndpoint(device, document.getElementById('usb-printer-status'));
+                } catch (e) { return false; }                                                        // still starting up, or held by another program: tried again
+                if (!hwIsReady('usb')) return false;
+                safeSetItem(hwKey('usb_printer_id'), idOf(device));
+                return true;
+            });
+        }
+
+//@fn hwBtFindCharacteristic
+async function hwBtFindCharacteristic(server) {
+            for (const uuid of BT_PRINTER_SERVICE_UUIDS) {
+                try {
+                    const service = await server.getPrimaryService(uuid);
+                    const characteristics = await service.getCharacteristics();
+                    const found = characteristics.find((c) => c.properties.write || c.properties.writeWithoutResponse);
+                    if (found) return found;
+                } catch (e) { /* not on this device: next */ }
+            }
+            return null;
+        }
+
+//@fn hwBtAttach
+async function hwBtAttach(device) {
+            // gatt.connect() can hang for a printer that is off or out of range, so it gets a time limit.
+            let timer;
+            const limit = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), window.__hwBtConnectMs || 12000); });
+            let server;
+            try { server = await Promise.race([device.gatt.connect(), limit]); }
+            catch (e) { try { device.gatt.disconnect(); } catch (e2) { /* nothing to close */ } return false; }
+            finally { clearTimeout(timer); }
+            let characteristic = null;
+            try { characteristic = await hwBtFindCharacteristic(server); } catch (e) { characteristic = null; }
+            if (!characteristic) { try { device.gatt.disconnect(); } catch (e) { /* nothing to close */ } return false; }
+            btPrinterDevice = device;
+            btPrinterCharacteristic = characteristic;
+            safeSetItem(hwKey('bt_printer_name'), device.name || 'Bluetooth printer');
+            if (device.id) safeSetItem(hwKey('bt_printer_id'), device.id);
+            if (!device.__hwHooked) {
+                device.__hwHooked = true;
+                device.addEventListener('gattserverdisconnected', () => { btPrinterCharacteristic = null; if (typeof hwKick === 'function') hwKick(1500); });
+            }
+            return true;
+        }
+
+//@fn hwBtWatch
+function hwBtWatch(device) {
+            // Some browsers can tell us the moment a remembered printer starts advertising (it was just switched on): connect then, not on the next poll.
+            if (device.__hwWatching || typeof device.watchAdvertisements !== 'function') return;
+            device.__hwWatching = true;
+            try {
+                device.addEventListener('advertisementreceived', () => { if (!hwIsReady('bt') && typeof hwKick === 'function') hwKick(150); });
+                Promise.resolve(device.watchAdvertisements()).catch(() => { device.__hwWatching = false; });
+            } catch (e) { device.__hwWatching = false; }
+        }
+
+//@fn hwBtReconnect
+function hwBtReconnect() {
+            return hwSingleFlight('bt', async () => {
+                if (!navigator.bluetooth) { window.__hwBtReason = 'unsupported'; return false; }
+                if (hwIsReady('bt')) return true;
+                let device = btPrinterDevice;                                        // this page already knows the printer: reopen it, no chooser
+                if (!device && typeof navigator.bluetooth.getDevices === 'function') {    // after a reload: the printers this browser remembers
+                    const list = await navigator.bluetooth.getDevices();
+                    const savedId = localStorage.getItem(hwKey('bt_printer_id')), savedName = localStorage.getItem(hwKey('bt_printer_name'));
+                    device = (savedId && list.find((d) => d.id === savedId)) || (savedName && list.find((d) => d.name === savedName)) || null;
+                }
+                if (!device) { window.__hwBtReason = typeof navigator.bluetooth.getDevices === 'function' ? 'unknown' : 'needs-pairing'; return false; }
+                window.__hwBtReason = 'off';
+                hwBtWatch(device);
+                return hwBtAttach(device);
+            });
+        }
+
+//@fn hwEnsureReady
+async function hwEnsureReady(kind, ms) {
+            // Called when something is about to print: the printer may simply have been switched on a moment ago, so look for it (up to ms)
+            // before giving up with "no printer connected".
+            if (hwIsReady(kind)) return true;
+            const limit = ms || window.__hwReadyMs || 4000;
+            const t0 = Date.now();
+            for (;;) {
+                const ok = kind === 'usb' ? await hwUsbReconnect() : await hwBtReconnect();
+                if (ok) return true;
+                if (Date.now() - t0 + 700 > limit) return false;
+                await new Promise((r) => setTimeout(r, 700));
+            }
+        }
+
+//@fn hwLinkLost
+function hwLinkLost(e) {
+            const name = e && e.name, msg = String((e && e.message) || '');
+            return name === 'NotFoundError' || name === 'InvalidStateError' || name === 'NetworkError'
+                || /disconnected|no device|not connected|must be opened|unavailable/i.test(msg);
+        }
+
+//@fn hwWrapPrinting
+function hwWrapPrinting() {
+            if (window.__hwWrapped) return;
+            window.__hwWrapped = true;
+            const k = () => window.__hwKeeper;
+            const busy = async (fn) => { k().printing++; try { return await fn(); } finally { k().printing--; } };
+            ['usb', 'bt'].forEach((kind) => {
+                const printName = kind === 'usb' ? 'printViaUSB' : 'printViaBluetooth';
+                const sendName = kind === 'usb' ? 'sendBytesViaUSB' : 'sendBytesViaBluetooth';
+                const origPrint = window[printName], origSend = window[sendName];
+                if (typeof origPrint === 'function') {
+                    // The printer was switched on a moment ago and nobody has reconnected it yet: look for it before saying "not connected".
+                    window[printName] = async function (...args) {
+                        if (!hwIsReady(kind)) await hwEnsureReady(kind);
+                        return busy(() => origPrint.apply(this, args));
+                    };
+                }
+                if (typeof origSend === 'function') {
+                    // The link dropped just as a receipt started, before ANY byte was accepted (so nothing has been printed): reconnect and send it once
+                    // more. If some of it had already gone out this is NOT repeated — that would print half a receipt twice.
+                    window[sendName] = async function (bytes) {
+                        if (!hwIsReady(kind)) await hwEnsureReady(kind);
+                        try { return await busy(() => origSend.call(this, bytes)); }
+                        catch (e) {
+                            if (e && e.hwTimeout) {                                     // it stopped answering: forget the handle so the keeper reopens it; never re-send
+                                if (kind === 'usb') { usbPrinterDevice = null; usbPrinterEndpoint = null; } else { btPrinterCharacteristic = null; }
+                                hwKick(500);
+                                throw e;
+                            }
+                            if (!hwLinkLost(e) || e.hwWritten !== 0) throw e;
+                            if (kind === 'usb') { usbPrinterDevice = null; usbPrinterEndpoint = null; } else { btPrinterCharacteristic = null; }
+                            if (!(await hwEnsureReady(kind))) throw e;
+                            return busy(() => origSend.call(this, bytes));
+                        }
+                    };
+                }
+            });
+        }
+
+//@fn hwKeeperStart
+function hwKeeperStart() {
+            // The printer keeper. A USB or Bluetooth printer that was used last is looked for again whenever it is not connected — after the
+            // power went off, the printer was switched off and on, the cable was pulled, the device went out of range or the app was reopened —
+            // and connected the moment it is there, with no visit to Settings. If it is not there it keeps checking (3 s, then a little slower,
+            // never slower than every 30 s). System-dialog printing has nothing to connect, so it is left alone.
+            if (window.__hwKeeper) return;
+            window.__hwKeeper = { fails: 0, timer: null, running: false, printing: 0, everReady: false };
+            hwWrapPrinting();
+            const kick = () => hwKick(200);
+            document.addEventListener('visibilitychange', () => { if (!document.hidden) kick(); });
+            window.addEventListener('focus', kick);
+            window.addEventListener('online', kick);
+            try { if (navigator.usb) navigator.usb.addEventListener('connect', kick); } catch (e) { /* no WebUSB here */ }
+            hwKick(400);
+        }
+
+//@fn hwKick
+function hwKick(delay) {
+            const k = window.__hwKeeper;
+            if (!k) return;
+            k.fails = 0;                                        // something just changed: start looking eagerly again
+            hwSchedule(delay == null ? 200 : delay);
+        }
+
+//@fn hwSchedule
+function hwSchedule(ms) {
+            const k = window.__hwKeeper;
+            if (!k) return;
+            clearTimeout(k.timer);
+            k.timer = setTimeout(hwTick, ms);
+        }
+
+//@fn hwTick
+async function hwTick() {
+            const k = window.__hwKeeper;
+            if (!k || k.running) return;
+            k.running = true;
+            let next = 3000;
+            try {
+                const mode = typeof printerMode !== 'undefined' ? printerMode : 'system';
+                if (document.hidden) { next = 15000; }
+                else if (mode !== 'usb' && mode !== 'bluetooth') { next = 3000; }                  // nothing to connect (or the mode is about to change)
+                else if (k.printing > 0) { next = 2000; }                                          // never reconnect in the middle of a receipt
+                else {
+                    const kind = mode === 'usb' ? 'usb' : 'bt';
+                    if ((kind === 'usb' && !navigator.usb) || (kind === 'bt' && !navigator.bluetooth)) { next = 30000; return; }      // this browser has no such API
+                    const ok = kind === 'usb' ? await hwUsbReconnect() : await hwBtReconnect();
+                    const was = k.lastReady === true;                                              // what the previous check found
+                    const changed = k.lastReady !== !!ok;
+                    k.lastReady = !!ok;
+                    if (ok) {
+                        k.fails = 0;
+                        next = 5000;
+                        // it was missing at the last check and is here now (whoever reconnected it): tell the cashier once
+                        if (!was && k.everReady && typeof showToast === 'function') showToast('🖨️ Printer connected again.');
+                        k.everReady = true;
+                        if (kind === 'bt' && btPrinterDevice && btPrinterDevice.id && localStorage.getItem(hwKey('bt_printer_id')) !== btPrinterDevice.id) safeSetItem(hwKey('bt_printer_id'), btPrinterDevice.id);
+                        if (!was) hwStatus(kind, 'success', `Connected: ${kind === 'usb' ? (usbPrinterDevice && usbPrinterDevice.productName) || 'USB printer' : (btPrinterDevice && btPrinterDevice.name) || 'Bluetooth printer'}`);
+                    } else {
+                        k.fails++;
+                        next = Math.min(30000, Math.round(2000 * Math.pow(1.5, Math.min(k.fails, 12))));
+                        const saved = localStorage.getItem(kind === 'usb' ? usbPrinterNameKey() : hwKey('bt_printer_name'));
+                        if (kind === 'bt' && window.__hwBtReason === 'needs-pairing') {
+                            hwStatus('bt', '', saved ? `Last connected: ${saved}. Tap Connect once — this browser can’t reopen a Bluetooth printer by itself after the page reloads.` : '');
+                        } else if (saved) {
+                            hwStatus(kind, '', `Looking for ${saved} — it seems to be switched off, out of range or unplugged. It will connect by itself as soon as it is back…`);
+                        }
+                    }
+                    if (changed) {                                                                 // (not every few seconds: it also reports to the server)
+                        if (typeof updatePrintRelaySectionVisibility === 'function') updatePrintRelaySectionVisibility();
+                        if (typeof updateStatusDot === 'function') { try { updateStatusDot(); } catch (e) { /* the hardware block is not on this page */ } }
+                    }
+                }
+            } catch (e) {
+                next = 10000;
+            } finally {
+                k.running = false;
+                hwSchedule(next);
+            }
+        }
+

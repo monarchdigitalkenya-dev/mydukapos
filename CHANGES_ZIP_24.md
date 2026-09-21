@@ -1,4 +1,4 @@
-# Zips 24 - 46 — what changed
+# Zips 24 - 49 — what changed
 
 ## Aqua POS (water): each site has its own bulk tank
 * Production and every Shop branch have their own tanks. Refills, sales and bulk orders draw only from their own site.
@@ -192,3 +192,26 @@ If clients on zip 24+ with big shops report reverts, ALSO check the Owner Consol
 * **Cylinders with the supplier are counted**: sent empties (Empty -, With supplier +), refilled ones received (Full +, With supplier -), or swapped on the spot. The number of cylinders you own is always visible.
 * **Fixed (Shop app): every refill/exchange added TWO empty cylinders instead of one** (the empty was credited in two places). Now once.
 * The old gas tab (variant manager, separate accessory manager, single burner/holder pickers) is replaced. Existing sizes and accessories carry over.
+
+## Zip 47  (fixes for the errors the shops reported — Owner Console -> Errors)
+* **"Cannot read properties of undefined (reading 'length')"** (owner, shop, services, hospital: 15 of the 21 groups): the barcode-scanner keydown handler read `e.key.length`; some keyboards / autofill send a keydown
+  event with no `key`. Guarded in every app (and the Owner Console).
+* **"Cannot read properties of undefined (reading 'toFixed')"** (Shop, one shop): an item saved without a price made `getEffectivePrice()` return undefined, and every place showing a price threw. It now always returns a
+  number, and every place that showed a bare `item.price` / `line.price` / wholesale / piece price with toFixed is wrapped to a number (129 places across the apps).
+
+## Zip 48  (DEPLOY THE ROUTER FIRST: `npm run deploy:router`, then `npm run deploy`)
+* **The Online / Syncing / Offline badge tells the truth and recovers by itself.** Causes fixed: a 3.5 s limit on every pull (a slow line or a cold server ended in "Offline"; several hard refreshes were needed); a retry wait of
+  up to 60 s after a failed save during which the badge was never re-checked; navigator.onLine believed as fact; saves with no time limit (a stalled one sat on "Syncing…" for minutes); server errors labelled "Offline".
+  Now: the badge follows whether the server actually answers (a tiny check); pulls get patience (45 s first pull, 12 s polls, doubling up to 90 s while the server is reachable); a dropped connection ends the retry wait the moment
+  the server answers; saves give up after 40 s; a server error is "Sync Error"; the wait is capped at 15 s and is kept only for pushes the server ANSWERED and refused. Shop, Hotel, Hospital, School, Production, Services,
+  Pharmacy, Aqua POS and the Owner Console.
+* **Printers reconnect by themselves** (USB and Bluetooth, all apps): the last-used printer is looked for again whenever it is not connected (after a power cut, switch off/on, unplug, out of range, app reopened) and connected the
+  moment it is there; if it is not there it keeps checking (3 s, slowing to 30 s). USB claims ONLY the remembered printer (never another permitted USB device); Bluetooth reopens the same printer without the chooser (and, where the
+  browser supports remembered devices, after a reload, and the moment it advertises). A print right after the printer was switched on finds it (up to 4 s); a link that drops before the first byte is reconnected and the receipt sent
+  once; one that drops part way is NOT re-sent. Every write has a 15 s limit so a stuck printer cannot block later prints. The shared print relay keeps its ON setting while the printer is off (it used to switch itself off for good).
+  System-dialog printing has nothing to connect and is unchanged.
+
+## Zip 49  (tests only — no change to the apps)
+* `npm test` failed on the owner's machine at "a save that runs out of room ... the device archives and the save goes through". The test waited a fixed 1.5 s for the archive to finish; with the whole suite running in
+  parallel the machine was many times slower and it had not finished. That test, the debounce-push waits in e2e-revert, and the waits in owner-storage-ui, regressions and usb now poll for the result instead of sleeping.
+  The test page loader also measures how starved the machine is and stretches its settle time to match (1x on a quiet machine, up to 8x).

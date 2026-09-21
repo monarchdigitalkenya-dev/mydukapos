@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { IDBFactory } from 'fake-indexeddb';
-import { boot, APPS } from './helpers.mjs';
+import { boot, APPS, until } from './helpers.mjs';
 
 // The device archives its own oldest history at 80% full — silently, losslessly, and with no message for the cashier.
 const DAY = 86400000;
@@ -57,7 +57,7 @@ test('a save that runs out of room does not show the cashier an error; the devic
   const big = JSON.stringify({ data: hard(900000) });
   w.eval(`window.__ok = safeSetItem('pos_customers', ${JSON.stringify(big)})`);
   assert.equal(w.eval('window.__ok'), false, 'the first attempt did not fit');
-  await new Promise((r) => setTimeout(r, 1500));                                              // archive runs, then the save is repeated
+  await until(() => w.eval('salesLog.length') === 1 && w.localStorage.getItem('pos_customers') === big);      // archive runs, then the save is repeated
   assert.equal(w.eval('window.__toasts || []').length, 0, 'no toast for the cashier');
   assert.equal(w.eval("salesLog.length"), 1, 'old sales were archived to make room');
   assert.equal(w.localStorage.getItem('pos_customers'), big, 'the save that failed went through');

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boot } from './helpers.mjs';
+import { boot, until } from './helpers.mjs';
 
 // Owner Console 💾 Storage tab: renders the list from /api/owner-storage, shows the alert + badge, and drives Compress.
 const SHOPS = {
@@ -213,7 +213,7 @@ test('Storage tab: shops that have no size yet are measured automatically, one a
   };
   const { w, d, errors, close } = await boot('owner/index.html', { fetch, wait: 900 });
   await w.eval('loadStorage()');
-  await new Promise((r) => setTimeout(r, 1500));
+  await until(() => calls.length >= 2 && !/Not measured yet/.test(d.getElementById('storage-table').textContent));
   assert.deepEqual(calls, ['K1', 'K2'], 'only the shops with no size, in order; not the known one, not the database shop');
   const text = d.getElementById('storage-table').textContent;
   assert.doesNotMatch(text, /Not measured yet/, 'nothing is left unmeasured');

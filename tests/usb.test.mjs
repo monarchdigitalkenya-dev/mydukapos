@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { boot } from './helpers.mjs';
+import { boot, until } from './helpers.mjs';
 
 for (const app of ['index.html', 'water/index.html', 'hotel/index.html']) {
   test(`${app}: USB printer connects, reports unplug, reconnects on replug`, async () => {
@@ -19,7 +19,7 @@ for (const app of ['index.html', 'water/index.html', 'hotel/index.html']) {
     assert.equal(w.eval('usbPrinterDevice === null'), true);
     w.eval("printerMode='usb'");
     usb.dispatchEvent(Object.assign(new w.Event('connect'), { device: dev }));
-    await new Promise((r) => setTimeout(r, 200));
+    await until(() => /Connected: XP-80/.test(status()));
     assert.match(status(), /Connected: XP-80/);
     close();
   });
