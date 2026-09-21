@@ -87,6 +87,8 @@ export function regionText(names, lib) {
 // Whole HTML+script blocks that are identical in every app (e.g. the Hardware icon).
 export const SHARED_BLOCKS = {
   'hardware-quick-access': { startMarker: '<!-- HARDWARE QUICK-ACCESS' },
+  'hold-sale': { startMarker: '<!-- HOLD SALE' },
+  'stock-take': { startMarker: '<!-- STOCK TAKE TAB', skip: ['water/index.html'] },
   'storage-and-photos': { startMarker: '<!-- STORAGE & PHOTOS' },
   'storage-compress': { startMarker: '<!-- STORAGE COMPRESSION', owner: true },   // must come first in <head>: everything below reads localStorage through it
   'error-reporting': { startMarker: '<!-- ERROR REPORTING', owner: true },   // also goes into the owner console

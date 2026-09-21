@@ -1,4 +1,4 @@
-# Zips 24 - 49 — what changed
+# Zips 24 - 51 — what changed
 
 ## Aqua POS (water): each site has its own bulk tank
 * Production and every Shop branch have their own tanks. Refills, sales and bulk orders draw only from their own site.
@@ -214,4 +214,28 @@ If clients on zip 24+ with big shops report reverts, ALSO check the Owner Consol
 ## Zip 49  (tests only — no change to the apps)
 * `npm test` failed on the owner's machine at "a save that runs out of room ... the device archives and the save goes through". The test waited a fixed 1.5 s for the archive to finish; with the whole suite running in
   parallel the machine was many times slower and it had not finished. That test, the debounce-push waits in e2e-revert, and the waits in owner-storage-ui, regressions and usb now poll for the result instead of sleeping.
-  The test page loader also measures how starved the machine is and stretches its settle time to match (1x on a quiet machine, up to 8x).
+
+## Zip 50  (DEPLOY THE ROUTER FIRST: `npm run deploy:router`, then `npm run deploy`) — includes zips 48 and 49
+New options
+* **⏸️ Hold sale** on the Sales Counter (Shop, Hotel, Hospital, Production, Services, Pharmacy, Aqua POS): one sale can be held at a time per device; **▶️ Held¹** brings it back
+  (lines, typed customer details and payment method). Nothing is deducted while it waits.
+* **Record a Past Sale** takes every payment method: cash, M-Pesa (code + payer), card (reference), split (cash + M-Pesa, must add up) and bill (Pay Later: goes to the Bills tab dated then,
+  with anything already paid recorded as a partial payment).
+* **Restock and Orders**: items at or below the low-stock level show as tappable buttons; a tap adds the item to the form with its last cost and the cursor in the quantity box ("Add all" too).
+  Orders have a **💬 WhatsApp** button and **Save & send on WhatsApp** in the form (the supplier's number is asked once and remembered).
+* **📋 Stock Take tab** (all shop-type apps): type what you counted; differences are valued at cost; only counted items change; every change is logged as a "Stock take" adjustment
+  (loose pieces counted separately); recent stock takes are kept on the device.
+Fixes
+* **Settled bills are kept** (closed) and show under "Show closed bills" instead of being deleted the moment they are paid (all six apps with bills); closed bills older than 90 days are tidied away.
+* **Bills only move forward on the server**: a settled bill / a payment can never be undone by an older-looking copy from a slow till, and a deleted bill / debt / supplier / delivery zone / recurring expense /
+  contract stays deleted even if a till that still holds it touches it (the cause of "a settled bill came back after a refresh").
+* **Order ticket on the system printer**: receipt-width, auto-length page (it used to use a full page, wasting paper) and pure black heavy text like the sales receipt (it was blurred).
+* **Printing is fast**: a system-dialog print no longer waits on a network check (remembered 30 s, at most 1.2 s wait), and the print queue moves on if a phone never reports a print finished.
+* **The sync indicator is a wordless dot** (green online, black offline, orange syncing) that does not flicker: quick syncs never turn it orange, blips never turn it black.
+* **Bug scan** (`npm run lint`, also part of `npm test`): finds names used but never declared and buttons calling functions that do not exist. Fixed what it found: Aqua POS carried purchasing code
+  it does not use; Hospital / Pharmacy / School threw and swallowed an error on every sync for lists they do not have; the Owner Console called printer code it does not have.
+* Tests: the loader no longer stretches its waits (it made multi-device tests twice as slow); fixed waits in five test files are polls.
+
+## Zip 51  (tools only — no change to the apps)
+* The bug scan (`tools/lint-globals.mjs`, run by `npm test` and `npm run lint`) built its file paths from `URL.pathname`, which on Windows is `/C:/dev/...` and became `C:\C:\dev\...`, so its 9 tests
+  failed there (549 of 558 passed on Windows; everything else was green). It now uses `fileURLToPath`.

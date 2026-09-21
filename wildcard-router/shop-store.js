@@ -20,7 +20,7 @@
 // Talks to the Pages Function (functions/api/pos-sync.js) over fetch(): POST /push /state /changes /history /import /export /stats.
 
 import {
-  MERGE_BY_ID_FIELDS, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift, reconcileQuantities,
+  MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift, reconcileQuantities,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
 
@@ -76,7 +76,7 @@ export class ShopStore {
     const t = recordTime(r);
     return Number.isFinite(t) ? Math.floor(t) : 0;
   }
-  getRow(col, rk) { return this.q('SELECT rk, upd, json FROM records WHERE col = ? AND rk = ?', col, rk)[0]; }
+  getRow(col, rk) { return this.q('SELECT rk, upd, del, json FROM records WHERE col = ? AND rk = ?', col, rk)[0]; }
 
   // Same rule as mergeRecordsById: an incoming record replaces the stored one unless the stored one is strictly newer.
   upsert(col, rk, rec) {
@@ -89,7 +89,19 @@ export class ShopStore {
         col, rk, this.timeOf(col, rec), upd, ++this.pos, ++this.seq, code, json, rec && rec._deleted === true ? 1 : 0);
       return true;
     }
-    if (upd >= (row.upd || 0) && row.json !== json) {
+    // Same rule as mergeRecordsById: for the lists in FINAL_TOMBSTONE_FIELDS (unique ids, never re-created) a tombstone is final.
+    if (row.del === 1 && !(rec && rec._deleted === true) && rk.startsWith('id:') && FINAL_TOMBSTONE_FIELDS.includes(col)) return false;
+    // Bills only move forward (see billProgress in _merge.js): the more advanced record wins whatever the times say.
+    let forceReplace = false;
+    if (col === 'bills' && row.del !== 1 && !(rec && rec._deleted === true)) {
+      let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
+      if (stored) {
+        const c = compareBillProgress(stored, rec);
+        if (c > 0) return false;
+        if (c < 0) forceReplace = true;
+      }
+    }
+    if ((forceReplace || upd >= (row.upd || 0)) && row.json !== json) {
       this.sql.exec('UPDATE records SET ts = ?, upd = ?, seq = ?, code = ?, json = ?, del = ? WHERE col = ? AND rk = ?',
         this.timeOf(col, rec), upd, ++this.seq, code, json, rec && rec._deleted === true ? 1 : 0, col, rk);
       return true;

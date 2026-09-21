@@ -821,20 +821,27 @@ async function checkPaymentGatewayStatus() {
         }
 
 //@fn checkPrintRelayAvailable
-async function checkPrintRelayAvailable() {
-            try {
-                const res = await fetch(apiUrl('/api/print-relay'), {
+function checkPrintRelayAvailable() {
+            // "Is a shop printer waiting to take this job?" A print must never wait on the network for the answer (it used to: a slow or hung
+            // request held every receipt back for up to a minute). The answer is remembered for 30 s and refreshed in the background; if a fresh
+            // one is not back within 1.2 s the last known answer is used and the receipt prints at once.
+            const c = window.__relayAvail || (window.__relayAvail = { at: 0, value: false, pending: null });
+            if (Date.now() - c.at < 30000) return Promise.resolve(c.value);
+            if (!c.pending) {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 6000);
+                c.pending = fetch(apiUrl('/api/print-relay'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ action: 'checkAvailable' }),
-                });
-                const data = await res.json();
-                return !!(res.ok && data.available);
-            } catch (e) {
-                return false;
+                    signal: controller.signal,
+                }).then((res) => res.json().then((data) => !!(res.ok && data.available)))
+                    .catch(() => false)
+                    .then((v) => { c.value = v; c.at = Date.now(); return v; })
+                    .finally(() => { clearTimeout(timer); c.pending = null; });
             }
+            return Promise.race([c.pending, new Promise((resolve) => setTimeout(() => resolve(c.value), window.__relayWaitMs || 1200))]);
         }
-
 //@fn claimLicensePayment
 async function claimLicensePayment() {
             if (paymentClaimInFlight) return;
@@ -3762,6 +3769,10 @@ function openRecordPastSaleModal() {
             document.getElementById('past-sale-qty-input').value = '1';
             document.getElementById('past-sale-price-input').value = '';
             document.getElementById('past-sale-error').textContent = '';
+            ['past-sale-mpesa-code-input', 'past-sale-mpesa-name-input', 'past-sale-card-ref-input', 'past-sale-split-cash-input', 'past-sale-split-mpesa-input', 'past-sale-bill-name-input', 'past-sale-bill-phone-input', 'past-sale-bill-paid-input']
+                .forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
+            const sel = document.getElementById('past-sale-payment-select'); if (sel) sel.value = 'cash';
+            pastSalePaymentChanged();
             document.getElementById('record-past-sale-modal').style.display = 'flex';
         }
 
@@ -4323,10 +4334,22 @@ function pruneOrphanedLocStates(kind, currentLabels) {
 
 //@fn markSync
 function markSync(status) {
-            // Every change of the Online / Syncing / Offline badge goes through here so the app also knows how long it has been in that state.
+            // What the app KNOWS (window.__syncStatus) is updated at once; what is SHOWN (the dot) changes calmly: a poll that answers in a fraction of a
+            // second never turns the dot orange, a blip never turns it black, and the dot does not go orange again every few seconds while offline.
             window.__syncStatus = status;
             window.__syncStatusAt = Date.now();
-            setSyncStatus(status);
+            const ui = window.__syncUi || (window.__syncUi = { shown: null, timer: null });
+            clearTimeout(ui.timer);
+            const show = (s) => { if (ui.shown !== s) { ui.shown = s; setSyncStatus(s); } };
+            if (status === 'synced') { show('synced'); return; }
+            if (status === 'syncing') {
+                if (ui.shown === 'offline') return;                                   // stay black until the result is known
+                if (ui.shown === null) { show('syncing'); return; }                   // first look at start-up
+                ui.timer = setTimeout(() => show('syncing'), window.__syncDotDelayMs || 1500);
+                return;
+            }
+            // offline / error: only if it lasts (a phone that just changed network, a slow answer)
+            ui.timer = setTimeout(() => show(status), navigator.onLine === false ? 600 : (window.__syncDotOfflineMs || 3000));
         }
 
 //@fn probeServer
@@ -5926,11 +5949,17 @@ async function runBackgroundCameraScanTick(video) {
 //@fn runQueuedSystemPrint
 function runQueuedSystemPrint(setupAndPrintFn) {
             return new Promise((resolve) => {
-                const onAfterPrint = () => {
-                    window.removeEventListener('afterprint', onAfterPrint);
+                let done = false;
+                const finish = () => {
+                    if (done) return;
+                    done = true;
+                    window.removeEventListener('afterprint', finish);
+                    clearTimeout(safety);
                     resolve();
                 };
-                window.addEventListener('afterprint', onAfterPrint);
+                // Some phones never fire 'afterprint': without a limit the next receipt in the queue waited behind this one for ever.
+                const safety = setTimeout(finish, window.__printSafetyMs || 20000);
+                window.addEventListener('afterprint', finish);
                 setupAndPrintFn();
             });
         }
@@ -9877,6 +9906,7 @@ function poRenderRows() {
             `;
             }).join('');
             poRenderTotals();
+            if (typeof renderLowStockStrip === 'function') renderLowStockStrip('po');
         }
 
 //@fn poUpdateRowField
@@ -9945,7 +9975,7 @@ function poEnsureSupplier(name) {
         }
 
 //@fn poSaveOrder
-function poSaveOrder() {
+function poSaveOrder(sendAfter) {
             const st = poState();
             const msgEl = document.getElementById('po-form-msg');
             const fail = (text) => { msgEl.textContent = text; msgEl.className = 'settings-msg error'; };
@@ -10002,6 +10032,7 @@ function poSaveOrder() {
             st.filter = 'active';
             renderOrdersList();
             showToast(`${order.orderNo} saved${sup.created ? ` — "${supplierName}" added to your suppliers` : ''}.`);
+            if (sendAfter === true) poSendOrder(order.id);                 // "Save & send on WhatsApp"
         }
 
 //@fn poSetFilter
@@ -10034,6 +10065,7 @@ function poActionsHtml(o) {
             const parts = [];
             if (o.status === 'pending') parts.push(btn('po-btn-transit', '🚚 In Transit', 'poMarkInTransit'));
             if (poIsOpen(o)) parts.push(btn('po-btn-arrived', '📦 Arrived', 'poOpenArriveModal'));
+            if (o.status !== 'cancelled') parts.push(btn('po-btn-send', '💬 WhatsApp', 'poSendOrder'));
             if (poCanEdit(o)) parts.push(btn('po-btn-edit', '✏️ Edit', 'poOpenForm'));
             if (poIsOpen(o) && stats.receivedLines > 0) parts.push(btn('po-btn-edit', '✔ Close order', 'poCloseShort'));
             if (poCanEdit(o)) parts.push(btn('po-btn-cancel', '✖ Cancel', 'poCancelOrder'));
@@ -10064,6 +10096,7 @@ function poDetailsHtml(o) {
             }).join('<br>');
             return `
                 ${o.note ? `<p class="po-note">📝 ${escapeHtml(o.note)}</p>` : ''}
+                ${o.sentToSupplierAt ? `<p class="po-note">💬 Sent to supplier ${escapeHtml(poFormatDateTime(o.sentToSupplierAt))}</p>` : ''}
                 <div class="table-scroll"><table class="po-detail-table">
                     <thead><tr><th>Item</th><th>Qty</th><th>Cost/Unit</th><th>Retail</th><th>Wholesale</th><th>Line Total</th></tr></thead>
                     <tbody>${lines}</tbody>
@@ -11887,5 +11920,558 @@ async function hwTick() {
                 k.running = false;
                 hwSchedule(next);
             }
+        }
+
+//@fn heldSaleKey
+function heldSaleKey() {
+            return 'held_sale_v1:' + location.pathname;
+        }
+
+//@fn heldSaleGet
+function heldSaleGet() {
+            try {
+                const raw = localStorage.getItem(heldSaleKey());
+                const h = raw ? JSON.parse(raw) : null;
+                return h && h.lines && Object.keys(h.lines).length ? h : null;
+            } catch (e) { return null; }
+        }
+
+//@fn heldSalePanel
+function heldSalePanel() {
+            // The part of the Sales Counter that belongs to the sale in progress (cart, payment method, customer, amounts tendered...).
+            const table = document.getElementById('cart-table');
+            return table ? (table.closest('.panel') || table.closest('.tab-content') || document.body) : null;
+        }
+
+//@fn heldSaleFields
+function heldSaleFields() {
+            const panel = heldSalePanel();
+            if (!panel) return [];
+            return Array.from(panel.querySelectorAll('input[id], select[id], textarea[id]')).filter((el) => !/search|patient-bill|^held-|quote/i.test(el.id) && el.type !== 'file' && el.type !== 'button');
+        }
+
+//@fn holdCurrentSale
+function holdCurrentSale() {
+            // ONE sale can be on hold at a time: a customer who is not ready to pay while there is a queue steps aside; the cashier serves the next
+            // person, then brings the held sale back with "Held" and completes it. Nothing is deducted while it waits (a held sale is just a cart).
+            if (Object.keys(currentCart).length === 0) { showToast('The cart is empty — nothing to hold.', true); return false; }
+            const existing = heldSaleGet();
+            if (existing) { showToast('A sale is already on hold. Bring it back with "Held" first — only one can be held at a time.', true); return false; }
+            const fields = {};
+            heldSaleFields().forEach((el) => { fields[el.id] = el.type === 'checkbox' || el.type === 'radio' ? { c: el.checked } : { v: el.value }; });
+            const total = (typeof cartTotal === 'function') ? cartTotal() : 0;
+            const held = {
+                savedAt: new Date().toISOString(),
+                by: (typeof activeServerName === 'function') ? activeServerName() : '',
+                total,
+                method: typeof currentPaymentMethod !== 'undefined' ? currentPaymentMethod : null,
+                lines: JSON.parse(JSON.stringify(currentCart)),
+                fields,
+            };
+            try { localStorage.setItem(heldSaleKey(), JSON.stringify(held)); }
+            catch (e) { showToast('Could not put the sale on hold (storage is full).', true); return false; }
+            currentCart = {};
+            // the next customer starts clean: typed amounts / names of the held sale are cleared (they come back with it)
+            heldSaleFields().forEach((el) => { if (/^(text|number|tel|email|date|time)$/.test(el.type) || el.tagName === 'TEXTAREA') el.value = ''; });
+            if (typeof updateChangeDue === 'function') { try { updateChangeDue(); } catch (e) { /* cosmetic */ } }
+            renderCart();
+            renderHeldSaleBar();
+            showToast(`Sale put on hold (${Object.keys(held.lines).length} item${Object.keys(held.lines).length === 1 ? '' : 's'}, KES ${Number(total).toFixed(2)}). Serve the next customer — tap "Held" to bring it back.`);
+            return true;
+        }
+
+//@fn resumeHeldSale
+function resumeHeldSale() {
+            const held = heldSaleGet();
+            if (!held) { showToast('Nothing is on hold.', true); renderHeldSaleBar(); return false; }
+            if (Object.keys(currentCart).length > 0) { showToast('Finish (or clear) the sale you are on first, then tap "Held".', true); return false; }
+            currentCart = JSON.parse(JSON.stringify(held.lines));
+            heldSaleFields().forEach((el) => {
+                const f = held.fields && held.fields[el.id];
+                if (!f) return;
+                if ('c' in f) el.checked = f.c; else if ('v' in f) el.value = f.v;
+            });
+            if (held.method && typeof setPaymentMethod === 'function') { try { setPaymentMethod(held.method); } catch (e) { /* the method is not available in this app any more */ } }
+            try { localStorage.removeItem(heldSaleKey()); } catch (e) { /* nothing */ }
+            // Stock may have moved while the customer was thinking: say so, but never block.
+            const short = [];
+            try {
+                const stock = typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : [];      // (Aqua POS keeps products elsewhere: no check there)
+                Object.values(currentCart).forEach((line) => {
+                    if (line.isService) return;
+                    const p = stock.find((x) => x.code === line.code);
+                    if (!p || typeof getAvailableStock !== 'function') return;
+                    const avail = getAvailableStock(p, line.saleMode);
+                    if (avail < line.qty) short.push(`${line.name} (${avail <= 0 ? 0 : avail} left)`);
+                });
+            } catch (e) { /* a stock warning is an extra: never stop the sale coming back */ }
+            if (typeof updateChangeDue === 'function') { try { updateChangeDue(); } catch (e) { /* cosmetic */ } }
+            renderCart();
+            renderHeldSaleBar();
+            showToast(`Held sale is back in the cart (${Object.keys(currentCart).length} item${Object.keys(currentCart).length === 1 ? '' : 's'}) — complete it now.`);
+            if (short.length) showToast('Stock has changed since it was held: ' + short.join(', ') + '.', true);
+            return true;
+        }
+
+//@fn renderHeldSaleBar
+function renderHeldSaleBar() {
+            const table = document.getElementById('cart-table');
+            if (!table) return;
+            let bar = document.getElementById('held-sale-bar');
+            if (!bar) {
+                bar = document.createElement('div');
+                bar.id = 'held-sale-bar';
+                bar.style.cssText = 'display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:4px 0 10px;';
+                bar.innerHTML = '<button type="button" id="hold-sale-btn" class="settings-small-btn" style="background:#f39c12; color:#fff; padding:8px 14px;" onclick="holdCurrentSale()">⏸️ Hold sale</button>'
+                    + '<button type="button" id="resume-held-btn" class="settings-small-btn" style="display:none; background:#8e44ad; color:#fff; padding:8px 14px;" onclick="resumeHeldSale()">▶️ Held<sup>1</sup> <span id="held-sale-info" style="font-weight:normal; font-size:12px;"></span></button>';
+                const wrap = table.closest('.table-scroll') || table;
+                wrap.parentNode.insertBefore(bar, wrap);
+            }
+            const held = heldSaleGet();
+            const hold = document.getElementById('hold-sale-btn'), resume = document.getElementById('resume-held-btn');
+            if (hold) { hold.disabled = !!held || Object.keys(currentCart).length === 0; hold.title = held ? 'A sale is already on hold' : 'Put this sale aside while you serve someone else'; hold.style.opacity = hold.disabled ? '0.5' : '1'; }
+            if (resume) {
+                resume.style.display = held ? '' : 'none';
+                const info = document.getElementById('held-sale-info');
+                if (held && info) info.textContent = `KES ${Number(held.total || 0).toFixed(2)} · ${new Date(held.savedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+                resume.title = held ? `${Object.keys(held.lines).length} item(s) waiting — tap to bring the sale back` : '';
+            }
+        }
+
+//@fn heldSaleInstall
+function heldSaleInstall() {
+            if (window.__heldSaleInstalled) return;
+            window.__heldSaleInstalled = true;
+            if (!document.getElementById('cart-table')) return;                     // this app has no Sales Counter cart (School)
+            const orig = window.renderCart;
+            if (typeof orig === 'function') {
+                window.renderCart = function (...args) {
+                    const r = orig.apply(this, args);
+                    try { renderHeldSaleBar(); } catch (e) { /* the bar is an extra */ }
+                    return r;
+                };
+            }
+            renderHeldSaleBar();
+        }
+
+//@fn pastSalePaymentChanged
+function pastSalePaymentChanged() {
+            const method = (document.getElementById('past-sale-payment-select') || {}).value;
+            const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? 'block' : 'none'; };
+            show('past-sale-mpesa-panel', method === 'mpesa');
+            show('past-sale-card-panel', method === 'card');
+            show('past-sale-split-panel', method === 'split');
+            show('past-sale-bill-panel', method === 'bill');
+            const err = document.getElementById('past-sale-error');
+            if (err) err.textContent = '';
+        }
+
+//@fn pastSalePaymentDetails
+function pastSalePaymentDetails(total) {
+            // Reads the payment part of the "Record a Past Sale" form. Returns { error } or { method, paid, fields, amountPaid, billName, ... }.
+            const val = (id) => { const el = document.getElementById(id); return el ? String(el.value || '').trim() : ''; };
+            const num = (id) => { const n = parseFloat(val(id)); return isNaN(n) ? 0 : n; };
+            const r2 = (n) => Math.round(n * 100) / 100;
+            const method = val('past-sale-payment-select') || 'cash';
+            const base = { paymentMethod: method, paid: true, cashAmount: 0, mpesaAmount: 0, cardAmount: 0 };
+            if (method === 'cash') return { method, paid: true, fields: { ...base, cashAmount: total, amountTendered: total, change: 0 } };
+            if (method === 'mpesa') {
+                const code = val('past-sale-mpesa-code-input').toUpperCase(), name = val('past-sale-mpesa-name-input');
+                return { method, paid: true, fields: { ...base, mpesaAmount: total, ...(code ? { mpesaReceiptNumber: code } : {}), ...(name ? { mpesaPayerName: name } : {}) } };
+            }
+            if (method === 'card') {
+                const ref = val('past-sale-card-ref-input');
+                return { method, paid: true, fields: { ...base, cardAmount: total, ...(ref ? { cardReference: ref } : {}) } };
+            }
+            if (method === 'split') {
+                const cash = num('past-sale-split-cash-input'), mpesa = num('past-sale-split-mpesa-input');
+                if (cash < 0 || mpesa < 0) return { error: 'Split amounts cannot be negative.' };
+                if (Math.abs(r2(cash + mpesa) - r2(total)) > 0.005) return { error: `Cash + M-Pesa must add up to the sale total (KES ${r2(total).toFixed(2)}); you have KES ${r2(cash + mpesa).toFixed(2)}.` };
+                const code = val('past-sale-mpesa-code-input').toUpperCase();
+                return { method, paid: true, fields: { ...base, cashAmount: cash, mpesaAmount: mpesa, amountTendered: cash, change: 0, ...(mpesa > 0 && code ? { mpesaReceiptNumber: code } : {}) } };
+            }
+            if (method === 'bill') {
+                const name = val('past-sale-bill-name-input');
+                if (!name) return { error: 'A Pay Later sale needs the customer\u2019s name.' };
+                const paidNow = num('past-sale-bill-paid-input');
+                if (paidNow < 0 || paidNow > total + 0.005) return { error: `The amount already paid must be between 0 and KES ${r2(total).toFixed(2)}.` };
+                return { method, paid: false, billName: name, billPhone: val('past-sale-bill-phone-input'), amountPaid: r2(paidNow), upfrontMethod: val('past-sale-bill-method-select') || 'cash',
+                    fields: { paymentMethod: 'bill', paid: false, cashAmount: 0, mpesaAmount: 0, cardAmount: 0, customerName: name, ...(val('past-sale-bill-phone-input') ? { customerPhone: val('past-sale-bill-phone-input') } : {}) } };
+            }
+            return { error: 'Choose a payment method.' };
+        }
+
+//@fn pastSaleStore
+function pastSaleStore(saleRecord, payment) {
+            // A paid past sale goes into the sales log, dated when it really happened. A Pay Later one goes to the Bills tab (dated the same way), and
+            // anything already paid on it is recorded as its own partial payment — exactly what the Sales Counter does.
+            if (!payment || payment.paid) {
+                salesLog.push(saleRecord);
+                safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+                return;
+            }
+            const total = saleRecord.items.reduce((s, l) => s + l.price * l.qty, 0);
+            saleRecord.amountPaid = payment.amountPaid || 0;
+            saleRecord.fulfillmentType = 'carried_immediately';
+            saleRecord.fulfillmentStatus = 'fulfilled';
+            saleRecord.inventoryDeducted = true;
+            saleRecord.paymentHistory = [];
+            if (saleRecord.amountPaid > 0) {
+                const m = payment.upfrontMethod;
+                saleRecord.paymentHistory.push({ id: genSaleId(), timestamp: saleRecord.timestamp, amount: saleRecord.amountPaid, method: m, reference: '', balanceAfter: Math.round((total - saleRecord.amountPaid) * 100) / 100 });
+                salesLog.push({
+                    id: genSaleId(), timestamp: saleRecord.timestamp, paid: true, paymentMethod: m, servedBy: saleRecord.servedBy, recordedLate: true,
+                    customerName: payment.billName,
+                    items: [{ name: `Partial payment — Bill (${payment.billName})`, price: saleRecord.amountPaid, qty: 1, unit: 'payment', wholesalePrice: 0, vatCategory: 'A' }],
+                    cashAmount: m === 'cash' ? saleRecord.amountPaid : 0, mpesaAmount: m === 'mpesa' ? saleRecord.amountPaid : 0, cardAmount: m === 'card' ? saleRecord.amountPaid : 0,
+                    amountTendered: m === 'cash' ? saleRecord.amountPaid : 0, change: 0,
+                });
+                safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+            }
+            if (typeof recomputeBillStatus === 'function') { try { recomputeBillStatus(saleRecord); } catch (e) { /* the Bills tab recomputes on open */ } }
+            bills.push(saleRecord);
+            safeSetItem('pos_bills', JSON.stringify(bills));
+            if (typeof createBillNotification === 'function') { try { createBillNotification('new_bill', saleRecord); } catch (e) { /* a notification is an extra */ } }
+            if (document.getElementById('bills-table') && typeof renderBillsTab === 'function') { try { renderBillsTab(); } catch (e) { /* not on screen */ } }
+        }
+
+//@fn lowStockItems
+function lowStockItems() {
+            // Everything that is at or below the low-stock level (Settings), worst first. Services are not stock, and the "empty" half of a gas
+            // cylinder is not something you order.
+            const limit = typeof LOW_STOCK_THRESHOLD !== 'undefined' ? LOW_STOCK_THRESHOLD : 3;
+            return inventory.filter((p) => p && p.type !== 'service' && !p.removed && !(p.isGasCylinder && p.gasRole === 'empty') && (Number(p.qty) || 0) <= limit)
+                .sort((a, b) => (Number(a.qty) || 0) - (Number(b.qty) || 0) || String(a.name || '').localeCompare(String(b.name || '')))
+                .slice(0, 60);
+        }
+
+//@fn lowStockInDraft
+function lowStockInDraft(kind, p) {
+            const same = (r) => (p.code && r.code === p.code) || (r.name && String(r.name).trim().toLowerCase() === String(p.name || '').trim().toLowerCase());
+            if (kind === 'po') return poState().draft.some(same);
+            return typeof restockDraft !== 'undefined' && restockDraft.some(same);
+        }
+
+//@fn renderLowStockStrip
+function renderLowStockStrip(kind) {
+            // "⚠️ Low stock — tap to add": one button per low item, on the Restock form and on the Orders tab. Tapping one puts it on the form
+            // with the quantity box ready for you to fill in.
+            const el = document.getElementById(kind === 'po' ? 'po-lowstock-chips' : 'restock-lowstock-strip');
+            if (!el) return;
+            if (kind !== 'po' && typeof restockDraft === 'undefined') return;
+            const items = lowStockItems();
+            const panel = document.getElementById('po-lowstock-panel');
+            if (kind === 'po' && panel) panel.style.display = items.length ? '' : 'none';
+            if (items.length === 0) { el.innerHTML = kind === 'po' ? '' : '<p class="settings-hint" style="margin:0 0 10px;">Nothing is running low right now.</p>'; return; }
+            const chips = items.map((p) => {
+                const added = lowStockInDraft(kind, p);
+                return `<button type="button" class="lowstock-chip${added ? ' added' : ''}" ${added ? 'disabled' : ''} onclick="lowStockAdd('${kind}', '${escapeJsAttr(p.code)}')" title="${added ? 'Already on the form' : 'Add to the form'}">${escapeHtml(p.name)} <b>${formatQtyDisplay(p.qty || 0, p.unit || 'pcs')}</b> ${added ? '✓' : '➕'}</button>`;
+            }).join('');
+            const remaining = items.filter((p) => !lowStockInDraft(kind, p)).length;
+            el.innerHTML = `<div class="lowstock-head">⚠️ Low stock <span class="settings-hint" style="margin:0;">(${items.length}) — tap one to add it, then enter the quantity</span>${remaining > 1 ? ` <button type="button" class="settings-small-btn" onclick="lowStockAddAll('${kind}')">➕ Add all (${remaining})</button>` : ''}</div><div class="lowstock-chips">${chips}</div>`;
+        }
+
+//@fn lowStockAdd
+function lowStockAdd(kind, code, quiet) {
+            const p = inventory.find((x) => x.code === code);
+            if (!p) return;
+            if (lowStockInDraft(kind, p)) return;
+            let focusEl = null;
+            if (kind === 'po') {
+                const panel = document.getElementById('po-form-panel');
+                if (panel && panel.style.display === 'none') poOpenForm();
+                const st = poState();
+                let row = st.draft.find((r) => !r.name.trim() && !r.code.trim() && r.qty.trim() === '' && String(r.cost).trim() === '' && r.retail === '' && r.wholesale === '');   // reuse the spare blank row
+                if (!row) { row = poNewRow(); st.draft.push(row); }
+                row.name = p.name; row.code = p.code || ''; row.autoCode = row.code; row.unit = p.unit || 'pcs';
+                if (Number(p.wholesalePrice) > 0) row.cost = String(p.wholesalePrice);
+                poRenderRows();
+                focusEl = document.getElementById(`po-row-${row.rowId}-qty`);
+            } else {
+                const last = restockDraft[restockDraft.length - 1];
+                const blank = last && !last.code && !last.name && last.qty === '' && last.cost === '';
+                const row = blank ? last : { rowId: restockRowSeq++, unit: 'pcs', qty: '', cost: '', wholesaleSell: '', sellPrice: '' };
+                Object.assign(row, { code: p.code || '', name: p.name, unit: p.unit || 'pcs', cost: Number(p.wholesalePrice) > 0 ? String(p.wholesalePrice) : '' });
+                if (!blank) restockDraft.push(row);
+                renderRestockRows();
+                const rows = document.querySelectorAll('#restock-rows-tbody tr');
+                const tr = rows[restockDraft.indexOf(row)];
+                focusEl = tr ? tr.querySelector('input[inputmode="decimal"]') : null;
+            }
+            renderLowStockStrip(kind);
+            if (!quiet && focusEl) { try { focusEl.focus(); if (focusEl.scrollIntoView) focusEl.scrollIntoView({ block: 'center' }); } catch (e) { /* cosmetic */ } }
+        }
+
+//@fn lowStockAddAll
+function lowStockAddAll(kind) {
+            lowStockItems().forEach((p) => lowStockAdd(kind, p.code, true));
+            renderLowStockStrip(kind);
+        }
+
+//@fn lowStockInstall
+function lowStockInstall() {
+            if (window.__lowStockInstalled) return;
+            window.__lowStockInstalled = true;
+            const refresh = () => { try { renderLowStockStrip('po'); renderLowStockStrip('restock'); } catch (e) { /* the strips are extras */ } };
+            ['restock-tab-btn', 'orders-tab-btn'].forEach((id) => { const b = document.getElementById(id); if (b) b.addEventListener('click', () => setTimeout(refresh, 60)); });
+            document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+            refresh();
+        }
+
+//@fn poSupplierRecord
+function poSupplierRecord(o) {
+            const name = String(o.supplierName || '').trim().toLowerCase();
+            return suppliers.find((s) => s && ((o.supplierId && s.id === o.supplierId) || (name && String(s.name || '').trim().toLowerCase() === name))) || null;
+        }
+
+//@fn poOrderTotal
+function poOrderTotal(o) {
+            return (o.items || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.cost) || 0), 0);
+        }
+
+//@fn poOrderText
+function poOrderText(o) {
+            const lines = (o.items || []).map((it) => `• ${it.name} × ${formatQtyDisplay(it.qty, it.unit)} ${unitLabel(it.unit)} @ KES ${Number(it.cost || 0).toLocaleString('en-US')}`);
+            return [`*Order ${o.orderNo}* — ${typeof businessName !== 'undefined' && businessName ? businessName : 'our shop'}`, '', ...lines, '', `Total: KES ${poOrderTotal(o).toLocaleString('en-US')}`, o.note ? `Note: ${o.note}` : '', 'Please confirm availability and delivery. Thank you!'].filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
+        }
+
+//@fn poSendOrder
+function poSendOrder(orderId) {
+            // Opens WhatsApp with the order written out, addressed to the supplier (their number is asked for once and remembered).
+            const o = purchaseOrders.find((x) => x.id === orderId && !x.removed);
+            if (!o) return;
+            const sup = poSupplierRecord(o);
+            let phone = sup && sup.phone ? String(sup.phone) : '';
+            if (!phone) {
+                const typed = prompt(`${o.supplierName || 'The supplier'}'s phone number (for WhatsApp) — it is saved for next time:`, '');
+                if (typed === null) return;
+                phone = String(typed).trim();
+                if (phone && sup) { sup.phone = phone; safeSetItem('pos_suppliers', JSON.stringify(suppliers)); if (typeof renderSupplierDropdowns === 'function') renderSupplierDropdowns(); }
+            }
+            const norm = typeof normalizeKenyanPhone === 'function' ? normalizeKenyanPhone(phone) : phone;
+            const digits = String(norm || '').replace(/\D/g, '');
+            const text = poOrderText(o);
+            o.sentToSupplierAt = new Date().toISOString();
+            poSave();
+            if (digits.length >= 9) window.open(`https://wa.me/${digits}?text=${encodeURIComponent(text)}`, '_blank');
+            else if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => showToast('No valid phone number — the order text is copied, paste it into a message.'), () => {});
+            else showToast('Add the supplier\u2019s phone number to send the order.', true);
+            renderOrdersList();
+        }
+
+//@fn stockTakeState
+function stockTakeState() {
+            if (!window.__stState) window.__stState = { counts: {}, q: '', diffOnly: false };
+            return window.__stState;
+        }
+
+//@fn stockTakeItems
+function stockTakeItems() {
+            const st = stockTakeState();
+            const q = st.q.trim().toLowerCase();
+            let list = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
+            if (q) list = list.filter((p) => String(p.name || '').toLowerCase().includes(q) || String(p.code || '').toLowerCase().includes(q));
+            list.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+            if (st.diffOnly) list = list.filter((p) => { const d = stockTakeDiff(p); return d.qty !== 0 || d.pieces !== 0; });
+            return list;
+        }
+
+//@fn stockTakeDiff
+function stockTakeDiff(p) {
+            // What was counted against what the system says (only for the fields that have a count typed in).
+            const c = stockTakeState().counts[p.code] || {};
+            const parse = (raw) => { if (raw === '' || raw == null) return null; const n = typeof parseQtyInput === 'function' ? parseQtyInput(String(raw)) : parseFloat(raw); return Number.isFinite(n) && n >= 0 ? n : NaN; };
+            const q = parse(c.qty), pc = parse(c.pieceQty);
+            const r3 = (n) => Math.round(n * 1000) / 1000;
+            return {
+                counted: q !== null || pc !== null,
+                invalid: Number.isNaN(q) || Number.isNaN(pc),
+                qtyNew: q, pieceNew: pc,
+                qty: q === null || Number.isNaN(q) ? 0 : r3(q - (Number(p.qty) || 0)),
+                pieces: pc === null || Number.isNaN(pc) ? 0 : r3(pc - (Number(p.pieceQty) || 0)),
+            };
+        }
+
+//@fn stockTakeValueOf
+function stockTakeValueOf(p, d) {
+            return (d.qty * (Number(p.wholesalePrice) || 0)) + (d.pieces * (Number(p.pieceWholesalePrice) || 0));
+        }
+
+//@fn stockTakeSet
+function stockTakeSet(code, field, value) {
+            const st = stockTakeState();
+            st.counts[code] = st.counts[code] || {};
+            st.counts[code][field] = String(value).trim();
+            const p = inventory.find((x) => x.code === code);
+            if (!p) return;
+            const row = Array.from(document.querySelectorAll('#stock-take-table tbody tr')).find((tr) => tr.dataset.code === code);
+            if (row) stockTakeFillDiffCell(row, p);
+            stockTakeRenderSummary();
+        }
+
+//@fn stockTakeFillDiffCell
+function stockTakeFillDiffCell(row, p) {
+            const cell = row.querySelector('.st-diff');
+            if (!cell) return;
+            const d = stockTakeDiff(p);
+            const fmt = (n) => (n > 0 ? '+' : '') + (Math.round(n * 1000) / 1000);
+            if (!d.counted) { cell.innerHTML = '<span class="st-muted">—</span>'; return; }
+            if (d.invalid) { cell.innerHTML = '<span class="st-bad">Not a number</span>'; return; }
+            const parts = [];
+            if (d.qtyNew !== null) parts.push(`<span class="${d.qty === 0 ? 'st-ok' : d.qty < 0 ? 'st-bad' : 'st-over'}">${d.qty === 0 ? '✓ matches' : fmt(d.qty)}</span>`);
+            if (d.pieceNew !== null) parts.push(`<span class="${d.pieces === 0 ? 'st-ok' : d.pieces < 0 ? 'st-bad' : 'st-over'}">${d.pieces === 0 ? '✓ loose match' : fmt(d.pieces) + ' loose'}</span>`);
+            cell.innerHTML = parts.join('<br>');
+        }
+
+//@fn stockTakeRenderSummary
+function stockTakeRenderSummary() {
+            const el = document.getElementById('stock-take-summary');
+            if (!el) return;
+            const st = stockTakeState();
+            let counted = 0, changed = 0, short = 0, over = 0, invalid = 0;
+            Object.keys(st.counts).forEach((code) => {
+                const p = inventory.find((x) => x.code === code);
+                if (!p) return;
+                const d = stockTakeDiff(p);
+                if (!d.counted) return;
+                counted++;
+                if (d.invalid) { invalid++; return; }
+                if (d.qty !== 0 || d.pieces !== 0) { changed++; const v = stockTakeValueOf(p, d); if (v < 0) short += -v; else over += v; }
+            });
+            const apply = document.getElementById('stock-take-apply-btn');
+            if (apply) { apply.disabled = counted === 0 || invalid > 0; apply.style.opacity = apply.disabled ? '0.5' : '1'; }
+            el.innerHTML = counted === 0 ? '<p class="settings-hint" style="margin:0;">Type what you actually counted next to each item. Leave items you did not count blank — they are not touched.</p>'
+                : `<p style="margin:0; font-size:14px;"><strong>${counted}</strong> counted · <strong>${changed}</strong> differ${invalid ? ` · <span class="st-bad">${invalid} not a number</span>` : ''}${short ? ` · missing stock worth <span class="st-bad">KES ${Math.round(short).toLocaleString('en-US')}</span> (at cost)` : ''}${over ? ` · extra stock worth <span class="st-over">KES ${Math.round(over).toLocaleString('en-US')}</span>` : ''}</p>`;
+        }
+
+//@fn renderStockTake
+function renderStockTake() {
+            const tbody = document.querySelector('#stock-take-table tbody');
+            if (!tbody) return;
+            const st = stockTakeState();
+            const list = stockTakeItems();
+            if (list.length === 0) { tbody.innerHTML = `<tr><td colspan="5" class="empty-state">${st.diffOnly ? 'No differences to show.' : 'No items match.'}</td></tr>`; stockTakeRenderSummary(); renderStockTakeHistory(); return; }
+            const n = (x) => (Math.round((Number(x) || 0) * 1000) / 1000).toString();
+            tbody.innerHTML = list.slice(0, 400).map((p) => {
+                const c = st.counts[p.code] || {};
+                const code = escapeJsAttr(p.code);
+                const unit = p.unit || 'pcs';
+                const dual = !!p.dualUnit;
+                const sys = dual ? `${n(p.qty)} ${escapeHtml(unitLabel(unit))} + ${n(p.pieceQty)} loose` : `${n(p.qty)} ${escapeHtml(unitLabel(unit))}`;
+                const inputs = `<input type="text" inputmode="decimal" class="st-input" placeholder="${dual ? 'boxes' : 'counted'}" value="${escapeHtml(c.qty || '')}" oninput="stockTakeSet('${code}', 'qty', this.value)">`
+                    + (dual ? `<input type="text" inputmode="decimal" class="st-input" placeholder="loose" value="${escapeHtml(c.pieceQty || '')}" oninput="stockTakeSet('${code}', 'pieceQty', this.value)">` : '');
+                return `<tr data-code="${escapeHtml(p.code)}"><td><strong>${escapeHtml(p.name)}</strong><div class="st-muted">${escapeHtml(p.code)}</div></td><td>${sys}</td><td class="st-inputs">${inputs}</td><td class="st-diff"></td><td><button type="button" class="settings-small-btn st-mini" title="The count matches the system" onclick="stockTakeMatches('${code}')">✓ same</button></td></tr>`;
+            }).join('') + (list.length > 400 ? `<tr><td colspan="5" class="st-muted">Showing the first 400 of ${list.length} — use the search box to narrow down.</td></tr>` : '');
+            Array.from(tbody.querySelectorAll('tr[data-code]')).forEach((tr) => { const p = inventory.find((x) => x.code === tr.dataset.code); if (p) stockTakeFillDiffCell(tr, p); });
+            stockTakeRenderSummary();
+            renderStockTakeHistory();
+        }
+
+//@fn stockTakeMatches
+function stockTakeMatches(code) {
+            const p = inventory.find((x) => x.code === code);
+            if (!p) return;
+            const st = stockTakeState();
+            st.counts[code] = { qty: String(Math.round((Number(p.qty) || 0) * 1000) / 1000) };
+            if (p.dualUnit) st.counts[code].pieceQty = String(Math.round((Number(p.pieceQty) || 0) * 1000) / 1000);
+            renderStockTake();
+        }
+
+//@fn stockTakeClear
+function stockTakeClear() {
+            stockTakeState().counts = {};
+            renderStockTake();
+        }
+
+//@fn stockTakeApply
+function stockTakeApply() {
+            const st = stockTakeState();
+            const changes = [];
+            let counted = 0;
+            for (const code of Object.keys(st.counts)) {
+                const p = inventory.find((x) => x.code === code);
+                if (!p) continue;
+                const d = stockTakeDiff(p);
+                if (!d.counted) continue;
+                if (d.invalid) { showToast(`"${p.name}": the count is not a number.`, true); return false; }
+                counted++;
+                if (d.qty !== 0 || d.pieces !== 0) changes.push({ p, d });
+            }
+            if (counted === 0) { showToast('Type at least one count first.', true); return false; }
+            if (changes.length === 0) { showToast(`All ${counted} counts match the system — nothing to change.`); stockTakeClear(); return true; }
+            if (!confirm(`Update the stock of ${changes.length} item${changes.length === 1 ? '' : 's'} to what you counted? ${counted - changes.length} counted item${counted - changes.length === 1 ? '' : 's'} already match. Each change is recorded as a "Stock take" adjustment.`)) return false;
+            const lines = [];
+            const actor = typeof activeServerName === 'function' ? activeServerName() : '';
+            changes.forEach(({ p, d }) => {
+                const before = { qty: Number(p.qty) || 0, pieceQty: Number(p.pieceQty) || 0 };
+                if (d.qtyNew !== null && d.qty !== 0) { p.qty = d.qtyNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.qty, 'Stock take'); }
+                if (d.pieceNew !== null && d.pieces !== 0) { p.pieceQty = d.pieceNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.pieces, 'Stock take', 'pieceQty'); }
+                p.updatedAt = Date.now();
+                lines.push({ code: p.code, name: p.name, unit: p.unit || 'pcs', before, after: { qty: Number(p.qty) || 0, pieceQty: Number(p.pieceQty) || 0 }, diff: d.qty, pieceDiff: d.pieces, value: Math.round(stockTakeValueOf(p, d)) });
+            });
+            safeSetItem('pos_inventory', JSON.stringify(inventory));
+            if (typeof stockMovementLog !== 'undefined') safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+            queuePush();
+            const hist = stockTakeHistoryGet();
+            hist.unshift({ id: genSaleId(), at: new Date().toISOString(), by: actor, counted, changed: lines.length, missingValue: lines.filter((l) => l.value < 0).reduce((s, l) => s - l.value, 0), extraValue: lines.filter((l) => l.value > 0).reduce((s, l) => s + l.value, 0), lines: lines.slice(0, 300) });
+            try { localStorage.setItem('stock_take_history_v1:' + location.pathname, JSON.stringify(hist.slice(0, 15))); } catch (e) { /* the stock itself is saved; only the history is skipped */ }
+            st.counts = {};
+            if (typeof renderInventoryTable === 'function') { try { renderInventoryTable(); } catch (e) { /* not on screen */ } }
+            renderStockTake();
+            showToast(`Stock take applied: ${lines.length} item${lines.length === 1 ? '' : 's'} updated.`);
+            return true;
+        }
+
+//@fn stockTakeHistoryGet
+function stockTakeHistoryGet() {
+            try { const h = JSON.parse(localStorage.getItem('stock_take_history_v1:' + location.pathname) || '[]'); return Array.isArray(h) ? h : []; } catch (e) { return []; }
+        }
+
+//@fn renderStockTakeHistory
+function renderStockTakeHistory() {
+            const el = document.getElementById('stock-take-history');
+            if (!el) return;
+            const hist = stockTakeHistoryGet();
+            if (hist.length === 0) { el.innerHTML = '<p class="settings-hint" style="margin:0;">No stock takes yet on this device.</p>'; return; }
+            el.innerHTML = hist.slice(0, 8).map((h) => `<details class="st-hist"><summary>${escapeHtml(new Date(h.at).toLocaleString('en-GB'))}${h.by ? ' · ' + escapeHtml(h.by) : ''} — ${h.changed} updated of ${h.counted} counted${h.missingValue ? ` · missing KES ${Math.round(h.missingValue).toLocaleString('en-US')}` : ''}${h.extraValue ? ` · extra KES ${Math.round(h.extraValue).toLocaleString('en-US')}` : ''}</summary>
+                <div class="table-scroll"><table><thead><tr><th>Item</th><th>Was</th><th>Counted</th><th>Difference</th></tr></thead><tbody>${(h.lines || []).map((l) => `<tr><td>${escapeHtml(l.name)}</td><td>${Math.round(l.before.qty * 1000) / 1000}${l.pieceDiff ? ' + ' + l.before.pieceQty + ' loose' : ''}</td><td>${Math.round(l.after.qty * 1000) / 1000}${l.pieceDiff ? ' + ' + l.after.pieceQty + ' loose' : ''}</td><td>${l.diff ? (l.diff > 0 ? '+' : '') + l.diff : ''}${l.pieceDiff ? ` ${l.pieceDiff > 0 ? '+' : ''}${l.pieceDiff} loose` : ''}</td></tr>`).join('')}</tbody></table></div></details>`).join('');
+        }
+
+//@fn stockTakeInstall
+function stockTakeInstall() {
+            if (window.__stockTakeInstalled) return;
+            window.__stockTakeInstalled = true;
+            const btn = document.getElementById('stock-take-tab-btn');
+            if (btn) btn.addEventListener('click', () => setTimeout(() => { try { renderStockTake(); } catch (e) { /* the tab is an extra */ } }, 60));
+        }
+
+//@fn setKitchenPrintPage
+function setKitchenPrintPage() {
+            // The order ticket printed through the system dialog never set its own paper size, so a receipt printer got a full page's length of
+            // paper for a few lines. Same width as the receipt and "auto" length: the slip is only as long as its lines.
+            const pageStyle = document.getElementById('print-page-style');
+            const w = typeof receiptWidth !== 'undefined' ? (receiptWidth === 'custom' ? (parseFloat(receiptCustomWidth) || 80) : (parseFloat(receiptWidth) || 80)) : 80;
+            if (pageStyle) pageStyle.textContent = `@page { size: ${w}mm auto; margin: 0; }`;
+            document.body.style.setProperty('--receipt-print-width', `${w}mm`);
+            document.body.style.setProperty('--receipt-print-zoom', String(((typeof receiptScale !== 'undefined' && Number(receiptScale)) || 100) / 100));
+        }
+
+//@fn pruneClosedBills
+function pruneClosedBills(days) {
+            // Settled bills are now kept (closed) so they show under "Show closed bills"; the ones closed more than `days` days ago are dropped so
+            // the list does not grow for ever. (Removal is a normal deletion: the sync sends a tombstone.)
+            const limit = Date.now() - (days || 90) * 86400000;
+            const keep = bills.filter((b) => {
+                if (!b || !b.closed) return true;
+                const last = (b.paymentHistory || []).length ? b.paymentHistory[b.paymentHistory.length - 1].timestamp : null;
+                const t = Date.parse(b.closedAt || last || b.timestamp || '');
+                return !(Number.isFinite(t) && t < limit);
+            });
+            if (keep.length === bills.length) return 0;
+            const n = bills.length - keep.length;
+            bills = keep;
+            safeSetItem('pos_bills', JSON.stringify(bills));
+            queuePush();
+            return n;
         }
 

@@ -48,7 +48,28 @@ export function recordKey(r) {
   return null;
 }
 
-export function mergeRecordsById(existingArr, incomingArr) {
+// Lists whose records are given a fresh unique id when they are created and are never re-created under the same id. For these a tombstone
+// is FINAL: once a bill / debt / supplier ... has been deleted (a bill fully settled and removed, say) no later copy of it can bring it back.
+// Without this, a till that was asleep or slow to sync and still held the record only had to TOUCH it (a reminder flag, a takeaway status) to
+// give it a newer `updatedAt` than the tombstone, and the settled bill reappeared on every till after its next refresh. (Lists keyed by `code`
+// — inventory — are different: the same code is deliberately added again, so a newer record still replaces the tombstone there.)
+export const FINAL_TOMBSTONE_FIELDS = ['bills', 'debts', 'suppliers', 'deliveryZones', 'recurringExpenses', 'contracts'];
+
+// A bill only ever moves FORWARD: voided, then closed (settled), then more money paid, then more payments recorded. A till that was slow to
+// sync still holds the bill as it was (open, unpaid); when it pushes it with a newer time it must not put the bill back to that state — that
+// re-opened settled bills and made a payment "disappear" from the bill it was taken on. So for bills the more advanced record wins whatever
+// the times say; only two equally advanced records fall back to last-write-wins.
+export function billProgress(r) {
+  const paid = Number(r && r.amountPaid) || 0;
+  return [r && r.voided ? 1 : 0, r && r.closed ? 1 : 0, Math.round(paid * 100), Array.isArray(r && r.paymentHistory) ? r.paymentHistory.length : 0];
+}
+export function compareBillProgress(a, b) {
+  const x = billProgress(a), y = billProgress(b);
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
+  return 0;
+}
+
+export function mergeRecordsById(existingArr, incomingArr, finalTombstones = false, field = '') {
   if (!Array.isArray(incomingArr)) return existingArr;
   if (!Array.isArray(existingArr) || existingArr.length === 0) return incomingArr;
 
@@ -74,6 +95,12 @@ export function mergeRecordsById(existingArr, incomingArr) {
     if (!existing) {
       merged.set(key, incoming);
       continue;
+    }
+    if (finalTombstones && existing._deleted === true && incoming._deleted !== true && key.startsWith('id:')) continue;   // a deleted record stays deleted
+    if (field === 'bills' && existing._deleted !== true && incoming._deleted !== true) {
+      const c = compareBillProgress(existing, incoming);
+      if (c > 0) continue;                                  // the stored bill is further along: keep it
+      if (c < 0) { merged.set(key, incoming); continue; }   // the incoming one is: take it, even if its time is older
     }
     const existingTs = existing.updatedAt || 0;
     const incomingTs = incoming.updatedAt || 0;
@@ -276,7 +303,7 @@ export function mergeIncomingState(existing, incoming) {
   if (Object.keys(times).length) merged._fieldTimes = times;
   for (const field of MERGE_BY_ID_FIELDS) {
     if (Array.isArray(incoming[field])) {
-      merged[field] = mergeRecordsById(existing[field], incoming[field]);
+      merged[field] = mergeRecordsById(existing[field], incoming[field], FINAL_TOMBSTONE_FIELDS.includes(field), field);
     }
   }
   // Quantity reconciliation runs AFTER the ordinary per-record merge above

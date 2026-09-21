@@ -22,9 +22,6 @@ export const SAMPLE_SALE = {
 };
 
 export async function boot(app, opts = {}) {
-  // The whole suite runs in parallel, so on a busy machine every timer in the app runs many times slower than on a quiet one. Measure how
-  // late a 40 ms timer fires BEFORE any heavy work of our own and stretch the settle time by that much (1x when quiet, up to 8x when starved).
-  const lag = await (async () => { const t = Date.now(); await new Promise((r) => setTimeout(r, 40)); return Math.min(8, Math.max(1, (Date.now() - t - 3) / 40)); })();
   const html = fs.readFileSync(path.join(ROOT, app), 'utf8');
   const errors = [];
   const vc = new VirtualConsole();
@@ -52,11 +49,11 @@ export async function boot(app, opts = {}) {
   });
   // Wait for the page to finish loading, then a short settle for the app's own async start-up (failed fetches, timers).
   // Was a flat 1200 ms per boot — about half of every test's time. A test that needs longer passes `wait` explicitly.
-  if (opts.wait != null) await new Promise((r) => setTimeout(r, Math.round(opts.wait * lag)));
+  if (opts.wait != null) await new Promise((r) => setTimeout(r, opts.wait));
   else {
     const t0 = Date.now();
-    while (dom.window.document.readyState !== 'complete' && Date.now() - t0 < 3000 * lag) await new Promise((r) => setTimeout(r, 25));
-    await new Promise((r) => setTimeout(r, Math.round(450 * lag)));
+    while (dom.window.document.readyState !== 'complete' && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 450));
   }
   return { w: dom.window, d: dom.window.document, errors, close: () => dom.window.close() };
 }
