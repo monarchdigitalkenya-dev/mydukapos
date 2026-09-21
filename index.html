@@ -1003,6 +1003,10 @@
             padding: 6px; cursor: pointer; opacity: 0.65;
         }
         .phone-picker-btn:hover { opacity: 1; }
+        .unit-toggle { display: inline-flex; margin-top: 4px; border: 1px solid var(--border-color, #ccc); border-radius: 6px; overflow: hidden; }
+        .unit-toggle button { border: 0; background: #fff; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+        .unit-toggle button.active { background: var(--accent, #2980b9); color: #fff; font-weight: bold; }
+        .dual-stock-note { font-size: 11.5px; color: #7f8c8d; margin-top: 3px; }
         .recipe-badge { background: #e67e22; color: white; font-size: 11px; padding: 3px 8px; border-radius: 10px; }
         .dual-unit-badge { background: #16a085; color: white; font-size: 11px; padding: 3px 8px; border-radius: 10px; }
         .contract-badge { background: #8e44ad; color: white; font-size: 11px; padding: 3px 8px; border-radius: 10px; }
@@ -2639,15 +2643,19 @@
             <div id="inv-edit-dual-block" style="display:none;">
                 <div class="form-group">
                     <label class="label">📦→🔢 Pieces per Box</label>
-                    <input type="number" id="inv-edit-unitsperbox-input" min="1" step="1" onchange="updateInventoryFieldFromModal('unitsPerBox', this.value)">
+                    <input type="number" id="inv-edit-unitsperbox-input" min="0.001" step="any" onchange="updateInventoryFieldFromModal('unitsPerBox', this.value)">
                 </div>
                 <div class="form-group">
                     <label class="label">Piece Price (KES)</label>
                     <input type="number" id="inv-edit-pieceprice-input" min="0" step="0.01" onchange="updateInventoryFieldFromModal('piecePrice', this.value)">
                 </div>
                 <div class="form-group">
+                    <label class="label">Loose unit (what one piece is)</label>
+                    <select id="inv-edit-looseunit-input" onchange="updateInventoryFieldFromModal('looseUnit', this.value)"><option value="pcs">Pieces (pcs)</option><option value="kg">Kilograms (kg)</option><option value="g">Grams (g)</option><option value="l">Litres (l)</option><option value="ml">Millilitres (ml)</option><option value="m">Metres (m)</option><option value="cm">Centimetres (cm)</option><option value="lb">Pounds (lb)</option><option value="oz">Ounces (oz)</option></select>
+                </div>
+                <div class="form-group">
                     <label class="label">Loose Pieces in Stock</label>
-                    <input type="number" id="inv-edit-piececount-input" min="0" step="1" onchange="updateInventoryFieldFromModal('pieceQty', this.value)">
+                    <input type="number" id="inv-edit-piececount-input" min="0" step="any" onchange="updateInventoryFieldFromModal('pieceQty', this.value)">
                     <button type="button" class="settings-small-btn" id="inv-edit-openbox-btn" style="margin-top:6px;" onclick="openBoxToPieces(inventoryEditModalCode); renderInventoryEditModalFields();">Open a box</button>
                 </div>
             </div>
@@ -3183,98 +3191,94 @@
 
     <!-- TAB: GAS REFILL & SALES -->
     <div id="gas-tab" class="tab-content">
-        <h3>🔥 Gas Refill &amp; Sales</h3>
-        <p class="settings-hint">Add a Refill/Exchange, Complete Set, or Outright cylinder line here — it's priced and paid for on the same cart as 🛒 Sales Counter (delivery, M-Pesa, Split, Bill, receipts all work exactly the same). A Refill/Exchange line automatically credits the matching Empty cylinder's stock once the sale checks out.</p>
-
-        <div class="settings-section-content" style="display:block; border:1px solid var(--light); border-radius:8px; padding:14px; margin-bottom:16px;">
-            <h4 style="margin-top:0;">Sell / Refill</h4>
-            <div class="order-type-toggle" id="gas-tx-type-toggle">
-                <button type="button" id="gas-tx-exchange-btn" class="active" onclick="setGasTxType('exchange')">🔄 Refill / Exchange</button>
-                <button type="button" id="gas-tx-set-btn" onclick="setGasTxType('set')">📦 Complete Set (New)</button>
-                <button type="button" id="gas-tx-outright-btn" onclick="setGasTxType('outright')">🛢️ Outright Purchase</button>
+        <style>
+            #gas-tab .gas-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; margin: 0 8px 8px 0; border-radius: 16px; background: #f1f3f5; font-size: 14px; }
+            #gas-tab .gas-chip b { font-size: 18px; }
+            #gas-tab .gas-chip.gas-full { background: #e6f6ec; } #gas-tab .gas-chip.gas-empty { background: #eef0f2; } #gas-tab .gas-chip.gas-away { background: #fff3d6; }
+            #gas-tab .gas-chip button { border: 0; background: none; cursor: pointer; color: #c0392b; }
+            #gas-tab #gas-board input { width: 84px; padding: 6px 8px; }
+            #gas-tab .gas-row-selected { background: #f4f9ff; }
+            #gas-tab .gas-tx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
+            #gas-tab .gas-tx-grid button { padding: 12px 8px; border: 2px solid #dfe4ea; background: #fff; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600; line-height: 1.3; }
+            #gas-tab .gas-tx-grid button small { display: block; font-weight: normal; color: #7f8c8d; font-size: 11.5px; margin-top: 2px; }
+            #gas-tab .gas-tx-grid button.active { border-color: var(--accent, #2980b9); background: #eaf4fc; }
+            #gas-tab .gas-size-chip { padding: 10px 16px; margin: 0 8px 8px 0; border: 2px solid #dfe4ea; background: #fff; border-radius: 10px; cursor: pointer; font-size: 16px; font-weight: 700; }
+            #gas-tab .gas-size-chip small { display: block; font-weight: normal; font-size: 11.5px; color: #7f8c8d; }
+            #gas-tab .gas-size-chip.active { border-color: var(--accent, #2980b9); background: #eaf4fc; }
+            #gas-tab .gas-acc-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--light, #eee); }
+            #gas-tab .gas-acc-row input[type=number] { width: 64px; padding: 4px 6px; }
+            #gas-tab details > summary { cursor: pointer; font-weight: 600; }
+        </style>
+        <div class="panel">
+            <h3 style="margin:0 0 4px;">🔥 Gas cylinders</h3>
+            <p class="settings-hint" style="margin:0 0 10px;">Every size has a <strong>Full</strong> and an <strong>Empty</strong> count. They live in your Inventory, and every sale or exchange moves them for you. Type a number into the table to correct a count.</p>
+            <div id="gas-totals"></div>
+            <div class="table-scroll">
+                <table id="gas-board">
+                    <thead><tr><th>Size</th><th>Full</th><th>Empty</th><th>With supplier</th><th>Total</th><th>Full cylinder price</th><th>Refill price</th><th>Empty cylinder price</th></tr></thead>
+                    <tbody id="gas-board-body"><tr><td colspan="8" class="empty-state">No sizes yet.</td></tr></tbody>
+                </table>
             </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+                <input id="gas-new-size" placeholder="Size, e.g. 13kg" style="width:130px;">
+                <input id="gas-new-full-stock" type="number" min="0" step="1" value="0" title="Full cylinders you have" style="width:90px;">
+                <input id="gas-new-empty-stock" type="number" min="0" step="1" value="0" title="Empty cylinders you have" style="width:90px;">
+                <input id="gas-new-brand" placeholder="Brand (optional)" style="width:150px;">
+                <button class="btn-main" style="width:auto; margin:0; padding:8px 16px;" onclick="addGasSize()">➕ Add size</button>
+            </div>
+            <p class="settings-hint" style="margin:4px 0 0;">The two number boxes are how many <strong>full</strong> and how many <strong>empty</strong> you start with.</p>
+            <p id="gas-size-msg" class="settings-msg"></p>
+        </div>
 
-            <label class="label" style="margin-top:10px;">Cylinder</label>
-            <select id="gas-variant-select" onchange="renderGasVariantStock()"><option value="">— No cylinder variants set up yet —</option></select>
+        <div class="panel">
+            <h3 style="margin:0 0 8px;">💳 Sell</h3>
+            <div class="gas-tx-grid" id="gas-tx-type-toggle">
+                <button type="button" id="gas-tx-exchange-btn" class="active" onclick="setGasTxType('exchange')">🔄 Refill / Exchange<small>customer gives an empty, gets a full</small></button>
+                <button type="button" id="gas-tx-outright-btn" onclick="setGasTxType('outright')">🛢️ Full cylinder<small>with gas, to keep</small></button>
+                <button type="button" id="gas-tx-set-btn" onclick="setGasTxType('set')">📦 Complete set<small>full cylinder + accessories</small></button>
+                <button type="button" id="gas-tx-empty-btn" onclick="setGasTxType('empty')">⚪ Empty cylinder<small>the cylinder on its own</small></button>
+            </div>
+            <label class="label">Which size?</label>
+            <div id="gas-size-chips"></div>
             <p id="gas-variant-stock-info" class="settings-hint"></p>
-
-            <div id="gas-set-accessories" style="display:none;">
-                <label class="label">Burner <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
-                <select id="gas-burner-select"><option value="">— None —</option></select>
-                <label class="label">Holder / Grill <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
-                <select id="gas-holder-select"><option value="">— None —</option></select>
+            <div id="gas-set-accessories" style="display:none; margin-bottom:10px;">
+                <label class="label">Accessories in the set <span style="font-weight:normal; color:#7f8c8d;">(tick, and how many per set)</span></label>
+                <div id="gas-set-accessories-list"></div>
             </div>
-
-            <label class="label">Quantity</label>
-            <input type="number" id="gas-tx-qty" min="1" step="1" value="1" style="width:80px;">
-
-            <div style="margin-top:10px;">
-                <button class="btn-main" onclick="addGasLineToCart()">➕ Add to Sale</button>
-                <button class="settings-small-btn" onclick="performTabSwitch(document.getElementById('sales-tab-btn'), 'sales-tab')">🛒 Go to Checkout</button>
+            <div style="display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+                <div><label class="label">How many?</label><input type="number" id="gas-tx-qty" min="1" step="1" value="1" style="width:90px;"></div>
+                <button class="btn-main" style="width:auto; margin:0; padding:10px 22px;" onclick="addGasLineToCart()">Add to sale</button>
             </div>
             <p id="gas-add-msg" class="settings-msg"></p>
         </div>
 
-        <div class="settings-section-content" style="display:block; border:1px solid var(--light); border-radius:8px; padding:14px; margin-bottom:16px;">
-            <h4 style="margin-top:0;">🔄 Supplier Exchange / Refill Return</h4>
-            <p class="settings-hint" style="margin-top:0;">Empty cylinders sent to your supplier, and full ones they send back — a stock adjustment only, no sale or payment.</p>
-            <label class="label">Cylinder</label>
-            <select id="gas-supplier-variant-select"><option value="">— No cylinder variants set up yet —</option></select>
-            <label class="label">Direction</label>
-            <select id="gas-supplier-direction">
-                <option value="send">Sent Empty(s) to Supplier (−Empty stock)</option>
-                <option value="return">Full(s) Returned From Supplier (−Empty, +Full stock)</option>
-            </select>
-            <label class="label">Quantity</label>
-            <input type="number" id="gas-supplier-qty" min="1" step="1" value="1" style="width:80px;">
-            <div style="margin-top:10px;">
-                <button class="btn-main" onclick="performSupplierGasExchange()">Record</button>
+        <div class="panel">
+            <h4 style="margin:0 0 6px;">🧰 Accessories</h4>
+            <p class="settings-hint" style="margin:0 0 8px;">Accessories (burners, regulators, hoses, grills…) are ordinary items — add them in Inventory and sell them at the Sales Counter. Marking an item here just offers it in the "Complete set" above.</p>
+            <div id="gas-accessory-list" style="margin-bottom:8px;"></div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <select id="gas-accessory-pick" style="flex:1; min-width:200px;"></select>
+                <button class="btn-main" style="width:auto; margin:0; padding:8px 16px;" onclick="markGasAccessory()">Mark as accessory</button>
             </div>
+        </div>
+
+        <details class="panel">
+            <summary>🚚 Empties to the supplier / refilled ones back</summary>
+            <p class="settings-hint" style="margin:8px 0;">Keeps track of cylinders that are away being refilled.</p>
+            <label class="label">Size</label>
+            <select id="gas-supplier-variant-select"><option value="">— No sizes yet —</option></select>
+            <label class="label">What happened?</label>
+            <select id="gas-supplier-direction">
+                <option value="send">Sent empties to the supplier (Empty − , With supplier +)</option>
+                <option value="receive">Received refilled ones back (Full + , With supplier −)</option>
+                <option value="return">Swapped empties for full ones on the spot (Empty − , Full +)</option>
+            </select>
+            <label class="label">How many?</label>
+            <input type="number" id="gas-supplier-qty" min="1" step="1" value="1" style="width:90px;">
+            <div style="margin-top:10px;"><button class="btn-main" onclick="performSupplierGasExchange()">Record</button></div>
             <p id="gas-supplier-msg" class="settings-msg"></p>
             <div id="gas-supplier-history" style="margin-top:10px; font-size:13px; color:#555;"></div>
-        </div>
-
-        <div class="settings-section-content" style="display:block; border:1px solid var(--light); border-radius:8px; padding:14px; margin-bottom:16px;">
-            <h4 style="margin-top:0;">⚙️ Manage Cylinder Variants</h4>
-            <p class="settings-hint" style="margin-top:0;">Creates two linked stock items — Full and Empty — for one brand/weight. Prices and stock can also be adjusted later from 📋 Inventory or 📥 Restock, same as any other item.</p>
-            <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px; max-width:520px;">
-                <input id="gas-new-brand" placeholder="Brand (e.g. Pro Gas)">
-                <input id="gas-new-weight" placeholder="Weight (e.g. 6kg)">
-                <input id="gas-new-outright-price" type="number" min="0" step="0.01" placeholder="Outright Retail Price (KES)">
-                <input id="gas-new-outright-wholesale" type="number" min="0" step="0.01" placeholder="Outright Wholesale (optional)">
-                <input id="gas-new-refill-price" type="number" min="0" step="0.01" placeholder="Refill/Exchange Retail Price (KES)">
-                <input id="gas-new-refill-wholesale" type="number" min="0" step="0.01" placeholder="Refill Wholesale (optional)">
-                <input id="gas-new-full-stock" type="number" min="0" step="1" placeholder="Starting Full Stock" value="0">
-                <input id="gas-new-empty-stock" type="number" min="0" step="1" placeholder="Starting Empty Stock" value="0">
-            </div>
-            <div style="margin-top:10px;">
-                <button class="btn-main" onclick="addGasCylinderVariant()">+ Add Cylinder Variant</button>
-            </div>
-            <p id="gas-variant-msg" class="settings-msg"></p>
-            <table id="gas-variants-table" style="margin-top:10px;">
-                <thead><tr><th>Brand</th><th>Weight</th><th>Full Stock</th><th>Empty Stock</th><th>Outright Price</th><th>Refill Price</th></tr></thead>
-                <tbody id="gas-variants-table-body"><tr><td colspan="6" class="empty-state">No cylinder variants yet — add one above.</td></tr></tbody>
-            </table>
-        </div>
-
-        <div class="settings-section-content" style="display:block; border:1px solid var(--light); border-radius:8px; padding:14px;">
-            <h4 style="margin-top:0;">⚙️ Manage Accessories</h4>
-            <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:8px; max-width:520px;">
-                <input id="gas-new-accessory-name" placeholder="Name (e.g. Heavy-Duty Cast Iron Burner)" style="grid-column: span 2;">
-                <select id="gas-new-accessory-type"><option value="burner">Burner</option><option value="holder">Holder / Grill</option></select>
-                <input id="gas-new-accessory-stock" type="number" min="0" step="1" placeholder="Starting Stock" value="0">
-                <input id="gas-new-accessory-price" type="number" min="0" step="0.01" placeholder="Retail Price (KES)">
-                <input id="gas-new-accessory-wholesale" type="number" min="0" step="0.01" placeholder="Wholesale (optional)">
-            </div>
-            <div style="margin-top:10px;">
-                <button class="btn-main" onclick="addGasAccessory()">+ Add Accessory</button>
-            </div>
-            <p id="gas-accessory-msg" class="settings-msg"></p>
-            <table id="gas-accessories-table" style="margin-top:10px;">
-                <thead><tr><th>Name</th><th>Type</th><th>Stock</th><th>Retail Price</th></tr></thead>
-                <tbody id="gas-accessories-table-body"><tr><td colspan="4" class="empty-state">No accessories yet — add one above.</td></tr></tbody>
-            </table>
-        </div>
+        </details>
     </div>
 
     <!-- TAB 2: INVENTORY LIST / STOCK OVERVIEW -->
@@ -3437,7 +3441,11 @@
                         <p style="font-size:13px; color:#7f8c8d; margin-bottom:10px;">The fields above (Item Code, Price, Stock Quantity) describe the <strong>box</strong>. Fill in the individual piece's details below — opening a box (manually, or automatically at sale time when loose stock runs out) moves its pieces into loose stock.</p>
                         <div class="form-group">
                             <label>Pieces per Box</label>
-                            <input type="number" id="inv-units-per-box" min="1" step="1" placeholder="e.g. 24">
+                            <input type="number" id="inv-units-per-box" min="0.001" step="any" placeholder="e.g. 24, or 50 for a 50 kg bag">
+                        </div>
+                        <div class="form-group">
+                            <label>Loose unit <span style="font-weight:normal; color:#7f8c8d;">(what one "piece" is — e.g. Kilograms for a 50 kg bag; sold in decimals like 3.5)</span></label>
+                            <select id="inv-loose-unit"><option value="pcs">Pieces (pcs)</option><option value="kg">Kilograms (kg)</option><option value="g">Grams (g)</option><option value="l">Litres (l)</option><option value="ml">Millilitres (ml)</option><option value="m">Metres (m)</option><option value="cm">Centimetres (cm)</option><option value="lb">Pounds (lb)</option><option value="oz">Ounces (oz)</option></select>
                         </div>
                         <div class="form-group">
                             <label>Individual Piece Barcode/Code <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
@@ -3448,7 +3456,7 @@
                         </div>
                         <div class="form-group">
                             <label>Individual Piece Price (KES)</label>
-                            <input type="number" id="inv-piece-price" min="0" step="0.01" placeholder="0.00">
+                            <input type="number" id="inv-piece-price" min="0" step="0.01" placeholder="blank = box price ÷ pieces per box">
                         </div>
                         <div class="form-group">
                             <label>Individual Piece Cost / Buying Price (KES) <span style="font-weight:normal; color:#7f8c8d;">optional — defaults to Box Cost ÷ Pieces per Box</span></label>
@@ -6741,7 +6749,7 @@
 
     <!-- APP ENGINE SCRIPTS -->
     <script>
-    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addBulkRow,addComboRow,addContractRow,addCrossBranchExchangeItem,addCrossBranchItemToCart,addDeliveryAgent,addDeliveryZone,addGasAccessory,addGasCylinderVariant,addLoyaltyTier,addRecipeCaptureIngredient,addRecipeRow,addSameItemAsReplacement,addTradeCreditManually,addVariantRow,addVariantsModalRow,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyExpensesOnlyRestriction,applyScannedCodeToContract,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,autoGenerateBarcodeValue,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,broadcastCustomerDisplayChange,buildAlignedRow,buildDrawerKickAsciiString,buildDrawerKickBytes,buildInventoryItemName,buildPoleDisplayBytes,buildReceiptCanvas,buildSystemPrintCopies,cancelCartTotalQuote,captureReviewInventoryOptions,captureScanModalNow,cellLooksNumeric,checkAiCaptureStatus,checkBillReminders,checkEtimsStatus,checkExistingContractMatch,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,checkPrintRelayAvailable,claimLicensePayment,clearAuthUrlParams,clearInventorySearch,clearMpesaPayerFields,clearSystemPrintCopies,closeAddCustomerModal,closeAddPrintRoutingRule,closeAdhocSaleModal,closeAttendanceClockModal,closeBarcodeScanModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeContractReturnModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeDemoPurgeModal,closeKitchenTicket,closeKitchenTicketAfterPrint,closePromoOfferModal,closeReceipt,closeReceiptAfterPrint,closeRecipeCaptureReviewModal,closeRecordBillModal,closeRecordPastSaleModal,closeSalesReport,closeStoreImportFromInventoryModal,closeTabsOverflowMenu,closeUpgradeScreen,closeVariantsModal,completeBarcodeScanModal,computeFlatOfferResults,computeLineOfferDiscount,computeStaffStats,computeTokensEarned,confirmAdhocSale,connectPoleDisplay,contractRowLineTotal,contractRowProduct,contractRowUnitPrice,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,createBillNotification,csvEscape,currentActiveTabId,currentAdminSettingsRestriction,currentNotifViewerId,currentStockValueTotals,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,daysUntilExpiry,debtBalance,debtPaidSoFar,decimalToFraction,defaultDeviceName,deleteBarcode,deleteBranch,deleteInventoryItem,deletePrintRoutingRule,deleteTradeCredit,deleteWebAuthnCredential,detectOnceFromScanModal,dismissCustomerDisplayDetectBanner,dismissNotificationPromptBanner,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureSaleIds,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchAndAttachLookupImage,fetchBranchDetail,fetchBranchesSummary,fetchPaymentAccounts,fetchReceiptSettingsSharing,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findInventoryByName,findSaleForVoid,flagWithinImportIngredientDuplicates,focusContractField,formatFileSize,formatHours,formatPickedPhone,formatQty,formatQtyDisplay,formatRemaining,formatShiftTime,formatShortDate,fuzzyMatchInventory,genGasCode,generateItemCode,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getEffectivePrice,getExchangeNetPayable,getExchangeReplacementTotal,getExpiringItems,getFaultyReturns,getGasAccessories,getGasFullVariants,getLocState,getLowStockRecipeServices,getOrCreateDeviceId,getPaperCols,getServiceAvailableQty,getServiceUnitCost,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleImageUpload,handleSplitAmountChange,heartbeatDeviceNetwork,ingredientOptionsHtml,initBulkAddForm,initCamera,initCameraScanOnLoad,initCustomerDisplayMode,initDeviceNetworkUI,initGasSettingsUI,initLoyaltySettingsUI,initPasswordToggles,initPhonebookPickers,invCellKey,isAdminServing,isBillNotifRelevant,isExpired,isExpiringSoon,isIngredientProduct,isKeyboardTypeable,isOfferActive,isPhoneField,isRecipeComponent,isRunningStandalone,isSellableProduct,isServiceProduct,isStaffLockedToday,itemOffers,itemTotalSold,jpegBytesToPdfBlob,jumpToSaleByRef,kbBackspace,kbEnter,kbInsertText,kbKeyTap,kbResolveTarget,kbSwitchMode,kbToggleShift,kitchenTicketPrintJob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadContractForMoreItems,loadNotifiedToday,loadPrintRoutingRules,loadRecoveryStatus,loadSheetJsOnce,loadStoreItems,loadUpgradePromptContent,logStockMovementDated,looksLikeRowNumberColumn,lookupBarcode,markAllBillNotificationsRead,markBillNotificationRead,markDeliveryNotificationsRead,markTillPaymentMatched,maybeAutoDetectCustomerDisplay,maybeFetchAutoImage,maybeOfferNotificationPrompt,maybeSendBillCreatedSms,maybeSendThankYouSms,maybeShowExpiryNudge,migrateIngredientsToItems,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,offerAvailableCategories,offerSummaryLine,onBillUpfrontAmountChange,onBulkCategoryChanged,onBulkRowCodeInput,onBulkRowFieldInput,onBulkRowNameInput,onRecordBillUpfrontChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAdhocSaleModal,openAttendanceClockModal,openBoxToPieces,openCartTotalQuoteEditor,openCashDrawer,openContractReturnModal,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openLicenseWhatsapp,openOfferModal,openPoleDisplayPort,openRecordBillModal,openRecordPastSaleModal,openSettingsSection,openVariantsModal,openWebAuthnDb,padPoleLine,parseHexBytes,parseQtyInput,performBulkDeclareOpeningStock,performCartPriceChange,performCartTotalQuote,performEditOpeningStock,performResetExceptInventory,performSupplierGasExchange,persistPrintRoutingRules,pickPhoneForField,populateServerFilter,previewBarcode,printAttendanceSheet,printBarcodeSheet,printDebtsStatement,printHTMLDirect,printItemSalesRecordFromModal,printKitchenTicket,printKitchenTicketManualJob,printOneBarcode,printReceiptInNewWindow,printRelayHasRealPrinter,printReportInNewWindow,printRoutingDestinationLabel,printSystemDrawerKickTest,printViaSystemDialog,productType,profitPeriodLabel,promptAppInstall,pruneOrphanedLocStates,pullState,pushNewStockAlerts,pushNow,pushSharedReceiptSettingsIfNeeded,qtyInputHint,queuePrintJob,receiptImageWidthPx,recipeIngredientMatchOptions,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeBulkRow,removeComboRow,removeContractRow,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,removeOffer,removeRecipeCaptureDish,removeRecipeCaptureIngredient,removeRecipeRow,removeRoom,removeSavedVariant,removeTable,removeVariantsModalRow,renderAdminActivityLog,renderAndPrintBarcodes,renderAttendanceHistory,renderAttendanceRosterTable,renderBarcodeLinkOptions,renderBarcodesTab,renderBillNotifyStaffList,renderBillsTabScoped,renderBizImportReviewTables,renderCameraScanTorchButton,renderComboRows,renderContractTotals,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderGasAccessoriesTable,renderGasSupplierHistory,renderGasTab,renderGasVariantStock,renderGasVariantsTable,renderInvEditableCell,renderInventoryPager,renderInventoryTableScoped,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderPaymentAccountsListView,renderProfitsTabScoped,renderReceivingAccountSelector,renderRecipeRows,renderReportAccountFilter,renderRestockTotals,renderStockValuationSummary,renderTillPayments,renderTrendsPieCharts,renderVariantsModalList,reportFilenameBase,reprintExchangeReceipt,requestBulkDeclareOpeningStock,requestEditOpeningStock,requestReduceStock,requestResetExceptInventory,requestSetOpeningStock,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetMpesaState,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,restockRowLineTotal,restoreStockForSaleUnit,retakePhoto,round2,runBackgroundCameraScanTick,runQueuedSystemPrint,runScanModalTick,safeJSONParse,safeSetItem,saleHasServices,salesTablePeriodLabel,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveAttendanceLocal,saveContract,saveDebtsLocal,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveNotifiedToday,saveOffersLocal,savePrintRoutingRule,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveVariantsModal,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,searchOtherBranchesForCart,searchOtherBranchesForExchange,selectLoginAdmin,selectLoginStaff,selectPastSaleItem,selectServerToLogin,selectUnavailableItem,sendBillReminderSms,sendToPoleDisplay,setAddItemMode,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBarcodeScanModalStatus,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setComboRowMode,setContractType,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setDeviceName,setDeviceStation,setDoGasRefills,setEtimsLogPeriod,setExchangeTopupMethod,setFieldAndFireInput,setGasTxType,setImageSource,setLocStatus,setOfferType,setOrderType,setPaymentAccountBranch,setPoleDisplayMode,setProfitPeriod,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSalesTablePeriod,setShowItemImageGrid,setSmsProvider,setStockReportPeriod,setTabReadOnly,setTradeCreditDirection,settleTradeCredit,setupPoleDisplayConnectListener,showAuthStep,showCustomerDisplayDetectBanner,showLoginPickerStep,showNotificationPromptBanner,showRecoverySignInStep,showUpgradeScreen,slugifyServiceName,snapCaptureListPhoto,snapPhoto,snapshotExtraSyncedFields,snapshotInventorySync,soldQtyAfter,soldQtyWithinRange,staffExpensesAccessLevel,staffShiftsFor,stampDirtyExtraSyncedFields,stampDirtyInventory,startAdminShiftIfNeeded,startBackgroundCameraScan,startDeviceNetworkHeartbeat,startInvCellEdit,startLicensePolling,startNewContract,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,stopBackgroundCameraScan,stopCamera,stopInvCellEdit,submitBarcodeScanManual,submitDemoPurgeConfirm,submitPrintRelayJob,supplierOptionsHtml,switchTab,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPaperCut,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAdhocBorrowedFields,toggleAutoOpenDrawer,toggleBillNotifyStaff,toggleCameraScanTorch,toggleChangePinPanel,toggleComboBuilder,toggleFloatingKeyboard,toggleInteractivePricing,toggleInventorySearchClear,toggleKitchenTicket,toggleNewStaffRole,toggleOfferCustomDate,togglePrintRoutingRule,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScanModalTorch,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleStoreManualForm,toggleTradeCreditManualForm,toggleUnavailableExchangeForm,toggleVariantsBuilder,triggerAutoPrintReceipt,triggerAutoPrintReport,triggerInventoryRowImageUpload,tryAutoReconnectPoleDisplay,unitLabel,unlinkRecoveryEmail,unreadBillNotifications,updateAttendanceRosterExpectedTime,updateBarcodeCopies,updateBillReminderDays,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateCameraScanStatusText,updateComboRowCode,updateComboRowCustomName,updateComboRowQty,updateContractRowField,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateGasTabVisibility,updateLicenseLockHintText,updateLocReservationField,updateLowStockDescText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updatePrintRelaySectionVisibility,updateRecipeCaptureDish,updateRecipeCaptureIngredient,updateRecipeCaptureIngredientMatch,updateRecipeRowIngredient,updateRecipeRowQty,updateRecipeSummary,updateRestockRowField,updateServerBtnLabel,updateVariantRow,updateVariantsModalField,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,usbPrinterNameKey,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,poState,poNewRow,poRound3,poFormatDateTime,poStatusMeta,poLineOutstanding,poOrderStats,poIsOpen,poCanEdit,poFindProduct,poSave,poNextOrderNo,poActor,poRefreshFormLists,poOpenForm,poCloseForm,poAddRow,poRemoveRow,poRowLineTotal,poRenderTotals,poRenderRows,poUpdateRowField,poFillRowFromProduct,poEnsureSupplier,poSaveOrder,poSetFilter,poVisibleOrders,poToggleDetails,poActionsHtml,poDetailsHtml,renderOrdersList,renderOrdersTab,renderOrdersIfOpen,poMarkInTransit,poCancelOrder,poRemoveOrder,poCloseShort,poOpenArriveModal,poCloseArriveModal,poRenderArriveModal,poArriveToggleLine,poArriveQtyChange,poArriveRefresh,poApplyArrivedLine,poConfirmArrival,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,attendanceRosterList,buildBillOwedMessage,buildReceiptEscPosBytes,cellLooksLikeCurrency,closeChangeStaffPinModal,closePinSetConfirmModal,collapseTabsIfNeeded,commitRecipeCaptureReview,confirmBillSettle,copyPinSetConfirmValue,currentOfferTargets,detectCsvColumnsAI,editBillDueDate,etimsLogPeriodRange,genSaleId,generateRandomStaffPin,importInventoryCsv,invertStoreImportSelection,levenshteinDistance,loadStoreLog,onBarcodeLinkChange,onOfferTypeChange,openBarcodeScanModal,performRestoreBackup,printReceipt,printStoreReport,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,renderStoreLogTab,salesTablePeriodRange,saveRecordBillModal,sendPendingExchangeSms,setOfferScope,setStoreImportSelection,showPinSetConfirmModal,stopCaptureListCamera,submitChangeStaffPin,toggleRecipeBuilder,toggleTabsOverflowMenu,updateCaptureReviewField,updateStoreItemField,updateStoreItemQty,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice */
+    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addBulkRow,addComboRow,addContractRow,addCrossBranchExchangeItem,addCrossBranchItemToCart,addDeliveryAgent,addDeliveryZone,addLoyaltyTier,addRecipeCaptureIngredient,addRecipeRow,addSameItemAsReplacement,addTradeCreditManually,addVariantRow,addVariantsModalRow,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyExpensesOnlyRestriction,applyScannedCodeToContract,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,autoGenerateBarcodeValue,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,broadcastCustomerDisplayChange,buildAlignedRow,buildDrawerKickAsciiString,buildDrawerKickBytes,buildInventoryItemName,buildPoleDisplayBytes,buildReceiptCanvas,buildSystemPrintCopies,cancelCartTotalQuote,captureReviewInventoryOptions,captureScanModalNow,cellLooksNumeric,checkAiCaptureStatus,checkBillReminders,checkEtimsStatus,checkExistingContractMatch,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,checkPrintRelayAvailable,claimLicensePayment,clearAuthUrlParams,clearInventorySearch,clearMpesaPayerFields,clearSystemPrintCopies,closeAddCustomerModal,closeAddPrintRoutingRule,closeAdhocSaleModal,closeAttendanceClockModal,closeBarcodeScanModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeContractReturnModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeDemoPurgeModal,closeKitchenTicket,closeKitchenTicketAfterPrint,closePromoOfferModal,closeReceipt,closeReceiptAfterPrint,closeRecipeCaptureReviewModal,closeRecordBillModal,closeRecordPastSaleModal,closeSalesReport,closeStoreImportFromInventoryModal,closeTabsOverflowMenu,closeUpgradeScreen,closeVariantsModal,completeBarcodeScanModal,computeFlatOfferResults,computeLineOfferDiscount,computeStaffStats,computeTokensEarned,confirmAdhocSale,connectPoleDisplay,contractRowLineTotal,contractRowProduct,contractRowUnitPrice,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,createBillNotification,csvEscape,currentActiveTabId,currentAdminSettingsRestriction,currentNotifViewerId,currentStockValueTotals,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,daysUntilExpiry,debtBalance,debtPaidSoFar,decimalToFraction,defaultDeviceName,deleteBarcode,deleteBranch,deleteInventoryItem,deletePrintRoutingRule,deleteTradeCredit,deleteWebAuthnCredential,detectOnceFromScanModal,dismissCustomerDisplayDetectBanner,dismissNotificationPromptBanner,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureSaleIds,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchAndAttachLookupImage,fetchBranchDetail,fetchBranchesSummary,fetchPaymentAccounts,fetchReceiptSettingsSharing,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findInventoryByName,findSaleForVoid,flagWithinImportIngredientDuplicates,focusContractField,formatFileSize,formatHours,formatPickedPhone,formatQty,formatQtyDisplay,formatRemaining,formatShiftTime,formatShortDate,fuzzyMatchInventory,genGasCode,generateItemCode,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getEffectivePrice,getExchangeNetPayable,getExchangeReplacementTotal,getExpiringItems,getFaultyReturns,getGasAccessories,getGasFullVariants,getLocState,getLowStockRecipeServices,getOrCreateDeviceId,getPaperCols,getServiceAvailableQty,getServiceUnitCost,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleImageUpload,handleSplitAmountChange,heartbeatDeviceNetwork,ingredientOptionsHtml,initBulkAddForm,initCamera,initCameraScanOnLoad,initCustomerDisplayMode,initDeviceNetworkUI,initGasSettingsUI,initLoyaltySettingsUI,initPasswordToggles,initPhonebookPickers,invCellKey,isAdminServing,isBillNotifRelevant,isExpired,isExpiringSoon,isIngredientProduct,isKeyboardTypeable,isOfferActive,isPhoneField,isRecipeComponent,isRunningStandalone,isSellableProduct,isServiceProduct,isStaffLockedToday,itemOffers,itemTotalSold,jpegBytesToPdfBlob,jumpToSaleByRef,kbBackspace,kbEnter,kbInsertText,kbKeyTap,kbResolveTarget,kbSwitchMode,kbToggleShift,kitchenTicketPrintJob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadContractForMoreItems,loadNotifiedToday,loadPrintRoutingRules,loadRecoveryStatus,loadSheetJsOnce,loadStoreItems,loadUpgradePromptContent,logStockMovementDated,looksLikeRowNumberColumn,lookupBarcode,markAllBillNotificationsRead,markBillNotificationRead,markDeliveryNotificationsRead,markTillPaymentMatched,maybeAutoDetectCustomerDisplay,maybeFetchAutoImage,maybeOfferNotificationPrompt,maybeSendBillCreatedSms,maybeSendThankYouSms,maybeShowExpiryNudge,migrateIngredientsToItems,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,offerAvailableCategories,offerSummaryLine,onBillUpfrontAmountChange,onBulkCategoryChanged,onBulkRowCodeInput,onBulkRowFieldInput,onBulkRowNameInput,onRecordBillUpfrontChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAdhocSaleModal,openAttendanceClockModal,openBoxToPieces,openCartTotalQuoteEditor,openCashDrawer,openContractReturnModal,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openLicenseWhatsapp,openOfferModal,openPoleDisplayPort,openRecordBillModal,openRecordPastSaleModal,openSettingsSection,openVariantsModal,openWebAuthnDb,padPoleLine,parseHexBytes,parseQtyInput,performBulkDeclareOpeningStock,performCartPriceChange,performCartTotalQuote,performEditOpeningStock,performResetExceptInventory,performSupplierGasExchange,persistPrintRoutingRules,pickPhoneForField,populateServerFilter,previewBarcode,printAttendanceSheet,printBarcodeSheet,printDebtsStatement,printHTMLDirect,printItemSalesRecordFromModal,printKitchenTicket,printKitchenTicketManualJob,printOneBarcode,printReceiptInNewWindow,printRelayHasRealPrinter,printReportInNewWindow,printRoutingDestinationLabel,printSystemDrawerKickTest,printViaSystemDialog,productType,profitPeriodLabel,promptAppInstall,pruneOrphanedLocStates,pullState,pushNewStockAlerts,pushNow,pushSharedReceiptSettingsIfNeeded,qtyInputHint,queuePrintJob,receiptImageWidthPx,recipeIngredientMatchOptions,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeBulkRow,removeComboRow,removeContractRow,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,removeOffer,removeRecipeCaptureDish,removeRecipeCaptureIngredient,removeRecipeRow,removeRoom,removeSavedVariant,removeTable,removeVariantsModalRow,renderAdminActivityLog,renderAndPrintBarcodes,renderAttendanceHistory,renderAttendanceRosterTable,renderBarcodeLinkOptions,renderBarcodesTab,renderBillNotifyStaffList,renderBillsTabScoped,renderBizImportReviewTables,renderCameraScanTorchButton,renderComboRows,renderContractTotals,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderGasSupplierHistory,renderGasTab,renderGasVariantStock,renderInvEditableCell,renderInventoryPager,renderInventoryTableScoped,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderPaymentAccountsListView,renderProfitsTabScoped,renderReceivingAccountSelector,renderRecipeRows,renderReportAccountFilter,renderRestockTotals,renderStockValuationSummary,renderTillPayments,renderTrendsPieCharts,renderVariantsModalList,reportFilenameBase,reprintExchangeReceipt,requestBulkDeclareOpeningStock,requestEditOpeningStock,requestReduceStock,requestResetExceptInventory,requestSetOpeningStock,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetMpesaState,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,restockRowLineTotal,restoreStockForSaleUnit,retakePhoto,round2,runBackgroundCameraScanTick,runQueuedSystemPrint,runScanModalTick,safeJSONParse,safeSetItem,saleHasServices,salesTablePeriodLabel,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveAttendanceLocal,saveContract,saveDebtsLocal,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveNotifiedToday,saveOffersLocal,savePrintRoutingRule,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveVariantsModal,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,searchOtherBranchesForCart,searchOtherBranchesForExchange,selectLoginAdmin,selectLoginStaff,selectPastSaleItem,selectServerToLogin,selectUnavailableItem,sendBillReminderSms,sendToPoleDisplay,setAddItemMode,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBarcodeScanModalStatus,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setComboRowMode,setContractType,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setDeviceName,setDeviceStation,setDoGasRefills,setEtimsLogPeriod,setExchangeTopupMethod,setFieldAndFireInput,setGasTxType,setImageSource,setLocStatus,setOfferType,setOrderType,setPaymentAccountBranch,setPoleDisplayMode,setProfitPeriod,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSalesTablePeriod,setShowItemImageGrid,setSmsProvider,setStockReportPeriod,setTabReadOnly,setTradeCreditDirection,settleTradeCredit,setupPoleDisplayConnectListener,showAuthStep,showCustomerDisplayDetectBanner,showLoginPickerStep,showNotificationPromptBanner,showRecoverySignInStep,showUpgradeScreen,slugifyServiceName,snapCaptureListPhoto,snapPhoto,snapshotExtraSyncedFields,snapshotInventorySync,soldQtyAfter,soldQtyWithinRange,staffExpensesAccessLevel,staffShiftsFor,stampDirtyExtraSyncedFields,stampDirtyInventory,startAdminShiftIfNeeded,startBackgroundCameraScan,startDeviceNetworkHeartbeat,startInvCellEdit,startLicensePolling,startNewContract,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,stopBackgroundCameraScan,stopCamera,stopInvCellEdit,submitBarcodeScanManual,submitDemoPurgeConfirm,submitPrintRelayJob,supplierOptionsHtml,switchTab,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPaperCut,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAdhocBorrowedFields,toggleAutoOpenDrawer,toggleBillNotifyStaff,toggleCameraScanTorch,toggleChangePinPanel,toggleComboBuilder,toggleFloatingKeyboard,toggleInteractivePricing,toggleInventorySearchClear,toggleKitchenTicket,toggleNewStaffRole,toggleOfferCustomDate,togglePrintRoutingRule,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScanModalTorch,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleStoreManualForm,toggleTradeCreditManualForm,toggleUnavailableExchangeForm,toggleVariantsBuilder,triggerAutoPrintReceipt,triggerAutoPrintReport,triggerInventoryRowImageUpload,tryAutoReconnectPoleDisplay,unitLabel,unlinkRecoveryEmail,unreadBillNotifications,updateAttendanceRosterExpectedTime,updateBarcodeCopies,updateBillReminderDays,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateCameraScanStatusText,updateComboRowCode,updateComboRowCustomName,updateComboRowQty,updateContractRowField,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateGasTabVisibility,updateLicenseLockHintText,updateLocReservationField,updateLowStockDescText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updatePrintRelaySectionVisibility,updateRecipeCaptureDish,updateRecipeCaptureIngredient,updateRecipeCaptureIngredientMatch,updateRecipeRowIngredient,updateRecipeRowQty,updateRecipeSummary,updateRestockRowField,updateServerBtnLabel,updateVariantRow,updateVariantsModalField,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,usbPrinterNameKey,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,poState,poNewRow,poRound3,poFormatDateTime,poStatusMeta,poLineOutstanding,poOrderStats,poIsOpen,poCanEdit,poFindProduct,poSave,poNextOrderNo,poActor,poRefreshFormLists,poOpenForm,poCloseForm,poAddRow,poRemoveRow,poRowLineTotal,poRenderTotals,poRenderRows,poUpdateRowField,poFillRowFromProduct,poEnsureSupplier,poSaveOrder,poSetFilter,poVisibleOrders,poToggleDetails,poActionsHtml,poDetailsHtml,renderOrdersList,renderOrdersTab,renderOrdersIfOpen,poMarkInTransit,poCancelOrder,poRemoveOrder,poCloseShort,poOpenArriveModal,poCloseArriveModal,poRenderArriveModal,poArriveToggleLine,poArriveQtyChange,poArriveRefresh,poApplyArrivedLine,poConfirmArrival,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,attendanceRosterList,buildBillOwedMessage,buildReceiptEscPosBytes,cellLooksLikeCurrency,closeChangeStaffPinModal,closePinSetConfirmModal,collapseTabsIfNeeded,commitRecipeCaptureReview,confirmBillSettle,copyPinSetConfirmValue,currentOfferTargets,detectCsvColumnsAI,editBillDueDate,etimsLogPeriodRange,genSaleId,generateRandomStaffPin,importInventoryCsv,invertStoreImportSelection,levenshteinDistance,loadStoreLog,onBarcodeLinkChange,onOfferTypeChange,openBarcodeScanModal,performRestoreBackup,printReceipt,printStoreReport,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,renderStoreLogTab,salesTablePeriodRange,saveRecordBillModal,sendPendingExchangeSms,setOfferScope,setStoreImportSelection,showPinSetConfirmModal,stopCaptureListCamera,submitChangeStaffPin,toggleRecipeBuilder,toggleTabsOverflowMenu,updateCaptureReviewField,updateStoreItemField,updateStoreItemQty,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice,gasLabelOf,gasTotals,gasSaveInventory,gasBoardSet,gasBoardPrice,addGasSize,selectGasSize,markGasAccessory,unmarkGasAccessory,addGasLineToCart */
         /* GENERATED from src/shared/functions.js by tools/sync-shared.mjs - do not edit here; edit the library and run `npm run sync`. */
         function _codeMatches(code, q){
         if(!q) return false;
@@ -6839,83 +6847,6 @@
             queuePush();
             renderDeliveryZonesList();
             showToast(`"${name}" zone added.`);
-        }
-
-        function addGasAccessory() {
-            const msgEl = document.getElementById('gas-accessory-msg');
-            const name = (document.getElementById('gas-new-accessory-name').value || '').trim();
-            const accType = document.getElementById('gas-new-accessory-type').value;
-            const price = parseFloat(document.getElementById('gas-new-accessory-price').value) || 0;
-            const wholesale = parseFloat(document.getElementById('gas-new-accessory-wholesale').value) || 0;
-            const stock = parseFloat(document.getElementById('gas-new-accessory-stock').value) || 0;
-
-            if (!name) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Enter a name.'; return; }
-            if (price <= 0) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Enter a retail price.'; return; }
-
-            const code = genGasCode('GASACC');
-            inventory.push({
-                code, type: 'item', name,
-                price, wholesaleSellingPrice: wholesale, wholesalePrice: 0,
-                qty: stock, unit: 'pcs', vatCategory: 'A',
-                isGasAccessory: true, gasAccessoryType: accType,
-            });
-            safeSetItem('pos_inventory', JSON.stringify(inventory));
-            queuePush();
-
-            document.getElementById('gas-new-accessory-name').value = '';
-            document.getElementById('gas-new-accessory-price').value = '';
-            document.getElementById('gas-new-accessory-wholesale').value = '';
-            document.getElementById('gas-new-accessory-stock').value = '0';
-
-            msgEl.className = 'settings-msg success';
-            msgEl.textContent = `Added "${name}".`;
-            renderGasTab();
-            if (typeof renderInventoryTable === 'function') renderInventoryTable();
-        }
-
-        function addGasCylinderVariant() {
-            const msgEl = document.getElementById('gas-variant-msg');
-            const brand = (document.getElementById('gas-new-brand').value || '').trim();
-            const weight = (document.getElementById('gas-new-weight').value || '').trim();
-            const outrightPrice = parseFloat(document.getElementById('gas-new-outright-price').value) || 0;
-            const outrightWholesale = parseFloat(document.getElementById('gas-new-outright-wholesale').value) || 0;
-            const refillPrice = parseFloat(document.getElementById('gas-new-refill-price').value) || 0;
-            const refillWholesale = parseFloat(document.getElementById('gas-new-refill-wholesale').value) || 0;
-            const fullStock = parseFloat(document.getElementById('gas-new-full-stock').value) || 0;
-            const emptyStock = parseFloat(document.getElementById('gas-new-empty-stock').value) || 0;
-
-            if (!brand || !weight) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Enter a brand and a weight.'; return; }
-            if (outrightPrice <= 0) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Enter an outright retail price.'; return; }
-
-            const fullCode = genGasCode('GASF');
-            const emptyCode = genGasCode('GASE');
-            const label = `${brand} ${weight}`;
-
-            inventory.push({
-                code: fullCode, type: 'item', name: `${label} (Full)`,
-                price: outrightPrice, wholesaleSellingPrice: outrightWholesale, wholesalePrice: 0,
-                qty: fullStock, unit: 'pcs', vatCategory: 'A',
-                isGasCylinder: true, gasRole: 'full', gasBrand: brand, gasWeight: weight,
-                gasPairCode: emptyCode, gasRefillPrice: refillPrice, gasRefillWholesalePrice: refillWholesale,
-            });
-            inventory.push({
-                code: emptyCode, type: 'item', name: `${label} (Empty)`,
-                price: 0, wholesaleSellingPrice: 0, wholesalePrice: 0,
-                qty: emptyStock, unit: 'pcs', vatCategory: 'A',
-                isGasCylinder: true, gasRole: 'empty', gasBrand: brand, gasWeight: weight,
-                gasPairCode: fullCode,
-            });
-            safeSetItem('pos_inventory', JSON.stringify(inventory));
-            queuePush();
-
-            ['gas-new-brand', 'gas-new-weight', 'gas-new-outright-price', 'gas-new-outright-wholesale', 'gas-new-refill-price', 'gas-new-refill-wholesale'].forEach(id => { document.getElementById(id).value = ''; });
-            document.getElementById('gas-new-full-stock').value = '0';
-            document.getElementById('gas-new-empty-stock').value = '0';
-
-            msgEl.className = 'settings-msg success';
-            msgEl.textContent = `Added "${label}" (Full + Empty items created).`;
-            renderGasTab();
-            if (typeof renderInventoryTable === 'function') renderInventoryTable();
         }
 
         function addLoyaltyTier() {
@@ -10244,36 +10175,30 @@
         }
 
         function performSupplierGasExchange() {
+            // send    — empties leave for the supplier: Empty -n, Away +n
+            // receive — refilled cylinders come back: Full +n, Away -n
+            // return  — swapped empties for full ones on the spot: Empty -n, Full +n
             const msgEl = document.getElementById('gas-supplier-msg');
             const fullCode = document.getElementById('gas-supplier-variant-select').value;
             const direction = document.getElementById('gas-supplier-direction').value;
-            const qty = Math.max(1, parseInt(document.getElementById('gas-supplier-qty').value) || 1);
+            const qty = Math.max(1, Math.round(parseFloat(document.getElementById('gas-supplier-qty').value) || 1));
+            const fail = (m) => { msgEl.className = 'settings-msg error'; msgEl.textContent = m; };
             const full = inventory.find(p => p.code === fullCode);
-            if (!full) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Choose a cylinder variant first.'; return; }
+            if (!full) { fail('Choose a cylinder size first.'); return; }
             const empty = inventory.find(p => p.code === full.gasPairCode);
-            if (!empty) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Could not find the matching Empty item.'; return; }
-            const label = `${full.gasBrand} ${full.gasWeight}`;
-
-            if ((empty.qty || 0) < qty) {
-                msgEl.className = 'settings-msg error';
-                msgEl.textContent = `Only ${empty.qty || 0} empty "${label}" on hand.`;
-                return;
-            }
-            empty.qty = (empty.qty || 0) - qty;
-            if (direction === 'return') full.qty = (full.qty || 0) + qty;
-
-            safeSetItem('pos_inventory', JSON.stringify(inventory));
+            if (!empty) { fail('Could not find the matching Empty item.'); return; }
+            const label = gasLabelOf(full);
+            if (direction !== 'receive' && (empty.qty || 0) < qty) { fail(`Only ${empty.qty || 0} empty ${label} on hand.`); return; }
+            if (direction === 'receive' && (full.gasAtSupplier || 0) < qty) { fail(`Only ${full.gasAtSupplier || 0} ${label} are with the supplier.`); return; }
+            if (direction === 'send') { empty.qty = (empty.qty || 0) - qty; full.gasAtSupplier = (full.gasAtSupplier || 0) + qty; }
+            else if (direction === 'receive') { full.qty = (full.qty || 0) + qty; full.gasAtSupplier = (full.gasAtSupplier || 0) - qty; }
+            else { empty.qty = (empty.qty || 0) - qty; full.qty = (full.qty || 0) + qty; }
             gasSupplierHistory.unshift({ id: genSaleId(), timestamp: new Date().toISOString(), label, direction, qty });
             gasSupplierHistory = gasSupplierHistory.slice(0, 30);
             safeSetItem('pos_gas_supplier_history', JSON.stringify(gasSupplierHistory));
-            queuePush();
-
+            gasSaveInventory();
             msgEl.className = 'settings-msg success';
-            msgEl.textContent = direction === 'send'
-                ? `Recorded ${qty} empty "${label}" sent to supplier.`
-                : `Recorded ${qty} full "${label}" returned from supplier.`;
-            renderGasTab();
-            if (typeof renderInventoryTable === 'function') renderInventoryTable();
+            msgEl.textContent = { send: `Recorded ${qty} empty ${label} sent to the supplier.`, receive: `Recorded ${qty} refilled ${label} received.`, return: `Recorded ${qty} ${label}: empties swapped for full ones.` }[direction];
         }
 
         async function persistPrintRoutingRules() {
@@ -11237,85 +11162,90 @@
                 </tr>`).join('');
         }
 
-        function renderGasAccessoriesTable() {
-            const tbody = document.getElementById('gas-accessories-table-body');
-            if (!tbody) return;
-            const items = inventory.filter(p => p.isGasAccessory);
-            if (items.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No accessories yet — add one above.</td></tr>`;
-                return;
-            }
-            tbody.innerHTML = items.map(p => `<tr>
-                <td>${escapeHtml(p.name)}</td>
-                <td>${p.gasAccessoryType === 'holder' ? 'Holder/Grill' : 'Burner'}</td>
-                <td>${p.qty || 0}</td>
-                <td>KES ${(p.price || 0).toFixed(2)}</td>
-            </tr>`).join('');
-        }
-
         function renderGasSupplierHistory() {
             const el = document.getElementById('gas-supplier-history');
             if (!el) return;
             if (gasSupplierHistory.length === 0) { el.innerHTML = ''; return; }
+            const words = { send: 'Sent empty', receive: 'Received refilled', return: 'Swapped at the depot' };
             el.innerHTML = '<strong>Recent:</strong><br>' + gasSupplierHistory.slice(0, 8).map(h => {
                 const date = new Date(h.timestamp).toLocaleString('en-GB');
-                return `${date} — ${h.direction === 'send' ? 'Sent' : 'Returned'} ${h.qty} × ${escapeHtml(h.label)}`;
+                return `${date} — ${words[h.direction] || h.direction} ${h.qty} × ${escapeHtml(h.label)}`;
             }).join('<br>');
         }
 
         function renderGasTab() {
-            const fulls = getGasFullVariants();
-            const variantOptions = fulls.length
-                ? fulls.map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.gasBrand)} ${escapeHtml(p.gasWeight)}</option>`).join('')
-                : '<option value="">— No cylinder variants set up yet —</option>';
+            const fulls = getGasFullVariants().slice().sort((a, b) => gasLabelOf(a).localeCompare(gasLabelOf(b), undefined, { numeric: true }));
+            if (!fulls.some(f => f.code === window.__gasSel)) window.__gasSel = fulls.length ? fulls[0].code : '';
+            const n = (x) => (Math.round((Number(x) || 0) * 100) / 100).toString();
 
-            const variantSelect = document.getElementById('gas-variant-select');
+            // 1. how many cylinders, in what state
+            const t = gasTotals();
+            const totalsEl = document.getElementById('gas-totals');
+            if (totalsEl) totalsEl.innerHTML = `<span class="gas-chip gas-full">🟢 Full <b>${t.full}</b></span><span class="gas-chip gas-empty">⚪ Empty <b>${t.empty}</b></span>${t.away ? `<span class="gas-chip gas-away">🚚 With supplier <b>${t.away}</b></span>` : ''}<span class="gas-chip">🛢️ All cylinders <b>${t.total}</b></span>`;
+
+            // 2. the board: one row per size, counts and prices editable in place
+            const tbody = document.getElementById('gas-board-body');
+            if (tbody) {
+                tbody.innerHTML = fulls.length === 0
+                    ? '<tr><td colspan="8" class="empty-state">No sizes yet — add your first size below (for example 13kg, with how many full and empty you have).</td></tr>'
+                    : fulls.map(f => {
+                        const e = inventory.find(p => p.code === f.gasPairCode) || {};
+                        const c = escapeJsAttr(f.code);
+                        const num = (v, cb) => `<input type="number" min="0" step="1" value="${Math.round(v || 0)}" onchange="${cb}(this.value)">`;
+                        const price = (v, field) => `<input type="number" min="0" step="0.01" value="${v ? n(v) : ''}" placeholder="—" onchange="gasBoardPrice('${c}', '${field}', this.value)">`;
+                        return `<tr class="${f.code === window.__gasSel ? 'gas-row-selected' : ''}">
+                            <td><strong>${escapeHtml(gasLabelOf(f))}</strong></td>
+                            <td>${num(f.qty, `gasBoardSet.bind(null, '${c}', 'full')`)}</td>
+                            <td>${num(e.qty, `gasBoardSet.bind(null, '${c}', 'empty')`)}</td>
+                            <td>${f.gasAtSupplier || 0}</td>
+                            <td><strong>${(f.qty || 0) + (e.qty || 0) + (f.gasAtSupplier || 0)}</strong></td>
+                            <td>${price(f.price, 'outright')}</td><td>${price(f.gasRefillPrice, 'refill')}</td><td>${price(e.price, 'empty')}</td>
+                        </tr>`;
+                    }).join('');
+            }
+
+            // 3. pick a size to sell
+            const chips = document.getElementById('gas-size-chips');
+            if (chips) chips.innerHTML = fulls.map(f => {
+                const e = inventory.find(p => p.code === f.gasPairCode) || {};
+                return `<button type="button" class="gas-size-chip ${f.code === window.__gasSel ? 'active' : ''}" onclick="selectGasSize('${escapeJsAttr(f.code)}')">${escapeHtml(gasLabelOf(f))}<small>${f.qty || 0} full · ${e.qty || 0} empty</small></button>`;
+            }).join('') || '<span class="settings-hint">Add a size first.</span>';
+
+            // 4. supplier form
             const supplierSelect = document.getElementById('gas-supplier-variant-select');
-            if (variantSelect) { const cur = variantSelect.value; variantSelect.innerHTML = variantOptions; if (fulls.some(p => p.code === cur)) variantSelect.value = cur; }
-            if (supplierSelect) { const cur = supplierSelect.value; supplierSelect.innerHTML = variantOptions; if (fulls.some(p => p.code === cur)) supplierSelect.value = cur; }
+            if (supplierSelect) { const cur = supplierSelect.value; supplierSelect.innerHTML = fulls.map(f => `<option value="${escapeHtml(f.code)}">${escapeHtml(gasLabelOf(f))}</option>`).join('') || '<option value="">— No sizes yet —</option>'; if (fulls.some(f => f.code === cur)) supplierSelect.value = cur; }
 
-            const burners = getGasAccessories('burner');
-            const holders = getGasAccessories('holder');
-            const burnerSelect = document.getElementById('gas-burner-select');
-            const holderSelect = document.getElementById('gas-holder-select');
-            if (burnerSelect) burnerSelect.innerHTML = '<option value="">— None —</option>' + burners.map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)} (${p.qty || 0} in stock)</option>`).join('');
-            if (holderSelect) holderSelect.innerHTML = '<option value="">— None —</option>' + holders.map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)} (${p.qty || 0} in stock)</option>`).join('');
+            // 5. accessories: ordinary inventory items that are marked as accessories
+            const accs = getGasAccessories();
+            const checklist = document.getElementById('gas-set-accessories-list');
+            if (checklist) {
+                const ticked = new Set(Array.from(checklist.querySelectorAll('.gas-acc-check:checked')).map(x => x.closest('.gas-acc-row').dataset.code));
+                checklist.innerHTML = accs.length === 0 ? '<p class="settings-hint" style="margin:0;">No accessories marked yet — mark some in the Accessories box below.</p>'
+                    : accs.map(a => `<div class="gas-acc-row" data-code="${escapeHtml(a.code)}"><label><input type="checkbox" class="gas-acc-check" ${ticked.has(a.code) ? 'checked' : ''}> ${escapeHtml(a.name)} <span class="kitchen-sub">KES ${n(a.price)} · ${n(a.qty)} in stock</span></label><input type="number" class="gas-acc-qty" min="1" step="1" value="1" title="How many per set"></div>`).join('');
+            }
+            const list = document.getElementById('gas-accessory-list');
+            if (list) list.innerHTML = accs.map(a => `<span class="gas-chip">${escapeHtml(a.name)} <button type="button" title="Unmark" onclick="unmarkGasAccessory('${escapeJsAttr(a.code)}')">✕</button></span>`).join('') || '<span class="settings-hint">None yet.</span>';
+            const pick = document.getElementById('gas-accessory-pick');
+            if (pick) pick.innerHTML = '<option value="">— pick an inventory item —</option>' + inventory.filter(p => (p.type || 'item') === 'item' && !p.isGasCylinder && !p.isGasAccessory).sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)}</option>`).join('');
 
-            renderGasVariantStock();
-            renderGasVariantsTable();
-            renderGasAccessoriesTable();
+            setGasTxType(gasTxType || 'exchange');
             renderGasSupplierHistory();
         }
 
         function renderGasVariantStock() {
-            const select = document.getElementById('gas-variant-select');
             const info = document.getElementById('gas-variant-stock-info');
-            if (!select || !info) return;
-            const full = inventory.find(p => p.code === select.value);
-            if (!full) { info.textContent = ''; return; }
+            if (!info) return;
+            const full = inventory.find(p => p.code === window.__gasSel);
+            if (!full) { info.textContent = getGasFullVariants().length ? 'Pick a size.' : 'Add a cylinder size above to start.'; return; }
             const empty = inventory.find(p => p.code === full.gasPairCode);
-            info.textContent = `Full in stock: ${full.qty || 0} · Empty in stock: ${(empty && empty.qty) || 0} · Outright: KES ${(full.price || 0).toFixed(2)} · Refill/Exchange: KES ${(full.gasRefillPrice || 0).toFixed(2)}`;
-        }
-
-        function renderGasVariantsTable() {
-            const tbody = document.getElementById('gas-variants-table-body');
-            if (!tbody) return;
-            const fulls = getGasFullVariants();
-            if (fulls.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No cylinder variants yet — add one above.</td></tr>`;
-                return;
-            }
-            tbody.innerHTML = fulls.map(full => {
-                const empty = inventory.find(p => p.code === full.gasPairCode);
-                return `<tr>
-                    <td>${escapeHtml(full.gasBrand)}</td>
-                    <td>${escapeHtml(full.gasWeight)}</td>
-                    <td>${full.qty || 0}</td>
-                    <td>${(empty && empty.qty) || 0}</td>
-                    <td>KES ${(full.price || 0).toFixed(2)}</td>
-                    <td>KES ${(full.gasRefillPrice || 0).toFixed(2)}</td>
-                </tr>`;
-            }).join('');
+            const kes = (n) => 'KES ' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const line = {
+                exchange: `Refill / exchange: ${kes(full.gasRefillPrice)} — the customer hands in an empty, so Full goes down by 1 and Empty goes up by 1.`,
+                outright: `Full cylinder with gas: ${kes(full.price)} — Full goes down by 1 (the customer keeps the cylinder).`,
+                set: `Full cylinder ${kes(full.price)} plus the accessories you tick below. Full goes down by 1.`,
+                empty: `Empty cylinder on its own: ${kes(empty && empty.price)} — Empty goes down by 1.`,
+            }[gasTxType] || '';
+            info.innerHTML = `<strong>${escapeHtml(gasLabelOf(full))}</strong> — Full ${full.qty || 0} · Empty ${(empty && empty.qty) || 0}<br>${escapeHtml(line)}`;
         }
 
         function renderInvEditableCell(id, field, value, commitCall, showScanBtn) {
@@ -12869,7 +12799,7 @@
 
         function setGasTxType(type) {
             gasTxType = type;
-            ['exchange', 'set', 'outright'].forEach(t => {
+            ['exchange', 'outright', 'set', 'empty'].forEach(t => {
                 const btn = document.getElementById(`gas-tx-${t}-btn`);
                 if (btn) btn.classList.toggle('active', t === type);
             });
@@ -17266,6 +17196,146 @@
                 await fetch(apiUrl('/api/owner-notice'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
             } catch (e) { /* offline: this device won't show it again; the server learns on the next dismissal */ }
         }
+
+        function gasLabelOf(full) {
+            return `${full.gasBrand ? full.gasBrand + ' ' : ''}${full.gasWeight || ''}`.trim();
+        }
+
+        function gasTotals() {
+            // Cylinders by state, across every size: Full, Empty, and Away (empties sent to the supplier and not back yet).
+            let full = 0, empty = 0, away = 0;
+            getGasFullVariants().forEach(f => {
+                full += f.qty || 0;
+                const e = inventory.find(p => p.code === f.gasPairCode);
+                empty += (e && e.qty) || 0;
+                away += f.gasAtSupplier || 0;
+            });
+            return { full, empty, away, total: full + empty + away };
+        }
+
+        function gasSaveInventory() {
+            safeSetItem('pos_inventory', JSON.stringify(inventory));
+            queuePush();
+            renderGasTab();
+            if (typeof renderInventoryTable === 'function') renderInventoryTable();
+        }
+
+        function gasBoardSet(code, which, value) {
+            // A stock count typed straight into the board: "Full 13kg = 20", "Empty 13kg = 5".
+            const full = inventory.find(p => p.code === code);
+            if (!full) return;
+            const item = which === 'empty' ? inventory.find(p => p.code === full.gasPairCode) : full;
+            const n = Math.round(parseFloat(value));
+            if (!item || !(n >= 0)) { showToast('Enter a whole number, 0 or more.', true); renderGasTab(); return; }
+            const delta = n - (item.qty || 0);
+            item.qty = n;
+            if (delta && typeof logStockMovement === 'function') logStockMovement(item.code, item.name, delta, 'Gas stock count');
+            gasSaveInventory();
+        }
+
+        function gasBoardPrice(code, field, value) {
+            const full = inventory.find(p => p.code === code);
+            if (!full) return;
+            const n = parseFloat(value);
+            if (!(n >= 0)) { showToast('Enter a price, 0 or more.', true); renderGasTab(); return; }
+            if (field === 'refill') full.gasRefillPrice = n;
+            else if (field === 'empty') { const e = inventory.find(p => p.code === full.gasPairCode); if (e) e.price = n; }
+            else full.price = n;
+            gasSaveInventory();
+        }
+
+        function addGasSize() {
+            const msgEl = document.getElementById('gas-size-msg');
+            const size = (document.getElementById('gas-new-size').value || '').trim();
+            const brand = (document.getElementById('gas-new-brand').value || '').trim();
+            const fullStock = Math.max(0, Math.round(parseFloat(document.getElementById('gas-new-full-stock').value) || 0));
+            const emptyStock = Math.max(0, Math.round(parseFloat(document.getElementById('gas-new-empty-stock').value) || 0));
+            const fail = (m) => { msgEl.className = 'settings-msg error'; msgEl.textContent = m; };
+            if (!size) { fail('Type the size, for example 13kg or 6kg.'); return; }
+            const label = `${brand ? brand + ' ' : ''}${size}`;
+            if (getGasFullVariants().some(f => gasLabelOf(f).toLowerCase() === label.toLowerCase())) { fail(`"${label}" is already in the list — change its numbers in the table.`); return; }
+            const fullCode = genGasCode('GASF'), emptyCode = genGasCode('GASE');
+            // Two ordinary inventory items per size (they show in Inventory and can be sold at the Sales Counter like anything else).
+            inventory.push({
+                code: fullCode, type: 'item', name: `${label} (Full)`, price: 0, wholesaleSellingPrice: 0, wholesalePrice: 0, qty: fullStock, unit: 'pcs', vatCategory: 'A',
+                isGasCylinder: true, gasRole: 'full', gasBrand: brand, gasWeight: size, gasPairCode: emptyCode, gasRefillPrice: 0, gasRefillWholesalePrice: 0,
+            });
+            inventory.push({
+                code: emptyCode, type: 'item', name: `${label} (Empty)`, price: 0, wholesaleSellingPrice: 0, wholesalePrice: 0, qty: emptyStock, unit: 'pcs', vatCategory: 'A',
+                isGasCylinder: true, gasRole: 'empty', gasBrand: brand, gasWeight: size, gasPairCode: fullCode,
+            });
+            ['gas-new-size', 'gas-new-brand'].forEach(id => { document.getElementById(id).value = ''; });
+            document.getElementById('gas-new-full-stock').value = '0';
+            document.getElementById('gas-new-empty-stock').value = '0';
+            window.__gasSel = fullCode;
+            gasSaveInventory();
+            msgEl.className = 'settings-msg success';
+            msgEl.textContent = `Added ${label}: ${fullStock} full, ${emptyStock} empty. Now set its prices in the table.`;
+        }
+
+        function selectGasSize(code) {
+            window.__gasSel = code;
+            renderGasTab();
+        }
+
+        function markGasAccessory() {
+            const sel = document.getElementById('gas-accessory-pick');
+            const p = inventory.find(x => x.code === (sel && sel.value));
+            if (!p) { showToast('Pick an item to mark as an accessory.', true); return; }
+            p.isGasAccessory = true;
+            if (!p.gasAccessoryType) p.gasAccessoryType = 'other';
+            gasSaveInventory();
+        }
+
+        function unmarkGasAccessory(code) {
+            const p = inventory.find(x => x.code === code);
+            if (!p) return;
+            delete p.isGasAccessory;
+            gasSaveInventory();
+        }
+
+        function addGasLineToCart() {
+            // Four ways to sell gas cylinders. Every one is an ordinary line in the Sales Counter cart; the stock moves when the sale is made:
+            //   exchange — full -1, empty +1 (the customer hands in an empty)      outright — full -1 (a full cylinder with gas, theirs to keep)
+            //   set      — full -1 plus the accessories ticked                     empty    — empty -1 (an empty cylinder on its own)
+            const msgEl = document.getElementById('gas-add-msg');
+            const fail = (m) => { msgEl.className = 'settings-msg error'; msgEl.textContent = m; };
+            const full = inventory.find(p => p.code === window.__gasSel);
+            const qty = Math.max(1, Math.round(parseFloat(document.getElementById('gas-tx-qty').value) || 1));
+            if (!full) { fail('Pick a cylinder size first.'); return; }
+            const empty = inventory.find(p => p.code === full.gasPairCode);
+            const label = gasLabelOf(full);
+            const type = gasTxType;
+            const needEmpty = type === 'empty';
+            const item = needEmpty ? empty : full;
+            const suffix = { exchange: 'gasrefill', outright: 'gasoutright', set: 'gasset', empty: 'gasempty' }[type] || 'gasrefill';
+            const key = `${item.code}::${suffix}`;
+            const existing = currentCart[key] ? currentCart[key].qty : 0;
+            const available = item.qty || 0;
+            if (existing + qty > available) { fail(`Only ${available} ${needEmpty ? 'empty' : 'full'} "${label}" in stock.`); return; }
+            const price = type === 'exchange' ? (full.gasRefillPrice || 0) : (needEmpty ? (empty.price || 0) : (full.price || 0));
+            if (!(price > 0)) { fail(`Set the ${type === 'exchange' ? 'refill' : (needEmpty ? 'empty cylinder' : 'full cylinder')} price for ${label} in the table above first.`); return; }
+            const names = { exchange: 'Refill/Exchange', outright: 'Full Cylinder', set: 'Complete Set', empty: 'Empty Cylinder' };
+            currentCart[key] = currentCart[key]
+                ? { ...currentCart[key], qty: existing + qty }
+                : {
+                    code: item.code, cartKey: key, name: `${label} — ${names[type]}`, price,
+                    wholesalePrice: type === 'exchange' ? (full.gasRefillWholesalePrice || 0) : (needEmpty ? 0 : (full.wholesaleSellingPrice || 0)),
+                    unit: 'pcs', isService: false, vatCategory: item.vatCategory || 'A', qty,
+                    ...(type === 'exchange' ? { gasReturnEmptyCode: full.gasPairCode } : {}),
+                };
+            if (type === 'set') {
+                document.querySelectorAll('#gas-set-accessories-list .gas-acc-row').forEach(row => {
+                    if (!row.querySelector('.gas-acc-check').checked) return;
+                    const per = Math.max(1, Math.round(parseFloat(row.querySelector('.gas-acc-qty').value) || 1));
+                    for (let i = 0; i < per * qty; i++) addToCart(row.dataset.code);
+                });
+            }
+            renderCart();
+            msgEl.className = 'settings-msg success';
+            msgEl.textContent = `Added ${qty} × ${label} — ${names[type]} to the sale. Go to 🛒 Sales Counter to take payment.`;
+            renderGasVariantStock();
+        }
         /* @shared:end */
 
         // --- Fuzzy code/name search helper (matches codes regardless of -, _, space) ---
@@ -20754,50 +20824,6 @@
         // Daily Sales/Bills all just work. A Refill/Exchange line's
         // gasReturnEmptyCode is read back out in checkoutCart() once the
         // sale actually goes through, to credit the Empty item's stock.
-        function addGasLineToCart() {
-            const msgEl = document.getElementById('gas-add-msg');
-            const fullCode = document.getElementById('gas-variant-select').value;
-            const qty = Math.max(1, parseInt(document.getElementById('gas-tx-qty').value) || 1);
-            const full = inventory.find(p => p.code === fullCode);
-            if (!full) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Choose a cylinder variant first.'; return; }
-            const label = `${full.gasBrand} ${full.gasWeight}`;
-            const available = full.qty || 0;
-
-            if (gasTxType === 'exchange' || gasTxType === 'outright' || gasTxType === 'set') {
-                const suffix = gasTxType === 'exchange' ? 'gasrefill' : (gasTxType === 'outright' ? 'gasoutright' : 'gasset');
-                const key = `${full.code}::${suffix}`;
-                const existingQty = currentCart[key] ? currentCart[key].qty : 0;
-                if (existingQty + qty > available) {
-                    msgEl.className = 'settings-msg error';
-                    msgEl.textContent = `Only ${available} full "${label}" available.`;
-                    return;
-                }
-                if (gasTxType === 'exchange') {
-                    const price = full.gasRefillPrice || 0;
-                    currentCart[key] = currentCart[key]
-                        ? { ...currentCart[key], qty: existingQty + qty }
-                        : { code: full.code, cartKey: key, name: `${label} — Refill/Exchange`, price, wholesalePrice: full.gasRefillWholesalePrice || 0, unit: 'pcs', isService: false, vatCategory: full.vatCategory || 'A', qty, gasReturnEmptyCode: full.gasPairCode };
-                } else {
-                    const txLabel = gasTxType === 'outright' ? 'Outright Purchase' : 'Complete Set';
-                    currentCart[key] = currentCart[key]
-                        ? { ...currentCart[key], qty: existingQty + qty }
-                        : { code: full.code, cartKey: key, name: `${label} — ${txLabel}`, price: full.price || 0, wholesalePrice: full.wholesaleSellingPrice || 0, unit: 'pcs', isService: false, vatCategory: full.vatCategory || 'A', qty };
-                }
-
-                if (gasTxType === 'set') {
-                    const burnerCode = document.getElementById('gas-burner-select').value;
-                    const holderCode = document.getElementById('gas-holder-select').value;
-                    for (let i = 0; i < qty; i++) {
-                        if (burnerCode) addToCart(burnerCode);
-                        if (holderCode) addToCart(holderCode);
-                    }
-                }
-            }
-
-            renderCart();
-            msgEl.className = 'settings-msg success';
-            msgEl.textContent = `Added "${label}" to the sale — go to 🛒 Sales Counter to complete payment.`;
-        }
 
         /* -> shared: performSupplierGasExchange */
 
@@ -24648,12 +24674,14 @@
             // Box/piece dual-unit fields — `price`/`qty`/`code` above describe the box;
             // these describe the individually-sold piece.
             if (document.getElementById('inv-has-dual-unit').checked) {
-                const unitsPerBox = parseInt(document.getElementById('inv-units-per-box').value, 10);
-                const piecePrice = parseFloat(document.getElementById('inv-piece-price').value);
-                if (!Number.isInteger(unitsPerBox) || unitsPerBox < 1) {
+                const unitsPerBox = parseFloat(document.getElementById('inv-units-per-box').value);
+                if (!(unitsPerBox > 0)) {
                     showToast('Please enter a valid number of pieces per box.', true);
                     return;
                 }
+                // blank = the package price shared out over its pieces (a 800 bag of 50 kg = 16 per kg); a typed price is your own per-kg margin
+                const piecePriceRaw = document.getElementById('inv-piece-price').value.trim();
+                const piecePrice = piecePriceRaw === '' ? Math.round(((item.price || 0) / unitsPerBox) * 100) / 100 : parseFloat(piecePriceRaw);
                 if (isNaN(piecePrice) || piecePrice < 0) {
                     showToast('Please enter a valid individual piece price.', true);
                     return;
@@ -24663,13 +24691,14 @@
                 const pieceCode = document.getElementById('inv-piece-code').value.trim() || null;
                 const pieceQtyRaw = document.getElementById('inv-piece-qty').value.trim();
                 const existingPieceQty = existingIndex >= 0 ? (inventory[existingIndex].pieceQty || 0) : 0;
-                const pieceQty = pieceQtyRaw === '' ? existingPieceQty : Math.max(0, parseInt(pieceQtyRaw, 10) || 0);
+                const pieceQty = pieceQtyRaw === '' ? existingPieceQty : Math.max(0, Math.round((parseFloat(pieceQtyRaw) || 0) * 1000) / 1000);
 
                 item.dualUnit = true;
                 item.unitsPerBox = unitsPerBox;
                 item.pieceCode = pieceCode;
                 item.piecePrice = piecePrice;
                 item.pieceWholesalePrice = pieceWholesalePrice;
+                item.looseUnit = document.getElementById('inv-loose-unit').value || 'pcs';
                 item.pieceQty = pieceQty;
             }
 
@@ -24782,6 +24811,7 @@
             document.getElementById('inv-piece-price').value = '';
             document.getElementById('inv-piece-wholesale-price').value = '';
             document.getElementById('inv-piece-qty').value = '';
+            document.getElementById('inv-loose-unit').value = 'pcs';
             document.getElementById('inv-has-variants').checked = false;
             document.getElementById('variants-builder').style.display = 'none';
             variantsDraft = [];
@@ -24951,7 +24981,8 @@
                 product.expiryDate = value || null;
                 showToast(value ? `Expiry date for "${product.name}" set to ${value}.` : `Expiry date cleared for "${product.name}".`);
             } else if (field === 'piecePrice') {
-                const piecePrice = parseFloat(value);
+                // blank = the package price shared out over its pieces
+                const piecePrice = String(value).trim() === '' ? Math.round(((product.price || 0) / (product.unitsPerBox || 1)) * 100) / 100 : parseFloat(value);
                 if (isNaN(piecePrice) || piecePrice < 0) {
                     showToast('Please enter a valid piece price.', true);
                     renderInventoryTable();
@@ -24959,8 +24990,11 @@
                 }
                 product.piecePrice = piecePrice;
                 showToast(`Piece price for "${product.name}" updated to KES ${piecePrice.toFixed(2)}.`);
+            } else if (field === 'looseUnit') {
+                product.looseUnit = String(value || 'pcs');
+                showToast(`"${product.name}" loose unit is now ${unitLabel(product.looseUnit)}.`);
             } else if (field === 'pieceQty') {
-                const pieceQty = parseInt(value, 10);
+                const pieceQty = Math.round(parseFloat(value) * 1000) / 1000;
                 if (isNaN(pieceQty) || pieceQty < 0) {
                     showToast('Please enter a valid loose-piece quantity.', true);
                     renderInventoryTable();
@@ -24969,8 +25003,8 @@
                 product.pieceQty = pieceQty;
                 showToast(`Loose piece stock for "${product.name}" updated to ${pieceQty}.`);
             } else if (field === 'unitsPerBox') {
-                const unitsPerBox = parseInt(value, 10);
-                if (!Number.isInteger(unitsPerBox) || unitsPerBox < 1) {
+                const unitsPerBox = parseFloat(value);
+                if (!(unitsPerBox > 0)) {
                     showToast('Please enter a valid pieces-per-box count.', true);
                     renderInventoryTable();
                     return;
@@ -25142,6 +25176,7 @@
                 document.getElementById('inv-edit-unitsperbox-input').value = target.unitsPerBox || 1;
                 document.getElementById('inv-edit-pieceprice-input').value = (target.piecePrice || 0).toFixed(2);
                 document.getElementById('inv-edit-piececount-input').value = target.pieceQty || 0;
+                document.getElementById('inv-edit-looseunit-input').value = (isVariant ? product.looseUnit : target.looseUnit) || 'pcs';
                 document.getElementById('inv-edit-openbox-btn').style.display = isVariant ? 'none' : 'inline-block';
             }
 
@@ -25699,7 +25734,7 @@
                             <td>
                                 <input class="inv-edit-input" type="number" min="0" step="${qtyStep}"
                                     value="${formatQty(p.qty, unit)}"
-                                    onchange="updateInventoryField('${escapeJsAttr(p.code)}', 'qty', this.value)">
+                                    onchange="updateInventoryField('${escapeJsAttr(p.code)}', 'qty', this.value)">${p.dualUnit && p.looseUnit && p.looseUnit !== 'pcs' ? `<div class="dual-stock-note">${escapeHtml(dualStockText(p))}</div>` : ''}
                             </td>
                             <td><span class="stock-pill ${isLow ? 'low' : 'ok'}">${isLow ? 'LOW STOCK' : 'IN STOCK'}</span></td>
                             <td>
@@ -27612,12 +27647,12 @@
                     const boxClick = boxOut ? `openAdhocSaleModal('${escapeQuotes(p.name)} (Box)', ${p.price || 0})` : `addToCart('${escapeQuotes(p.code)}', 'box')`;
                     const pieceClick = pieceOut ? `openAdhocSaleModal('${escapeQuotes(p.name)} (Piece)', ${p.piecePrice || 0})` : `addToCart('${escapeQuotes(p.code)}', 'piece')`;
                     return `<div class="search-item" onclick="${boxClick}">
-                        <span>${escapeHtml(p.name)} (Box) <span class="dual-unit-badge">📦</span>${boxOfferTag} <span class="stock-tag">(#${escapeHtml(p.code)})${locTag}</span></span>
-                        <span>${boxOut ? '<span style="color:var(--danger);">Out of stock</span> — tap to borrow' : 'KES ' + getEffectivePrice(p, 'box').toFixed(2) + ' / box'}</span>
+                        <span>${escapeHtml(p.name + dualLineSuffix(p, 'box'))} <span class="dual-unit-badge">📦</span>${boxOfferTag} <span class="stock-tag">(#${escapeHtml(p.code)})${locTag}</span></span>
+                        <span>${boxOut ? '<span style="color:var(--danger);">Out of stock</span> — tap to borrow' : 'KES ' + getEffectivePrice(p, 'box').toFixed(2) + ' / ' + (p.looseUnit && p.looseUnit !== 'pcs' ? dualBoxWord(p) : 'box')}</span>
                     </div>
                     <div class="search-item" onclick="${pieceClick}">
-                        <span>${escapeHtml(p.name)} (Piece) <span class="dual-unit-badge">🔢</span> <span class="stock-tag">${p.pieceCode ? '(#' + escapeHtml(p.pieceCode) + ')' : ''}${locTag}</span></span>
-                        <span>${pieceOut ? '<span style="color:var(--danger);">Out of stock</span> — tap to borrow' : 'KES ' + (p.piecePrice || 0).toFixed(2) + ' / piece'}</span>
+                        <span>${escapeHtml(p.name + dualLineSuffix(p, 'piece'))} <span class="dual-unit-badge">🔢</span> <span class="stock-tag">${p.pieceCode ? '(#' + escapeHtml(p.pieceCode) + ')' : ''}${locTag}</span></span>
+                        <span>${pieceOut ? '<span style="color:var(--danger);">Out of stock</span> — tap to borrow' : 'KES ' + (p.piecePrice || 0).toFixed(2) + ' / ' + (p.looseUnit && p.looseUnit !== 'pcs' ? dualLooseWord(p) : 'piece')}</span>
                     </div>`;
                 }
 
@@ -28086,6 +28121,53 @@
 
 
 
+        /* ---------- DUAL-UNIT MEASURABLES (a bag AND loose kilograms) ----------
+           A packaged item can also be sold loose by weight / length / volume: "Cement: 50 kg bag OR by the kg". The product keeps its package
+           (`unit`, e.g. bag), how many loose units make one (`unitsPerBox`, decimals allowed), the loose unit's name (`looseUnit`, e.g. kg) and its price
+           (`piecePrice` — blank = package price / units). Stock is one balance in the loose unit: bags x units + loose. Quantities may be decimals. */
+        function dualBoxWord(product) {
+            return (product && product.unit && product.unit !== 'pcs') ? unitLabel(product.unit) : 'Box';
+        }
+        function dualLooseWord(product) {
+            return unitLabel((product && product.looseUnit) || 'pcs');
+        }
+        // The label a cart line / search row carries: "Cement (50kg bag)" and "Cement (Loose kg)". Items without a loose unit keep "(Box)" / "(Piece)".
+        function dualLineSuffix(product, mode) {
+            if (!product || !product.looseUnit || product.looseUnit === 'pcs') return mode === 'piece' ? ' (Piece)' : ' (Box)';
+            return mode === 'piece'
+                ? ` (Loose ${dualLooseWord(product)})`
+                : ` (${Math.round((product.unitsPerBox || 1) * 1000) / 1000}${dualLooseWord(product)} ${dualBoxWord(product)})`;
+        }
+        // "Stock: 29 bag + 47 kg (1,497 kg in all)" — the one balance shown both ways.
+        function dualStockText(product) {
+            const per = product.unitsPerBox || 1;
+            const total = Math.round(((product.qty || 0) * per + (product.pieceQty || 0)) * 1000) / 1000;
+            const boxes = Math.floor(total / per + 1e-9);
+            const rest = Math.round((total - boxes * per) * 1000) / 1000;
+            const n = (x) => (Math.round(x * 100) / 100).toLocaleString('en-US');
+            return `${n(boxes)} ${dualBoxWord(product)}${rest ? ' + ' + n(rest) + ' ' + dualLooseWord(product) : ''} (${n(total)} ${dualLooseWord(product)} in all)`;
+        }
+        function cartUnitToggleHtml(line) {
+            const p = inventory.find(x => x.code === line.code);
+            if (!p || !p.dualUnit || line.isService || line.isCrossBranch || (line.saleMode !== 'box' && line.saleMode !== 'piece')) return '';
+            const key = escapeJsAttr(line.cartKey || line.code);
+            return `<div class="unit-toggle"><button type="button" class="${line.saleMode === 'box' ? 'active' : ''}" onclick="switchCartUnit('${key}', 'box')">📦 ${escapeHtml(dualBoxWord(p))}</button><button type="button" class="${line.saleMode === 'piece' ? 'active' : ''}" onclick="switchCartUnit('${key}', 'piece')">⚖️ ${escapeHtml(dualLooseWord(p))}</button></div>`;
+        }
+        // Flip a cart line between the package and the loose unit, keeping the same amount of goods (1 bag <-> 50 kg).
+        function switchCartUnit(key, mode) {
+            const line = currentCart[key];
+            if (!line || line.saleMode === mode) return;
+            const product = inventory.find(p => p.code === line.code);
+            if (!product || !product.dualUnit) return;
+            const per = product.unitsPerBox || 1;
+            const qty = Math.round((mode === 'piece' ? line.qty * per : line.qty / per) * 1000) / 1000;
+            delete currentCart[key];
+            addToCart(line.code, mode);
+            const newKey = cartKeyFor(line.code, mode);
+            if (currentCart[newKey] && qty > 0) setCartQty(newKey, qty);
+            renderCart();
+        }
+
         function addToCart(code, mode, priceTier, variantId) {
             const product = inventory.find(p => p.code === code);
             if (!product) return;
@@ -28137,7 +28219,7 @@
             // combinations for little real benefit.
             const useWholesale = priceTier === 'wholesale' && !isDual && (product.wholesaleSellingPrice || 0) > 0;
             const key = cartKeyFor(code, saleMode, useWholesale ? 'wholesale' : undefined);
-            const unit = isDual && saleMode === 'piece' ? 'pcs' : (product.unit || 'pcs');
+            const unit = isDual && saleMode === 'piece' ? (product.looseUnit || 'pcs') : (product.unit || 'pcs');
             const step = 1; // whole steps only — a decimal only ever comes from typing one directly
 
             const price = useWholesale
@@ -28146,7 +28228,7 @@
             const wholesalePrice = isDual && saleMode === 'piece'
                 ? (product.pieceWholesalePrice || 0)
                 : getServiceUnitCost(product);
-            const name = product.name + (isDual ? (saleMode === 'piece' ? ' (Piece)' : ' (Box)') : '') + (useWholesale ? ' (Wholesale)' : '');
+            const name = product.name + (isDual ? dualLineSuffix(product, saleMode) : '') + (useWholesale ? ' (Wholesale)' : '');
 
             const available = getAvailableStock(product, saleMode);
             const inCart = currentCart[key] ? currentCart[key].qty : 0;
@@ -28507,7 +28589,7 @@
                         : `KES ${lineTotal.toFixed(2)}`;
                     return `
                     <tr class="${offer ? 'cart-row-has-offer' : ''}">
-                        <td class="cart-cell-name">${escapeHtml(line.name)}${line.isService ? ' <span class="service-badge">SERVICE</span>' : ''}${line.isCrossBranch ? ` <span class="dual-unit-badge" style="background:#8e44ad;">🔀 ${escapeHtml(line.crossBranchLabel)}</span>` : ''}${badgeHtml}</td>
+                        <td class="cart-cell-name">${escapeHtml(line.name)}${line.isService ? ' <span class="service-badge">SERVICE</span>' : ''}${line.isCrossBranch ? ` <span class="dual-unit-badge" style="background:#8e44ad;">🔀 ${escapeHtml(line.crossBranchLabel)}</span>` : ''}${badgeHtml}${cartUnitToggleHtml(line)}</td>
                         <td class="cart-cell-qty">
                             <div class="qty-controls">
                                 <button onclick="changeCartQty('${escapeJsAttr(line.cartKey || line.code)}', -${step})">−</button>
@@ -30752,18 +30834,10 @@
             if (!deferInventoryForHeldBill) {
                 deductEntriesForBillRoot(entries);
             }
-            // 🔥 Gas Refill — a Refill/Exchange line (see addGasLineToCart)
-            // means the customer handed in an empty cylinder as they left
-            // with the full one already deducted above. Credit the matching
-            // Empty item's own stock by the same quantity. Skipped for a
-            // held bill for the same reason as the deduction above — the
-            // physical exchange hasn't actually happened yet.
+            // 🔥 Gas Refill — the empty cylinder handed in with a Refill/Exchange line is credited INSIDE deductEntriesForBillRoot()
+            // (once, and only when the goods actually leave). It used to be credited a second time right here, so every exchange added
+            // two empties instead of one.
             if (!deferInventoryForHeldBill) {
-                entries.forEach(line => {
-                    if (!line.gasReturnEmptyCode) return;
-                    const emptyItem = inventory.find(p => p.code === line.gasReturnEmptyCode);
-                    if (emptyItem) emptyItem.qty = (emptyItem.qty || 0) + line.qty;
-                });
                 safeSetItem('pos_inventory', JSON.stringify(inventory));
                 queuePush();
             }

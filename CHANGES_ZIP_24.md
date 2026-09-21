@@ -1,4 +1,4 @@
-# Zips 24 - 44 — what changed
+# Zips 24 - 46 — what changed
 
 ## Aqua POS (water): each site has its own bulk tank
 * Production and every Shop branch have their own tanks. Refills, sales and bulk orders draw only from their own site.
@@ -173,3 +173,22 @@ If clients on zip 24+ with big shops report reverts, ALSO check the Owner Consol
 ## Zip 44
 * **Pharmacy Sales Counter now has the dosage box too** (Hospital had it since zip 42): an optional dosage under each stocked item in the cart with quick chips (1 x 3, 1 x 2, 2 x 3, 1 x 1), saved on the
   sale line and printed as `--> Dose: ...` on the on-screen, printed and USB/Bluetooth receipts. Tested end to end in both apps. (Dose-pack rules and the cashier patient bill remain Hospital-only.)
+
+## Zip 45  (Shop app: dual-unit measurables — a bag AND loose kilograms)
+* **Loose unit** on a package item that is also sold loose (Add item form + edit window): pick what one "piece" is (kg, g, l, ml, m ...). Pieces per bag and loose stock now take decimals (a 25.5 kg bag, 12.5 kg loose).
+  Loose price: leave blank = bag price / pieces per bag (800 / 50 = 16 per kg) or type your own per-kg margin.
+* **Cart / search / receipts speak the unit**: "Cement (50kg bag)" in bags, "Cement (Loose kg)" in kg, with the quantity carrying its unit (10bag, 3kg, 2.5kg). Items without a loose unit keep "(Box)" / "(Piece)".
+* **Unit toggle on every dual-unit cart line** (📦 bag | ⚖️ kg): flips the line keeping the same amount of goods (2 bags = 100 kg, 3 kg = 0.06 bag); decimal bags (0.25) sell too.
+* **One stock balance**: bags x units + loose. The inventory table shows "29 bag + 47 kg (1,497 kg in all)"; selling anything (bags, kg, fractions of a bag) moves that one balance.
+* Shop app only for now (Hotel/Hospital/Pharmacy/Production/Services have the older Box/Piece dual unit).
+
+## Zip 46  (Gas Refill tab, in the Shop, Production and Services apps — one shared implementation)
+* **A simple stock board**: one row per cylinder size with FULL and EMPTY counts you can type into (13kg 20 / 5, 6kg 31 / 8), plus "with supplier" and the total, and the three prices (full cylinder, refill, empty
+  cylinder) in the same row. Totals by state at the top (Full / Empty / With supplier / All cylinders). Adding a size takes a size and two counts; brand is optional. Every cylinder is an ordinary inventory item
+  ("13kg (Full)", "13kg (Empty)") and shows in Inventory; a typed count is logged as a stock adjustment.
+* **Four ways to sell**, one tap each, all as normal Sales Counter lines: 🔄 Refill/Exchange (full -1, empty +1 at the refill price), 🛢️ Full cylinder (full -1), 📦 Complete set (full -1 + the accessories you tick,
+  with how many per set), ⚪ Empty cylinder (empty -1). A void puts everything back.
+* **Accessories are ordinary inventory items**, sold at the Sales Counter like any item; mark the ones that go in a set from the Gas tab (no separate accessory stock to maintain).
+* **Cylinders with the supplier are counted**: sent empties (Empty -, With supplier +), refilled ones received (Full +, With supplier -), or swapped on the spot. The number of cylinders you own is always visible.
+* **Fixed (Shop app): every refill/exchange added TWO empty cylinders instead of one** (the empty was credited in two places). Now once.
+* The old gas tab (variant manager, separate accessory manager, single burner/holder pickers) is replaced. Existing sizes and accessories carry over.

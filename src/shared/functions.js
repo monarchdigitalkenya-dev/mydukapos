@@ -110,85 +110,6 @@ function addDeliveryZone() {
             showToast(`"${name}" zone added.`);
         }
 
-//@fn addGasAccessory
-function addGasAccessory() {
-            const msgEl = document.getElementById('gas-accessory-msg');
-            const name = (document.getElementById('gas-new-accessory-name').value || '').trim();
-            const accType = document.getElementById('gas-new-accessory-type').value;
-            const price = parseFloat(document.getElementById('gas-new-accessory-price').value) || 0;
-            const wholesale = parseFloat(document.getElementById('gas-new-accessory-wholesale').value) || 0;
-            const stock = parseFloat(document.getElementById('gas-new-accessory-stock').value) || 0;
-
-            if (!name) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Enter a name.'; return; }
-            if (price <= 0) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Enter a retail price.'; return; }
-
-            const code = genGasCode('GASACC');
-            inventory.push({
-                code, type: 'item', name,
-                price, wholesaleSellingPrice: wholesale, wholesalePrice: 0,
-                qty: stock, unit: 'pcs', vatCategory: 'A',
-                isGasAccessory: true, gasAccessoryType: accType,
-            });
-            safeSetItem('pos_inventory', JSON.stringify(inventory));
-            queuePush();
-
-            document.getElementById('gas-new-accessory-name').value = '';
-            document.getElementById('gas-new-accessory-price').value = '';
-            document.getElementById('gas-new-accessory-wholesale').value = '';
-            document.getElementById('gas-new-accessory-stock').value = '0';
-
-            msgEl.className = 'settings-msg success';
-            msgEl.textContent = `Added "${name}".`;
-            renderGasTab();
-            if (typeof renderInventoryTable === 'function') renderInventoryTable();
-        }
-
-//@fn addGasCylinderVariant
-function addGasCylinderVariant() {
-            const msgEl = document.getElementById('gas-variant-msg');
-            const brand = (document.getElementById('gas-new-brand').value || '').trim();
-            const weight = (document.getElementById('gas-new-weight').value || '').trim();
-            const outrightPrice = parseFloat(document.getElementById('gas-new-outright-price').value) || 0;
-            const outrightWholesale = parseFloat(document.getElementById('gas-new-outright-wholesale').value) || 0;
-            const refillPrice = parseFloat(document.getElementById('gas-new-refill-price').value) || 0;
-            const refillWholesale = parseFloat(document.getElementById('gas-new-refill-wholesale').value) || 0;
-            const fullStock = parseFloat(document.getElementById('gas-new-full-stock').value) || 0;
-            const emptyStock = parseFloat(document.getElementById('gas-new-empty-stock').value) || 0;
-
-            if (!brand || !weight) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Enter a brand and a weight.'; return; }
-            if (outrightPrice <= 0) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Enter an outright retail price.'; return; }
-
-            const fullCode = genGasCode('GASF');
-            const emptyCode = genGasCode('GASE');
-            const label = `${brand} ${weight}`;
-
-            inventory.push({
-                code: fullCode, type: 'item', name: `${label} (Full)`,
-                price: outrightPrice, wholesaleSellingPrice: outrightWholesale, wholesalePrice: 0,
-                qty: fullStock, unit: 'pcs', vatCategory: 'A',
-                isGasCylinder: true, gasRole: 'full', gasBrand: brand, gasWeight: weight,
-                gasPairCode: emptyCode, gasRefillPrice: refillPrice, gasRefillWholesalePrice: refillWholesale,
-            });
-            inventory.push({
-                code: emptyCode, type: 'item', name: `${label} (Empty)`,
-                price: 0, wholesaleSellingPrice: 0, wholesalePrice: 0,
-                qty: emptyStock, unit: 'pcs', vatCategory: 'A',
-                isGasCylinder: true, gasRole: 'empty', gasBrand: brand, gasWeight: weight,
-                gasPairCode: fullCode,
-            });
-            safeSetItem('pos_inventory', JSON.stringify(inventory));
-            queuePush();
-
-            ['gas-new-brand', 'gas-new-weight', 'gas-new-outright-price', 'gas-new-outright-wholesale', 'gas-new-refill-price', 'gas-new-refill-wholesale'].forEach(id => { document.getElementById(id).value = ''; });
-            document.getElementById('gas-new-full-stock').value = '0';
-            document.getElementById('gas-new-empty-stock').value = '0';
-
-            msgEl.className = 'settings-msg success';
-            msgEl.textContent = `Added "${label}" (Full + Empty items created).`;
-            renderGasTab();
-            if (typeof renderInventoryTable === 'function') renderInventoryTable();
-        }
-
 //@fn addLoyaltyTier
 function addLoyaltyTier() {
             loyaltyTiers.push({ id: genSaleId(), minSpend: 0, maxSpend: null, tokens: 1 });
@@ -2102,6 +2023,156 @@ function genGasCode(prefix) {
             return `${prefix}-${genSaleId()}`;
         }
 
+//@fn addGasLineToCart
+function addGasLineToCart() {
+            // Four ways to sell gas cylinders. Every one is an ordinary line in the Sales Counter cart; the stock moves when the sale is made:
+            //   exchange — full -1, empty +1 (the customer hands in an empty)      outright — full -1 (a full cylinder with gas, theirs to keep)
+            //   set      — full -1 plus the accessories ticked                     empty    — empty -1 (an empty cylinder on its own)
+            const msgEl = document.getElementById('gas-add-msg');
+            const fail = (m) => { msgEl.className = 'settings-msg error'; msgEl.textContent = m; };
+            const full = inventory.find(p => p.code === window.__gasSel);
+            const qty = Math.max(1, Math.round(parseFloat(document.getElementById('gas-tx-qty').value) || 1));
+            if (!full) { fail('Pick a cylinder size first.'); return; }
+            const empty = inventory.find(p => p.code === full.gasPairCode);
+            const label = gasLabelOf(full);
+            const type = gasTxType;
+            const needEmpty = type === 'empty';
+            const item = needEmpty ? empty : full;
+            const suffix = { exchange: 'gasrefill', outright: 'gasoutright', set: 'gasset', empty: 'gasempty' }[type] || 'gasrefill';
+            const key = `${item.code}::${suffix}`;
+            const existing = currentCart[key] ? currentCart[key].qty : 0;
+            const available = item.qty || 0;
+            if (existing + qty > available) { fail(`Only ${available} ${needEmpty ? 'empty' : 'full'} "${label}" in stock.`); return; }
+            const price = type === 'exchange' ? (full.gasRefillPrice || 0) : (needEmpty ? (empty.price || 0) : (full.price || 0));
+            if (!(price > 0)) { fail(`Set the ${type === 'exchange' ? 'refill' : (needEmpty ? 'empty cylinder' : 'full cylinder')} price for ${label} in the table above first.`); return; }
+            const names = { exchange: 'Refill/Exchange', outright: 'Full Cylinder', set: 'Complete Set', empty: 'Empty Cylinder' };
+            currentCart[key] = currentCart[key]
+                ? { ...currentCart[key], qty: existing + qty }
+                : {
+                    code: item.code, cartKey: key, name: `${label} — ${names[type]}`, price,
+                    wholesalePrice: type === 'exchange' ? (full.gasRefillWholesalePrice || 0) : (needEmpty ? 0 : (full.wholesaleSellingPrice || 0)),
+                    unit: 'pcs', isService: false, vatCategory: item.vatCategory || 'A', qty,
+                    ...(type === 'exchange' ? { gasReturnEmptyCode: full.gasPairCode } : {}),
+                };
+            if (type === 'set') {
+                document.querySelectorAll('#gas-set-accessories-list .gas-acc-row').forEach(row => {
+                    if (!row.querySelector('.gas-acc-check').checked) return;
+                    const per = Math.max(1, Math.round(parseFloat(row.querySelector('.gas-acc-qty').value) || 1));
+                    for (let i = 0; i < per * qty; i++) addToCart(row.dataset.code);
+                });
+            }
+            renderCart();
+            msgEl.className = 'settings-msg success';
+            msgEl.textContent = `Added ${qty} × ${label} — ${names[type]} to the sale. Go to 🛒 Sales Counter to take payment.`;
+            renderGasVariantStock();
+        }
+
+//@fn unmarkGasAccessory
+function unmarkGasAccessory(code) {
+            const p = inventory.find(x => x.code === code);
+            if (!p) return;
+            delete p.isGasAccessory;
+            gasSaveInventory();
+        }
+
+//@fn markGasAccessory
+function markGasAccessory() {
+            const sel = document.getElementById('gas-accessory-pick');
+            const p = inventory.find(x => x.code === (sel && sel.value));
+            if (!p) { showToast('Pick an item to mark as an accessory.', true); return; }
+            p.isGasAccessory = true;
+            if (!p.gasAccessoryType) p.gasAccessoryType = 'other';
+            gasSaveInventory();
+        }
+
+//@fn selectGasSize
+function selectGasSize(code) {
+            window.__gasSel = code;
+            renderGasTab();
+        }
+
+//@fn addGasSize
+function addGasSize() {
+            const msgEl = document.getElementById('gas-size-msg');
+            const size = (document.getElementById('gas-new-size').value || '').trim();
+            const brand = (document.getElementById('gas-new-brand').value || '').trim();
+            const fullStock = Math.max(0, Math.round(parseFloat(document.getElementById('gas-new-full-stock').value) || 0));
+            const emptyStock = Math.max(0, Math.round(parseFloat(document.getElementById('gas-new-empty-stock').value) || 0));
+            const fail = (m) => { msgEl.className = 'settings-msg error'; msgEl.textContent = m; };
+            if (!size) { fail('Type the size, for example 13kg or 6kg.'); return; }
+            const label = `${brand ? brand + ' ' : ''}${size}`;
+            if (getGasFullVariants().some(f => gasLabelOf(f).toLowerCase() === label.toLowerCase())) { fail(`"${label}" is already in the list — change its numbers in the table.`); return; }
+            const fullCode = genGasCode('GASF'), emptyCode = genGasCode('GASE');
+            // Two ordinary inventory items per size (they show in Inventory and can be sold at the Sales Counter like anything else).
+            inventory.push({
+                code: fullCode, type: 'item', name: `${label} (Full)`, price: 0, wholesaleSellingPrice: 0, wholesalePrice: 0, qty: fullStock, unit: 'pcs', vatCategory: 'A',
+                isGasCylinder: true, gasRole: 'full', gasBrand: brand, gasWeight: size, gasPairCode: emptyCode, gasRefillPrice: 0, gasRefillWholesalePrice: 0,
+            });
+            inventory.push({
+                code: emptyCode, type: 'item', name: `${label} (Empty)`, price: 0, wholesaleSellingPrice: 0, wholesalePrice: 0, qty: emptyStock, unit: 'pcs', vatCategory: 'A',
+                isGasCylinder: true, gasRole: 'empty', gasBrand: brand, gasWeight: size, gasPairCode: fullCode,
+            });
+            ['gas-new-size', 'gas-new-brand'].forEach(id => { document.getElementById(id).value = ''; });
+            document.getElementById('gas-new-full-stock').value = '0';
+            document.getElementById('gas-new-empty-stock').value = '0';
+            window.__gasSel = fullCode;
+            gasSaveInventory();
+            msgEl.className = 'settings-msg success';
+            msgEl.textContent = `Added ${label}: ${fullStock} full, ${emptyStock} empty. Now set its prices in the table.`;
+        }
+
+//@fn gasBoardPrice
+function gasBoardPrice(code, field, value) {
+            const full = inventory.find(p => p.code === code);
+            if (!full) return;
+            const n = parseFloat(value);
+            if (!(n >= 0)) { showToast('Enter a price, 0 or more.', true); renderGasTab(); return; }
+            if (field === 'refill') full.gasRefillPrice = n;
+            else if (field === 'empty') { const e = inventory.find(p => p.code === full.gasPairCode); if (e) e.price = n; }
+            else full.price = n;
+            gasSaveInventory();
+        }
+
+//@fn gasBoardSet
+function gasBoardSet(code, which, value) {
+            // A stock count typed straight into the board: "Full 13kg = 20", "Empty 13kg = 5".
+            const full = inventory.find(p => p.code === code);
+            if (!full) return;
+            const item = which === 'empty' ? inventory.find(p => p.code === full.gasPairCode) : full;
+            const n = Math.round(parseFloat(value));
+            if (!item || !(n >= 0)) { showToast('Enter a whole number, 0 or more.', true); renderGasTab(); return; }
+            const delta = n - (item.qty || 0);
+            item.qty = n;
+            if (delta && typeof logStockMovement === 'function') logStockMovement(item.code, item.name, delta, 'Gas stock count');
+            gasSaveInventory();
+        }
+
+//@fn gasSaveInventory
+function gasSaveInventory() {
+            safeSetItem('pos_inventory', JSON.stringify(inventory));
+            queuePush();
+            renderGasTab();
+            if (typeof renderInventoryTable === 'function') renderInventoryTable();
+        }
+
+//@fn gasTotals
+function gasTotals() {
+            // Cylinders by state, across every size: Full, Empty, and Away (empties sent to the supplier and not back yet).
+            let full = 0, empty = 0, away = 0;
+            getGasFullVariants().forEach(f => {
+                full += f.qty || 0;
+                const e = inventory.find(p => p.code === f.gasPairCode);
+                empty += (e && e.qty) || 0;
+                away += f.gasAtSupplier || 0;
+            });
+            return { full, empty, away, total: full + empty + away };
+        }
+
+//@fn gasLabelOf
+function gasLabelOf(full) {
+            return `${full.gasBrand ? full.gasBrand + ' ' : ''}${full.gasWeight || ''}`.trim();
+        }
+
 //@fn generateItemCode
 function generateItemCode() {
             const existingCodes = new Set(inventory.map(p => (p.code || '').toLowerCase()));
@@ -3888,36 +3959,30 @@ function performResetExceptInventory() {
 
 //@fn performSupplierGasExchange
 function performSupplierGasExchange() {
+            // send    — empties leave for the supplier: Empty -n, Away +n
+            // receive — refilled cylinders come back: Full +n, Away -n
+            // return  — swapped empties for full ones on the spot: Empty -n, Full +n
             const msgEl = document.getElementById('gas-supplier-msg');
             const fullCode = document.getElementById('gas-supplier-variant-select').value;
             const direction = document.getElementById('gas-supplier-direction').value;
-            const qty = Math.max(1, parseInt(document.getElementById('gas-supplier-qty').value) || 1);
+            const qty = Math.max(1, Math.round(parseFloat(document.getElementById('gas-supplier-qty').value) || 1));
+            const fail = (m) => { msgEl.className = 'settings-msg error'; msgEl.textContent = m; };
             const full = inventory.find(p => p.code === fullCode);
-            if (!full) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Choose a cylinder variant first.'; return; }
+            if (!full) { fail('Choose a cylinder size first.'); return; }
             const empty = inventory.find(p => p.code === full.gasPairCode);
-            if (!empty) { msgEl.className = 'settings-msg error'; msgEl.textContent = 'Could not find the matching Empty item.'; return; }
-            const label = `${full.gasBrand} ${full.gasWeight}`;
-
-            if ((empty.qty || 0) < qty) {
-                msgEl.className = 'settings-msg error';
-                msgEl.textContent = `Only ${empty.qty || 0} empty "${label}" on hand.`;
-                return;
-            }
-            empty.qty = (empty.qty || 0) - qty;
-            if (direction === 'return') full.qty = (full.qty || 0) + qty;
-
-            safeSetItem('pos_inventory', JSON.stringify(inventory));
+            if (!empty) { fail('Could not find the matching Empty item.'); return; }
+            const label = gasLabelOf(full);
+            if (direction !== 'receive' && (empty.qty || 0) < qty) { fail(`Only ${empty.qty || 0} empty ${label} on hand.`); return; }
+            if (direction === 'receive' && (full.gasAtSupplier || 0) < qty) { fail(`Only ${full.gasAtSupplier || 0} ${label} are with the supplier.`); return; }
+            if (direction === 'send') { empty.qty = (empty.qty || 0) - qty; full.gasAtSupplier = (full.gasAtSupplier || 0) + qty; }
+            else if (direction === 'receive') { full.qty = (full.qty || 0) + qty; full.gasAtSupplier = (full.gasAtSupplier || 0) - qty; }
+            else { empty.qty = (empty.qty || 0) - qty; full.qty = (full.qty || 0) + qty; }
             gasSupplierHistory.unshift({ id: genSaleId(), timestamp: new Date().toISOString(), label, direction, qty });
             gasSupplierHistory = gasSupplierHistory.slice(0, 30);
             safeSetItem('pos_gas_supplier_history', JSON.stringify(gasSupplierHistory));
-            queuePush();
-
+            gasSaveInventory();
             msgEl.className = 'settings-msg success';
-            msgEl.textContent = direction === 'send'
-                ? `Recorded ${qty} empty "${label}" sent to supplier.`
-                : `Recorded ${qty} full "${label}" returned from supplier.`;
-            renderGasTab();
-            if (typeof renderInventoryTable === 'function') renderInventoryTable();
+            msgEl.textContent = { send: `Recorded ${qty} empty ${label} sent to the supplier.`, receive: `Recorded ${qty} refilled ${label} received.`, return: `Recorded ${qty} ${label}: empties swapped for full ones.` }[direction];
         }
 
 //@fn persistPrintRoutingRules
@@ -4997,90 +5062,93 @@ function renderFaultyItemsRegister() {
                 </tr>`).join('');
         }
 
-//@fn renderGasAccessoriesTable
-function renderGasAccessoriesTable() {
-            const tbody = document.getElementById('gas-accessories-table-body');
-            if (!tbody) return;
-            const items = inventory.filter(p => p.isGasAccessory);
-            if (items.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="4" class="empty-state">No accessories yet — add one above.</td></tr>`;
-                return;
-            }
-            tbody.innerHTML = items.map(p => `<tr>
-                <td>${escapeHtml(p.name)}</td>
-                <td>${p.gasAccessoryType === 'holder' ? 'Holder/Grill' : 'Burner'}</td>
-                <td>${p.qty || 0}</td>
-                <td>KES ${(p.price || 0).toFixed(2)}</td>
-            </tr>`).join('');
-        }
-
 //@fn renderGasSupplierHistory
 function renderGasSupplierHistory() {
             const el = document.getElementById('gas-supplier-history');
             if (!el) return;
             if (gasSupplierHistory.length === 0) { el.innerHTML = ''; return; }
+            const words = { send: 'Sent empty', receive: 'Received refilled', return: 'Swapped at the depot' };
             el.innerHTML = '<strong>Recent:</strong><br>' + gasSupplierHistory.slice(0, 8).map(h => {
                 const date = new Date(h.timestamp).toLocaleString('en-GB');
-                return `${date} — ${h.direction === 'send' ? 'Sent' : 'Returned'} ${h.qty} × ${escapeHtml(h.label)}`;
+                return `${date} — ${words[h.direction] || h.direction} ${h.qty} × ${escapeHtml(h.label)}`;
             }).join('<br>');
         }
 
 //@fn renderGasTab
 function renderGasTab() {
-            const fulls = getGasFullVariants();
-            const variantOptions = fulls.length
-                ? fulls.map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.gasBrand)} ${escapeHtml(p.gasWeight)}</option>`).join('')
-                : '<option value="">— No cylinder variants set up yet —</option>';
+            const fulls = getGasFullVariants().slice().sort((a, b) => gasLabelOf(a).localeCompare(gasLabelOf(b), undefined, { numeric: true }));
+            if (!fulls.some(f => f.code === window.__gasSel)) window.__gasSel = fulls.length ? fulls[0].code : '';
+            const n = (x) => (Math.round((Number(x) || 0) * 100) / 100).toString();
 
-            const variantSelect = document.getElementById('gas-variant-select');
+            // 1. how many cylinders, in what state
+            const t = gasTotals();
+            const totalsEl = document.getElementById('gas-totals');
+            if (totalsEl) totalsEl.innerHTML = `<span class="gas-chip gas-full">🟢 Full <b>${t.full}</b></span><span class="gas-chip gas-empty">⚪ Empty <b>${t.empty}</b></span>${t.away ? `<span class="gas-chip gas-away">🚚 With supplier <b>${t.away}</b></span>` : ''}<span class="gas-chip">🛢️ All cylinders <b>${t.total}</b></span>`;
+
+            // 2. the board: one row per size, counts and prices editable in place
+            const tbody = document.getElementById('gas-board-body');
+            if (tbody) {
+                tbody.innerHTML = fulls.length === 0
+                    ? '<tr><td colspan="8" class="empty-state">No sizes yet — add your first size below (for example 13kg, with how many full and empty you have).</td></tr>'
+                    : fulls.map(f => {
+                        const e = inventory.find(p => p.code === f.gasPairCode) || {};
+                        const c = escapeJsAttr(f.code);
+                        const num = (v, cb) => `<input type="number" min="0" step="1" value="${Math.round(v || 0)}" onchange="${cb}(this.value)">`;
+                        const price = (v, field) => `<input type="number" min="0" step="0.01" value="${v ? n(v) : ''}" placeholder="—" onchange="gasBoardPrice('${c}', '${field}', this.value)">`;
+                        return `<tr class="${f.code === window.__gasSel ? 'gas-row-selected' : ''}">
+                            <td><strong>${escapeHtml(gasLabelOf(f))}</strong></td>
+                            <td>${num(f.qty, `gasBoardSet.bind(null, '${c}', 'full')`)}</td>
+                            <td>${num(e.qty, `gasBoardSet.bind(null, '${c}', 'empty')`)}</td>
+                            <td>${f.gasAtSupplier || 0}</td>
+                            <td><strong>${(f.qty || 0) + (e.qty || 0) + (f.gasAtSupplier || 0)}</strong></td>
+                            <td>${price(f.price, 'outright')}</td><td>${price(f.gasRefillPrice, 'refill')}</td><td>${price(e.price, 'empty')}</td>
+                        </tr>`;
+                    }).join('');
+            }
+
+            // 3. pick a size to sell
+            const chips = document.getElementById('gas-size-chips');
+            if (chips) chips.innerHTML = fulls.map(f => {
+                const e = inventory.find(p => p.code === f.gasPairCode) || {};
+                return `<button type="button" class="gas-size-chip ${f.code === window.__gasSel ? 'active' : ''}" onclick="selectGasSize('${escapeJsAttr(f.code)}')">${escapeHtml(gasLabelOf(f))}<small>${f.qty || 0} full · ${e.qty || 0} empty</small></button>`;
+            }).join('') || '<span class="settings-hint">Add a size first.</span>';
+
+            // 4. supplier form
             const supplierSelect = document.getElementById('gas-supplier-variant-select');
-            if (variantSelect) { const cur = variantSelect.value; variantSelect.innerHTML = variantOptions; if (fulls.some(p => p.code === cur)) variantSelect.value = cur; }
-            if (supplierSelect) { const cur = supplierSelect.value; supplierSelect.innerHTML = variantOptions; if (fulls.some(p => p.code === cur)) supplierSelect.value = cur; }
+            if (supplierSelect) { const cur = supplierSelect.value; supplierSelect.innerHTML = fulls.map(f => `<option value="${escapeHtml(f.code)}">${escapeHtml(gasLabelOf(f))}</option>`).join('') || '<option value="">— No sizes yet —</option>'; if (fulls.some(f => f.code === cur)) supplierSelect.value = cur; }
 
-            const burners = getGasAccessories('burner');
-            const holders = getGasAccessories('holder');
-            const burnerSelect = document.getElementById('gas-burner-select');
-            const holderSelect = document.getElementById('gas-holder-select');
-            if (burnerSelect) burnerSelect.innerHTML = '<option value="">— None —</option>' + burners.map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)} (${p.qty || 0} in stock)</option>`).join('');
-            if (holderSelect) holderSelect.innerHTML = '<option value="">— None —</option>' + holders.map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)} (${p.qty || 0} in stock)</option>`).join('');
+            // 5. accessories: ordinary inventory items that are marked as accessories
+            const accs = getGasAccessories();
+            const checklist = document.getElementById('gas-set-accessories-list');
+            if (checklist) {
+                const ticked = new Set(Array.from(checklist.querySelectorAll('.gas-acc-check:checked')).map(x => x.closest('.gas-acc-row').dataset.code));
+                checklist.innerHTML = accs.length === 0 ? '<p class="settings-hint" style="margin:0;">No accessories marked yet — mark some in the Accessories box below.</p>'
+                    : accs.map(a => `<div class="gas-acc-row" data-code="${escapeHtml(a.code)}"><label><input type="checkbox" class="gas-acc-check" ${ticked.has(a.code) ? 'checked' : ''}> ${escapeHtml(a.name)} <span class="kitchen-sub">KES ${n(a.price)} · ${n(a.qty)} in stock</span></label><input type="number" class="gas-acc-qty" min="1" step="1" value="1" title="How many per set"></div>`).join('');
+            }
+            const list = document.getElementById('gas-accessory-list');
+            if (list) list.innerHTML = accs.map(a => `<span class="gas-chip">${escapeHtml(a.name)} <button type="button" title="Unmark" onclick="unmarkGasAccessory('${escapeJsAttr(a.code)}')">✕</button></span>`).join('') || '<span class="settings-hint">None yet.</span>';
+            const pick = document.getElementById('gas-accessory-pick');
+            if (pick) pick.innerHTML = '<option value="">— pick an inventory item —</option>' + inventory.filter(p => (p.type || 'item') === 'item' && !p.isGasCylinder && !p.isGasAccessory).sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)}</option>`).join('');
 
-            renderGasVariantStock();
-            renderGasVariantsTable();
-            renderGasAccessoriesTable();
+            setGasTxType(gasTxType || 'exchange');
             renderGasSupplierHistory();
         }
 
 //@fn renderGasVariantStock
 function renderGasVariantStock() {
-            const select = document.getElementById('gas-variant-select');
             const info = document.getElementById('gas-variant-stock-info');
-            if (!select || !info) return;
-            const full = inventory.find(p => p.code === select.value);
-            if (!full) { info.textContent = ''; return; }
+            if (!info) return;
+            const full = inventory.find(p => p.code === window.__gasSel);
+            if (!full) { info.textContent = getGasFullVariants().length ? 'Pick a size.' : 'Add a cylinder size above to start.'; return; }
             const empty = inventory.find(p => p.code === full.gasPairCode);
-            info.textContent = `Full in stock: ${full.qty || 0} · Empty in stock: ${(empty && empty.qty) || 0} · Outright: KES ${(full.price || 0).toFixed(2)} · Refill/Exchange: KES ${(full.gasRefillPrice || 0).toFixed(2)}`;
-        }
-
-//@fn renderGasVariantsTable
-function renderGasVariantsTable() {
-            const tbody = document.getElementById('gas-variants-table-body');
-            if (!tbody) return;
-            const fulls = getGasFullVariants();
-            if (fulls.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No cylinder variants yet — add one above.</td></tr>`;
-                return;
-            }
-            tbody.innerHTML = fulls.map(full => {
-                const empty = inventory.find(p => p.code === full.gasPairCode);
-                return `<tr>
-                    <td>${escapeHtml(full.gasBrand)}</td>
-                    <td>${escapeHtml(full.gasWeight)}</td>
-                    <td>${full.qty || 0}</td>
-                    <td>${(empty && empty.qty) || 0}</td>
-                    <td>KES ${(full.price || 0).toFixed(2)}</td>
-                    <td>KES ${(full.gasRefillPrice || 0).toFixed(2)}</td>
-                </tr>`;
-            }).join('');
+            const kes = (n) => 'KES ' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const line = {
+                exchange: `Refill / exchange: ${kes(full.gasRefillPrice)} — the customer hands in an empty, so Full goes down by 1 and Empty goes up by 1.`,
+                outright: `Full cylinder with gas: ${kes(full.price)} — Full goes down by 1 (the customer keeps the cylinder).`,
+                set: `Full cylinder ${kes(full.price)} plus the accessories you tick below. Full goes down by 1.`,
+                empty: `Empty cylinder on its own: ${kes(empty && empty.price)} — Empty goes down by 1.`,
+            }[gasTxType] || '';
+            info.innerHTML = `<strong>${escapeHtml(gasLabelOf(full))}</strong> — Full ${full.qty || 0} · Empty ${(empty && empty.qty) || 0}<br>${escapeHtml(line)}`;
         }
 
 //@fn renderInvEditableCell
@@ -6782,7 +6850,7 @@ function setFieldAndFireInput(id, value) {
 //@fn setGasTxType
 function setGasTxType(type) {
             gasTxType = type;
-            ['exchange', 'set', 'outright'].forEach(t => {
+            ['exchange', 'outright', 'set', 'empty'].forEach(t => {
                 const btn = document.getElementById(`gas-tx-${t}-btn`);
                 if (btn) btn.classList.toggle('active', t === type);
             });
