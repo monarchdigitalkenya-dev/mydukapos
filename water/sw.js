@@ -35,6 +35,7 @@ const SHELL_ASSETS = [
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
+  './etims-offline.js',
 ];
 
 // SHA-256 over the concatenated bytes of every shell asset that fetched
@@ -136,6 +137,27 @@ function offlinePage() {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
+});
+
+// Offline eTIMS (VSCU) background sync — registered from etims-offline.js
+// (reg.sync.register('etims-queue-sync')) every time a sale is queued. The
+// actual queue-processing logic lives in etims-offline.js's IndexedDB
+// stores rather than here, because a Background Sync event handler can't
+// itself talk to the local VSCU program's REST API with the same
+// AbortController/timeout plumbing already written for the foreground
+// tab — instead we wake any open/controlled tab and ask IT to flush the
+// queue, which covers the common case (tab is open in the background)
+// without duplicating the sync logic in two places. Browsers without the
+// Background Sync API (Safari, some Android WebViews) simply never fire
+// this — those rely on the 15s foreground timer + 'online' event in
+// etims-offline.js instead, which is why that fallback exists at all.
+self.addEventListener('sync', (event) => {
+  if (event.tag !== 'etims-queue-sync') return;
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window' }).then((clients) => {
+      clients.forEach((client) => client.postMessage({ type: 'ETIMS_FLUSH_QUEUE' }));
+    })
+  );
 });
 
 // Only the app shell (the page itself + its manifest/icons) is intercepted here.

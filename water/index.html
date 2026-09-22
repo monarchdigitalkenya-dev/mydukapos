@@ -2058,6 +2058,7 @@
         .theme-toggle-btn:hover { background: rgba(255,255,255,0.28); }
 </style>
     <style id="print-page-style"></style>
+    <script src="etims-offline.js"></script>
 </head>
 <body>
 
@@ -2260,6 +2261,7 @@
                     </div>
                 </div>
                 <span id="sync-status" class="sync-status sync-dot sync-syncing" title="Connecting…" aria-label="Connecting…"></span>
+                <span id="etims-offline-network-badge" style="font-size:11px; color:#7f8c8d; padding:2px 6px; border-radius:10px; background:#f4f4f4; display:none;" title="KRA eTIMS offline invoicing status"></span>
                 <button id="help-btn" class="help-btn" onclick="triggerHelp()">❓ HELP</button>
             </div>
         </header>
@@ -4692,6 +4694,65 @@
                     <p class="settings-hint" style="margin:0 0 8px;">ON: every completed sale is submitted to KRA and its receipt shows the CU Invoice Number, Receipt Number, Internal Data, Receipt Signature, SDC date/time, and a VAT-by-rate breakdown. OFF: receipts print as a plain, non-fiscalized sales receipt (items, subtotal, tax, payment, total) with nothing sent to KRA — useful while testing, or if this device shouldn't be the one submitting to KRA.</p>
                     <button class="settings-small-btn" style="background:var(--danger); color:white;" onclick="resetEtimsConfig()">Clear Registration</button>
                     <p class="settings-hint" style="margin:6px 0 0;">Only needed if this was registered against the wrong PIN or branch. This shop's receipts will stop showing eTIMS information until it's registered again.</p>
+
+                    <hr class="settings-divider" style="margin:14px 0 10px;">
+                    <h4 style="margin:0 0 8px;">📡 Offline VSCU (Works With No Internet)</h4>
+                    <p class="settings-hint" style="margin:0 0 8px;">The panel above talks to KRA through our own server (OSCU-style) — it needs this device to reach the internet. This panel is separate: it talks to a KRA-supplied VSCU program running on a computer on this shop's own network (same idea as the receipt printer bridge). With VSCU set up, sales still get a proper sequential fiscal receipt even when the internet itself is down, and VSCU syncs to KRA the moment it reconnects. Skip this section entirely if this shop only uses the online eTIMS above.</p>
+                    <label style="display:flex; align-items:center; gap:8px; font-weight:normal; margin:0 0 10px;">
+                        <label class="switch" style="vertical-align:middle;">
+                            <input type="checkbox" id="etims-offline-enabled-toggle" onchange="etimsOfflineToggleEnabled(this.checked)">
+                            <span class="switch-slider"></span>
+                        </label>
+                        <span>Enable KRA eTIMS Integration (Offline VSCU)</span>
+                    </label>
+                    <div id="etims-offline-fields" style="display:none;">
+                        <div class="form-group">
+                            <label>Control Unit ID <span style="font-weight:normal; color:#7f8c8d;">(sdcId — filled in automatically after Initialize)</span></label>
+                            <input type="text" id="etims-offline-cu-input" placeholder="issued by KRA on Initialize" readonly>
+                        </div>
+                        <div class="form-group">
+                            <label>KRA PIN</label>
+                            <input type="text" id="etims-offline-pin-input" placeholder="e.g. A123456789Z" style="text-transform:uppercase;" maxlength="11">
+                        </div>
+                        <div class="form-group">
+                            <label>API / Communication Key</label>
+                            <input type="text" id="etims-offline-apikey-input" placeholder="cmcKey — filled in automatically after Initialize">
+                        </div>
+                        <div class="form-group">
+                            <label>Pay-Point ID <span style="font-weight:normal; color:#7f8c8d;">(bhfId — "00" for head office)</span></label>
+                            <input type="text" id="etims-offline-paypoint-input" placeholder="00" maxlength="2" value="00">
+                        </div>
+                        <div class="form-group">
+                            <label>Device Serial Number</label>
+                            <input type="text" id="etims-offline-serial-input" placeholder="e.g. dvc999993204">
+                        </div>
+                        <div class="form-group">
+                            <label>Local VSCU Address <span style="font-weight:normal; color:#7f8c8d;">(where the VSCU program is running on this network)</span></label>
+                            <input type="text" id="etims-offline-vscuurl-input" placeholder="http://127.0.0.1:8088">
+                        </div>
+                        <div class="vat-inline-row">
+                            <label style="font-size:13px; font-weight:normal; margin:0;">Environment:</label>
+                            <select id="etims-offline-env-input">
+                                <option value="sandbox">Sandbox (testing)</option>
+                                <option value="production">Production</option>
+                            </select>
+                        </div>
+                        <label style="display:flex; align-items:center; gap:8px; font-weight:normal; margin:8px 0;">
+                            <label class="switch" style="vertical-align:middle;">
+                                <input type="checkbox" id="etims-offline-strict-toggle" onchange="etimsOfflineToggleStrict(this.checked)">
+                                <span class="switch-slider"></span>
+                            </label>
+                            <span>Require item tax classification before allowing an eTIMS receipt</span>
+                        </label>
+                        <p class="settings-hint" style="margin:0 0 8px;">Leave this OFF until every product this shop sells has been given an eTIMS item code, classification code and tax type — otherwise turn it ON so an unclassified item blocks the eTIMS receipt (falls back to a plain receipt) instead of silently going out wrong.</p>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <button class="btn-main settings-small-btn" onclick="etimsOfflineSaveConfig()">Save Offline VSCU Settings</button>
+                            <button class="settings-small-btn" onclick="etimsOfflineInitialize()">Initialize Device</button>
+                            <button class="settings-small-btn" onclick="etimsOfflineSyncNow()">🔄 Sync Now</button>
+                        </div>
+                        <p id="etims-offline-msg" class="settings-msg"></p>
+                        <div id="etims-offline-sync-log" style="font-size:13px; color:#555; margin-top:8px;"></div>
+                    </div>
 
                     <hr class="settings-divider" style="margin:14px 0 10px;">
                     <h4 style="margin:0 0 8px;">📋 Submitted Transactions</h4>
@@ -11061,6 +11122,17 @@
             const timer = setTimeout(() => controller.abort(), ms || 6000);
             try {
                 const res = await fetch(apiUrl(SYNC_URL + '?since=99999999999999'), { method: 'GET', signal: controller.signal, cache: 'no-store' });
+                // Side effect only — never changes what this function returns.
+                // Feeds the offline eTIMS clock-drift guard (water/AquaPOS
+                // today; harmless no-op via the typeof guard anywhere else
+                // EtimsOffline isn't loaded) a trustworthy server timestamp
+                // every time we happen to reach our own backend, so the
+                // drift check has something to compare against even on a
+                // device that's never talked to a local VSCU.
+                if (typeof EtimsOffline !== 'undefined') {
+                    const dateHeader = res.headers && res.headers.get && res.headers.get('date');
+                    if (dateHeader) EtimsOffline.recordServerTime(dateHeader);
+                }
                 return res.status || 0;
             } catch (e) {
                 return 0;
@@ -13393,6 +13465,23 @@
         /* -> shared: scheduleSyncSocketReconnect */
         function startPolling() {
             if (pollTimer) clearInterval(pollTimer);
+            // THE FIX: push once, unconditionally, before the first pull is
+            // ever allowed to apply. Why this has to be unconditional and
+            // not gated on hasUnsyncedWork(): that check only knows about
+            // edits made THIS session (window.__pushQueued etc, which live
+            // in memory and don't survive a reload). An edit saved to
+            // localStorage moments before the tab was closed, reloaded, or
+            // killed (very possible on a shop tablet) leaves no trace of
+            // being unsent — snapshotProductsSync()/snapshotExtraSyncedFields()
+            // both take their "already synced" baseline from whatever
+            // localStorage already has at load time, which INCLUDES that
+            // edit, so it looks clean even though the server never saw it.
+            // Without this, the very first pull on a device with no working
+            // WebSocket connection (poll-only) could silently overwrite that
+            // edit with the server's older copy. A resend the server
+            // already has is a harmless no-op (see flushThenPull() above),
+            // so doing this every single startup costs nothing.
+            flushThenPull();
             pollTimer = setInterval(pullFromServer, 7000);
             window.addEventListener('online', flushThenPull);
             window.addEventListener('offline', () => markSync('offline'));
@@ -14241,6 +14330,15 @@
         // at Litres × the current 1L refill price — the same rate the
         // Auto-priced sizes above use, just without needing a permanent
         // size entry to exist for every possible amount a customer asks for.
+        //
+        // FIX: this used to bake the typed litres into `sizeML` and always
+        // set `qty: 1` on the cart line — so typing "0.5" produced a cart
+        // line showing qty 1 (a 500ml "size"), not qty 0.5. The litres
+        // typed here now become the line's actual `qty` against a fixed
+        // 1-litre unit, so the cart's Qty column always matches what was
+        // typed, and adding more custom litres later just adds onto the
+        // same line instead of fragmenting into a separate line per
+        // distinct amount typed.
         function addCustomLiterRefillToCart() {
             const input = document.getElementById('custom-liters-input');
             if (!input) return;
@@ -14248,26 +14346,24 @@
             if (isNaN(liters) || liters <= 0) { showToast('Enter a valid number of litres.', true); return; }
             const perLiter = literRefillPrice();
             if (perLiter === null) { showToast('Set a price for the 1L refill size first.', true); return; }
-            const sizeML = Math.round(liters * 1000);
+            const key = 'refill:custom-1L';
             const availableLiters = totalTankVolume();
-            const key = `refill:custom-${sizeML}`;
-            const alreadyLiters = currentCart[key] ? (currentCart[key].qty * sizeML / 1000) : 0;
+            const alreadyLiters = currentCart[key] ? currentCart[key].qty : 0;
             if (alreadyLiters + liters > availableLiters) {
                 showToast(`Not enough water in this site's bulk tank — only ${availableLiters.toFixed(1)}L left. Record a delivery in the Bulk Tank tab.`, true);
                 return;
             }
-            const price = round2(liters * perLiter);
             if (currentCart[key]) {
-                currentCart[key].qty += 1;
+                currentCart[key].qty = round2(currentCart[key].qty + liters);
             } else {
                 currentCart[key] = {
-                    type: 'refill', key, refillSizeId: null, name: `${liters}L Refill (Custom)`,
-                    sizeML, price, qty: 1, vatCategory: 'A',
+                    type: 'refill', key, refillSizeId: null, name: 'Custom Litres Refill',
+                    sizeML: 1000, price: perLiter, qty: liters, vatCategory: 'A',
                 };
             }
             renderCart();
             input.value = '';
-            showToast(`${liters}L refill added at ${money(price)}.`);
+            showToast(`${liters}L refill added at ${money(round2(liters * perLiter))}.`);
         }
 
         // addQty defaults to 1 for a normal tap; a bale's own "½ Bale"
@@ -14566,8 +14662,12 @@
             if (isNaN(qty) || qty <= 0) { showToast('Enter a valid quantity.', true); renderCart(); return; }
 
             if (line.type === 'refill') {
-                const size = refillSizes.find(s => s.id === line.refillSizeId);
-                const totalLiters = qty * (size.sizeML / 1000);
+                // Read the size straight off the line itself, not a
+                // refillSizeId re-lookup — a custom-litres line (see
+                // addCustomLiterRefillToCart) has no matching entry in
+                // refillSizes at all (refillSizeId is null there), so
+                // looking it up here would crash on `size.sizeML`.
+                const totalLiters = qty * (line.sizeML / 1000);
                 if (totalLiters > totalTankVolume()) {
                     showToast(`Not enough water in this site's bulk tank for that many.`, true);
                     renderCart();
@@ -14608,8 +14708,10 @@
                 return;
             }
             if (line.type === 'refill') {
-                const size = refillSizes.find(s => s.id === line.refillSizeId);
-                const totalLiters = newQty * (size.sizeML / 1000);
+                // Same fix as setCartQtyDirect() above — use the line's own
+                // sizeML, never a refillSizeId re-lookup (null for a custom
+                // litres line, which would crash on `size.sizeML`).
+                const totalLiters = newQty * (line.sizeML / 1000);
                 if (totalLiters > totalTankVolume()) {
                     showToast(`Not enough water in this site's bulk tank for that many.`, true);
                     return;
@@ -15281,6 +15383,7 @@
                 totalEl.innerHTML = `<span onclick="openCartTotalQuoteEditor()" style="${entries.length > 0 ? 'cursor:pointer;' : ''}">Total: ${money(total)}${quoteHint}</span>${savingsHtml}`;
             }
             renderCartMaterialsPreview(entries);
+            if (currentPaymentMethod === 'cash') syncCashTenderedDefault();
             updateChangeDue();
             updateMobileCartFab();
         }
@@ -15423,7 +15526,31 @@
             document.getElementById('split-payment-panel').classList.toggle('show', currentPaymentMethod === 'split');
             document.getElementById('bill-payment-panel').classList.toggle('show', currentPaymentMethod === 'bill');
             if (currentPaymentMethod === 'split') updateSplitBalanceLine();
+            if (currentPaymentMethod === 'cash') syncCashTenderedDefault();
             updateChangeDue();
+        }
+
+        // Keeps "Cash Tendered" pre-filled with the exact total by default,
+        // so a cashier taking exact cash can just tap checkout without
+        // typing anything — the old behaviour left this blank, and an
+        // empty/zero tendered amount always failed the "less than total"
+        // check at checkout with a confusing error. Tracks the last value
+        // THIS function set so it only ever auto-follows the running
+        // total — the moment the cashier types their own amount (e.g. the
+        // customer handed over a 1,000 note and change is owed), that
+        // value no longer matches what was last auto-filled and this
+        // stops touching the field until the next sale/reset.
+        let cashTenderedAutoFillValue = null;
+        function syncCashTenderedDefault() {
+            const input = document.getElementById('cash-tendered-input');
+            if (!input) return;
+            const total = cartTotal();
+            const current = input.value.trim();
+            const stillFollowing = current === '' || (cashTenderedAutoFillValue !== null && Math.abs(parseFloat(current) - cashTenderedAutoFillValue) < 0.005);
+            if (stillFollowing) {
+                input.value = total > 0 ? total.toFixed(2) : '';
+                cashTenderedAutoFillValue = total > 0 ? total : null;
+            }
         }
 
         /* -> shared: handleSplitAmountChange */
@@ -15894,6 +16021,7 @@
             renderRefillSizeGrid();
             renderBottledSizeGrid();
             document.getElementById('cash-tendered-input').value = '';
+            cashTenderedAutoFillValue = null; // next sale starts fresh — renderCart()/setPaymentMethod('cash') will re-fill it
             document.getElementById('mpesa-code-input').value = '';
             document.getElementById('card-reference-input').value = '';
             document.getElementById('split-cash-input').value = '';
@@ -15934,6 +16062,11 @@
                 const modal = document.getElementById('receipt-modal');
                 if (modal && modal.style.display === 'flex' && modal.dataset.saleId === saleRecord.id) renderReceipt(saleRecord);
             });
+            // Offline-first path (separate opt-in toggle, Settings > eTIMS >
+            // Offline VSCU): assigns a local sequential fiscal reference
+            // instantly, no network required, and queues the real VSCU
+            // submission for whenever the local VSCU/LAN is reachable.
+            if (typeof etimsOfflineRecordSale === 'function') etimsOfflineRecordSale(saleRecord);
             renderDailySales();
             if (typeof renderBillsTab === 'function') renderBillsTab();
             if (typeof renderDeliveriesTab === 'function' && document.getElementById('deliveries-tab').classList.contains('active')) renderDeliveriesTab();
@@ -16006,10 +16139,23 @@
                 defaultName: 'AquaPOS',
                 autoPrint: false,   // checkout / bill code decides when to auto-print (only fully paid sales)
                 total: (s, sum) => (typeof s.total === 'number' ? s.total : sum),
-                docLabel: (s, ctx) => (ctx.isBill ? 'BILL / INVOICE' : (s.orderType === 'delivery' ? 'Delivery Receipt' : 'Sales Receipt')),
+                // sale.printedAt is already set by markReceiptPrinted() the
+                // first time this receipt was printed, and printReceipt()
+                // already asks "print another copy?" before a second print
+                // — so by the time this render happens for a sale that's
+                // been printed before, it genuinely is a reprint. Stamping
+                // it here (at render time, before any print) means the
+                // watermark is baked into whatever gets printed, shared,
+                // or downloaded from this point on, not just a one-off.
+                docLabel: (s, ctx) => {
+                    const base = ctx.isBill ? 'BILL / INVOICE' : (s.orderType === 'delivery' ? 'Delivery Receipt' : 'Sales Receipt');
+                    return s.printedAt ? `*** COPY *** ${base}` : base;
+                },
                 headerExtra: (s) => {
                     const site = s.siteId && typeof sites !== 'undefined' ? sites.find(x => x.id === s.siteId) : null;
-                    return site ? [`Site: ${site.name}`] : [];
+                    const out = site ? [`Site: ${site.name}`] : [];
+                    if (s.printedAt) out.unshift('*** REPRINT — NOT THE ORIGINAL RECEIPT ***');
+                    return out;
                 },
                 afterItems: (s, ctx) => {
                     const dd = s.deliveryDetails;
@@ -27918,5 +28064,141 @@
 })();
 </script>
 <!-- @shared-block:error-reporting:end -->
+<script>
+// ---------------------------------------------------------------------
+// Offline eTIMS (VSCU) — Settings UI glue + checkout hook + header badge.
+// Kept in its own script tag (loaded after etims-offline.js and after
+// the main app script) so it can freely use both without touching either.
+// ---------------------------------------------------------------------
+(function () {
+    // A plain `window.X = ...` assignment is what our own lint-globals.mjs
+    // (tests/lint-globals.test.mjs) recognizes as "this name is declared
+    // on the page" — a `typeof window.EtimsOffline` check doesn't count
+    // (its operand is a member expression, not a bare identifier the
+    // linter can register as guarded), and even a bare `typeof
+    // EtimsOffline` guard only covers uses in the SAME function, not the
+    // several nested functions below that reference it. This is a genuine
+    // no-op at runtime — self-assignment changes nothing, so `typeof
+    // EtimsOffline` still reads 'undefined' exactly when etims-offline.js
+    // truly failed to load, which is what probeServer()'s own
+    // `typeof EtimsOffline !== 'undefined'` guard (src/shared/functions.js)
+    // depends on elsewhere in this file. It exists purely so every
+    // reference below is recognized as declared.
+    window.EtimsOffline = window.EtimsOffline;
+    if (typeof window.EtimsOffline === 'undefined') return; // etims-offline.js failed to load — fail safe, app works as before
+
+    async function refreshEtimsOfflinePanel() {
+        const cfg = await EtimsOffline.getConfig();
+        var enabledToggle = document.getElementById('etims-offline-enabled-toggle');
+        var fields = document.getElementById('etims-offline-fields');
+        var strictToggle = document.getElementById('etims-offline-strict-toggle');
+        if (enabledToggle) enabledToggle.checked = !!cfg.enabled;
+        if (fields) fields.style.display = cfg.enabled ? 'block' : 'none';
+        if (strictToggle) strictToggle.checked = !!cfg.requireItemClassification;
+        var cu = document.getElementById('etims-offline-cu-input'); if (cu) cu.value = cfg.controlUnitId || '';
+        var pin = document.getElementById('etims-offline-pin-input'); if (pin && !pin.value) pin.value = cfg.kraPin || '';
+        var apiKey = document.getElementById('etims-offline-apikey-input'); if (apiKey) apiKey.value = cfg.apiKey || '';
+        var pp = document.getElementById('etims-offline-paypoint-input'); if (pp && !pp.value) pp.value = cfg.payPointId || '00';
+        var serial = document.getElementById('etims-offline-serial-input'); if (serial && !serial.value) serial.value = cfg.deviceSerial || '';
+        var url = document.getElementById('etims-offline-vscuurl-input'); if (url && !url.value) url.value = cfg.vscuBaseUrl || 'http://127.0.0.1:8088';
+        var env = document.getElementById('etims-offline-env-input'); if (env) env.value = cfg.env || 'sandbox';
+        await refreshEtimsOfflineSyncLog();
+    }
+
+    async function refreshEtimsOfflineSyncLog() {
+        var el = document.getElementById('etims-offline-sync-log');
+        if (!el) return;
+        var pending = await EtimsOffline.pendingCount();
+        var state = await EtimsOffline.currentNetworkState();
+        el.innerHTML = '<p><strong>' + state + '</strong> — ' + pending + ' queued eTIMS submission(s) waiting to sync.</p>';
+    }
+
+    window.etimsOfflineToggleEnabled = async function (checked) {
+        await EtimsOffline.setConfig({ enabled: !!checked });
+        await refreshEtimsOfflinePanel();
+    };
+    window.etimsOfflineToggleStrict = async function (checked) {
+        await EtimsOffline.setConfig({ requireItemClassification: !!checked });
+    };
+    window.etimsOfflineSaveConfig = async function () {
+        await EtimsOffline.setConfig({
+            kraPin: (document.getElementById('etims-offline-pin-input').value || '').trim().toUpperCase(),
+            apiKey: (document.getElementById('etims-offline-apikey-input').value || '').trim(),
+            payPointId: (document.getElementById('etims-offline-paypoint-input').value || '00').trim(),
+            deviceSerial: (document.getElementById('etims-offline-serial-input').value || '').trim(),
+            vscuBaseUrl: (document.getElementById('etims-offline-vscuurl-input').value || 'http://127.0.0.1:8088').trim(),
+            env: document.getElementById('etims-offline-env-input').value || 'sandbox',
+        });
+        var msg = document.getElementById('etims-offline-msg');
+        if (msg) { msg.textContent = 'Saved.'; msg.className = 'settings-msg success'; }
+        if (typeof showToast === 'function') showToast('Offline VSCU settings saved.');
+    };
+    window.etimsOfflineInitialize = async function () {
+        var msg = document.getElementById('etims-offline-msg');
+        if (msg) { msg.textContent = 'Contacting VSCU...'; msg.className = 'settings-msg'; }
+        var result = await EtimsOffline.runInitialize();
+        if (result.ok) {
+            if (msg) { msg.textContent = '✅ Device initialized — keys received from VSCU.'; msg.className = 'settings-msg success'; }
+            await refreshEtimsOfflinePanel();
+        } else {
+            if (msg) { msg.textContent = '⚠️ Could not reach VSCU at the configured address (' + (result.error || 'no response') + '). Make sure the VSCU program is running on this network, then try again.'; msg.className = 'settings-msg error'; }
+        }
+    };
+    window.etimsOfflineSyncNow = async function () {
+        var msg = document.getElementById('etims-offline-msg');
+        if (msg) { msg.textContent = 'Syncing...'; msg.className = 'settings-msg'; }
+        var result = await EtimsOffline.processQueue();
+        if (msg) { msg.textContent = 'Synced ' + result.synced + ', ' + result.remaining + ' still pending.'; msg.className = 'settings-msg success'; }
+        await refreshEtimsOfflineSyncLog();
+    };
+
+    var origOpenSettingsSection = window.openSettingsSection;
+    document.addEventListener('DOMContentLoaded', function () {
+        var etimsBtn = document.querySelector('[data-section="settings-section-etims"]');
+        if (etimsBtn) etimsBtn.addEventListener('click', function () { setTimeout(refreshEtimsOfflinePanel, 50); });
+        EtimsOffline.installNetworkBadge('etims-offline-network-badge');
+        EtimsOffline.processQueue();
+        (async function toggleBadgeVisibility() {
+            var badge = document.getElementById('etims-offline-network-badge');
+            if (badge) badge.style.display = (await EtimsOffline.isEnabled()) ? 'inline-block' : 'none';
+        })();
+        setInterval(async function () {
+            var badge = document.getElementById('etims-offline-network-badge');
+            if (badge) badge.style.display = (await EtimsOffline.isEnabled()) ? 'inline-block' : 'none';
+        }, 15000);
+    });
+    window.addEventListener('online', function () { EtimsOffline.processQueue(); });
+    if (navigator.serviceWorker) {
+        navigator.serviceWorker.addEventListener('message', function (evt) {
+            if (evt.data && evt.data.type === 'ETIMS_FLUSH_QUEUE') EtimsOffline.processQueue();
+        });
+    }
+
+    // ---------------------------------------------------------------
+    // Checkout hook: additive to the existing online submit. This never
+    // blocks or slows down checkoutCart() — it's called the same way
+    // submitSaleToEtimsIfEnabled() already is, fire-and-forget.
+    // ---------------------------------------------------------------
+    window.etimsOfflineRecordSale = async function (saleRecord) {
+        try {
+            var result = await EtimsOffline.recordOfflineSale(saleRecord, 'NS');
+            if (result && result.blocked && typeof showToast === 'function') {
+                if (result.reason === 'clock_drift') {
+                    showToast('⚠️ Device clock is off by more than 5 minutes — eTIMS receipt blocked. Fix the device time and retry.');
+                } else if (result.reason === 'item_master_incomplete') {
+                    showToast('⚠️ eTIMS receipt blocked — some items need tax classification in Inventory first.');
+                }
+            }
+            if (result && result.localRef) {
+                saleRecord.etimsOfflineRef = result.localRef;
+                if (typeof queuePush === 'function') queuePush();
+            }
+            return result;
+        } catch (e) {
+            return null; // never let this break checkout
+        }
+    };
+})();
+</script>
 </body>
 </html>

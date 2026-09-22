@@ -4401,6 +4401,17 @@ async function probeServer(ms) {
             const timer = setTimeout(() => controller.abort(), ms || 6000);
             try {
                 const res = await fetch(apiUrl(SYNC_URL + '?since=99999999999999'), { method: 'GET', signal: controller.signal, cache: 'no-store' });
+                // Side effect only — never changes what this function returns.
+                // Feeds the offline eTIMS clock-drift guard (water/AquaPOS
+                // today; harmless no-op via the typeof guard anywhere else
+                // EtimsOffline isn't loaded) a trustworthy server timestamp
+                // every time we happen to reach our own backend, so the
+                // drift check has something to compare against even on a
+                // device that's never talked to a local VSCU.
+                if (typeof EtimsOffline !== 'undefined') {
+                    const dateHeader = res.headers && res.headers.get && res.headers.get('date');
+                    if (dateHeader) EtimsOffline.recordServerTime(dateHeader);
+                }
                 return res.status || 0;
             } catch (e) {
                 return 0;

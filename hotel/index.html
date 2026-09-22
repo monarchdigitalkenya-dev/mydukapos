@@ -16689,6 +16689,17 @@
             const timer = setTimeout(() => controller.abort(), ms || 6000);
             try {
                 const res = await fetch(apiUrl(SYNC_URL + '?since=99999999999999'), { method: 'GET', signal: controller.signal, cache: 'no-store' });
+                // Side effect only — never changes what this function returns.
+                // Feeds the offline eTIMS clock-drift guard (water/AquaPOS
+                // today; harmless no-op via the typeof guard anywhere else
+                // EtimsOffline isn't loaded) a trustworthy server timestamp
+                // every time we happen to reach our own backend, so the
+                // drift check has something to compare against even on a
+                // device that's never talked to a local VSCU.
+                if (typeof EtimsOffline !== 'undefined') {
+                    const dateHeader = res.headers && res.headers.get && res.headers.get('date');
+                    if (dateHeader) EtimsOffline.recordServerTime(dateHeader);
+                }
                 return res.status || 0;
             } catch (e) {
                 return 0;
@@ -20157,6 +20168,23 @@
         /* -> shared: scheduleSyncSocketReconnect */
         function startPolling() {
             if (pollTimer) clearInterval(pollTimer);
+            // THE FIX (found while investigating reports of edits silently
+            // reverting): push once, unconditionally, before the first pull
+            // is ever allowed to apply. hasUnsyncedWork()-style checks only
+            // know about edits made THIS session — the flags they read live
+            // in memory and don't survive a reload. An edit saved to
+            // localStorage moments before the tab was closed, reloaded, or
+            // killed (very possible on a shop tablet) leaves no trace of
+            // being unsent: the per-record dirty-tracking snapshot
+            // (snapshotInventorySync/snapshotExtraSyncedFields) is taken
+            // from whatever localStorage already has at load time, which
+            // INCLUDES that edit, so it looks already-synced even though
+            // the server never received it. Without this, the very first
+            // pull on a device with no working WebSocket connection
+            // (poll-only) could silently overwrite that edit with the
+            // server's older copy. A resend the server already has is a
+            // harmless no-op, so doing this every startup costs nothing.
+            flushThenPull();
             pollTimer = setInterval(pullState, 7000);
             window.addEventListener('online', flushThenPull);
             window.addEventListener('offline', () => markSync('offline'));
