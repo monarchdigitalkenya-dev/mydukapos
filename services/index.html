@@ -38347,6 +38347,232 @@ function savePromoOffer() {
     </script>
 <!-- @shared-block:hold-sale:end -->
 
+<!-- @shared-block:mobile-cards:begin -->
+<!-- MOBILE CARDS --------------------------------------------------------------
+         On a phone a table with 6-12 columns (Inventory, Store, Bills, Daily Sales, Stock Report, Restock...) needs sideways scrolling to read. Under 700 px wide every
+         such table is shown as a stack of CARDS instead: one card per row, each line "Column name ........ value", the item name as the card's title, the
+         buttons at the bottom. Nothing about the tables changes on a computer or tablet. The column names are copied from the table header onto each cell
+         (data-label), and rows drawn later (search, sync, edits) are labelled as they appear. Also: 16 px form fields (stops the iPhone zooming in on tap), roomier
+         touch targets, and toolbars that wrap instead of running off the screen. -->
+    <style>
+        @media (max-width: 700px) {
+            table.m-cards { min-width: 0 !important; width: 100% !important; border: 0 !important; }
+            table.m-cards thead { display: none !important; }
+            table.m-cards tbody, table.m-cards tfoot { display: block !important; width: 100% !important; }
+            table.m-cards tr { display: block !important; width: 100% !important; box-sizing: border-box; border: 1px solid #e5e8eb !important; border-radius: 12px; margin: 0 0 10px !important; padding: 4px 12px !important; background: var(--bg-surface, #fff); box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+            table.m-cards td { display: flex !important; justify-content: space-between; align-items: center; gap: 12px; width: 100% !important; box-sizing: border-box; padding: 7px 0 !important; border: 0 !important; border-bottom: 1px dashed #eef0f2 !important; text-align: right !important; min-height: 34px; white-space: normal !important; word-break: break-word; }
+            table.m-cards td:last-child { border-bottom: 0 !important; }
+            table.m-cards td::before { content: attr(data-label); flex: 0 0 38%; max-width: 45%; text-align: left; font-size: 12px; font-weight: 600; color: #7f8c8d; }
+            table.m-cards td[data-label=""]::before { display: none; }
+            table.m-cards td[data-title] { display: block !important; text-align: left !important; font-size: 15.5px; font-weight: 700; border-bottom: 1px solid #e5e8eb !important; padding: 9px 0 8px !important; }
+            table.m-cards td[data-title]::before { display: none; }
+            table.m-cards td[colspan] { display: block !important; text-align: center !important; }
+            table.m-cards td[colspan]::before { display: none; }
+            table.m-cards td[data-actions] { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+            table.m-cards td[data-actions]::before { display: none; }
+            table.m-cards td button, table.m-cards td .settings-small-btn { min-height: 38px; }
+            table.m-cards td input:not([type=checkbox]):not([type=radio]), table.m-cards td select { max-width: 60%; min-width: 90px; }
+            /* a comfortable touch size, and no zoom-on-tap on iPhones */
+            input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { font-size: 16px !important; }
+            .tab-content button, .tab-content .settings-small-btn { min-height: 40px; }
+            .tab-content [style*="display:flex"], .tab-content [style*="display: flex"] { flex-wrap: wrap; }
+            .panel { padding-left: 12px !important; padding-right: 12px !important; }
+            .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__mobileCardsLoaded) return;
+        window.__mobileCardsLoaded = true;
+        var MAX = 700, observers = new WeakMap(), timer = null;
+        var TITLE_RE = /^(name|item|product|medication|medicine|customer|client|student|service|description|supplier|patient|dish|material|tank|staff|member|category|ref|reference)\b/i;
+        function narrow() { return window.matchMedia ? window.matchMedia('(max-width: ' + MAX + 'px)').matches : (window.innerWidth || 1024) <= MAX; }
+        function skip(t) {
+            return t.classList.contains('no-cards') || t.id === 'cart-table' || !!t.closest('#receipt-modal, #receipt-preview, .receipt, #aqua-pos-print-area, .print-only, #guide-modal');
+        }
+        function headers(t) {
+            var tr = t.querySelectorAll('thead tr'); if (!tr.length) return null;
+            var ths = tr[tr.length - 1].children, out = [];
+            for (var i = 0; i < ths.length; i++) out.push((ths[i].textContent || '').replace(/\s+/g, ' ').trim());
+            return out;
+        }
+        function label(t) {
+            var h = headers(t); if (!h || h.length < 4) return;
+            var rows = t.querySelectorAll('tbody tr');
+            for (var r = 0; r < rows.length; r++) {
+                var cells = rows[r].children;
+                if (rows[r].dataset.mc === String(cells.length)) continue;
+                var titled = false;
+                for (var c = 0; c < cells.length; c++) {
+                    var td = cells[c];
+                    if (td.tagName !== 'TD') continue;
+                    if (td.hasAttribute('colspan') && cells.length === 1) continue;
+                    var name = h[c] != null ? h[c] : '';
+                    td.setAttribute('data-label', name);
+                    if (!titled && c <= 3 && TITLE_RE.test(name) && !td.querySelector('input,select')) { td.setAttribute('data-title', '1'); titled = true; }
+                    if (c === cells.length - 1 && !name && td.querySelector('button')) td.setAttribute('data-actions', '1');
+                    else if (c === cells.length - 1 && /^(action|actions|options|manage|edit)$/i.test(name)) td.setAttribute('data-actions', '1');
+                }
+                rows[r].dataset.mc = String(cells.length);
+            }
+            t.classList.add('m-cards');
+        }
+        function attach(t) {
+            if (skip(t)) return;
+            label(t);
+            if (observers.has(t)) return;
+            var scheduled = false;
+            var mo = new MutationObserver(function () {
+                if (scheduled) return; scheduled = true;
+                (window.requestAnimationFrame || setTimeout)(function () { scheduled = false; if (narrow()) label(t); });
+            });
+            mo.observe(t, { childList: true, subtree: true });
+            observers.set(t, mo);
+        }
+        function scan() {
+            if (!narrow()) return;
+            var ts = document.querySelectorAll('table');
+            for (var i = 0; i < ts.length; i++) { var h = ts[i].querySelector('thead'); if (h) attach(ts[i]); }
+        }
+        function detach() {
+            document.querySelectorAll('table.m-cards').forEach(function (t) { t.classList.remove('m-cards'); });
+        }
+        window.mobileCardsRefresh = function () { if (narrow()) scan(); else detach(); };
+        function start() {
+            window.mobileCardsRefresh();
+            if (timer) clearInterval(timer);
+            timer = setInterval(function () { if (narrow()) scan(); }, 2500);            // tables that appear later (modals, tabs opened for the first time)
+            var mq = window.matchMedia && window.matchMedia('(max-width: ' + MAX + 'px)');
+            if (mq && mq.addEventListener) mq.addEventListener('change', window.mobileCardsRefresh);
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    })();
+    </script>
+<!-- @shared-block:mobile-cards:end -->
+
+<!-- @shared-block:session-keep:begin -->
+<!-- SESSION KEEP --------------------------------------------------------------
+         Stay signed in on this device. The login (admin, or a staff member's PIN) used to live only in the open tab's memory, so ANYTHING that reloaded the page —
+         switching to WhatsApp / the printer / the camera and back on a phone (the system drops the page to free memory), an installed app being reopened, a
+         browser refresh, a software update — brought the "Who's logging in?" screen back, often every few clicks.
+         Now a successful login is remembered on the device (never the password: only who signed in, with a fingerprint of the current password so changing the
+         password signs everyone out) and the picker is skipped while the session is fresh: it lasts 12 hours after the last tap and is ended by Clock out /
+         switching user, by the staff member being removed or locked out for the day, or by turning "Stay signed in" off in Settings ▸ Security & Access. -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__sessionKeepLoaded) return;
+        window.__sessionKeepLoaded = true;
+        var KEY = 'pos_session_keep', IDLE_MS = 12 * 60 * 60 * 1000, lastTouch = 0;
+        function enabled() { try { return localStorage.getItem('pos_stay_signed_in') !== '0'; } catch (e) { return false; } }
+        function fp() { try { return localStorage.getItem('pos_pw_hash') || localStorage.getItem('aqua_pw_hash') || ''; } catch (e) { return ''; } }
+        function read() { try { var s = JSON.parse(localStorage.getItem(KEY) || 'null'); return s && s.at ? s : null; } catch (e) { return null; } }
+        function write(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* storage full: they just log in next time */ } }
+        function clear() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } }
+        function shown(id) { var el = document.getElementById(id); return !!el && el.style.display !== 'none' && el.style.display !== ''; }
+        var SCREENS = ['login-screen', 'staff-login-screen', 'registration-screen'];
+        function anyAuthShown() { return ['login-screen', 'staff-login-screen'].some(shown); }     // (the sign-up screen is a different thing: it is for a business with no account yet)
+        function save() {
+            if (!enabled()) return;
+            var srv = typeof currentServer !== 'undefined' ? currentServer : null;
+            var viaLink = false; try { viaLink = sessionStorage.getItem('pos_via_staff_link') === '1'; } catch (e) { /* ignore */ }
+            write({ at: Date.now(), fp: fp(), role: srv ? 'staff' : 'admin', id: srv ? srv.id : null, name: srv ? srv.name : null, viaLink: viaLink });
+            window.__adminAuthed = !srv;
+        }
+        function touch() {
+            var now = Date.now();
+            if (now - lastTouch < 60000) return;
+            lastTouch = now;
+            var s = read(); if (s) { s.at = now; write(s); }
+        }
+        // Puts the app back into the signed-in state without showing the picker. True when it did.
+        function resume() {
+            if (!enabled()) return false;
+            var s = read();
+            if (!s) return false;
+            if (Date.now() - s.at > IDLE_MS || s.fp !== fp()) { clear(); return false; }
+            if (s.role === 'staff') {
+                var list = typeof staff !== 'undefined' && Array.isArray(staff) ? staff : [];
+                var m = list.find(function (x) { return x && x.id === s.id && !x.removed; });
+                if (!m) { clear(); return false; }
+                if (typeof isStaffLockedToday === 'function' && isStaffLockedToday(m)) { clear(); return false; }
+                currentServer = { id: m.id, name: m.name };
+                try { sessionStorage.setItem('pos_current_server', JSON.stringify(currentServer)); if (s.viaLink) sessionStorage.setItem('pos_via_staff_link', '1'); } catch (e) { /* ignore */ }
+                if (typeof loggedInViaStaffLink !== 'undefined') loggedInViaStaffLink = !!s.viaLink;
+            } else {
+                currentServer = null;
+                try { sessionStorage.removeItem('pos_current_server'); sessionStorage.removeItem('pos_via_staff_link'); } catch (e) { /* ignore */ }
+                if (typeof loggedInViaStaffLink !== 'undefined') loggedInViaStaffLink = false;
+                window.__adminAuthed = true;
+            }
+            SCREENS.forEach(function (id) { var el = document.getElementById(id); if (el) el.style.display = 'none'; });
+            try {
+                if (s.role !== 'staff' && typeof startAdminShiftIfNeeded === 'function') startAdminShiftIfNeeded();
+                if (typeof updateServerBtnLabel === 'function') updateServerBtnLabel();
+                if (typeof renderLockTabsList === 'function') renderLockTabsList();
+                if (typeof applyServerVisibility === 'function') applyServerVisibility();
+                // Aqua POS starts its app after every login in launchApp() (shows the app, loads the counter, staff panel and cloud data)
+                if (typeof launchApp === 'function') launchApp();
+            } catch (e) { /* the screens are hidden; the tabs refresh on the next redraw */ }
+            s.at = Date.now(); write(s);
+            return true;
+        }
+        window.sessionKeepResume = resume;
+        window.sessionKeepSave = save;
+        window.sessionKeepClear = clear;
+        window.sessionKeepSetEnabled = function (on) { try { localStorage.setItem('pos_stay_signed_in', on ? '1' : '0'); } catch (e) { /* ignore */ } if (!on) clear(); else if (!anyAuthShown()) save(); };
+
+        function wrap(name, after, before) {
+            var orig = window[name];
+            if (typeof orig !== 'function' || orig.__sessionKept) return;
+            var w = function () {
+                if (before) before();
+                var wasShown = anyAuthShown();
+                var out = orig.apply(this, arguments);
+                var done = function () { try { after(wasShown); } catch (e) { /* only a convenience */ } };
+                if (out && typeof out.then === 'function') return out.then(function (v) { done(); return v; });
+                done(); return out;
+            };
+            w.__sessionKept = true;
+            window[name] = w;
+        }
+        // a successful login = the login screen was showing and now is not
+        ['loginSubmit', 'submitRecoverySignIn', 'submitLoginStaffPin', 'submitStaffLogin', 'submitServerPin', 'submitStaffInvite'].forEach(function (n) {
+            wrap(n, function (wasShown) { if (wasShown ? !anyAuthShown() : (typeof currentServer !== 'undefined' && currentServer)) save(); });
+        });
+        // signing out or switching user ends it (before the app shows the picker again)
+        ['logoutAdmin', 'logoutServer'].forEach(function (n) { wrap(n, function () { /* cleared below */ }, clear); });
+        // the picker is what brings the login screen back: when a fresh session exists, skip it
+        var pick = window.showLoginPickerStep;
+        if (typeof pick === 'function' && !pick.__sessionKept) {
+            window.showLoginPickerStep = function () { if (resume()) return undefined; return pick.apply(this, arguments); };
+            window.showLoginPickerStep.__sessionKept = true;
+        }
+        // activity keeps it fresh
+        ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) { document.addEventListener(ev, touch, { passive: true, capture: true }); });
+        // if the app already put the picker up before this ran, take it down again
+        function initial() { if (anyAuthShown() && shown('login-screen') && resume()) { /* resumed */ } }
+        initial();
+        document.addEventListener('DOMContentLoaded', initial);
+        // Settings ▸ Security & Access: the switch
+        function installSwitch() {
+            var sec = document.getElementById('settings-section-security');
+            if (!sec || document.getElementById('stay-signed-in-toggle')) return;
+            var box = document.createElement('div');
+            box.style.cssText = 'margin:12px 0; padding:10px 12px; background:#f8f9fa; border-radius:8px;';
+            box.innerHTML = '<label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer; margin:0;"><input type="checkbox" id="stay-signed-in-toggle" style="width:auto; margin-top:3px;"><span><strong>Stay signed in on this device</strong><br><span style="font-size:13px; color:#555;">Skips the "Who\u2019s logging in?" screen when the app is reopened or reloaded — for 12 hours after the last tap. It ends when you Clock out or switch user. Turn this off on a shared device.</span></span></label>';
+            sec.insertBefore(box, sec.firstChild);
+            var cb = document.getElementById('stay-signed-in-toggle');
+            cb.checked = enabled();
+            cb.onchange = function () { window.sessionKeepSetEnabled(cb.checked); };
+        }
+        installSwitch();
+        document.addEventListener('DOMContentLoaded', installSwitch);
+    })();
+    </script>
+<!-- @shared-block:session-keep:end -->
+
 <!-- @shared-block:guide-ui:begin -->
 <!-- GUIDE UI ------------------------------------------------------------------
          The 📖 user guide: a full-screen, searchable "how to use this app" for THIS module. The text lives in the guide-data block

@@ -90,6 +90,8 @@ export const SHARED_BLOCKS = {
   'hold-sale': { startMarker: '<!-- HOLD SALE' },
   'stock-take': { startMarker: '<!-- STOCK TAKE TAB', skip: ['water/index.html'] },
   'reports-tab': { startMarker: '<!-- REPORTS TAB', skip: ['water/index.html'] },
+  'mobile-cards': { startMarker: '<!-- MOBILE CARDS', owner: true },
+  'session-keep': { startMarker: '<!-- SESSION KEEP', owner: true },
   'guide-ui': { startMarker: '<!-- GUIDE UI', owner: true },
   'guide-data': { startMarker: '<!-- GUIDE DATA', owner: true, perModule: true },      // the per-module user guide text (src/shared/blocks/guide-data/<module>.html, built by tools/build-guides.mjs)
   'storage-and-photos': { startMarker: '<!-- STORAGE & PHOTOS' },

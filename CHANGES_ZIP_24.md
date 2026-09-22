@@ -1,4 +1,4 @@
-# Zips 24 - 55 — what changed
+# Zips 24 - 56 — what changed
 
 ## Aqua POS (water): each site has its own bulk tank
 * Production and every Shop branch have their own tanks. Refills, sales and bulk orders draw only from their own site.
@@ -286,3 +286,11 @@ Fixes
   Text: `tools/build-guides.mjs` (`npm run guides`, then `npm run sync`); viewer: `src/shared/blocks/guide-ui.html`; per-module data: `src/shared/blocks/guide-data/<module>.html` (the sync tool now supports per-module block content).
 * **Settings ▸ Install App ▸ Version** reads **Version 1.0.0 — The best software in existence.** (the build line stays underneath).
 * Test: `tests/guides.test.mjs` (every tab of every app is described in its guide; opens three ways; search; print; each guide is about its own module).
+
+## Zip 56  (includes 55; `npm run deploy:router` first if zips 50-55 are not live, then `npm run deploy`)
+* **Stay signed in on this device** (`src/shared/blocks/session-keep.html`, every app incl. Aqua POS and the Owner Console): the "Who's logging in?" picker came back after ANY page reload (a phone dropping the app when you switch to
+  WhatsApp / printer / camera, an installed app reopened, a refresh, an update) because the login lived only in memory / the tab. A successful login (Admin or a staff member's PIN) is now remembered on the device — never the password —
+  for 12 hours after the last tap. Ends on Clock out / switch user, password change, staff removed or locked for the day, 12 h idle, or Settings ▸ Security & Access ▸ "Stay signed in on this device" turned off.
+* **Phone layout** (`src/shared/blocks/mobile-cards.html`, every app): under 700 px wide, tables with 4+ columns (Inventory, Store, Bills, Daily Sales, Stock Report, Restock, Orders, Debts, ...) are shown as cards (item name as the title,
+  labelled lines, buttons at the bottom; rows drawn later are labelled as they appear); 16 px form fields (no zoom-on-tap on iPhone), bigger touch targets, toolbars wrap. The Sales Counter cart and 2-3 column tables are unchanged; computers unchanged.
+* Tests: `tests/stay-signed-in.test.mjs` (7), `tests/mobile-cards.test.mjs` (5).

@@ -1,0 +1,101 @@
+<!-- MOBILE CARDS --------------------------------------------------------------
+         On a phone a table with 6-12 columns (Inventory, Store, Bills, Daily Sales, Stock Report, Restock...) needs sideways scrolling to read. Under 700 px wide every
+         such table is shown as a stack of CARDS instead: one card per row, each line "Column name ........ value", the item name as the card's title, the
+         buttons at the bottom. Nothing about the tables changes on a computer or tablet. The column names are copied from the table header onto each cell
+         (data-label), and rows drawn later (search, sync, edits) are labelled as they appear. Also: 16 px form fields (stops the iPhone zooming in on tap), roomier
+         touch targets, and toolbars that wrap instead of running off the screen. -->
+    <style>
+        @media (max-width: 700px) {
+            table.m-cards { min-width: 0 !important; width: 100% !important; border: 0 !important; }
+            table.m-cards thead { display: none !important; }
+            table.m-cards tbody, table.m-cards tfoot { display: block !important; width: 100% !important; }
+            table.m-cards tr { display: block !important; width: 100% !important; box-sizing: border-box; border: 1px solid #e5e8eb !important; border-radius: 12px; margin: 0 0 10px !important; padding: 4px 12px !important; background: var(--bg-surface, #fff); box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+            table.m-cards td { display: flex !important; justify-content: space-between; align-items: center; gap: 12px; width: 100% !important; box-sizing: border-box; padding: 7px 0 !important; border: 0 !important; border-bottom: 1px dashed #eef0f2 !important; text-align: right !important; min-height: 34px; white-space: normal !important; word-break: break-word; }
+            table.m-cards td:last-child { border-bottom: 0 !important; }
+            table.m-cards td::before { content: attr(data-label); flex: 0 0 38%; max-width: 45%; text-align: left; font-size: 12px; font-weight: 600; color: #7f8c8d; }
+            table.m-cards td[data-label=""]::before { display: none; }
+            table.m-cards td[data-title] { display: block !important; text-align: left !important; font-size: 15.5px; font-weight: 700; border-bottom: 1px solid #e5e8eb !important; padding: 9px 0 8px !important; }
+            table.m-cards td[data-title]::before { display: none; }
+            table.m-cards td[colspan] { display: block !important; text-align: center !important; }
+            table.m-cards td[colspan]::before { display: none; }
+            table.m-cards td[data-actions] { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+            table.m-cards td[data-actions]::before { display: none; }
+            table.m-cards td button, table.m-cards td .settings-small-btn { min-height: 38px; }
+            table.m-cards td input:not([type=checkbox]):not([type=radio]), table.m-cards td select { max-width: 60%; min-width: 90px; }
+            /* a comfortable touch size, and no zoom-on-tap on iPhones */
+            input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { font-size: 16px !important; }
+            .tab-content button, .tab-content .settings-small-btn { min-height: 40px; }
+            .tab-content [style*="display:flex"], .tab-content [style*="display: flex"] { flex-wrap: wrap; }
+            .panel { padding-left: 12px !important; padding-right: 12px !important; }
+            .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__mobileCardsLoaded) return;
+        window.__mobileCardsLoaded = true;
+        var MAX = 700, observers = new WeakMap(), timer = null;
+        var TITLE_RE = /^(name|item|product|medication|medicine|customer|client|student|service|description|supplier|patient|dish|material|tank|staff|member|category|ref|reference)\b/i;
+        function narrow() { return window.matchMedia ? window.matchMedia('(max-width: ' + MAX + 'px)').matches : (window.innerWidth || 1024) <= MAX; }
+        function skip(t) {
+            return t.classList.contains('no-cards') || t.id === 'cart-table' || !!t.closest('#receipt-modal, #receipt-preview, .receipt, #aqua-pos-print-area, .print-only, #guide-modal');
+        }
+        function headers(t) {
+            var tr = t.querySelectorAll('thead tr'); if (!tr.length) return null;
+            var ths = tr[tr.length - 1].children, out = [];
+            for (var i = 0; i < ths.length; i++) out.push((ths[i].textContent || '').replace(/\s+/g, ' ').trim());
+            return out;
+        }
+        function label(t) {
+            var h = headers(t); if (!h || h.length < 4) return;
+            var rows = t.querySelectorAll('tbody tr');
+            for (var r = 0; r < rows.length; r++) {
+                var cells = rows[r].children;
+                if (rows[r].dataset.mc === String(cells.length)) continue;
+                var titled = false;
+                for (var c = 0; c < cells.length; c++) {
+                    var td = cells[c];
+                    if (td.tagName !== 'TD') continue;
+                    if (td.hasAttribute('colspan') && cells.length === 1) continue;
+                    var name = h[c] != null ? h[c] : '';
+                    td.setAttribute('data-label', name);
+                    if (!titled && c <= 3 && TITLE_RE.test(name) && !td.querySelector('input,select')) { td.setAttribute('data-title', '1'); titled = true; }
+                    if (c === cells.length - 1 && !name && td.querySelector('button')) td.setAttribute('data-actions', '1');
+                    else if (c === cells.length - 1 && /^(action|actions|options|manage|edit)$/i.test(name)) td.setAttribute('data-actions', '1');
+                }
+                rows[r].dataset.mc = String(cells.length);
+            }
+            t.classList.add('m-cards');
+        }
+        function attach(t) {
+            if (skip(t)) return;
+            label(t);
+            if (observers.has(t)) return;
+            var scheduled = false;
+            var mo = new MutationObserver(function () {
+                if (scheduled) return; scheduled = true;
+                (window.requestAnimationFrame || setTimeout)(function () { scheduled = false; if (narrow()) label(t); });
+            });
+            mo.observe(t, { childList: true, subtree: true });
+            observers.set(t, mo);
+        }
+        function scan() {
+            if (!narrow()) return;
+            var ts = document.querySelectorAll('table');
+            for (var i = 0; i < ts.length; i++) { var h = ts[i].querySelector('thead'); if (h) attach(ts[i]); }
+        }
+        function detach() {
+            document.querySelectorAll('table.m-cards').forEach(function (t) { t.classList.remove('m-cards'); });
+        }
+        window.mobileCardsRefresh = function () { if (narrow()) scan(); else detach(); };
+        function start() {
+            window.mobileCardsRefresh();
+            if (timer) clearInterval(timer);
+            timer = setInterval(function () { if (narrow()) scan(); }, 2500);            // tables that appear later (modals, tabs opened for the first time)
+            var mq = window.matchMedia && window.matchMedia('(max-width: ' + MAX + 'px)');
+            if (mq && mq.addEventListener) mq.addEventListener('change', window.mobileCardsRefresh);
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    })();
+    </script>

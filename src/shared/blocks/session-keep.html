@@ -1,0 +1,119 @@
+<!-- SESSION KEEP --------------------------------------------------------------
+         Stay signed in on this device. The login (admin, or a staff member's PIN) used to live only in the open tab's memory, so ANYTHING that reloaded the page —
+         switching to WhatsApp / the printer / the camera and back on a phone (the system drops the page to free memory), an installed app being reopened, a
+         browser refresh, a software update — brought the "Who's logging in?" screen back, often every few clicks.
+         Now a successful login is remembered on the device (never the password: only who signed in, with a fingerprint of the current password so changing the
+         password signs everyone out) and the picker is skipped while the session is fresh: it lasts 12 hours after the last tap and is ended by Clock out /
+         switching user, by the staff member being removed or locked out for the day, or by turning "Stay signed in" off in Settings ▸ Security & Access. -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__sessionKeepLoaded) return;
+        window.__sessionKeepLoaded = true;
+        var KEY = 'pos_session_keep', IDLE_MS = 12 * 60 * 60 * 1000, lastTouch = 0;
+        function enabled() { try { return localStorage.getItem('pos_stay_signed_in') !== '0'; } catch (e) { return false; } }
+        function fp() { try { return localStorage.getItem('pos_pw_hash') || localStorage.getItem('aqua_pw_hash') || ''; } catch (e) { return ''; } }
+        function read() { try { var s = JSON.parse(localStorage.getItem(KEY) || 'null'); return s && s.at ? s : null; } catch (e) { return null; } }
+        function write(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* storage full: they just log in next time */ } }
+        function clear() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } }
+        function shown(id) { var el = document.getElementById(id); return !!el && el.style.display !== 'none' && el.style.display !== ''; }
+        var SCREENS = ['login-screen', 'staff-login-screen', 'registration-screen'];
+        function anyAuthShown() { return ['login-screen', 'staff-login-screen'].some(shown); }     // (the sign-up screen is a different thing: it is for a business with no account yet)
+        function save() {
+            if (!enabled()) return;
+            var srv = typeof currentServer !== 'undefined' ? currentServer : null;
+            var viaLink = false; try { viaLink = sessionStorage.getItem('pos_via_staff_link') === '1'; } catch (e) { /* ignore */ }
+            write({ at: Date.now(), fp: fp(), role: srv ? 'staff' : 'admin', id: srv ? srv.id : null, name: srv ? srv.name : null, viaLink: viaLink });
+            window.__adminAuthed = !srv;
+        }
+        function touch() {
+            var now = Date.now();
+            if (now - lastTouch < 60000) return;
+            lastTouch = now;
+            var s = read(); if (s) { s.at = now; write(s); }
+        }
+        // Puts the app back into the signed-in state without showing the picker. True when it did.
+        function resume() {
+            if (!enabled()) return false;
+            var s = read();
+            if (!s) return false;
+            if (Date.now() - s.at > IDLE_MS || s.fp !== fp()) { clear(); return false; }
+            if (s.role === 'staff') {
+                var list = typeof staff !== 'undefined' && Array.isArray(staff) ? staff : [];
+                var m = list.find(function (x) { return x && x.id === s.id && !x.removed; });
+                if (!m) { clear(); return false; }
+                if (typeof isStaffLockedToday === 'function' && isStaffLockedToday(m)) { clear(); return false; }
+                currentServer = { id: m.id, name: m.name };
+                try { sessionStorage.setItem('pos_current_server', JSON.stringify(currentServer)); if (s.viaLink) sessionStorage.setItem('pos_via_staff_link', '1'); } catch (e) { /* ignore */ }
+                if (typeof loggedInViaStaffLink !== 'undefined') loggedInViaStaffLink = !!s.viaLink;
+            } else {
+                currentServer = null;
+                try { sessionStorage.removeItem('pos_current_server'); sessionStorage.removeItem('pos_via_staff_link'); } catch (e) { /* ignore */ }
+                if (typeof loggedInViaStaffLink !== 'undefined') loggedInViaStaffLink = false;
+                window.__adminAuthed = true;
+            }
+            SCREENS.forEach(function (id) { var el = document.getElementById(id); if (el) el.style.display = 'none'; });
+            try {
+                if (s.role !== 'staff' && typeof startAdminShiftIfNeeded === 'function') startAdminShiftIfNeeded();
+                if (typeof updateServerBtnLabel === 'function') updateServerBtnLabel();
+                if (typeof renderLockTabsList === 'function') renderLockTabsList();
+                if (typeof applyServerVisibility === 'function') applyServerVisibility();
+                // Aqua POS starts its app after every login in launchApp() (shows the app, loads the counter, staff panel and cloud data)
+                if (typeof launchApp === 'function') launchApp();
+            } catch (e) { /* the screens are hidden; the tabs refresh on the next redraw */ }
+            s.at = Date.now(); write(s);
+            return true;
+        }
+        window.sessionKeepResume = resume;
+        window.sessionKeepSave = save;
+        window.sessionKeepClear = clear;
+        window.sessionKeepSetEnabled = function (on) { try { localStorage.setItem('pos_stay_signed_in', on ? '1' : '0'); } catch (e) { /* ignore */ } if (!on) clear(); else if (!anyAuthShown()) save(); };
+
+        function wrap(name, after, before) {
+            var orig = window[name];
+            if (typeof orig !== 'function' || orig.__sessionKept) return;
+            var w = function () {
+                if (before) before();
+                var wasShown = anyAuthShown();
+                var out = orig.apply(this, arguments);
+                var done = function () { try { after(wasShown); } catch (e) { /* only a convenience */ } };
+                if (out && typeof out.then === 'function') return out.then(function (v) { done(); return v; });
+                done(); return out;
+            };
+            w.__sessionKept = true;
+            window[name] = w;
+        }
+        // a successful login = the login screen was showing and now is not
+        ['loginSubmit', 'submitRecoverySignIn', 'submitLoginStaffPin', 'submitStaffLogin', 'submitServerPin', 'submitStaffInvite'].forEach(function (n) {
+            wrap(n, function (wasShown) { if (wasShown ? !anyAuthShown() : (typeof currentServer !== 'undefined' && currentServer)) save(); });
+        });
+        // signing out or switching user ends it (before the app shows the picker again)
+        ['logoutAdmin', 'logoutServer'].forEach(function (n) { wrap(n, function () { /* cleared below */ }, clear); });
+        // the picker is what brings the login screen back: when a fresh session exists, skip it
+        var pick = window.showLoginPickerStep;
+        if (typeof pick === 'function' && !pick.__sessionKept) {
+            window.showLoginPickerStep = function () { if (resume()) return undefined; return pick.apply(this, arguments); };
+            window.showLoginPickerStep.__sessionKept = true;
+        }
+        // activity keeps it fresh
+        ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) { document.addEventListener(ev, touch, { passive: true, capture: true }); });
+        // if the app already put the picker up before this ran, take it down again
+        function initial() { if (anyAuthShown() && shown('login-screen') && resume()) { /* resumed */ } }
+        initial();
+        document.addEventListener('DOMContentLoaded', initial);
+        // Settings ▸ Security & Access: the switch
+        function installSwitch() {
+            var sec = document.getElementById('settings-section-security');
+            if (!sec || document.getElementById('stay-signed-in-toggle')) return;
+            var box = document.createElement('div');
+            box.style.cssText = 'margin:12px 0; padding:10px 12px; background:#f8f9fa; border-radius:8px;';
+            box.innerHTML = '<label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer; margin:0;"><input type="checkbox" id="stay-signed-in-toggle" style="width:auto; margin-top:3px;"><span><strong>Stay signed in on this device</strong><br><span style="font-size:13px; color:#555;">Skips the "Who\u2019s logging in?" screen when the app is reopened or reloaded — for 12 hours after the last tap. It ends when you Clock out or switch user. Turn this off on a shared device.</span></span></label>';
+            sec.insertBefore(box, sec.firstChild);
+            var cb = document.getElementById('stay-signed-in-toggle');
+            cb.checked = enabled();
+            cb.onchange = function () { window.sessionKeepSetEnabled(cb.checked); };
+        }
+        installSwitch();
+        document.addEventListener('DOMContentLoaded', installSwitch);
+    })();
+    </script>
