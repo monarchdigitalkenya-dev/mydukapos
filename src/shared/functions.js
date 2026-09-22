@@ -170,7 +170,7 @@ function addTradeCreditManually() {
 
 //@fn addVariantRow
 function addVariantRow() {
-            variantsDraft.push({ id: genSaleId(), name: '', code: '', price: '', wholesaleSellingPrice: '', wholesalePrice: '', qty: '', dualUnit: false, unitsPerBox: '', pieceCode: '', piecePrice: '', pieceWholesalePrice: '', pieceQty: '' });
+            variantsDraft.push({ id: genSaleId(), name: '', code: '', price: '', wholesaleSellingPrice: '', wholesalePrice: '', qty: '', dualUnit: false, unitsPerBox: '', pieceCode: '', piecePrice: '', pieceWholesalePrice: '', pieceQty: '', image: null });
             renderVariantRows();
         }
 
@@ -7524,7 +7524,7 @@ function slimPayloadForPush(payload) {
             const MERGED = new Set(['staff', 'pendingInvites', 'inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers',
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
-                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges']);
+                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
@@ -8524,11 +8524,24 @@ function toggleUnavailableExchangeForm() {
 function toggleVariantsBuilder() {
             const checked = document.getElementById('inv-has-variants').checked;
             document.getElementById('variants-builder').style.display = checked ? 'block' : 'none';
+            // Retail Price/Wholesale/Cost above become an optional SHARED
+            // DEFAULT once variants are on — set it once here if every
+            // variant shares it (e.g. all shoe sizes cost the same), and
+            // leave it blank if every variant needs its own (each variant's
+            // own field then overrides this one). See saveInventoryItem().
+            const priceLabel = document.getElementById('inv-price-label');
+            const priceInput = document.getElementById('inv-price');
+            if (priceLabel) {
+                priceLabel.innerHTML = 'Retail Price (KES) ' + (checked
+                    ? '<span style="font-weight:normal; color:#7f8c8d;">— shared default for every variant; leave blank if each variant has its own</span>'
+                    : '<span id="inv-price-unit-hint" style="font-weight:normal; color:#7f8c8d;">per piece</span>');
+            }
+            if (priceInput) priceInput.placeholder = checked ? '0.00 (optional if variants set their own)' : '0.00';
             if (checked) {
                 document.getElementById('inv-has-dual-unit').checked = false;
                 document.getElementById('dual-unit-builder').style.display = 'none';
                 if (variantsDraft.length === 0) {
-                    variantsDraft.push({ id: genSaleId(), name: '', code: '', price: '', wholesaleSellingPrice: '', wholesalePrice: '', qty: '', dualUnit: false, unitsPerBox: '', pieceCode: '', piecePrice: '', pieceWholesalePrice: '', pieceQty: '' });
+                    variantsDraft.push({ id: genSaleId(), name: '', code: '', price: '', wholesaleSellingPrice: '', wholesalePrice: '', qty: '', dualUnit: false, unitsPerBox: '', pieceCode: '', piecePrice: '', pieceWholesalePrice: '', pieceQty: '', image: null });
                 }
                 renderVariantRows();
             } else {
@@ -12370,10 +12383,57 @@ function stockTakeItems() {
             const st = stockTakeState();
             const q = st.q.trim().toLowerCase();
             let list = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
+            // Flatten variants into their own countable rows — a shoe with
+            // 5 sizes needs each size counted separately, not one combined
+            // number for the whole item. A variant-bearing parent itself
+            // isn't directly countable (its own qty is just the sum of its
+            // variants', recomputed after each variant's count is applied
+            // — see stockTakeApply), so it's replaced by its variants here
+            // rather than listed alongside them.
+            const flattened = [];
+            list.forEach((p) => {
+                if (p.hasVariants && Array.isArray(p.variants) && p.variants.length > 0) {
+                    p.variants.forEach((v) => flattened.push(Object.assign({}, v, {
+                        name: `${p.name} — ${v.name}`,
+                        unit: p.unit,
+                        __stCode: v.code,
+                        __stParentCode: p.code,
+                    })));
+                } else {
+                    flattened.push(Object.assign({}, p, { __stCode: p.code, __stParentCode: null }));
+                }
+            });
+            list = flattened;
             if (q) list = list.filter((p) => String(p.name || '').toLowerCase().includes(q) || String(p.code || '').toLowerCase().includes(q));
             list.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
             if (st.diffOnly) list = list.filter((p) => { const d = stockTakeDiff(p); return d.qty !== 0 || d.pieces !== 0; });
             return list;
+        }
+
+//@fn stockTakeFindByCode
+// Looks up a countable row by the code stockTakeItems() gave it (a plain
+// item's own code, or a variant's own code) and, for a variant, also
+// returns the parent product — every write-back site below needs the
+// parent to resync its aggregate qty/price after the variant changes.
+function stockTakeFindByCode(code) {
+            const direct = inventory.find((x) => x.code === code && !(x.hasVariants && Array.isArray(x.variants) && x.variants.length > 0));
+            if (direct) return { item: direct, parent: null };
+            for (const p of inventory) {
+                if (!p.hasVariants || !Array.isArray(p.variants)) continue;
+                const v = p.variants.find((ev) => ev.code === code);
+                if (v) return { item: v, parent: p };
+            }
+            return { item: null, parent: null };
+        }
+
+//@fn stockTakeResyncParent
+// Same aggregate recompute used when a variant is edited inline from the
+// Inventory table (see updateVariantField) — keeps the parent's qty/price
+// consistent after a variant's own qty changes here.
+function stockTakeResyncParent(parent) {
+            if (!parent || !Array.isArray(parent.variants)) return;
+            parent.qty = parent.variants.reduce((sum, v) => sum + v.qty, 0);
+            parent.price = parent.variants.length > 0 ? Math.min(...parent.variants.map((v) => v.price)) : 0;
         }
 
 //@fn stockTakeDiff
@@ -12402,7 +12462,7 @@ function stockTakeSet(code, field, value) {
             const st = stockTakeState();
             st.counts[code] = st.counts[code] || {};
             st.counts[code][field] = String(value).trim();
-            const p = inventory.find((x) => x.code === code);
+            const { item: p } = stockTakeFindByCode(code);
             if (!p) return;
             const row = Array.from(document.querySelectorAll('#stock-take-table tbody tr')).find((tr) => tr.dataset.code === code);
             if (row) stockTakeFillDiffCell(row, p);
@@ -12430,7 +12490,7 @@ function stockTakeRenderSummary() {
             const st = stockTakeState();
             let counted = 0, changed = 0, short = 0, over = 0, invalid = 0;
             Object.keys(st.counts).forEach((code) => {
-                const p = inventory.find((x) => x.code === code);
+                const { item: p } = stockTakeFindByCode(code);
                 if (!p) return;
                 const d = stockTakeDiff(p);
                 if (!d.counted) return;
@@ -12462,14 +12522,14 @@ function renderStockTake() {
                     + (dual ? `<input type="text" inputmode="decimal" class="st-input" placeholder="loose" value="${escapeHtml(c.pieceQty || '')}" oninput="stockTakeSet('${code}', 'pieceQty', this.value)">` : '');
                 return `<tr data-code="${escapeHtml(p.code)}"><td><strong>${escapeHtml(p.name)}</strong><div class="st-muted">${escapeHtml(p.code)}</div></td><td>${sys}</td><td class="st-inputs">${inputs}</td><td class="st-diff"></td><td><button type="button" class="settings-small-btn st-mini" title="The count matches the system" onclick="stockTakeMatches('${code}')">✓ same</button></td></tr>`;
             }).join('') + (list.length > 400 ? `<tr><td colspan="5" class="st-muted">Showing the first 400 of ${list.length} — use the search box to narrow down.</td></tr>` : '');
-            Array.from(tbody.querySelectorAll('tr[data-code]')).forEach((tr) => { const p = inventory.find((x) => x.code === tr.dataset.code); if (p) stockTakeFillDiffCell(tr, p); });
+            Array.from(tbody.querySelectorAll('tr[data-code]')).forEach((tr) => { const { item: p } = stockTakeFindByCode(tr.dataset.code); if (p) stockTakeFillDiffCell(tr, p); });
             stockTakeRenderSummary();
             renderStockTakeHistory();
         }
 
 //@fn stockTakeMatches
 function stockTakeMatches(code) {
-            const p = inventory.find((x) => x.code === code);
+            const { item: p } = stockTakeFindByCode(code);
             if (!p) return;
             const st = stockTakeState();
             st.counts[code] = { qty: String(Math.round((Number(p.qty) || 0) * 1000) / 1000) };
@@ -12489,7 +12549,7 @@ function stockTakeApply() {
             const changes = [];
             let counted = 0;
             for (const code of Object.keys(st.counts)) {
-                const p = inventory.find((x) => x.code === code);
+                const { item: p } = stockTakeFindByCode(code);
                 if (!p) continue;
                 const d = stockTakeDiff(p);
                 if (!d.counted) continue;
@@ -12502,13 +12562,21 @@ function stockTakeApply() {
             if (!confirm(`Update the stock of ${changes.length} item${changes.length === 1 ? '' : 's'} to what you counted? ${counted - changes.length} counted item${counted - changes.length === 1 ? '' : 's'} already match. Each change is recorded as a "Stock take" adjustment.`)) return false;
             const lines = [];
             const actor = typeof activeServerName === 'function' ? activeServerName() : '';
+            const touchedParents = new Set();
             changes.forEach(({ p, d }) => {
                 const before = { qty: Number(p.qty) || 0, pieceQty: Number(p.pieceQty) || 0 };
                 if (d.qtyNew !== null && d.qty !== 0) { p.qty = d.qtyNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.qty, 'Stock take'); }
                 if (d.pieceNew !== null && d.pieces !== 0) { p.pieceQty = d.pieceNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.pieces, 'Stock take', 'pieceQty'); }
                 p.updatedAt = Date.now();
+                const { parent } = stockTakeFindByCode(p.code);
+                if (parent) touchedParents.add(parent);
                 lines.push({ code: p.code, name: p.name, unit: p.unit || 'pcs', before, after: { qty: Number(p.qty) || 0, pieceQty: Number(p.pieceQty) || 0 }, diff: d.qty, pieceDiff: d.pieces, value: Math.round(stockTakeValueOf(p, d)) });
             });
+            // A counted row can be a variant, whose own qty just changed
+            // above — the parent's qty (a sum of all its variants) and
+            // price (the cheapest one) need the same recompute an inline
+            // Inventory-table edit already gets (see updateVariantField).
+            touchedParents.forEach((parent) => stockTakeResyncParent(parent));
             safeSetItem('pos_inventory', JSON.stringify(inventory));
             if (typeof stockMovementLog !== 'undefined') safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
             queuePush();

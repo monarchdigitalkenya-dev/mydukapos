@@ -5249,9 +5249,28 @@
                 const qp = new URLSearchParams(location.search);
                 const staffFlow = qp.has('invite') || qp.has('staff');
                 const savedStaffClient = localStorage.getItem('pos_console_staff_client');
-                if (!ownerSessionToken && (staffFlow || savedStaffClient)) {
+                // An explicit ?invite= or ?staff= param is unambiguous — it can only
+                // come from a staff link, so it always wins, even on a device that
+                // separately has an owner session saved (e.g. the owner opening a
+                // staff link from their own already-signed-in browser to test or
+                // preview it — previously this fell through to the owner's email
+                // sign-in screen instead of the staff PIN flow, because the bypass
+                // below required NO owner session to already exist on the device).
+                // A remembered staff device with no explicit link param this time
+                // still only applies when there's no competing owner session, same
+                // as before — that ambiguous case is unaffected by this fix.
+                if (staffFlow || (!ownerSessionToken && savedStaffClient)) {
                     const cid = qp.get('c') || savedStaffClient || localStorage.getItem('pos_owner_client_id');
                     if (cid) {
+                        // Explicitly drop any owner session/token this browser might
+                        // still be holding (the "owner testing their own staff link"
+                        // case this fix targets) — without this, a background API
+                        // call during what's now a staff session could still carry
+                        // the owner's Authorization header via ownerAuthHeaders().
+                        if (ownerSessionToken) {
+                            ownerSessionToken = '';
+                            localStorage.removeItem('pos_owner_session_token');
+                        }
                         clientToken = cid;
                         myClientId = cid;
                         ownerSignedIn = false;

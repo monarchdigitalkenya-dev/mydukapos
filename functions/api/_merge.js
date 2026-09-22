@@ -144,6 +144,18 @@ export const MERGE_BY_ID_FIELDS = [
   'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers',
   'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts',
   'attendanceRoster', 'sites',
+  // Hotel/HMS: Tab Management's open tabs (table/room/guest tabs — see
+  // Check-In/Check-Out and the Folio). Edited in place (orders appended,
+  // status OPEN -> CLOSED/VOID), and different tills opening/appending to
+  // DIFFERENT tabs must both survive a merge — plain wholesale replace
+  // would let one till's push silently erase every other till's open tabs.
+  // Note: this still resolves two tills editing the exact SAME tab id at
+  // the exact same time by last-write-wins on that whole tab record (the
+  // same trade-off every other field in this list accepts) — it does not
+  // give tabs the additive per-order union that qty/stockMovementLog get
+  // below, so two tills appending different orders to the same already-
+  // open tab within the same sync window can still have one append lost.
+  'tabs',
   // Aqua POS bulk tanks (per site). Volumes/settings edited in place; removal is a `removed: true` tombstone.
   'tanks',
   // Aqua POS: Shop -> Production stock requests (edited in place: pending -> fulfilled). Merged per record so two tills' requests both survive.

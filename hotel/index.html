@@ -994,7 +994,7 @@
         .balance-pill.owed { background: var(--danger); }
         .balance-pill.settled { background: #95a5a6; }
         .balance-pill.retail { background: var(--secondary, #2980b9); }
-        #bill-settle-modal, #bill-history-modal, #contract-return-modal, #offer-modal, #promo-offer-modal, #store-import-modal, #adhoc-sale-modal, #add-customer-modal, #customer-profile-modal, #record-past-sale-modal, #new-tab-modal, #tab-detail-modal, #tab-settle-modal, #change-staff-pin-modal, #pin-set-confirm-modal, #quick-tabs-modal, #price-select-modal, #inventory-edit-modal {
+        #bill-settle-modal, #bill-history-modal, #contract-return-modal, #offer-modal, #promo-offer-modal, #store-import-modal, #adhoc-sale-modal, #add-customer-modal, #customer-profile-modal, #record-past-sale-modal, #new-tab-modal, #tab-detail-modal, #tab-settle-modal, #change-staff-pin-modal, #pin-set-confirm-modal, #quick-tabs-modal, #price-select-modal, #inventory-edit-modal, #check-in-room-modal, #check-out-room-modal, #update-bill-modal {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(44, 62, 80, 0.95);
             display: none; justify-content: center; align-items: center; z-index: 9999;
@@ -1558,6 +1558,22 @@
            The actual @page size is injected dynamically (see #print-page-style)
            right before each print job. */
         @media print {
+            /* THE FIX for faded/near-blank thermal receipts (reported on
+               Shop, audited across all 8 modules): without this, the
+               browser is free to apply its own "print economy" color
+               adjustment — commonly lightening solid black text to save
+               ink on a regular inkjet/laser printer. On a thermal printer
+               there are no shades: text the browser quietly renders as
+               "off-black" gray can come out barely visible or not at all.
+               This was present for kitchen tickets in 7 of 8 modules but
+               MISSING from the actual sales receipt rule in every single
+               one (and missing entirely, even for kitchen tickets, in
+               water) — applied here once, globally, so every print
+               context (receipt, kitchen ticket, report, bill) gets it
+               and it can never again go missing from one new rule while
+               present on another.
+               -webkit-*/plain = Chrome/Edge/Safari, color-adjust = Firefox. */
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; color-adjust: exact !important; }
             body.printing-adhoc > *:not(#aqua-pos-print-area) { display: none !important; }
             body.printing-adhoc * { visibility: hidden; }
             body.printing-adhoc #aqua-pos-print-area,
@@ -5343,6 +5359,86 @@
         </div>
     </div>
 
+    <div id="check-in-room-modal">
+        <div class="popup-modal-box">
+            <h2 id="check-in-room-title" style="margin-bottom:14px;">🏨 Check In</h2>
+            <div class="form-group">
+                <label class="label">Guest Name</label>
+                <input type="text" id="checkin-guest-name-input" placeholder="e.g. Jane Wanjiru">
+            </div>
+            <div class="form-group">
+                <label class="label">Phone</label>
+                <input type="text" id="checkin-guest-phone-input" placeholder="e.g. 0712345678">
+            </div>
+            <div class="form-group">
+                <label class="label">ID / Passport <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
+                <input type="text" id="checkin-guest-id-input" placeholder="e.g. 12345678">
+            </div>
+            <div class="form-group">
+                <label class="label">Number of Guests</label>
+                <input type="number" id="checkin-guest-count-input" min="1" value="1">
+            </div>
+            <div class="split-amounts-row">
+                <div class="form-group" style="margin-bottom:0;">
+                    <label class="label">Nightly Rate (KES)</label>
+                    <input type="number" id="checkin-nightly-rate-input" min="0" step="1" placeholder="e.g. 4500">
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label class="label">Expected Check-Out Date</label>
+                    <input type="date" id="checkin-checkout-date-input">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="label">Advance Deposit (KES) <span style="font-weight:normal; color:#7f8c8d;">(optional — counted against the folio at checkout)</span></label>
+                <input type="number" id="checkin-deposit-input" min="0" step="1" placeholder="0">
+            </div>
+            <div class="form-group">
+                <label class="label">Credit Limit (KES) <span style="font-weight:normal; color:#7f8c8d;">(optional — blocks further room charges once reached; leave blank for no limit)</span></label>
+                <input type="number" id="checkin-credit-limit-input" min="0" step="1" placeholder="No limit">
+            </div>
+            <p id="check-in-room-error" style="color:#e74c3c; min-height:18px;"></p>
+            <div style="display:flex; gap:10px;">
+                <button class="btn-main" style="background:#95a5a6;" onclick="closeCheckInRoomModal()">Cancel</button>
+                <button class="btn-main" style="background:#16a085;" onclick="confirmCheckIn()">🏨 Check In</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="check-out-room-modal">
+        <div class="popup-modal-box">
+            <h2 style="margin-bottom:14px;">🚪 Check Out & Settle Folio</h2>
+            <div id="check-out-room-summary" style="margin-bottom:14px;"></div>
+            <p id="check-out-room-error" style="color:#e74c3c; min-height:18px;"></p>
+            <div style="display:flex; gap:10px;">
+                <button class="btn-main" style="background:#95a5a6;" onclick="closeCheckOutRoomModal()">Cancel</button>
+                <button class="btn-main" style="background:#16a085;" onclick="confirmCheckOut()">🚪 Proceed to Settle Folio</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="update-bill-modal">
+        <div class="popup-modal-box">
+            <h2 style="margin-bottom:14px;">✏️ Update Bill</h2>
+            <div class="form-group">
+                <label class="label">Customer Name</label>
+                <input type="text" id="update-bill-name-input" placeholder="Walk-in customer">
+            </div>
+            <div class="form-group">
+                <label class="label">Phone</label>
+                <input type="text" id="update-bill-phone-input" placeholder="e.g. 0712345678">
+            </div>
+            <div class="form-group">
+                <label class="label">Due Date <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
+                <input type="date" id="update-bill-due-date-input">
+            </div>
+            <p id="update-bill-error" style="color:#e74c3c; min-height:18px;"></p>
+            <div style="display:flex; gap:10px;">
+                <button class="btn-main" style="background:#95a5a6;" onclick="closeUpdateBillModal()">Cancel</button>
+                <button class="btn-main" style="background:#16a085;" onclick="confirmUpdateBill()">💾 Save Changes</button>
+            </div>
+        </div>
+    </div>
+
     <div id="customer-profile-modal">
         <div class="popup-modal-box" style="max-width:560px;">
             <h2 id="customer-profile-name" style="margin-bottom:2px;">Customer</h2>
@@ -6871,7 +6967,7 @@
 
     <!-- APP ENGINE SCRIPTS -->
     <script>
-    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addBulkRow,addComboRow,addContractRow,addCrossBranchExchangeItem,addCrossBranchItemToCart,addDeliveryAgent,addDeliveryZone,addLoyaltyTier,addRecipeCaptureIngredient,addRecipeRow,addSameItemAsReplacement,addTradeCreditManually,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyExpensesOnlyRestriction,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,autoGenerateBarcodeValue,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,broadcastCustomerDisplayChange,buildAlignedRow,buildDrawerKickAsciiString,buildDrawerKickBytes,buildInventoryItemName,buildPoleDisplayBytes,buildReceiptCanvas,buildSystemPrintCopies,cancelCartTotalQuote,captureReviewInventoryOptions,captureScanModalNow,cellLooksNumeric,changeCartPrice,checkAiCaptureStatus,checkBillReminders,checkEtimsStatus,checkExistingContractMatch,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,checkPrintRelayAvailable,claimLicensePayment,clearAuthUrlParams,clearInventorySearch,clearMpesaPayerFields,clearSystemPrintCopies,closeAddCustomerModal,closeAddPrintRoutingRule,closeAdhocSaleModal,closeAttendanceClockModal,closeBarcodeScanModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeContractReturnModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeDemoPurgeModal,closeKitchenTicket,closeKitchenTicketAfterPrint,closePromoOfferModal,closeReceipt,closeReceiptAfterPrint,closeRecipeCaptureReviewModal,closeRecordBillModal,closeRecordPastSaleModal,closeSalesReport,closeStoreImportFromInventoryModal,closeTabsOverflowMenu,closeUpgradeScreen,completeBarcodeScanModal,computeFlatOfferResults,computeLineOfferDiscount,computeStaffStats,computeTokensEarned,confirmAdhocSale,connectPoleDisplay,contractRowLineTotal,contractRowProduct,contractRowUnitPrice,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,createBillNotification,csvEscape,currentActiveTabId,currentAdminSettingsRestriction,currentNotifViewerId,currentPromoOfferTargets,currentStockValueTotals,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,daysUntilExpiry,debtBalance,debtPaidSoFar,decimalToFraction,defaultDeviceName,deleteBarcode,deleteBranch,deleteInventoryItem,deletePrintRoutingRule,deletePromoOffer,deleteTradeCredit,deleteWebAuthnCredential,detectOnceFromScanModal,dismissCustomerDisplayDetectBanner,dismissNotificationPromptBanner,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureSaleIds,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchBranchDetail,fetchBranchesSummary,fetchReceiptSettingsSharing,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findInventoryByName,findSaleForVoid,flagWithinImportIngredientDuplicates,formatFileSize,formatHours,formatPickedPhone,formatQty,formatQtyDisplay,formatRemaining,formatShiftTime,formatShortDate,fuzzyMatchInventory,generateItemCode,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getEffectivePrice,getExchangeNetPayable,getExchangeReplacementTotal,getExpiringItems,getFaultyReturns,getLocState,getLowStockRecipeServices,getOrCreateDeviceId,getServiceAvailableQty,getServiceUnitCost,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleImageUpload,handleSplitAmountChange,heartbeatDeviceNetwork,ingredientOptionsHtml,initBulkAddForm,initCamera,initCameraScanOnLoad,initCustomerDisplayMode,initDeviceNetworkUI,initLoyaltySettingsUI,initPasswordToggles,initPhonebookPickers,isAdminServing,isBillNotifRelevant,isExpired,isExpiringSoon,isIngredientProduct,isKeyboardTypeable,isOfferActive,isPhoneField,isRecipeComponent,isRunningStandalone,isSellableProduct,isStaffLockedToday,itemOffers,itemTotalSold,jpegBytesToPdfBlob,jumpToSaleByRef,kbBackspace,kbEnter,kbInsertText,kbKeyTap,kbResolveTarget,kbSwitchMode,kbToggleShift,kitchenTicketPrintJob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadContractForMoreItems,loadNotifiedToday,loadPrintRoutingRules,loadRecoveryStatus,loadSheetJsOnce,loadStoreItems,loadUpgradePromptContent,logStockMovementDated,looksLikeRowNumberColumn,lookupBarcode,markAllBillNotificationsRead,markBillNotificationRead,markDeliveryNotificationsRead,markTillPaymentMatched,maybeAutoDetectCustomerDisplay,maybeFetchAutoImage,maybeOfferNotificationPrompt,maybeSendBillCreatedSms,maybeSendThankYouSms,maybeShowExpiryNudge,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,offerAvailableCategories,offerSummaryLine,onBillUpfrontAmountChange,onBulkCategoryChanged,onBulkRowCodeInput,onBulkRowFieldInput,onBulkRowNameInput,onPromoOfferTypeChange,onRecordBillUpfrontChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAddPromoOffer,openAdhocSaleModal,openAttendanceClockModal,openBoxToPieces,openCartTotalQuoteEditor,openCashDrawer,openContractReturnModal,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openEditPromoOffer,openLicenseWhatsapp,openOfferModal,openPoleDisplayPort,openRecordBillModal,openRecordPastSaleModal,openSettingsSection,openWebAuthnDb,padPoleLine,parseHexBytes,parseQtyInput,performBulkDeclareOpeningStock,performCartTotalQuote,performEditOpeningStock,performResetExceptInventory,persistPrintRoutingRules,pickPhoneForField,populateServerFilter,previewBarcode,printAttendanceSheet,printBarcodeSheet,printDebtsStatement,printHTMLDirect,printItemSalesRecordFromModal,printKitchenTicket,printKitchenTicketManualJob,printOneBarcode,printReceiptInNewWindow,printRelayHasRealPrinter,printReportInNewWindow,printRoutingDestinationLabel,printSystemDrawerKickTest,printViaSystemDialog,productType,profitPeriodLabel,promptAppInstall,pruneOrphanedLocStates,pullState,pushNewStockAlerts,pushNow,pushSharedReceiptSettingsIfNeeded,qtyInputHint,queuePrintJob,receiptImageWidthPx,recipeIngredientMatchOptions,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeBulkRow,removeComboRow,removeContractRow,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,removeOffer,removeRecipeCaptureDish,removeRecipeCaptureIngredient,removeRecipeRow,removeRoom,removeTable,renderAdminActivityLog,renderAndPrintBarcodes,renderAttendanceHistory,renderAttendanceRosterTable,renderBarcodeLinkOptions,renderBarcodesTab,renderBillNotifyStaffList,renderBillsTabScoped,renderBizImportReviewTables,renderCameraScanTorchButton,renderComboRows,renderContractTotals,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderInventoryPager,renderInventoryTableScoped,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderProfitsTabScoped,renderPromoOfferTargetCategories,renderPromoOfferTargetProducts,renderRecipeRows,renderRestockTotals,renderStockValuationSummary,renderTillPayments,renderTrendsPieCharts,reportFilenameBase,reprintExchangeReceipt,requestBulkDeclareOpeningStock,requestEditOpeningStock,requestResetExceptInventory,requestSetOpeningStock,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetMpesaState,resetPromoOfferModalFields,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,restockRowLineTotal,restoreStockForSaleUnit,retakePhoto,round2,runBackgroundCameraScanTick,runQueuedSystemPrint,runScanModalTick,safeJSONParse,safeSetItem,salesTablePeriodLabel,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveAttendanceLocal,saveContract,saveDebtsLocal,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveNotifiedToday,saveOffersLocal,savePrintRoutingRule,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,searchOtherBranchesForCart,searchOtherBranchesForExchange,selectLoginAdmin,selectLoginStaff,selectPastSaleItem,selectServerToLogin,selectUnavailableItem,sendBillReminderSms,sendToPoleDisplay,setAddItemMode,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBarcodeScanModalStatus,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setComboRowMode,setContractType,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setDeviceName,setDeviceStation,setEtimsLogPeriod,setExchangeTopupMethod,setFieldAndFireInput,setImageSource,setLocStatus,setOfferType,setOrderType,setPoleDisplayMode,setProfitPeriod,setPromoOfferScope,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSalesTablePeriod,setShowItemImageGrid,setSmsProvider,setStockReportPeriod,setTabReadOnly,setTradeCreditDirection,settleTradeCredit,setupPoleDisplayConnectListener,showAuthStep,showCustomerDisplayDetectBanner,showLoginPickerStep,showNotificationPromptBanner,showRecoverySignInStep,showUpgradeScreen,slugifyServiceName,snapCaptureListPhoto,snapPhoto,snapshotExtraSyncedFields,snapshotInventorySync,soldQtyAfter,soldQtyWithinRange,staffExpensesAccessLevel,staffShiftsFor,stampDirtyExtraSyncedFields,stampDirtyInventory,startAdminShiftIfNeeded,startBackgroundCameraScan,startDeviceNetworkHeartbeat,startLicensePolling,startNewContract,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,stopBackgroundCameraScan,stopCamera,submitBarcodeScanManual,submitDemoPurgeConfirm,submitPrintRelayJob,supplierOptionsHtml,switchTab,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAdhocBorrowedFields,toggleAutoOpenDrawer,toggleBillNotifyStaff,toggleCameraScanTorch,toggleChangePinPanel,toggleComboBuilder,toggleFloatingKeyboard,toggleInteractivePricing,toggleInventorySearchClear,toggleKitchenTicket,toggleNewStaffRole,toggleOfferCustomDate,togglePrintRoutingRule,togglePromoOfferActive,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScanModalTorch,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleStoreManualForm,toggleTradeCreditManualForm,toggleUnavailableExchangeForm,triggerAutoPrintReceipt,triggerAutoPrintReport,triggerInventoryRowImageUpload,tryAutoReconnectPoleDisplay,unitLabel,unlinkRecoveryEmail,unreadBillNotifications,updateAttendanceRosterExpectedTime,updateBarcodeCopies,updateBillReminderDays,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateCameraScanStatusText,updateComboRowCode,updateComboRowCustomName,updateComboRowQty,updateContractRowField,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateLicenseLockHintText,updateLocReservationField,updateLowStockDescText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updatePrintRelaySectionVisibility,updateRecipeCaptureDish,updateRecipeCaptureIngredient,updateRecipeCaptureIngredientMatch,updateRecipeRowIngredient,updateRecipeRowQty,updateRecipeSummary,updateRestockRowField,updateServerBtnLabel,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,getPaperCols,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,usbPrinterNameKey,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,poState,poNewRow,poRound3,poFormatDateTime,poStatusMeta,poLineOutstanding,poOrderStats,poIsOpen,poCanEdit,poFindProduct,poSave,poNextOrderNo,poActor,poRefreshFormLists,poOpenForm,poCloseForm,poAddRow,poRemoveRow,poRowLineTotal,poRenderTotals,poRenderRows,poUpdateRowField,poFillRowFromProduct,poEnsureSupplier,poSaveOrder,poSetFilter,poVisibleOrders,poToggleDetails,poActionsHtml,poDetailsHtml,renderOrdersList,renderOrdersTab,renderOrdersIfOpen,poMarkInTransit,poCancelOrder,poRemoveOrder,poCloseShort,poOpenArriveModal,poCloseArriveModal,poRenderArriveModal,poArriveToggleLine,poArriveQtyChange,poArriveRefresh,poApplyArrivedLine,poConfirmArrival,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,applyPriceSelectTier,attendanceRosterList,buildBillOwedMessage,cellLooksLikeCurrency,closeChangeStaffPinModal,closePinSetConfirmModal,collapseTabsIfNeeded,commitRecipeCaptureReview,confirmBillSettle,copyPinSetConfirmValue,detectCsvColumnsAI,editBillDueDate,etimsLogPeriodRange,genSaleId,generateRandomStaffPin,importInventoryCsv,levenshteinDistance,onBarcodeLinkChange,openBarcodeScanModal,performRestoreBackup,printReceipt,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,salesTablePeriodRange,saveRecordBillModal,sendPendingExchangeSms,showPinSetConfirmModal,stopCaptureListCamera,submitChangeStaffPin,toggleRecipeBuilder,toggleTabsOverflowMenu,updateCaptureReviewField,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice,markSync,probeServer,pullStateOnce,hwKey,hwStatus,hwIsReady,hwSingleFlight,hwUsbReconnect,hwBtFindCharacteristic,hwBtAttach,hwBtWatch,hwBtReconnect,hwEnsureReady,hwLinkLost,hwWrapPrinting,hwKeeperStart,hwKick,hwSchedule,hwTick,claimUsbPrinterEndpointOnce,hwWithTimeout,heldSaleKey,heldSaleGet,heldSalePanel,heldSaleFields,holdCurrentSale,resumeHeldSale,renderHeldSaleBar,heldSaleInstall,pastSalePaymentChanged,pastSalePaymentDetails,pastSaleStore,lowStockItems,lowStockInDraft,renderLowStockStrip,lowStockAdd,lowStockAddAll,lowStockInstall,poSupplierRecord,poOrderTotal,poOrderText,poSendOrder,stockTakeState,stockTakeItems,stockTakeDiff,stockTakeValueOf,stockTakeSet,stockTakeFillDiffCell,stockTakeRenderSummary,renderStockTake,stockTakeMatches,stockTakeClear,stockTakeApply,stockTakeHistoryGet,renderStockTakeHistory,stockTakeInstall,setKitchenPrintPage,pruneClosedBills,authWatchInstall,dayKeyOf,assignCustomerNo,itemSuggestMatches,itemSuggestBox,itemSuggestShow,itemSuggestHide,itemSuggestPick,itemSuggestInstall,markReceiptPrinted,soldTotalsMap,showBusyBanner,hideBusyBanner,nextPaint,reportMoney,reportShort,reportsRange,reportSales,reportSaleTotal,reportSaleCost,reportBarSvg,reportLineSvg,reportTable,reportCards,reportBuildSales,reportBuildInsights,reportBuildStaff,reportBuildStock,reportBuildBillsDebts,reportBuildExpenses,reportsGenerate,reportsRangeChanged,reportsCsv,reportsPrint,reportsInstall,reportsGoto,perfInstall,dedupeStaff */
+    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addBulkRow,addComboRow,addContractRow,addCrossBranchExchangeItem,addCrossBranchItemToCart,addDeliveryAgent,addDeliveryZone,addLoyaltyTier,addRecipeCaptureIngredient,addRecipeRow,addSameItemAsReplacement,addTradeCreditManually,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyExpensesOnlyRestriction,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,autoGenerateBarcodeValue,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,broadcastCustomerDisplayChange,buildAlignedRow,buildDrawerKickAsciiString,buildDrawerKickBytes,buildInventoryItemName,buildPoleDisplayBytes,buildReceiptCanvas,buildSystemPrintCopies,cancelCartTotalQuote,captureReviewInventoryOptions,captureScanModalNow,cellLooksNumeric,changeCartPrice,checkAiCaptureStatus,checkBillReminders,checkEtimsStatus,checkExistingContractMatch,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,checkPrintRelayAvailable,claimLicensePayment,clearAuthUrlParams,clearInventorySearch,clearMpesaPayerFields,clearSystemPrintCopies,closeAddCustomerModal,closeAddPrintRoutingRule,closeAdhocSaleModal,closeAttendanceClockModal,closeBarcodeScanModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeContractReturnModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeDemoPurgeModal,closeKitchenTicket,closeKitchenTicketAfterPrint,closePromoOfferModal,closeReceipt,closeReceiptAfterPrint,closeRecipeCaptureReviewModal,closeRecordBillModal,closeRecordPastSaleModal,closeSalesReport,closeStoreImportFromInventoryModal,closeTabsOverflowMenu,closeUpgradeScreen,completeBarcodeScanModal,computeFlatOfferResults,computeLineOfferDiscount,computeStaffStats,computeTokensEarned,confirmAdhocSale,connectPoleDisplay,contractRowLineTotal,contractRowProduct,contractRowUnitPrice,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,createBillNotification,csvEscape,currentActiveTabId,currentAdminSettingsRestriction,currentNotifViewerId,currentPromoOfferTargets,currentStockValueTotals,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,daysUntilExpiry,debtBalance,debtPaidSoFar,decimalToFraction,defaultDeviceName,deleteBarcode,deleteBranch,deleteInventoryItem,deletePrintRoutingRule,deletePromoOffer,deleteTradeCredit,deleteWebAuthnCredential,detectOnceFromScanModal,dismissCustomerDisplayDetectBanner,dismissNotificationPromptBanner,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureSaleIds,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchBranchDetail,fetchBranchesSummary,fetchReceiptSettingsSharing,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findInventoryByName,findSaleForVoid,flagWithinImportIngredientDuplicates,formatFileSize,formatHours,formatPickedPhone,formatQty,formatQtyDisplay,formatRemaining,formatShiftTime,formatShortDate,fuzzyMatchInventory,generateItemCode,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getEffectivePrice,getExchangeNetPayable,getExchangeReplacementTotal,getExpiringItems,getFaultyReturns,getLocState,getLowStockRecipeServices,getOrCreateDeviceId,getServiceAvailableQty,getServiceUnitCost,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleImageUpload,handleSplitAmountChange,heartbeatDeviceNetwork,ingredientOptionsHtml,initBulkAddForm,initCamera,initCameraScanOnLoad,initCustomerDisplayMode,initDeviceNetworkUI,initLoyaltySettingsUI,initPasswordToggles,initPhonebookPickers,isAdminServing,isBillNotifRelevant,isExpired,isExpiringSoon,isIngredientProduct,isKeyboardTypeable,isOfferActive,isPhoneField,isRecipeComponent,isRunningStandalone,isSellableProduct,isStaffLockedToday,itemOffers,itemTotalSold,jpegBytesToPdfBlob,jumpToSaleByRef,kbBackspace,kbEnter,kbInsertText,kbKeyTap,kbResolveTarget,kbSwitchMode,kbToggleShift,kitchenTicketPrintJob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadContractForMoreItems,loadNotifiedToday,loadPrintRoutingRules,loadRecoveryStatus,loadSheetJsOnce,loadStoreItems,loadUpgradePromptContent,logStockMovementDated,looksLikeRowNumberColumn,lookupBarcode,markAllBillNotificationsRead,markBillNotificationRead,markDeliveryNotificationsRead,markTillPaymentMatched,maybeAutoDetectCustomerDisplay,maybeFetchAutoImage,maybeOfferNotificationPrompt,maybeSendBillCreatedSms,maybeSendThankYouSms,maybeShowExpiryNudge,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,offerAvailableCategories,offerSummaryLine,onBillUpfrontAmountChange,onBulkCategoryChanged,onBulkRowCodeInput,onBulkRowFieldInput,onBulkRowNameInput,onPromoOfferTypeChange,onRecordBillUpfrontChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAddPromoOffer,openAdhocSaleModal,openAttendanceClockModal,openBoxToPieces,openCartTotalQuoteEditor,openCashDrawer,openContractReturnModal,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openEditPromoOffer,openLicenseWhatsapp,openOfferModal,openPoleDisplayPort,openRecordBillModal,openRecordPastSaleModal,openSettingsSection,openWebAuthnDb,padPoleLine,parseHexBytes,parseQtyInput,performBulkDeclareOpeningStock,performCartTotalQuote,performEditOpeningStock,performResetExceptInventory,persistPrintRoutingRules,pickPhoneForField,populateServerFilter,previewBarcode,printAttendanceSheet,printBarcodeSheet,printDebtsStatement,printHTMLDirect,printItemSalesRecordFromModal,printKitchenTicket,printKitchenTicketManualJob,printOneBarcode,printReceiptInNewWindow,printRelayHasRealPrinter,printReportInNewWindow,printRoutingDestinationLabel,printSystemDrawerKickTest,printViaSystemDialog,productType,profitPeriodLabel,promptAppInstall,pruneOrphanedLocStates,pullState,pushNewStockAlerts,pushNow,pushSharedReceiptSettingsIfNeeded,qtyInputHint,queuePrintJob,receiptImageWidthPx,recipeIngredientMatchOptions,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeBulkRow,removeComboRow,removeContractRow,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,removeOffer,removeRecipeCaptureDish,removeRecipeCaptureIngredient,removeRecipeRow,removeRoom,removeTable,renderAdminActivityLog,renderAndPrintBarcodes,renderAttendanceHistory,renderAttendanceRosterTable,renderBarcodeLinkOptions,renderBarcodesTab,renderBillNotifyStaffList,renderBillsTabScoped,renderBizImportReviewTables,renderCameraScanTorchButton,renderComboRows,renderContractTotals,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderInventoryPager,renderInventoryTableScoped,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderProfitsTabScoped,renderPromoOfferTargetCategories,renderPromoOfferTargetProducts,renderRecipeRows,renderRestockTotals,renderStockValuationSummary,renderTillPayments,renderTrendsPieCharts,reportFilenameBase,reprintExchangeReceipt,requestBulkDeclareOpeningStock,requestEditOpeningStock,requestResetExceptInventory,requestSetOpeningStock,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetMpesaState,resetPromoOfferModalFields,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,restockRowLineTotal,restoreStockForSaleUnit,retakePhoto,round2,runBackgroundCameraScanTick,runQueuedSystemPrint,runScanModalTick,safeJSONParse,safeSetItem,salesTablePeriodLabel,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveAttendanceLocal,saveContract,saveDebtsLocal,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveNotifiedToday,saveOffersLocal,savePrintRoutingRule,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,searchOtherBranchesForCart,searchOtherBranchesForExchange,selectLoginAdmin,selectLoginStaff,selectPastSaleItem,selectServerToLogin,selectUnavailableItem,sendBillReminderSms,sendToPoleDisplay,setAddItemMode,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBarcodeScanModalStatus,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setComboRowMode,setContractType,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setDeviceName,setDeviceStation,setEtimsLogPeriod,setExchangeTopupMethod,setFieldAndFireInput,setImageSource,setLocStatus,setOfferType,setOrderType,setPoleDisplayMode,setProfitPeriod,setPromoOfferScope,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSalesTablePeriod,setShowItemImageGrid,setSmsProvider,setStockReportPeriod,setTabReadOnly,setTradeCreditDirection,settleTradeCredit,setupPoleDisplayConnectListener,showAuthStep,showCustomerDisplayDetectBanner,showLoginPickerStep,showNotificationPromptBanner,showRecoverySignInStep,showUpgradeScreen,slugifyServiceName,snapCaptureListPhoto,snapPhoto,snapshotExtraSyncedFields,snapshotInventorySync,soldQtyAfter,soldQtyWithinRange,staffExpensesAccessLevel,staffShiftsFor,stampDirtyExtraSyncedFields,stampDirtyInventory,startAdminShiftIfNeeded,startBackgroundCameraScan,startDeviceNetworkHeartbeat,startLicensePolling,startNewContract,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,stopBackgroundCameraScan,stopCamera,submitBarcodeScanManual,submitDemoPurgeConfirm,submitPrintRelayJob,supplierOptionsHtml,switchTab,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAdhocBorrowedFields,toggleAutoOpenDrawer,toggleBillNotifyStaff,toggleCameraScanTorch,toggleChangePinPanel,toggleComboBuilder,toggleFloatingKeyboard,toggleInteractivePricing,toggleInventorySearchClear,toggleKitchenTicket,toggleNewStaffRole,toggleOfferCustomDate,togglePrintRoutingRule,togglePromoOfferActive,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScanModalTorch,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleStoreManualForm,toggleTradeCreditManualForm,toggleUnavailableExchangeForm,triggerAutoPrintReceipt,triggerAutoPrintReport,triggerInventoryRowImageUpload,tryAutoReconnectPoleDisplay,unitLabel,unlinkRecoveryEmail,unreadBillNotifications,updateAttendanceRosterExpectedTime,updateBarcodeCopies,updateBillReminderDays,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateCameraScanStatusText,updateComboRowCode,updateComboRowCustomName,updateComboRowQty,updateContractRowField,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateLicenseLockHintText,updateLocReservationField,updateLowStockDescText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updatePrintRelaySectionVisibility,updateRecipeCaptureDish,updateRecipeCaptureIngredient,updateRecipeCaptureIngredientMatch,updateRecipeRowIngredient,updateRecipeRowQty,updateRecipeSummary,updateRestockRowField,updateServerBtnLabel,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,getPaperCols,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,usbPrinterNameKey,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,poState,poNewRow,poRound3,poFormatDateTime,poStatusMeta,poLineOutstanding,poOrderStats,poIsOpen,poCanEdit,poFindProduct,poSave,poNextOrderNo,poActor,poRefreshFormLists,poOpenForm,poCloseForm,poAddRow,poRemoveRow,poRowLineTotal,poRenderTotals,poRenderRows,poUpdateRowField,poFillRowFromProduct,poEnsureSupplier,poSaveOrder,poSetFilter,poVisibleOrders,poToggleDetails,poActionsHtml,poDetailsHtml,renderOrdersList,renderOrdersTab,renderOrdersIfOpen,poMarkInTransit,poCancelOrder,poRemoveOrder,poCloseShort,poOpenArriveModal,poCloseArriveModal,poRenderArriveModal,poArriveToggleLine,poArriveQtyChange,poArriveRefresh,poApplyArrivedLine,poConfirmArrival,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,applyPriceSelectTier,attendanceRosterList,buildBillOwedMessage,cellLooksLikeCurrency,closeChangeStaffPinModal,closePinSetConfirmModal,collapseTabsIfNeeded,commitRecipeCaptureReview,confirmBillSettle,copyPinSetConfirmValue,detectCsvColumnsAI,editBillDueDate,etimsLogPeriodRange,genSaleId,generateRandomStaffPin,importInventoryCsv,levenshteinDistance,onBarcodeLinkChange,openBarcodeScanModal,performRestoreBackup,printReceipt,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,salesTablePeriodRange,saveRecordBillModal,sendPendingExchangeSms,showPinSetConfirmModal,stopCaptureListCamera,submitChangeStaffPin,toggleRecipeBuilder,toggleTabsOverflowMenu,updateCaptureReviewField,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice,markSync,probeServer,pullStateOnce,hwKey,hwStatus,hwIsReady,hwSingleFlight,hwUsbReconnect,hwBtFindCharacteristic,hwBtAttach,hwBtWatch,hwBtReconnect,hwEnsureReady,hwLinkLost,hwWrapPrinting,hwKeeperStart,hwKick,hwSchedule,hwTick,claimUsbPrinterEndpointOnce,hwWithTimeout,heldSaleKey,heldSaleGet,heldSalePanel,heldSaleFields,holdCurrentSale,resumeHeldSale,renderHeldSaleBar,heldSaleInstall,pastSalePaymentChanged,pastSalePaymentDetails,pastSaleStore,lowStockItems,lowStockInDraft,renderLowStockStrip,lowStockAdd,lowStockAddAll,lowStockInstall,poSupplierRecord,poOrderTotal,poOrderText,poSendOrder,stockTakeState,stockTakeItems,stockTakeDiff,stockTakeFindByCode,stockTakeResyncParent,stockTakeValueOf,stockTakeSet,stockTakeFillDiffCell,stockTakeRenderSummary,renderStockTake,stockTakeMatches,stockTakeClear,stockTakeApply,stockTakeHistoryGet,renderStockTakeHistory,stockTakeInstall,setKitchenPrintPage,pruneClosedBills,authWatchInstall,dayKeyOf,assignCustomerNo,itemSuggestMatches,itemSuggestBox,itemSuggestShow,itemSuggestHide,itemSuggestPick,itemSuggestInstall,markReceiptPrinted,soldTotalsMap,showBusyBanner,hideBusyBanner,nextPaint,reportMoney,reportShort,reportsRange,reportSales,reportSaleTotal,reportSaleCost,reportBarSvg,reportLineSvg,reportTable,reportCards,reportBuildSales,reportBuildInsights,reportBuildStaff,reportBuildStock,reportBuildBillsDebts,reportBuildExpenses,reportsGenerate,reportsRangeChanged,reportsCsv,reportsPrint,reportsInstall,reportsGoto,perfInstall,dedupeStaff */
         /* GENERATED from src/shared/functions.js by tools/sync-shared.mjs - do not edit here; edit the library and run `npm run sync`. */
         function _codeMatches(code, q){
         if(!q) return false;
@@ -15368,7 +15464,7 @@
             const MERGED = new Set(['staff', 'pendingInvites', 'inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers',
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
-                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges']);
+                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
@@ -17415,6 +17511,27 @@
             const st = stockTakeState();
             const q = st.q.trim().toLowerCase();
             let list = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
+            // Flatten variants into their own countable rows — a shoe with
+            // 5 sizes needs each size counted separately, not one combined
+            // number for the whole item. A variant-bearing parent itself
+            // isn't directly countable (its own qty is just the sum of its
+            // variants', recomputed after each variant's count is applied
+            // — see stockTakeApply), so it's replaced by its variants here
+            // rather than listed alongside them.
+            const flattened = [];
+            list.forEach((p) => {
+                if (p.hasVariants && Array.isArray(p.variants) && p.variants.length > 0) {
+                    p.variants.forEach((v) => flattened.push(Object.assign({}, v, {
+                        name: `${p.name} — ${v.name}`,
+                        unit: p.unit,
+                        __stCode: v.code,
+                        __stParentCode: p.code,
+                    })));
+                } else {
+                    flattened.push(Object.assign({}, p, { __stCode: p.code, __stParentCode: null }));
+                }
+            });
+            list = flattened;
             if (q) list = list.filter((p) => String(p.name || '').toLowerCase().includes(q) || String(p.code || '').toLowerCase().includes(q));
             list.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
             if (st.diffOnly) list = list.filter((p) => { const d = stockTakeDiff(p); return d.qty !== 0 || d.pieces !== 0; });
@@ -17436,6 +17553,30 @@
             };
         }
 
+        // Looks up a countable row by the code stockTakeItems() gave it (a plain
+// item's own code, or a variant's own code) and, for a variant, also
+// returns the parent product — every write-back site below needs the
+// parent to resync its aggregate qty/price after the variant changes.
+function stockTakeFindByCode(code) {
+            const direct = inventory.find((x) => x.code === code && !(x.hasVariants && Array.isArray(x.variants) && x.variants.length > 0));
+            if (direct) return { item: direct, parent: null };
+            for (const p of inventory) {
+                if (!p.hasVariants || !Array.isArray(p.variants)) continue;
+                const v = p.variants.find((ev) => ev.code === code);
+                if (v) return { item: v, parent: p };
+            }
+            return { item: null, parent: null };
+        }
+
+        // Same aggregate recompute used when a variant is edited inline from the
+// Inventory table (see updateVariantField) — keeps the parent's qty/price
+// consistent after a variant's own qty changes here.
+function stockTakeResyncParent(parent) {
+            if (!parent || !Array.isArray(parent.variants)) return;
+            parent.qty = parent.variants.reduce((sum, v) => sum + v.qty, 0);
+            parent.price = parent.variants.length > 0 ? Math.min(...parent.variants.map((v) => v.price)) : 0;
+        }
+
         function stockTakeValueOf(p, d) {
             return (d.qty * (Number(p.wholesalePrice) || 0)) + (d.pieces * (Number(p.pieceWholesalePrice) || 0));
         }
@@ -17444,7 +17585,7 @@
             const st = stockTakeState();
             st.counts[code] = st.counts[code] || {};
             st.counts[code][field] = String(value).trim();
-            const p = inventory.find((x) => x.code === code);
+            const { item: p } = stockTakeFindByCode(code);
             if (!p) return;
             const row = Array.from(document.querySelectorAll('#stock-take-table tbody tr')).find((tr) => tr.dataset.code === code);
             if (row) stockTakeFillDiffCell(row, p);
@@ -17470,7 +17611,7 @@
             const st = stockTakeState();
             let counted = 0, changed = 0, short = 0, over = 0, invalid = 0;
             Object.keys(st.counts).forEach((code) => {
-                const p = inventory.find((x) => x.code === code);
+                const { item: p } = stockTakeFindByCode(code);
                 if (!p) return;
                 const d = stockTakeDiff(p);
                 if (!d.counted) return;
@@ -17501,13 +17642,13 @@
                     + (dual ? `<input type="text" inputmode="decimal" class="st-input" placeholder="loose" value="${escapeHtml(c.pieceQty || '')}" oninput="stockTakeSet('${code}', 'pieceQty', this.value)">` : '');
                 return `<tr data-code="${escapeHtml(p.code)}"><td><strong>${escapeHtml(p.name)}</strong><div class="st-muted">${escapeHtml(p.code)}</div></td><td>${sys}</td><td class="st-inputs">${inputs}</td><td class="st-diff"></td><td><button type="button" class="settings-small-btn st-mini" title="The count matches the system" onclick="stockTakeMatches('${code}')">✓ same</button></td></tr>`;
             }).join('') + (list.length > 400 ? `<tr><td colspan="5" class="st-muted">Showing the first 400 of ${list.length} — use the search box to narrow down.</td></tr>` : '');
-            Array.from(tbody.querySelectorAll('tr[data-code]')).forEach((tr) => { const p = inventory.find((x) => x.code === tr.dataset.code); if (p) stockTakeFillDiffCell(tr, p); });
+            Array.from(tbody.querySelectorAll('tr[data-code]')).forEach((tr) => { const { item: p } = stockTakeFindByCode(tr.dataset.code); if (p) stockTakeFillDiffCell(tr, p); });
             stockTakeRenderSummary();
             renderStockTakeHistory();
         }
 
         function stockTakeMatches(code) {
-            const p = inventory.find((x) => x.code === code);
+            const { item: p } = stockTakeFindByCode(code);
             if (!p) return;
             const st = stockTakeState();
             st.counts[code] = { qty: String(Math.round((Number(p.qty) || 0) * 1000) / 1000) };
@@ -17525,7 +17666,7 @@
             const changes = [];
             let counted = 0;
             for (const code of Object.keys(st.counts)) {
-                const p = inventory.find((x) => x.code === code);
+                const { item: p } = stockTakeFindByCode(code);
                 if (!p) continue;
                 const d = stockTakeDiff(p);
                 if (!d.counted) continue;
@@ -17538,13 +17679,21 @@
             if (!confirm(`Update the stock of ${changes.length} item${changes.length === 1 ? '' : 's'} to what you counted? ${counted - changes.length} counted item${counted - changes.length === 1 ? '' : 's'} already match. Each change is recorded as a "Stock take" adjustment.`)) return false;
             const lines = [];
             const actor = typeof activeServerName === 'function' ? activeServerName() : '';
+            const touchedParents = new Set();
             changes.forEach(({ p, d }) => {
                 const before = { qty: Number(p.qty) || 0, pieceQty: Number(p.pieceQty) || 0 };
                 if (d.qtyNew !== null && d.qty !== 0) { p.qty = d.qtyNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.qty, 'Stock take'); }
                 if (d.pieceNew !== null && d.pieces !== 0) { p.pieceQty = d.pieceNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.pieces, 'Stock take', 'pieceQty'); }
                 p.updatedAt = Date.now();
+                const { parent } = stockTakeFindByCode(p.code);
+                if (parent) touchedParents.add(parent);
                 lines.push({ code: p.code, name: p.name, unit: p.unit || 'pcs', before, after: { qty: Number(p.qty) || 0, pieceQty: Number(p.pieceQty) || 0 }, diff: d.qty, pieceDiff: d.pieces, value: Math.round(stockTakeValueOf(p, d)) });
             });
+            // A counted row can be a variant, whose own qty just changed
+            // above — the parent's qty (a sum of all its variants) and
+            // price (the cheapest one) need the same recompute an inline
+            // Inventory-table edit already gets (see updateVariantField).
+            touchedParents.forEach((parent) => stockTakeResyncParent(parent));
             safeSetItem('pos_inventory', JSON.stringify(inventory));
             if (typeof stockMovementLog !== 'undefined') safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
             queuePush();
@@ -18258,6 +18407,20 @@
             registerSyncedField('attendanceRoster', () => attendanceRoster, 'id');
             registerSyncedField('tables', () => tables, 'id');
             registerSyncedField('rooms', () => rooms, 'id');
+            // Tab Management's `tabs` — previously 100% local-only (never
+            // in collectSyncPayload/applyRemotePayload at all), so a guest
+            // checked in on one till whose orders were rung up on another
+            // till simply weren't visible when checking out on a third.
+            // Registering it here gets it the same automatic updatedAt
+            // dirty-stamping every other synced list already gets; the
+            // actual push/pull wiring is below in collectSyncPayload() and
+            // applyRemotePayload(), and the server-side per-record merge
+            // list (MERGE_BY_ID_FIELDS in functions/api/_merge.js) needed
+            // 'tabs' added too — otherwise this would push whole-array
+            // last-write-wins, which is worse than not syncing at all
+            // (two tills would overwrite each other's entire tab list on
+            // every push instead of merging).
+            registerSyncedField('tabs', () => tabs, 'id');
         }
         let extraSyncSnapshot = {};
         /* -> shared: snapshotExtraSyncedFields */
@@ -18414,7 +18577,161 @@
             occupied: { icon: '🔴', label: 'Occupied' },
             reserved: { icon: '🟡', label: 'Reserved' },
             cleaning: { icon: '🧹', label: 'Cleaning' },
+            maintenance: { icon: '🔧', label: 'Maintenance' },
         };
+
+        // ---------- LODGING: real check-in/check-out for `rooms` (kind
+        // 'room' only — `tables` stay a pure dining/seating concept with
+        // the party-size/time reservation fields above unchanged). Kept as
+        // its own data structure rather than reusing roomStates.reservation
+        // because setLocStatus() (shared/functions.js, used by 5 modules)
+        // deliberately WIPES .reservation on any non-'reserved' status —
+        // exactly right for a dining reservation once a table is seated,
+        // but it would silently erase an active guest's stay the moment
+        // check-in sets the room to 'occupied'. A stay is only ever
+        // touched by the functions below, never by setLocStatus.
+        // roomStays[label] = { guestName, guestPhone, guestId, numGuests,
+        //   checkInAt (ISO), checkOutDue (YYYY-MM-DD), nightlyRate,
+        //   depositAmount, creditLimit (null = no limit), tabId }
+        let roomStays = safeJSONParse('pos_room_stays', {});
+        function saveRoomStays() {
+            safeSetItem('pos_room_stays', JSON.stringify(roomStays));
+            queuePush();
+        }
+        function roomStayFor(label) { return roomStays[label] || null; }
+        function stayNights(stay) {
+            const inMs = new Date(stay.checkInAt).setHours(0, 0, 0, 0);
+            const nowMs = new Date().setHours(0, 0, 0, 0);
+            return Math.max(1, Math.round((nowMs - inMs) / 86400000) + 1); // at least 1 night, counts the check-in day
+        }
+        function stayRoomCharge(stay) { return round2(stayNights(stay) * (stay.nightlyRate || 0)); }
+
+        let pendingCheckInLabel = null;
+        function openCheckInRoomModal(label) {
+            const st = getLocState('room', label);
+            if (st.status === 'occupied') { showToast('This room is already occupied — check out the current guest first.', true); return; }
+            pendingCheckInLabel = label;
+            document.getElementById('check-in-room-title').textContent = `🏨 Check In — ${label}`;
+            document.getElementById('checkin-guest-name-input').value = '';
+            document.getElementById('checkin-guest-phone-input').value = '';
+            document.getElementById('checkin-guest-id-input').value = '';
+            document.getElementById('checkin-guest-count-input').value = '1';
+            document.getElementById('checkin-nightly-rate-input').value = '';
+            const d = new Date(); d.setDate(d.getDate() + 1);
+            document.getElementById('checkin-checkout-date-input').value = d.toISOString().slice(0, 10);
+            document.getElementById('checkin-deposit-input').value = '';
+            document.getElementById('checkin-credit-limit-input').value = '';
+            document.getElementById('check-in-room-error').textContent = '';
+            document.getElementById('check-in-room-modal').style.display = 'flex';
+        }
+        function closeCheckInRoomModal() {
+            document.getElementById('check-in-room-modal').style.display = 'none';
+            pendingCheckInLabel = null;
+        }
+        function confirmCheckIn() {
+            const label = pendingCheckInLabel;
+            const errEl = document.getElementById('check-in-room-error');
+            if (!label) { errEl.textContent = 'No room selected.'; return; }
+            const guestName = document.getElementById('checkin-guest-name-input').value.trim();
+            if (!guestName) { errEl.textContent = 'Guest name is required.'; return; }
+            const nightlyRate = parseFloat(document.getElementById('checkin-nightly-rate-input').value);
+            if (isNaN(nightlyRate) || nightlyRate <= 0) { errEl.textContent = 'Enter a valid nightly rate.'; return; }
+            roomStays[label] = {
+                guestName,
+                guestPhone: document.getElementById('checkin-guest-phone-input').value.trim(),
+                guestId: document.getElementById('checkin-guest-id-input').value.trim(),
+                numGuests: parseInt(document.getElementById('checkin-guest-count-input').value, 10) || 1,
+                checkInAt: new Date().toISOString(),
+                checkOutDue: document.getElementById('checkin-checkout-date-input').value || null,
+                nightlyRate,
+                depositAmount: parseFloat(document.getElementById('checkin-deposit-input').value) || 0,
+                creditLimit: document.getElementById('checkin-credit-limit-input').value.trim() === '' ? null : (parseFloat(document.getElementById('checkin-credit-limit-input').value) || 0),
+                tabId: null,
+            };
+            saveRoomStays();
+            setLocStatus('room', label, 'occupied'); // safe: only clears .reservation (dining fields), never touches roomStays
+            closeCheckInRoomModal();
+            renderTablesRoomsLists();
+            showToast(`${guestName} checked in to ${label}.`);
+        }
+
+        let pendingCheckOutLabel = null;
+        function openCheckOutRoomModal(label) {
+            const stay = roomStayFor(label);
+            if (!stay) { showToast('No active stay found for this room.', true); return; }
+            pendingCheckOutLabel = label;
+            const tab = findOpenTabByLabel(label);
+            const tabCharges = tab ? tabTotal(tab) : 0;
+            const nights = stayNights(stay);
+            const roomCharge = stayRoomCharge(stay);
+            const grandTotal = round2(roomCharge + tabCharges - (stay.depositAmount || 0));
+            document.getElementById('check-out-room-summary').innerHTML = `
+                <p style="margin:0 0 6px;"><strong>${escapeHtml(stay.guestName)}</strong> — ${label}</p>
+                <p style="margin:0 0 4px; font-size:13px; color:#555;">Checked in ${new Date(stay.checkInAt).toLocaleDateString('en-GB')} · ${nights} night(s) @ ${money(stay.nightlyRate)}</p>
+                <table style="width:100%; font-size:14px; margin-top:8px;">
+                    <tr><td>Room Charge (${nights} night${nights > 1 ? 's' : ''})</td><td style="text-align:right;">${money(roomCharge)}</td></tr>
+                    <tr><td>Bar / Restaurant / Other Charges${tab ? ` (${tab.orders.length} order(s))` : ''}</td><td style="text-align:right;">${money(tabCharges)}</td></tr>
+                    ${stay.depositAmount > 0 ? `<tr><td>Less: Advance Deposit</td><td style="text-align:right; color:var(--success);">-${money(stay.depositAmount)}</td></tr>` : ''}
+                    <tr style="font-weight:bold; border-top:1px solid #ddd;"><td>Total Due at Checkout</td><td style="text-align:right;">${money(Math.max(0, grandTotal))}</td></tr>
+                </table>`;
+            document.getElementById('check-out-room-error').textContent = '';
+            document.getElementById('check-out-room-modal').style.display = 'flex';
+        }
+        function closeCheckOutRoomModal() {
+            document.getElementById('check-out-room-modal').style.display = 'none';
+            pendingCheckOutLabel = null;
+        }
+        // Folds the room tariff into the SAME tab-settle flow every other
+        // Tab Management charge already goes through (confirmTabSettle,
+        // below) — a synthetic order with one line item, so payment
+        // collection, the receipt, and stock/void handling are all the
+        // exact same tested code path as any other tab. This function only
+        // prepares that order and hands off to the existing tab UI.
+        function confirmCheckOut() {
+            const label = pendingCheckOutLabel;
+            const stay = roomStayFor(label);
+            if (!label || !stay) { document.getElementById('check-out-room-error').textContent = 'No active stay found.'; return; }
+            let tab = findOpenTabByLabel(label);
+            if (!tab) {
+                tab = { id: genSaleId(), kind: 'room', label, status: 'OPEN', openedAt: stay.checkInAt, orders: [] };
+                tabs.push(tab);
+            }
+            const roomCharge = stayRoomCharge(stay);
+            const nights = stayNights(stay);
+            tab.orders.push({
+                id: genSaleId(),
+                placedAt: new Date().toISOString(),
+                entries: [{
+                    type: 'room-charge', code: null, refillSizeId: null,
+                    name: `Room Charge — ${nights} night(s) @ ${money(stay.nightlyRate)} (${label})`,
+                    qty: 1, price: roomCharge, vatCategory: 'A',
+                }],
+            });
+            if (stay.depositAmount > 0) {
+                tab.orders.push({
+                    id: genSaleId(),
+                    placedAt: new Date().toISOString(),
+                    entries: [{
+                        type: 'room-charge', code: null, refillSizeId: null,
+                        name: `Less: Advance Deposit Paid at Check-In`,
+                        qty: 1, price: -stay.depositAmount, vatCategory: 'A',
+                    }],
+                });
+            }
+            tab.checkoutOf = label; // marks this settle as a lodging checkout, read by confirmTabSettle() below
+            saveTabs();
+            closeCheckOutRoomModal();
+            openTabDetailModal(tab.id);
+            // Jump straight to the payment step — the folio total is
+            // already fully built above, there's nothing left to review
+            // on the plain tab-detail screen first.
+            if (typeof openTabSettleModal === 'function') openTabSettleModal();
+        }
+
+        function markRoomClean(label) {
+            setLocStatus('room', label, 'available');
+            renderTablesRoomsLists();
+        }
 
         /* -> shared: getLocState */
 
@@ -19161,6 +19478,28 @@
                 `<option value="${key}" ${st.status === key ? 'selected' : ''}>${LOC_STATUS_META[key].icon} ${LOC_STATUS_META[key].label}</option>`
             ).join('');
 
+            // Lodging block — rooms only; tables never show this. See the
+            // roomStays block above for why this is entirely separate from
+            // the dining reservation fields just below it.
+            let lodgingHtml = '';
+            if (kind === 'room') {
+                const stay = roomStayFor(label);
+                if (stay) {
+                    const nights = stayNights(stay);
+                    lodgingHtml = `
+                        <div class="loc-reservation-fields" style="background:#fef9e7; padding:8px; border-radius:6px; margin-top:6px;">
+                            <p style="margin:0 0 4px; font-size:13px;"><strong>${escapeHtml(stay.guestName)}</strong>${stay.numGuests > 1 ? ` (${stay.numGuests} guests)` : ''}</p>
+                            <p style="margin:0 0 4px; font-size:12px; color:#555;">In: ${new Date(stay.checkInAt).toLocaleDateString('en-GB')} · Due out: ${stay.checkOutDue ? new Date(stay.checkOutDue).toLocaleDateString('en-GB') : '—'} · ${nights} night(s) @ ${money(stay.nightlyRate)}</p>
+                            ${stay.guestPhone ? `<p style="margin:0 0 4px; font-size:12px; color:#555;">📞 ${escapeHtml(stay.guestPhone)}</p>` : ''}
+                            <button type="button" class="settings-small-btn" onclick="openCheckOutRoomModal('${escapeJsAttr(label)}')">🚪 Check Out &amp; Settle Folio</button>
+                        </div>`;
+                } else if (st.status === 'available' || st.status === 'reserved') {
+                    lodgingHtml = `<button type="button" class="settings-small-btn" style="margin-top:6px;" onclick="openCheckInRoomModal('${escapeJsAttr(label)}')">🏨 Check In</button>`;
+                } else if (st.status === 'cleaning') {
+                    lodgingHtml = `<button type="button" class="settings-small-btn" style="margin-top:6px;" onclick="markRoomClean('${escapeJsAttr(label)}')">✅ Mark Clean (Available)</button>`;
+                }
+            }
+
             return `
                 <div class="loc-card loc-status-${st.status}">
                     <div class="loc-card-head">
@@ -19169,6 +19508,7 @@
                     </div>
                     <select onchange="setLocStatus('${kind}', '${escapeJsAttr(label)}', this.value)">${optionsHtml}</select>
                     ${st.status === 'reserved' ? reservationFieldsHtml(kind, label, st.reservation) : ''}
+                    ${lodgingHtml}
                 </div>`;
         }
 
@@ -19257,11 +19597,67 @@
                         <div style="display:flex; gap:6px; flex-wrap:wrap;">
                             <span style="font-weight:bold;">${money(tabTotal(t))}</span>
                             <button class="settings-small-btn" onclick="routeOrderToTab('${escapeJsAttr(t.label)}')">➕ Add Order</button>
-                            <button class="settings-small-btn" onclick="openTabDetailModal('${escapeJsAttr(t.id)}')">👁️ View / Settle / Clear</button>
+                            <button class="settings-small-btn" style="background:#16a085; color:#fff;" title="Settle this tab now" onclick="settleTabDirect('${escapeJsAttr(t.id)}')">💳 Settle</button>
+                            <button class="settings-small-btn" onclick="openTabDetailModal('${escapeJsAttr(t.id)}')">👁️ View / Clear</button>
                         </div>
                     </div>`;
                 }).join('');
             boxes.forEach(box => { box.innerHTML = html; });
+        }
+
+        // The "💳 Settle" shortcut on a tab card (Sales Counter quick popup
+        // and the Tabs tab) — jumps straight to the payment-method screen
+        // for that tab, instead of the two-step View then Settle. Reuses
+        // the exact same tab-detail-then-settle-modal flow as every other
+        // settle path (including the lodging checkout folio above), so the
+        // actual payment collection, receipt, and stock/void handling are
+        // all the same tested code — this is purely a one-click shortcut
+        // to reach that same screen.
+        function settleTabDirect(tabId) {
+            openTabDetailModal(tabId);
+            if (typeof openTabSettleModal === 'function') openTabSettleModal();
+        }
+
+        // "✏️ Update" on a bill row — lets the customer's name/phone and the
+        // due date be corrected after the fact (a typo, a number added
+        // later, a due date renegotiated). Deliberately does NOT touch
+        // items, total, or amountPaid — those drive the settle/folio math
+        // elsewhere, and blind-editing them here could desync a bill from
+        // its own payment history. editBillDueDate() (shared, near the top
+        // of the file) still works as its own one-click shortcut for just
+        // the due date; this covers the rest in one place. Kept down here,
+        // outside the @shared block, since it's hotel-only.
+        let pendingUpdateBillId = null;
+        function openUpdateBillModal(billId) {
+            const bill = bills.find(b => b.id === billId);
+            if (!bill) { showToast('Could not find that bill.', true); return; }
+            pendingUpdateBillId = billId;
+            document.getElementById('update-bill-name-input').value = bill.customerName || '';
+            document.getElementById('update-bill-phone-input').value = bill.customerPhone || '';
+            document.getElementById('update-bill-due-date-input').value = bill.dueDate || '';
+            document.getElementById('update-bill-error').textContent = '';
+            document.getElementById('update-bill-modal').style.display = 'flex';
+        }
+        function closeUpdateBillModal() {
+            document.getElementById('update-bill-modal').style.display = 'none';
+            pendingUpdateBillId = null;
+        }
+        function confirmUpdateBill() {
+            const bill = bills.find(b => b.id === pendingUpdateBillId);
+            if (!bill) { document.getElementById('update-bill-error').textContent = 'Could not find that bill.'; return; }
+            bill.customerName = document.getElementById('update-bill-name-input').value.trim() || null;
+            bill.customerPhone = document.getElementById('update-bill-phone-input').value.trim() || null;
+            const dueDate = document.getElementById('update-bill-due-date-input').value || null;
+            if (dueDate !== bill.dueDate) {
+                delete bill.lastDueSoonReminderDate;
+                delete bill.lastOverdueReminderDate;
+            }
+            bill.dueDate = dueDate;
+            safeSetItem('pos_bills', JSON.stringify(bills));
+            queuePush();
+            closeUpdateBillModal();
+            renderBillsTab();
+            showToast('Bill updated.');
         }
 
         function setNewTabKind(kind) {
@@ -19558,7 +19954,12 @@
             tab.status = 'VOID';
             tab.closedAt = new Date().toISOString();
             saveTabs();
-            if (tab.kind === 'table' || tab.kind === 'room') setLocStatus(tab.kind, tab.label, 'available');
+            // A room with an active lodging stay (see roomStayFor) stays
+            // OCCUPIED when its tab is voided — the guest hasn't checked
+            // out, voiding just discards that particular tab's charges.
+            // Only a plain dining table/room with no active stay goes back
+            // to 'available' here, exactly as before.
+            if (tab.kind === 'table' || (tab.kind === 'room' && !roomStayFor(tab.label))) setLocStatus(tab.kind, tab.label, 'available');
             renderInventoryTable();
             renderOpenTabsList();
             renderSalesLocationSelect();
@@ -19751,7 +20152,19 @@
             tab.closedAt = new Date().toISOString();
             tab.settlement = { paymentMethod: tabSettlePayMethod, cashAmount, mpesaAmount, cardAmount, total, saleId: saleRecord.id };
             saveTabs();
-            if (tab.kind === 'table' || tab.kind === 'room') setLocStatus(tab.kind, tab.label, 'available');
+            if (tab.kind === 'room' && tab.checkoutOf) {
+                // A real lodging checkout (see confirmCheckOut above), not
+                // just a plain room-as-dining-tab settle: the stay is over,
+                // so the room needs housekeeping before it can be sold
+                // again — 'cleaning', not 'available' — and the stay
+                // record is done with, so it's cleared rather than left
+                // around to confuse the next check-in.
+                delete roomStays[tab.checkoutOf];
+                saveRoomStays();
+                setLocStatus('room', tab.checkoutOf, 'cleaning');
+            } else if (tab.kind === 'table' || tab.kind === 'room') {
+                setLocStatus(tab.kind, tab.label, 'available');
+            }
 
             closeTabSettleModal();
             closeTabDetailModal();
@@ -19835,6 +20248,8 @@
                 utensils: utensils,
                 tableStates: tableStates,
                 roomStates: roomStates,
+                roomStays: roomStays,
+                tabs: tabs,
                 offers: offers,
                 suppliers: suppliers,
                 purchaseOrders: purchaseOrders,
@@ -20028,6 +20443,12 @@
             if (Array.isArray(data.rooms)) rooms = data.rooms;
             if (data.tableStates && typeof data.tableStates === 'object' && !Array.isArray(data.tableStates)) tableStates = data.tableStates;
             if (data.roomStates && typeof data.roomStates === 'object' && !Array.isArray(data.roomStates)) roomStates = data.roomStates;
+            if (data.roomStays && typeof data.roomStays === 'object' && !Array.isArray(data.roomStays)) roomStays = data.roomStays;
+            // Guarded the same way as tables/rooms/roomStays above, not the
+            // unconditional bills-style fallback-to-[] — an OPEN tab is
+            // exactly the kind of in-progress state a stale/incomplete pull
+            // response must never wipe out from under an active till.
+            if (Array.isArray(data.tabs)) tabs = data.tabs;
             if (Array.isArray(data.utensils)) utensils = data.utensils;
             suppliers = Array.isArray(data.suppliers) ? data.suppliers : [];
             if (Array.isArray(data.purchaseOrders)) {
@@ -22838,7 +23259,8 @@
                 receiptFixedLength = value;
                 safeSetItem('pos_receipt_fixed_length', receiptFixedLength);
             } else if (field === 'scale') {
-                receiptScale = parseInt(value, 10) || 100;
+                const parsed = parseInt(value, 10);
+                receiptScale = (Number.isFinite(parsed) && parsed >= 70 && parsed <= 130) ? parsed : 100;
                 safeSetItem('pos_receipt_scale', String(receiptScale));
                 const scaleLabel = document.getElementById('receipt-scale-value');
                 if (scaleLabel) scaleLabel.textContent = `${receiptScale}%`;
@@ -25664,6 +26086,9 @@
         function setupModalCloseButtons() {
             const modalCloseFns = {
                 'add-customer-modal': closeAddCustomerModal,
+                'check-in-room-modal': closeCheckInRoomModal,
+                'check-out-room-modal': closeCheckOutRoomModal,
+                'update-bill-modal': closeUpdateBillModal,
                 'adhoc-sale-modal': closeAdhocSaleModal,
                 'price-select-modal': closePriceSelectModal,
                 'admin-pw-modal': cancelAdminPassword,
@@ -34933,6 +35358,7 @@
                         ${b.closed ? '' : `<button class="btn-main" style="padding:6px 12px; font-size:13px;" onclick="openBillSettleModal('${b.kind}', '${escapeJsAttr(b.id)}')">💳 Settle</button>`}
                         ${canMarkCarried ? `<button class="settings-small-btn" style="padding:6px 10px; font-size:12px; margin-left:6px; background:#2980b9; color:#fff;" onclick="markBillCarried('${escapeJsAttr(b.id)}')">📦 Mark as Carried</button>` : ''}
                         <button class="settings-small-btn" style="padding:6px 10px; font-size:12px; margin-left:6px;" onclick="printOpenBillInvoice('${b.kind}', '${escapeJsAttr(b.id)}')">🖨️ Print</button>
+                        ${b.kind === 'sale' ? `<button class="settings-small-btn" style="padding:6px 10px; font-size:12px; margin-left:6px;" onclick="openUpdateBillModal('${escapeJsAttr(b.id)}')">✏️ Update</button>` : ''}
                         ${b.kind === 'sale' ? `<button class="settings-small-btn" style="padding:6px 10px; font-size:12px; margin-left:6px;" onclick="openBillHistoryModal('${escapeJsAttr(b.id)}')">📜 History</button>` : ''}
                         ${b.kind === 'sale' ? `<button class="settings-small-btn" style="padding:6px 10px; font-size:12px; margin-left:6px;" onclick="sendBillReminderSms('${escapeJsAttr(b.id)}')">🔔 Remind</button>` : ''}
                         ${b.kind === 'sale' ? `<button class="settings-small-btn" style="padding:6px 10px; font-size:12px; background:var(--danger); color:white; margin-left:6px;" onclick="requestVoidSale('${escapeJsAttr(b.id)}', 'bills')">🚫 Void</button>` : ''}

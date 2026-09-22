@@ -1,4 +1,167 @@
-# Zips 24 - 60 — what changed
+# Zips 24 - 65 — what changed
+
+## Zip 65 — the real fix for blank/faded receipts (all 8 modules), plus the variant work verified
+Investigated the "receipt printed is completely blank and fades sometimes" report on Shop by tracing the
+whole print pipeline (CSS, ESC/POS byte generation, USB/Bluetooth chunking, the print-trigger sequencing) —
+most of it turned out to already be solidly engineered from earlier work, but found two real, concrete gaps.
+
+* **The main fix — `print-color-adjust: exact` was missing from the actual receipt print rule in every
+  single module.** Without it, the browser is free to apply its own "print economy" color adjustment —
+  commonly lightening solid black text to save ink, which is normal and invisible on a regular inkjet/laser
+  printer. On a thermal printer there are no shades: text the browser quietly renders as "off-black" gray can
+  come out barely visible or not printed at all. This rule already existed for KITCHEN TICKETS in 7 of 8
+  modules (and was missing there too, entirely, in water) but had never been applied to the sales receipt
+  itself anywhere. Fixed once, globally, at the top of every module's `@media print` block (`* {
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }`) — covers every print
+  context (receipt, kitchen ticket, report, bill) in one place, so it can't go missing from one new print rule
+  while present on another the way it had.
+* **Secondary hardening:** the live "Print Scale" slider's `oninput` handler set `receiptScale` with no
+  bounds check, unlike the three other places that set it (initial load, sync pull, staff login), which all
+  correctly clamp it to 70–130. In practice the slider's own `min`/`max` attributes already prevent this from
+  being reachable through normal use, so this is defense-in-depth rather than a confirmed second cause — but
+  an out-of-range scale feeds a CSS zoom/scale factor that a receipt is rendered at, and a very small value
+  there would print as effectively blank, so it's now clamped consistently with the other three sites in all
+  8 modules regardless.
+* Also confirmed as NOT the cause, so as not to leave this as an open question: the receipt-building functions
+  (`buildReceiptDoc`, `renderSharedReceipt`) set their print-ready text synchronously with no async gap: the
+  auto-print race that seemed plausible at first isn't actually possible; the USB and Bluetooth byte-sending
+  functions already chunk and pace writes correctly, with retry/backoff on stalls; and the "receipt prints in
+  a new window" code doesn't actually open a new window at all (despite the name) — it prints in-place with no
+  timing gap between applying the print CSS class and calling `window.print()`.
+
+Also finished and verified this session's variant work (stock take showing every variant, variant photos in
+the Add Item form and the Sales Counter photo grid, and optional main-item price/qty that variants can
+inherit or override): `npm run check`/`npm run lint` clean, and directly ran every test file touching this —
+`stock-take`, `printer-keeper`, `receipt-uniform`, `receipts`, `sales-and-print`, `sync`, `pull-merge`,
+`e2e-revert`, `deletions`, `regressions`, `smoke`, `static`, `lint-globals` — 134 individual subtests this
+session, 0 failures.
+
+**Still not done, flagged from last turn and still open:** AI Capture List and Bulk Add supporting variants,
+and variant breakdown in reports beyond Stock Take (e.g. the Stock report has the same parent-only gap Stock
+Take had before this session's fix).
+
+## Zip 64 — Bills "Update" button and a direct Settle shortcut on tab cards (hotel)
+* **✏️ Update button (Bills tab):** a new button on each bill row opens a small modal to correct the
+  customer's name, phone, and due date after the fact. Deliberately doesn't touch items, total, or
+  amountPaid — those drive the settle/folio math elsewhere, and blind-editing them could desync a bill from
+  its own payment history. The existing one-click due-date-only shortcut (click the due date cell) still
+  works exactly as before; this covers the rest in one place.
+* **💳 Settle shortcut on open-tab cards:** the tab cards shown both on the dedicated Tabs tab and the
+  Sales Counter's quick-access tabs popup (same shared render function, so this appears in both places at
+  once) now have a direct "💳 Settle" button that jumps straight to the payment-method screen for that tab,
+  instead of the old two-step View-then-Settle. Reuses the exact same tab-detail-then-settle-modal flow as
+  every other settle path in the app (including the lodging checkout folio from zip 61), so this is purely a
+  one-click shortcut to a screen that already existed and was already tested — no new payment logic.
+* Caught and fixed my own placement mistake before it shipped: the Update Bill functions initially landed
+  inside the shared `@shared:begin/@shared:end` block (right next to the existing `editBillDueDate`, which
+  is genuinely shared) — `npm run check` caught the drift immediately, moved the new, hotel-only functions
+  outside that block instead of adding them to the shared library (they're not used by any other module).
+
+**Verified:** `npm run check`/`npm run lint` clean; ran `hotel-fixes`, `hotel-bills-quickview`,
+`bill-settle-stays-settled`, and `lint-globals` by name — 38/38 passing, 0 failures.
+
+## Zip 63 — Owner Console: staff invite links no longer get stuck on the owner's email sign-in
+Reported: adding a staff member in the Owner Console and opening their invite/login link asked for email
+sign-in instead of the expected PIN screen. The code already had an explicit "staff don't use email" bypass
+— it just had a specific hole in it.
+
+* **Root cause:** the bypass only fired when there was *no owner session already saved on that device*
+  (`!ownerSessionToken`). The most natural way to hit this is exactly what happened: opening a staff invite
+  link to preview/test it from the same browser you're already signed in as the owner on — the leftover owner
+  session blocked the bypass, so it fell straight through to the owner's email sign-in screen, and once past
+  that early-return the app never even got to check the invite/staff link at all.
+* **Fixed:** an explicit `?invite=` or `?staff=` link is unambiguous — it can only come from a staff link, so
+  it now always wins and routes to the staff PIN screen, regardless of any owner session already on that
+  device. A remembered staff device with no explicit link parameter this time is unaffected — that narrower,
+  more ambiguous case still only applies when there's no competing owner session, exactly as before.
+* Also explicitly clears any lingering owner session token when taking this path (a case that couldn't
+  previously occur, now can) — without this, a background API call during what's now a staff session could
+  still have carried the owner's Authorization header.
+
+**Verified:** `npm run check`/`npm run lint` clean; ran every owner-console and staff-link-related test file
+by name (`staff-link-open`, `signup-unified`, `owner-finance`, `owner-reminder`, `owner-storage-ui`,
+`lint-globals`) — 62/62 passing, 0 failures.
+
+## Zip 62 — closed the "tabs not synced" gap flagged in zip 61
+Zip 61 shipped Phase 1 of the Hotel HMS with an honest caveat: the Tab Management `tabs` array (which the new
+Folio checkout relies on) wasn't synced across devices at all. This closes that gap properly rather than
+papering over it.
+
+* **Root cause:** `tabs` was never in `collectSyncPayload()`/`applyRemotePayload()` at all — 100% local to
+  whichever till created it. A naive fix (just adding it to the push/pull payload) would have made things
+  *worse*, not better: the server's per-record merge only applies to fields explicitly listed in
+  `MERGE_BY_ID_FIELDS` (`functions/api/_merge.js`), and `tabs` wasn't on that list either — so without the
+  server-side change too, two tills would have started wholesale-overwriting each other's *entire* tabs array
+  on every push instead of merging.
+* **Fixed properly, both sides:**
+  - `functions/api/_merge.js`: added `'tabs'` to `MERGE_BY_ID_FIELDS`, so the server now merges tabs
+    record-by-record (each tab keyed by its own id) instead of blanket-replacing the array.
+  - `src/shared/functions.js`: added `'tabs'` to the client-side `MERGED` set that mirrors the server's list
+    (this is a genuinely shared, cross-module file — synced to all 8 apps via `npm run sync`, verified against
+    the project's own test that asserts these two lists stay identical:
+    `tests/e2e-revert.test.mjs` — "the client's list of per-record collections matches the server's").
+  - `hotel/index.html`: registered `tabs` via the existing per-record dirty-tracking (`registerSyncedField`,
+    same mechanism bills/customers/etc. already use, so it gets automatic `updatedAt` stamping for free), added
+    it to `collectSyncPayload()`, and added it to `applyRemotePayload()` — guarded the same way tables/rooms/
+    roomStays already are (only overwrite when the incoming payload actually has it), not the unconditional
+    empty-array fallback bills/customers use: an open tab is exactly the kind of in-progress state a stale or
+    incomplete pull must never wipe out.
+* **What this does and doesn't fully solve, stated plainly:** different tabs (different rooms/tables) opened
+  on different tills now correctly merge and appear everywhere. The one residual edge case: two tills
+  appending *different orders to the exact same already-open tab* at the *exact same moment*, before either
+  has synced the other's change, still resolves by last-write-wins on that whole tab record — same trade-off
+  every other field in this merge system already accepts (bills, customers, products all work this way), not
+  a new risk specific to tabs. A true additive per-order merge (like `stockMovementLog` gets for quantities)
+  would need a bespoke merge function; didn't build that now, both because it's meaningfully riskier to get
+  right blind and because the common case (one till manages a given tab's session) is what this actually fixes.
+* Also noted, not fixed: closed/voided tabs currently accumulate forever with no pruning (unlike bills, which
+  have `pruneClosedBills`) — a separate, smaller storage-growth item, out of scope for "sync this across
+  devices."
+
+**Verified:** `npm run check`, `npm run lint` clean. Ran the specific cross-check test this change depends on
+by name and confirmed it passes, plus every hotel-specific and sync-related test file, plus a full pass through
+every remaining test file not yet covered by name in zip 61's report — 296+ individual subtests across this
+session, 0 failures.
+
+## Zip 61 — Hotel HMS Phase 1: real lodging model (check-in/out, folio) — hotel module only
+First phase of the larger Hotel & Restaurant Management System spec, built the way hospital's HMIS upgrade was:
+an agreed phased plan, each phase shipped and verified on its own. This phase turns "Rooms" from a pure
+dining-seat label into an actual bookable lodging unit, without touching the existing dining-reservation
+system tables still use.
+
+* **New: guest stays (`roomStays`)** — kept entirely separate from the existing per-room reservation fields
+  (name/phone/party size/time/notes) used by dining tables, specifically because the shared `setLocStatus()`
+  function (used by 5 modules) deliberately wipes `.reservation` on any non-"reserved" status change — exactly
+  right for a table once seated, but it would have silently erased an active guest's stay the moment check-in
+  marks the room occupied. A stay holds guest name/phone/ID, party size, check-in time, expected check-out
+  date, nightly rate, an optional advance deposit, and an optional credit limit.
+* **Check-In** (🏨 button on an available/reserved room) — a short form, then the room goes to occupied.
+* **Check-Out & Settle Folio** (🚪 button on an occupied room with an active stay) — computes nights stayed ×
+  rate, shows it alongside any Bar/Restaurant charges already on that room's tab, subtracts any deposit, and
+  hands off to the existing tab-settle payment screen for the actual payment. Deliberately reuses the tested
+  Tab Management settle path (a synthetic "Room Charge" line item folded into the same tab) rather than
+  building a second, parallel billing engine — same receipt code, same payment validation, same stock/void
+  handling as every other tab.
+* **Room status**: added a `maintenance` state alongside the existing available/occupied/reserved/cleaning;
+  checkout now correctly leaves a room in `cleaning` (needs housekeeping) instead of jumping straight back to
+  `available`, with a "Mark Clean" button to finish that step.
+* **Fixed a related pre-existing quirk** found while wiring this up: voiding a room's tab used to always reset
+  the room to "available," even mid-stay. It now leaves an occupied lodging room alone if voiding just
+  discards a round of charges rather than actually checking the guest out.
+* `roomStays` wired into sync the same way the existing `roomStates`/`tableStates` are.
+
+**Known limitation, not fixed this pass (flagging on purpose):** the underlying Tab Management `tabs` array
+isn't currently synced across devices at all — a pre-existing gap, not introduced here. A guest checked in on
+one till whose F&B orders get rung up on a different till won't show those orders in the folio total if
+checkout happens on a third till. Left alone to avoid stacking more risk onto an already large change;
+worth a dedicated fix before this feature is relied on across multiple simultaneous tills.
+
+**Verified:** `npm run check` and `npm run lint` clean. Directly ran every hotel-specific test file
+(`hotel-fixes`, `hotel-bills-quickview`) plus everything most relevant to what changed (`sync`, `pull-merge`,
+`lint-globals`, `receipts`, `sales-and-print`, `two-devices`, `regressions`, `smoke`, `static`) — 164
+individual subtests run this way, 0 failures. The full ~150-file suite kept getting cut short end-to-end by
+this session's own execution-time limits (not test failures) before a final combined tally could print;
+everything that did run passed.
 
 ## Zip 60 — fixed a real regression from zip 59, plus a test-suite blocker
 Fixed the exact `npm test` failure reported (lint-globals flagging `EtimsOffline` as undeclared) and, while
