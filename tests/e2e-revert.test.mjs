@@ -129,6 +129,48 @@ test('a shop whose pushes keep failing does not re-send itself on every poll (gr
   a.close();
 });
 
+test('hasUnsyncedWork() catches a crash-time edit through the persisted marker alone, with no in-memory flags at all (what a reload actually leaves behind)', async () => {
+  // The in-memory flags (__pushQueued/__pushInFlight/__pushFailed) that
+  // hasUnsyncedWork() used to rely on exclusively don't survive a reload —
+  // they're just undefined again the moment the page comes back. This
+  // reproduces exactly that: dirty_seq moved past acked_seq (what
+  // queuePush's markLocalDirty() does) with every in-memory flag forced
+  // back to its post-reload default, and checks hasUnsyncedWork() still
+  // reports dirty from the persisted counters alone.
+  const s = makeServer();
+  const a = await openDevice('index.html', s, { pos_inventory: JSON.stringify(ITEMS) });
+  await a.w.eval('pushNow()');           // baseline: dirty_seq and acked_seq start equal
+  a.w.eval("localStorage.setItem('pos_dirty_seq', String((parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0) + 1))");
+  a.w.eval('window.__pushQueued = false; window.__pushInFlight = 0; window.__pushFailed = false;');
+  assert.equal(a.w.eval('hasUnsyncedWork()'), true, 'reported dirty from the persisted marker alone');
+  // And once a push actually delivers that generation, it clears again.
+  await a.w.eval('pushNow()');
+  assert.equal(a.w.eval('hasUnsyncedWork()'), false, 'clears once a push acknowledges that generation');
+  a.close();
+});
+
+test('a crash right after an edit (before the 300ms push debounce ever fires) does not let the next boot\'s pull put the old value back', async () => {
+  // Boot already protects the common path unconditionally (flushThenPull()
+  // pushes once, before the first pull is ever allowed to apply — see
+  // startPolling()). This confirms the end-to-end outcome across that path
+  // still holds with the persisted hasUnsyncedWork() marker layered under it,
+  // and that the edit really did reach the server rather than just surviving
+  // by luck of timing.
+  const s = makeServer();
+  const a = await openDevice('index.html', s, { pos_inventory: JSON.stringify(ITEMS) });
+  await a.w.eval('pushNow()');                                    // baseline: server already has the original price
+  quiet(a.w);
+  a.w.eval("updateInventoryField('00001', 'price', '99')");        // edit saved locally; its debounced push has not fired yet
+  const store = deviceStorage(a.w);                                // "crash": snapshot storage exactly as it sits, mid-debounce
+  a.close();
+  const b = await openDevice('index.html', s, store, 1200);        // "reload" on the same device — full boot, including its own flushThenPull()
+  quiet(b.w);
+  await settled(b);
+  assert.equal(price(b.w), 99, 'the edit made before the crash is still here after reload');
+  assert.equal(s.serverState().inventory[0].price, 99, 'and it actually reached the server');
+  b.close();
+});
+
 test('the client\'s list of per-record collections matches the server\'s, so no setting is stamped as a collection or vice versa', async () => {
   const fs = await import('node:fs');
   const path = await import('node:path');

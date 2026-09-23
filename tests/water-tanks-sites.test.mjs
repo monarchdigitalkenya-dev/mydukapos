@@ -161,3 +161,24 @@ test('the Bulk Tank tab renders per site and in the All Sites view without error
   assert.deepEqual(errors, []);
   close();
 });
+
+test('an "infinite" tank never runs out: sales draw from it without depleting it, and it is never flagged low or insufficient', async () => {
+  const { w, d, errors, close } = await boot('water/index.html', { storage: store({ aqua_active_site_id: SHOP }) });
+  // Off: normal metered behaviour first.
+  assert.equal(w.eval(`totalTankVolume('${SHOP}')`), 3000);
+  w.eval(`toggleTankInfinite('tank-1', true)`);
+  assert.equal(w.eval("tanks.find(t => t.id === 'tank-1').infinite"), true);
+  assert.equal(w.eval(`totalTankVolume('${SHOP}')`), Infinity, 'the site now reports bottomless supply');
+  // A sale that would exceed the real 3000L stored on the tank still succeeds and doesn't touch the stored level.
+  assert.equal(w.eval(`deductFromTanks(50000, '${SHOP}')`), true);
+  assert.equal(w.eval("tanks.find(t => t.id === 'tank-1').currentVolumeLiters"), 3000, 'the real litre count is untouched');
+  // Dashboard/tab rendering doesn't choke on Infinity.
+  w.eval('renderTankTab()');
+  assert.match(d.getElementById('tank-gauge-label').textContent, /♾️/);
+  assert.doesNotMatch(d.getElementById('tank-gauge-caption').textContent, /Running low/);
+  assert.deepEqual(errors, []);
+  // Toggling back off restores normal metered behaviour.
+  w.eval(`toggleTankInfinite('tank-1', false)`);
+  assert.equal(w.eval(`totalTankVolume('${SHOP}')`), 3000);
+  close();
+});

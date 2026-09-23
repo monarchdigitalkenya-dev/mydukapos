@@ -3888,6 +3888,19 @@ function parseQtyInput(raw) {
                 return parseInt(simple[1], 10) / den;
             }
 
+            // Thousands-grouping vs. decimal comma/space — "1,200" and "1 200"
+            // both mean twelve hundred to someone counting stock; naively
+            // swapping the comma for a decimal point (below) used to turn
+            // "1,200" into 1.2 and "12,000" into 12, silently wiping out a
+            // stock take count to a tiny fraction of what was typed. Only
+            // treat a comma as a decimal separator when it's a single comma
+            // followed by 1-2 digits ("0,25" on some keyboards) — a proper
+            // 3-digit grouping (optionally repeated, e.g. "1,200,000") or a
+            // space-grouped number is a whole-number count instead.
+            if (/^\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g, '');
+            else if (/^\d{1,3}( \d{3})+$/.test(s)) s = s.replace(/ /g, '');
+            else if (!/^\d+,\d{1,2}$/.test(s)) s = s.replace(/,/g, ''); // any other stray comma — drop rather than misread as a decimal point
+
             // Plain decimal, with either separator ("0,25" on some keyboards).
             const n = parseFloat(s.replace(',', '.'));
             return isFinite(n) ? n : NaN;
@@ -4579,6 +4592,11 @@ function preparePulledPayload(data) {
 async function pushNow() {
             return trackPush(async () => {
                 markSync('syncing');
+                // Snapshot BEFORE collecting the payload — see ackLocalDirty()'s
+                // note on why this must be the count at push-start, not whatever
+                // it is by the time the response comes back.
+                let seqAtStart = '0';
+                try { seqAtStart = localStorage.getItem('pos_dirty_seq') || '0'; } catch (e) { /* best effort */ }
                 const payload = collectSyncPayload();
                 const slim = slimPayloadForPush(payload);
                 // A push that never gets an answer used to sit at "Syncing…" for as long as the browser cared to wait (minutes), blocking
@@ -4604,6 +4622,7 @@ async function pushNow() {
                         const missedSomething = typeof data.prev === 'number' && data.prev > heldUpTo && heldUpTo > 0;
                         if (!missedSomething) safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
                         else setTimeout(() => { try { pullState(); } catch (e) { /* the poll will */ } }, 50);
+                        ackLocalDirty(seqAtStart);
                         snapshotInventorySync();
                         snapshotExtraSyncedFields();
                         window.__pushFails = 0; window.__pushBackoffUntil = 0; window.__pushFailKind = '';
@@ -7696,9 +7715,35 @@ async function trackPush(fn) {
             }
         }
 
+//@fn markLocalDirty
+// Persists (synchronously, to localStorage — not just an in-memory flag)
+// that this device has a local change the server hasn't acknowledged yet.
+// The in-memory __pushQueued/__pushInFlight/__pushFailed flags below are
+// reset by any page reload or crash, so on their own they can't tell a
+// fresh boot "the last edit before that reload never actually reached the
+// server" — which is exactly the case where the very first pull after
+// login/reload would apply the server's OLDER copy on top of an edit that
+// was only ever saved locally, making it look like it silently reverted.
+// This counter survives the reload; see hasUnsyncedWork() and pushNow().
+function markLocalDirty() {
+            try { localStorage.setItem('pos_dirty_seq', String((parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0) + 1)); } catch (e) { /* best effort */ }
+        }
+
+//@fn ackLocalDirty
+// Records, durably, which dirty-sequence number a push actually delivered.
+// Called with the sequence read at the START of that push — never the
+// current one — so an edit that landed WHILE the push was in flight (and
+// so was never in its payload) correctly keeps the device "still dirty"
+// until a later push covers it too.
+function ackLocalDirty(seqAtPushStart) {
+            try { localStorage.setItem('pos_acked_seq', seqAtPushStart); } catch (e) { /* best effort */ }
+        }
+
 //@fn hasUnsyncedWork
 function hasUnsyncedWork() {
-            return !!(window.__pushQueued || window.__pushInFlight > 0 || window.__pushFailed === true);
+            let persisted = false;
+            try { persisted = (parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0) > (parseInt(localStorage.getItem('pos_acked_seq') || '0', 10) || 0); } catch (e) { /* best effort */ }
+            return !!(window.__pushQueued || window.__pushInFlight > 0 || window.__pushFailed === true || persisted);
         }
 
 //@fn flushPendingPush

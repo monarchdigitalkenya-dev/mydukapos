@@ -84,3 +84,32 @@ test('the bottle-size picker lists each size once', async () => {
   assert.equal(new Set(opts).size, opts.length);
   close();
 });
+
+test('a refill size can carry its own cost, editable in Settings, and it is used for COGS instead of the litre-rate fallback', async () => {
+  const { w, d, errors, close } = await boot('water/index.html', { storage: STORE });
+  w.eval("showToast = function () {};");
+  // Editable in the settings list.
+  w.eval('renderRefillPriceRows()');
+  const costInputs = [...d.querySelectorAll('#refill-price-rows input[title*="what one refill"], #refill-price-rows input[placeholder="Cost"]')];
+  assert.ok(costInputs.length >= 1, 'a cost input exists per refill size');
+  w.eval("updateRefillCost('size-2', '90')");
+  assert.equal(w.eval("refillSizes.find(s => s.id === 'size-2').cost"), 90);
+  // Adding a size via the modal accepts an optional cost too.
+  d.getElementById('custom-size-label-input').value = '5L';
+  d.getElementById('custom-size-ml-input').value = '5000';
+  d.getElementById('custom-size-price-input').value = '50';
+  d.getElementById('custom-size-cost-input').value = '22.5';
+  w.eval('saveCustomRefillSize()');
+  const created = w.eval("JSON.stringify(refillSizes.find(s => s.label === '5L'))");
+  assert.equal(JSON.parse(created).cost, 22.5);
+  // A sold refill snapshots that size's cost onto the line, and itemCogs() uses it directly.
+  const sale = { waterCostPerLiterAtSale: 999 }; // deliberately wrong, to prove it's ignored when refillCostAtSale is set
+  const line = { type: 'refill', refillSizeId: 'size-2', sizeML: 20000, qty: 3, refillCostAtSale: 90, materialsUsed: [] };
+  assert.equal(w.eval(`itemCogs(${JSON.stringify(line)}, ${JSON.stringify(sale)})`), 270, '3 × the size\'s own 90 cost, not the litre rate');
+  // A size with no cost set still falls back to the litre-rate calculation exactly as before.
+  const lineNoCost = { type: 'refill', refillSizeId: 'size-1', sizeML: 1000, qty: 2, refillCostAtSale: null, materialsUsed: [] };
+  const saleWithRate = { waterCostPerLiterAtSale: 1.5 };
+  assert.equal(w.eval(`itemCogs(${JSON.stringify(lineNoCost)}, ${JSON.stringify(saleWithRate)})`), 3, 'falls back to litres × waterCostPerLiterAtSale');
+  assert.deepEqual(errors, []);
+  close();
+});
