@@ -169,37 +169,25 @@ export const MERGE_BY_ID_FIELDS = [
 ];
 
 // --- Quantity reconciliation (fixes the lost-update problem) ---------------
-// mergeRecordsById above is last-write-wins for the WHOLE record, which is
-// exactly wrong for a running stock count: if two devices are offline and
-// each sell one unit of the same item from the same starting count, only
-// one device's decrement can "win" a whole-record merge — the other is
-// silently dropped, and the item ends up overcounted by however many
-// decrements lost. This makes qty/pieceQty additive instead: every quantity
-// change is ALSO logged as a signed delta in stockMovementLog (see
-// logStockMovement() in each app's index.html — sales, box-opening, voids,
-// restocks and manual adjustments all go through it), and stockMovementLog
-// itself already merges losslessly (it's in MERGE_BY_ID_FIELDS, unioned by
-// id) — so no delta a device recorded is ever dropped, no matter how many
-// devices were offline or for how long.
+// DISABLED — kept below, renamed, but no longer called from
+// mergeIncomingState() or shop-store.js. This used to make qty/pieceQty
+// additive across concurrent offline sales of the same item on two tills.
+// In production it turned out to be the source of a worse and far more
+// common problem: qty edits doubling or reverting on ordinary refreshes —
+// real, repeated, reported data corruption, not a rare edge case.
 //
-// `_qtySyncedAt` is a cursor stamped onto each record here, never read or
-// written by the front-end. It marks "every delta up to this timestamp is
-// already folded into this record's qty," so the same delta is never
-// applied twice across repeated merges. The base a record's new deltas are
-// added ON TOP OF is always taken from `existing` — the server's last-known
-// canonical count — never from the merge winner picked above, since that
-// winner may just be one device's necessarily partial view. A record with
-// no logged deltas for its code, or one that tracks quantity a different
-// way (batch-tracked items — see `batches`), is left exactly as the
-// ordinary per-record merge produced it.
+// The trade-off this removal accepts: the one scenario this specifically
+// protected — two tills each selling the LAST unit of the same item while
+// BOTH are offline at the same time — can now lose one of those two
+// decrements (stock briefly reads one higher than physically true, until
+// the next manual stock take corrects it). Judged the smaller risk.
 //
-// On the very first push after this feature goes live, a record has no
-// `_qtySyncedAt` yet — rather than replaying its entire delta history
-// (which the OLD last-write-wins qty may already reflect, and would double
-// count), the cursor is initialized to "now" and reconciliation starts
-// fresh from the next push onward. This avoids a one-time corruption of
-// existing stock counts on rollout.
-export function reconcileQuantities(existingArr, mergedArr, mergedLog) {
+// What still applies, unaffected by this change: every record — inventory
+// included — still gets ordinary per-record "newest updatedAt wins" merging
+// via mergeRecordsById()/upsert() above. A real edit, with its own fresh
+// timestamp, is never reverted by an older push landing after it. Only the
+// additive delta-replay on top of that whole-record merge is removed.
+function reconciledQuantities_DISABLED(existingArr, mergedArr, mergedLog) {
   if (!Array.isArray(mergedArr)) return mergedArr;
   const now = Date.now();
 
@@ -271,6 +259,13 @@ export function reconcileQuantities(existingArr, mergedArr, mergedLog) {
     }
     return changed ? out : rec;
   });
+}
+
+// The no-op that actually runs now: quantities are left exactly as the
+// ordinary per-record merge (mergeRecordsById, above) already resolved
+// them -- whichever side has the newer updatedAt for that whole record.
+export function reconcileQuantities(existingArr, mergedArr, mergedLog) {
+  return mergedArr;
 }
 
 // Scalar settings that a push must never BLANK. A brand-new device (or one

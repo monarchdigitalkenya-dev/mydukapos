@@ -70,7 +70,7 @@ test('DB == blob: an edit on one device survives a stale device; new items from 
   assert.ok(a.inventory.find((i) => i.code === 'B'));
 });
 
-test('DB == blob: two tills each sell one unit while offline -> stock falls by 2; a retried push does not double count', async () => {
+test('DB == blob: two tills each sell one unit while offline -> newest push wins the whole record (additive reconciliation removed; see _merge.js)', async () => {
   const [a, b] = await both(async (s) => {
     const t0 = Date.now();
     await s.push({ updatedAt: t0, inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 10, updatedAt: t0 - 1000 }], stockMovementLog: [] });
@@ -81,8 +81,12 @@ test('DB == blob: two tills each sell one unit while offline -> stock falls by 2
     const second = { updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 9, updatedAt: Date.now() }], stockMovementLog: [sale('m2')] };
     await s.push(second); await wait(10); await s.push({ updatedAt: Date.now(), stockMovementLog: second.stockMovementLog });   // a retry of the movement
   });
-  assert.equal(a.inventory[0].qty, 8);
-  assert.equal(b.inventory[0].qty, 8);
+  // Each till computed its own decrement from a stale base of 10 (neither knew about the other's sale) and pushed qty:9 — the
+  // later push (till 2's) wins the whole record outright, same as any other field. Both sales are still in stockMovementLog
+  // (unioned by id — nothing is lost there), so a stock take / audit trail still shows both; only the live qty reflects
+  // whichever till pushed last, not a runnning total of both decrements. See _merge.js for why this trade-off was made.
+  assert.equal(a.inventory[0].qty, 9);
+  assert.equal(b.inventory[0].qty, 9);
   assert.equal(b.stockMovementLog.length, 2);
 });
 
@@ -181,7 +185,7 @@ test('DB: import from a blob shop and export back give the same shop (the migrat
   assert.deepEqual(strip(back), strip(state));
 });
 
-test('DB == blob: a device re-sending its earlier inventory record (a retry after a lost reply) does not put an old stock count back', async () => {
+test('DB == blob: a device re-sending its earlier push (a retry after a lost reply) does not change the outcome the second time', async () => {
   const [a, b] = await both(async (s) => {
     const t0 = Date.now();
     await s.push({ updatedAt: t0, inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 10, updatedAt: t0 - 1000 }], stockMovementLog: [] });
@@ -190,12 +194,12 @@ test('DB == blob: a device re-sending its earlier inventory record (a retry afte
     await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 9, updatedAt: Date.now() }], stockMovementLog: [sale('m1')] });
     await wait(20);
     const second = { updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 9, updatedAt: Date.now() }], stockMovementLog: [sale('m2')] };
-    await s.push(second);                       // till 2's sale: 9 -> 8 on the server
+    await s.push(second);                       // till 2's sale (from its own stale base of 10): wins the record outright, qty -> 9
     await wait(10);
-    await s.push(second);                       // the SAME request again (its reply was lost): must not undo the second sale
+    await s.push(second);                       // the SAME request again (its reply was lost): must be a no-op, not a further change
   });
-  assert.equal(a.inventory[0].qty, 8, 'blob');
-  assert.equal(b.inventory[0].qty, 8, 'database');
+  assert.equal(a.inventory[0].qty, 9, 'blob');
+  assert.equal(b.inventory[0].qty, 9, 'database');
 });
 
 test('DB == blob: a real stock edit (new updatedAt) is still honoured, and a stale copy with an OLDER stamp still loses', async () => {

@@ -20,12 +20,11 @@
 // Talks to the Pages Function (functions/api/pos-sync.js) over fetch(): POST /push /state /changes /history /import /export /stats.
 
 import {
-  MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift, reconcileQuantities,
+  MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
 
 const LOGS = new Set(ARCHIVE_LOG_FIELDS);
-const QTY_COLLECTIONS = ['inventory', 'products'];
 const DEFAULT_HOT_DAYS = 120;
 
 export class ShopStore {
@@ -135,17 +134,7 @@ export class ShopStore {
       }
       if (Object.keys(times).length) this.setCore('_fieldTimes', times, coreText._fieldTimes);
 
-      // 2. which stock codes does this push touch? (needed to reconcile quantities, see below)
-      const codes = new Set();
-      for (const col of QTY_COLLECTIONS) for (const r of body[col] || []) if (r && r.code != null) codes.add(String(r.code));
-      for (const e of body.stockMovementLog || []) if (e && e.code != null && typeof e.delta === 'number' && e.delta) codes.add(String(e.code));
-      const before = {};
-      for (const col of QTY_COLLECTIONS) {
-        before[col] = new Map();
-        for (const code of codes) for (const row of this.q('SELECT json FROM records WHERE col = ? AND code = ?', col, code)) { const r = JSON.parse(row.json); before[col].set(String(r.code), r); }
-      }
-
-      // 3. merge every by-id collection, record by record
+      // 2. merge every by-id collection, record by record
       for (const col of MERGE_BY_ID_FIELDS) {
         const arr = body[col];
         if (!Array.isArray(arr)) continue;
@@ -158,27 +147,6 @@ export class ShopStore {
         if (keyless) {                                  // records with no id/code/token: the incoming ones replace the stored ones
           this.sql.exec("DELETE FROM records WHERE col = ? AND rk LIKE 'k:%'", col);
           keyless.forEach((rec, i) => this.upsert(col, 'k:' + i, rec));
-        }
-      }
-
-      // 4. quantities: two tills each selling one unit while offline must remove TWO (see reconcileQuantities)
-      if (codes.size) {
-        for (const col of QTY_COLLECTIONS) {
-          const existingArr = [...before[col].values()];
-          const mergedArr = [];
-          const log = [];
-          for (const code of codes) {
-            for (const row of this.q('SELECT rk, json FROM records WHERE col = ? AND code = ?', col, code)) mergedArr.push(JSON.parse(row.json));
-            const prior = before[col].get(code);
-            const cursor = prior && typeof prior._qtySyncedAt === 'number' ? prior._qtySyncedAt : null;
-            const rows = cursor == null
-              ? this.q('SELECT json FROM records WHERE col = ? AND code = ?', 'stockMovementLog', code)
-              : this.q('SELECT json FROM records WHERE col = ? AND code = ? AND ts > ?', 'stockMovementLog', code, cursor);
-            for (const r of rows) log.push(JSON.parse(r.json));
-          }
-          if (!mergedArr.length) continue;
-          const reconciled = reconcileQuantities(existingArr, mergedArr, log);
-          reconciled.forEach((rec, i) => { if (rec !== mergedArr[i]) this.upsert(col, recordKey(rec), { ...rec, updatedAt: mergedArr[i].updatedAt }); });
         }
       }
 
@@ -267,7 +235,7 @@ export class ShopStore {
       must(st.businessName === 'Self-test' && st.inventory.length === 1 && st.salesLog.length === 2 && st.staff.length === 1, 'state read back does not match what was pushed');
       must(JSON.parse(this.stateText(120)).salesLog.length === 1, 'the recent window did not exclude the 400-day-old sale');
     });
-    await step('two tills selling offline: stock falls by 2', async () => {
+    await step('two tills selling offline: the later push wins the whole record', async () => {
       // a real sale is stamped BEFORE the server sees it, so each movement is created a few ms after the previous push
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const mv = (id, delta) => ({ id, code: 'A', delta, timestamp: new Date().toISOString(), type: 'removed' });
@@ -276,7 +244,10 @@ export class ShopStore {
       await sleep(8);
       this.push({ inventory: [{ code: 'A', qty: 4, price: 9, updatedAt: now + 30 }], stockMovementLog: [mv('m2', -1)] }, now + 40);
       const q = JSON.parse(this.stateText(null)).inventory[0].qty;
-      must(q === 3, `expected stock 3 after 5 - 1 - 1, got ${q}`);
+      // Both tills independently computed "5 - 1 = 4" (neither saw the other's sale); the second push has the
+      // newer updatedAt, so its whole record wins outright — same rule as every other synced field (see _merge.js).
+      // Both sales are still in stockMovementLog for the audit trail; the live qty reflects the later push only.
+      must(q === 4, `expected the later push's stock of 4 to win, got ${q}`);
     });
     await step('bulk load 5,000 sales, then one more', () => {
       const t0 = Date.now();

@@ -8025,18 +8025,32 @@
         async function downloadReceiptPdf() {
             const text = (lastReceiptText || '').trim();
             if (!text) { showToast('Nothing to download yet.', true); return; }
-            const blob = await textToPdfBlob(text, { width: receiptImageWidthPx() });
-            if (!blob) { showToast('Could not generate the receipt PDF.', true); return; }
-            const ref = (currentReceiptSale && (currentReceiptSale.refNumber || currentReceiptSale.id)) || Date.now();
-            downloadBlob(blob, `receipt-${ref}.pdf`);
+            try {
+                const blob = await textToPdfBlob(text, { width: receiptImageWidthPx() });
+                if (!blob) { showToast('Could not generate the receipt PDF.', true); return; }
+                const ref = (currentReceiptSale && (currentReceiptSale.refNumber || currentReceiptSale.id)) || Date.now();
+                downloadBlob(blob, `receipt-${ref}.pdf`);
+            } catch (e) {
+                // A canvas/PDF failure here used to leave the button doing
+                // nothing with no sign anything went wrong — the sale itself
+                // is already saved either way, only the PDF download failed.
+                showToast('Could not generate the receipt PDF on this device — try printing instead.', true);
+            }
         }
 
         async function downloadReportPdf() {
             const text = (lastReportText || '').trim();
             if (!text) { showToast('Nothing to download yet.', true); return; }
-            const blob = await textToPdfBlob(text);
-            if (!blob) { showToast('Could not generate the report PDF.', true); return; }
-            downloadBlob(blob, `${reportFilenameBase()}.pdf`);
+            try {
+                const blob = await textToPdfBlob(text);
+                if (!blob) { showToast('Could not generate the report PDF.', true); return; }
+                downloadBlob(blob, `${reportFilenameBase()}.pdf`);
+            } catch (e) {
+                // Same as downloadReceiptPdf() above — a very long report on
+                // a low-memory device could fail building the canvas/PDF;
+                // this used to fail completely silently.
+                showToast('Could not generate the report PDF on this device — try printing instead, or a shorter date range.', true);
+            }
         }
 
         function endStaffShift(staffId) {
@@ -30943,12 +30957,17 @@ function ackLocalDirty(seqAtPushStart) {
                 product.expiryDate = product.batches.length
                     ? product.batches.reduce((min, b) => (b.expiryDate < min ? b.expiryDate : min), product.batches[0].expiryDate)
                     : null;
-                // The batch breakdown above is still whole-record last-write-wins
-                // on sync (see reconcileQuantities() in pos-sync.js) — but the
-                // aggregate deducted here is logged as a plain qty delta same as
-                // any other sale, so the overall stock count stays correct across
-                // two devices selling this item concurrently even if the specific
-                // batch/expiry attribution behind it needs a manual double-check.
+                // The batch breakdown above is whole-record last-write-wins
+                // on sync, same as the aggregate qty below it now is too
+                // (see _merge.js) — a device's edit only ever loses to a
+                // genuinely newer one, never to an older push arriving
+                // later. The aggregate deducted here is still logged as a
+                // plain qty delta same as any other sale, for the Stock
+                // Report's audit trail; it's no longer replayed on top of
+                // the synced qty, so two devices selling this item
+                // concurrently while both offline will have the later
+                // push's count win outright rather than both decrements
+                // combining.
                 const actuallyDeducted = qty - need;
                 if (actuallyDeducted) logStockMovement(product.code, product.name, -actuallyDeducted, 'Sale', 'qty');
             } else {

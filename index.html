@@ -8370,18 +8370,32 @@
         async function downloadReceiptPdf() {
             const text = (lastReceiptText || '').trim();
             if (!text) { showToast('Nothing to download yet.', true); return; }
-            const blob = await textToPdfBlob(text, { width: receiptImageWidthPx() });
-            if (!blob) { showToast('Could not generate the receipt PDF.', true); return; }
-            const ref = (currentReceiptSale && (currentReceiptSale.refNumber || currentReceiptSale.id)) || Date.now();
-            downloadBlob(blob, `receipt-${ref}.pdf`);
+            try {
+                const blob = await textToPdfBlob(text, { width: receiptImageWidthPx() });
+                if (!blob) { showToast('Could not generate the receipt PDF.', true); return; }
+                const ref = (currentReceiptSale && (currentReceiptSale.refNumber || currentReceiptSale.id)) || Date.now();
+                downloadBlob(blob, `receipt-${ref}.pdf`);
+            } catch (e) {
+                // A canvas/PDF failure here used to leave the button doing
+                // nothing with no sign anything went wrong — the sale itself
+                // is already saved either way, only the PDF download failed.
+                showToast('Could not generate the receipt PDF on this device — try printing instead.', true);
+            }
         }
 
         async function downloadReportPdf() {
             const text = (lastReportText || '').trim();
             if (!text) { showToast('Nothing to download yet.', true); return; }
-            const blob = await textToPdfBlob(text);
-            if (!blob) { showToast('Could not generate the report PDF.', true); return; }
-            downloadBlob(blob, `${reportFilenameBase()}.pdf`);
+            try {
+                const blob = await textToPdfBlob(text);
+                if (!blob) { showToast('Could not generate the report PDF.', true); return; }
+                downloadBlob(blob, `${reportFilenameBase()}.pdf`);
+            } catch (e) {
+                // Same as downloadReceiptPdf() above — a very long report on
+                // a low-memory device could fail building the canvas/PDF;
+                // this used to fail completely silently.
+                showToast('Could not generate the report PDF on this device — try printing instead, or a shorter date range.', true);
+            }
         }
 
         function endStaffShift(staffId) {
@@ -26400,11 +26414,12 @@ function ackLocalDirty(seqAtPushStart) {
         // `unit` says which stock number this delta applies to: 'qty' (whole
         // units/boxes — the default, matching every call site that predates
         // this parameter) or 'pieceQty' (loose pieces on a dual-unit
-        // product). The server's sync merge sums these deltas per
-        // code+unit to reconcile quantity across devices that were offline
-        // at the same time — see reconcileQuantities() in pos-sync.js —
-        // so every place qty or pieceQty changes should log one of these,
-        // not just manual restocks/adjustments.
+        // product). This log is the audit trail the Stock Report reads —
+        // the live qty itself syncs as an ordinary whole-record field
+        // (newest edit wins outright; see _merge.js), so every place qty or
+        // pieceQty changes should still log one of these for reporting,
+        // even though the server no longer replays these deltas on top of
+        // that record merge.
         function logStockMovement(code, name, delta, reason, unit) {
             if (!delta) return;
             stockMovementLog.push({
@@ -32547,11 +32562,13 @@ function ackLocalDirty(seqAtPushStart) {
 
         // Every branch below both mutates the in-memory number (for
         // instant UI feedback on this device) AND logs the same change as a
-        // signed delta via logStockMovement — the log is what actually
-        // survives the sync merge intact when two devices sell the same
-        // item while both offline (see logStockMovement's and
-        // reconcileQuantities' own comments); the direct mutation here is
-        // just this device's optimistic local view until its next sync.
+        // signed delta via logStockMovement — the log feeds the Stock
+        // Report's audit trail. The live qty itself now syncs as an
+        // ordinary whole-record field: whichever device's edit has the
+        // newer timestamp wins outright (see _merge.js). If two devices
+        // sell the same item while both offline, only the later push's
+        // decrement is reflected in the synced qty — the earlier sale is
+        // still visible in the log, just not subtracted twice.
         function deductStockForSaleUnit(product, qty, saleMode) {
             if (product.dualUnit && saleMode === 'piece') {
                 let need = qty;
