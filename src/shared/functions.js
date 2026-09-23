@@ -12523,7 +12523,7 @@ function renderStockTake() {
                 const sys = dual ? `${n(p.qty)} ${escapeHtml(unitLabel(unit))} + ${n(p.pieceQty)} loose` : `${n(p.qty)} ${escapeHtml(unitLabel(unit))}`;
                 const inputs = `<input type="text" inputmode="decimal" class="st-input" placeholder="${dual ? 'boxes' : 'counted'}" value="${escapeHtml(c.qty || '')}" oninput="stockTakeSet('${code}', 'qty', this.value)">`
                     + (dual ? `<input type="text" inputmode="decimal" class="st-input" placeholder="loose" value="${escapeHtml(c.pieceQty || '')}" oninput="stockTakeSet('${code}', 'pieceQty', this.value)">` : '');
-                return `<tr data-code="${escapeHtml(p.code)}"><td><strong>${escapeHtml(p.name)}</strong><div class="st-muted">${escapeHtml(p.code)}</div></td><td>${sys}</td><td class="st-inputs">${inputs}</td><td class="st-diff"></td><td><button type="button" class="settings-small-btn st-mini" title="The count matches the system" onclick="stockTakeMatches('${code}')">✓ same</button></td></tr>`;
+                return `<tr data-code="${escapeHtml(p.code)}"><td><strong>${escapeHtml(p.name)}</strong><div class="st-muted">${escapeHtml(p.code)}</div></td><td>${sys}</td><td class="st-inputs">${inputs}</td><td class="st-diff"></td><td style="display:flex; gap:4px; flex-wrap:wrap;"><button type="button" class="settings-small-btn st-mini" title="The count matches the system" onclick="stockTakeMatches('${code}')">✓ same</button><button type="button" class="settings-small-btn st-mini" style="background:#16a085; color:#fff;" title="Set this item's stock to the count typed above, right now — without applying anything else on this page" onclick="stockTakeApplyOne('${code}')">💾 Update</button></td></tr>`;
             }).join('') + (list.length > 400 ? `<tr><td colspan="5" class="st-muted">Showing the first 400 of ${list.length} — use the search box to narrow down.</td></tr>` : '');
             Array.from(tbody.querySelectorAll('tr[data-code]')).forEach((tr) => { const { item: p } = stockTakeFindByCode(tr.dataset.code); if (p) stockTakeFillDiffCell(tr, p); });
             stockTakeRenderSummary();
@@ -12590,6 +12590,43 @@ function stockTakeApply() {
             if (typeof renderInventoryTable === 'function') { try { renderInventoryTable(); } catch (e) { /* not on screen */ } }
             renderStockTake();
             showToast(`Stock take applied: ${lines.length} item${lines.length === 1 ? '' : 's'} updated.`);
+            return true;
+        }
+
+//@fn stockTakeApplyOne
+// The per-row "💾 Update" button — sets ONE item's stock to whatever was
+// typed for it, immediately, without needing to fill in every other row
+// and hit the single "Apply all" button first. Deliberately no confirm()
+// dialog (unlike stockTakeApply's bulk version) since a single, obviously-
+// intentional row edit doesn't need the same "are you sure" friction a
+// many-item bulk change does — the same reasoning an inline Inventory-
+// table edit already uses.
+function stockTakeApplyOne(code) {
+            const { item: p, parent } = stockTakeFindByCode(code);
+            if (!p) return false;
+            const d = stockTakeDiff(p);
+            if (!d.counted) { showToast('Type a count for this item first.', true); return false; }
+            if (d.invalid) { showToast(`"${p.name}": the count is not a number.`, true); return false; }
+            const st = stockTakeState();
+            if (d.qty === 0 && d.pieces === 0) {
+                delete st.counts[code]; // already matches — nothing to change, just clear this row
+                renderStockTake();
+                showToast(`"${p.name}" already matches the system.`);
+                return true;
+            }
+            if (d.qtyNew !== null && d.qty !== 0) { p.qty = d.qtyNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.qty, 'Stock take'); }
+            if (d.pieceNew !== null && d.pieces !== 0) { p.pieceQty = d.pieceNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.pieces, 'Stock take', 'pieceQty'); }
+            p.updatedAt = Date.now();
+            // Same parent-aggregate recompute as the bulk apply above, for
+            // the case where this row is one variant of a parent item.
+            if (parent) stockTakeResyncParent(parent);
+            safeSetItem('pos_inventory', JSON.stringify(inventory));
+            if (typeof stockMovementLog !== 'undefined') safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+            queuePush();
+            delete st.counts[code]; // this row is done — clears its input box so it's obviously applied
+            if (typeof renderInventoryTable === 'function') { try { renderInventoryTable(); } catch (e) { /* not on screen */ } }
+            renderStockTake();
+            showToast(`"${p.name}" updated.`);
             return true;
         }
 

@@ -77,6 +77,30 @@ test('search and "only differences" narrow the list; "same" fills in the system 
   close();
 });
 
+test('the per-row "💾 Update" button applies just that one item immediately, with no bulk confirm dialog', async () => {
+  const { w, d, close } = await boot('index.html', { storage: { pos_inventory: INV }, wait: 1500 });
+  // If stockTakeApplyOne ever needed a confirm() the way the bulk apply
+  // does, this would throw — proving the per-row path genuinely skips it.
+  w.eval("showToast = function (m) { window.__toasts = (window.__toasts || []).concat(m); }; window.confirm = () => { throw new Error('should not be asked to confirm a single-row update'); }");
+  w.eval('renderStockTake()');
+  type(d, w, 'A1', 'qty', '8');   // 2 short
+  type(d, w, 'C3', 'qty', '55');  // +5, but deliberately left untouched below
+  assert.equal(w.eval("stockTakeApplyOne('A1')"), true);
+  assert.equal(w.eval("inventory.find(p => p.code === 'A1').qty"), 8, 'the counted item is updated to exactly the typed count');
+  assert.equal(w.eval("inventory.find(p => p.code === 'B2').qty"), 5, 'an untouched item is unaffected');
+  assert.equal(w.eval("inventory.find(p => p.code === 'C3').qty"), 50, "a DIFFERENT counted-but-not-yet-applied item is untouched by A1's update");
+  assert.equal(w.eval("stockTakeState().counts['A1']"), undefined, "A1's own input is cleared once applied — obviously done");
+  assert.ok(w.eval("stockTakeState().counts['C3']"), "C3's still-pending count is untouched, not swept up by A1's update");
+  assert.equal(w.eval('stockMovementLog.filter(m => m.code === "A1" && m.reason === "Stock take").length'), 1, 'logged the same way the bulk apply logs each item');
+  assert.match((w.__toasts || []).join(' '), /Alpha Tin.*updated/);
+  // Applying an item whose count already matches the system just clears
+  // the row instead of logging a no-op "Stock take" movement.
+  type(d, w, 'B2', 'qty', '5');
+  assert.equal(w.eval("stockTakeApplyOne('B2')"), true);
+  assert.equal(w.eval('stockMovementLog.filter(m => m.code === "B2" && m.reason === "Stock take").length'), 0, 'a matching count applies as a no-op, not a movement');
+  close();
+});
+
 test('Aqua POS has no Stock Take tab (it has no item stock list) and is unaffected', async () => {
   const { d, errors, close } = await boot('water/index.html', { wait: 1200 });
   assert.equal(d.getElementById('stock-take-tab-btn'), null);

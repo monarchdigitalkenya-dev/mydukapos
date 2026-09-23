@@ -1,4 +1,37 @@
-# Zips 24 - 68 — what changed
+# Zips 24 - 69 — what changed
+
+## Zip 69 — Aqua POS: connected bale/bottle production fixed; Stock Take gets a per-item apply
+Both reported bugs, fixed and verified with real tests (not just "it parses") given how much this exact class
+of mistake has cost this session already.
+
+* **"I produced 24 bales and the linked Sealed Bottle stayed at 0" — root cause found and fixed in three
+  places.** A bale connected to a Sealed Bottle product (linked, "track by bottle" off) has no stock of its
+  own at all — its displayed quantity is always derived live from the bottle's actual stock. Both production
+  entry points (the Production Wizard and the simpler quick-produce form) were writing straight to the bale's
+  own qty/bottleStock fields regardless of this — a value that gets silently overwritten the next time
+  anything resyncs it, while the bottle (what's actually sold) never received the produced stock at all. Fixed
+  in the Wizard, the quick-produce form, and the shared `adjustProductStock` helper other callers (returns,
+  restocks) already rely on for this same bale↔bottle awareness — which had the identical gap for a
+  *trackBottles* bale (an independently-tracked one), also fixed.
+* **"Doesn't connect unless I untick then tick again" — fixed.** Unticking "track by bottle" never actually
+  re-synced the bale's derived quantity — only re-ticking did, as a side effect of its own seeding logic. A
+  single untick now re-syncs immediately.
+* **Stock Take: per-item apply.** Added a "💾 Update" button to every row — type a count, tap it, that one
+  item's stock updates immediately to exactly what was counted, without needing to fill in every row and hit
+  one bulk "Apply" button. No confirm dialog for a single row (same reasoning the inline Inventory-table edit
+  already uses) — the bulk "Apply all" button is untouched and still there for counting a whole shelf at once.
+  Shares the same variant/parent-resync logic already built for Stock Take earlier this session, so it works
+  correctly for a variant row too.
+* Two new test files written to actually prove both fixes work — `tests/aqua-production-bale-link.test.mjs`
+  (4 cases: both production entry points, the trackBottles case, and the untick-alone re-sync) and an
+  addition to `tests/stock-take.test.mjs` for the per-row button. Both hit a real bug on first run — a missing
+  "switch to the Production site first" step in the test setup for the production tests, and an apostrophe-
+  escaping mistake in both new test files — caught and fixed before either was trusted.
+
+**Verified:** `npm run check`/`npm run lint` clean. `aqua-production-bale-link` 4/4, `stock-take` 10/10
+(covering all 7 modules with Stock Take plus the new per-row case), plus a broader regression batch
+(`water-tanks-sites`, `water-refill-sites`, `loose-units`, `sales-and-print`, `smoke`, `static`,
+`lint-globals`) 56/56 — 70 individual subtests this turn, 0 failures.
 
 ## Zip 68 — HMIS Phase 5: minimum-price guardrails, genuinely verified this time
 Finished the minimum-price feature from last turn and, given how much silent-corruption risk this session has

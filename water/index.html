@@ -14154,7 +14154,17 @@
         // sync back to its linked bottle's real stock.
         function adjustProductStock(product, delta, note) {
             if (!product || !delta) return;
-            if (product.category === 'bale' && product.linkedBottleCode && !product.trackBottles) {
+            if (product.category === 'bale' && product.trackBottles) {
+                // Tracked independently at the bottle level — bottleStock
+                // is the real source of truth here (qty is just a derived
+                // mirror via syncBaleTrackingFields), so this has to update
+                // bottleStock directly or the adjustment is silently lost
+                // the next time anything resyncs the mirror.
+                const bpb = product.bottlesPerBale || defaultBottlesPerBale || 24;
+                product.bottleStock = Math.max(0, round2((product.bottleStock || 0) + delta * bpb));
+                syncBaleTrackingFields(product);
+                if (note) logStockMovement(product.code, product.name, delta, note);
+            } else if (product.category === 'bale' && product.linkedBottleCode && !product.trackBottles) {
                 const bottle = products.find(b => b.code === product.linkedBottleCode && b.category === 'bottled');
                 const bpb = product.bottlesPerBale || defaultBottlesPerBale || 24;
                 if (bottle) {
@@ -17278,6 +17288,16 @@
                     if (!p.bottlesPerBale) p.bottlesPerBale = defaultBottlesPerBale || 24;
                     if (!p.bottleStock) p.bottleStock = baleBreakdownToBottles(Math.floor(p.qty || 0), ((p.qty || 0) % 1 >= 0.5) ? 1 : 0, 0, p.bottlesPerBale);
                     syncBaleTrackingFields(p);
+                } else {
+                    // Turning tracking off re-enables the live connection to
+                    // the linked bottle (if any): recompute this bale's qty
+                    // from that bottle's actual stock right away, instead of
+                    // leaving it at whatever independent value it last held
+                    // until some unrelated render happened to call
+                    // syncLinkedBaleQuantities() — which is why unticking
+                    // alone looked broken ("doesn't connect") until also
+                    // re-ticking triggered a sync as a side effect.
+                    syncLinkedBaleQuantities();
                 }
             } else if (field === 'bottleStock') {
                 const n = parseInt(value, 10);
@@ -17727,6 +17747,24 @@
                 // syncBaleTrackingFields derives the qty mirror from it.
                 target.bottleStock = (target.bottleStock || 0) + bottles;
                 syncBaleTrackingFields(target);
+            } else if (target.category === 'bale' && target.linkedBottleCode) {
+                // THE FIX for "I produced 24 bales and the linked Sealed
+                // Bottle stayed at 0": a connected bale's own qty is
+                // DERIVED from its linked bottle's stock (see
+                // effectiveBaleQty/adjustProductStock), never stored
+                // directly — writing target.qty here (the old code) set a
+                // value that the next sync silently overwrote, while the
+                // bottle product — the item that's actually sold and
+                // actually in stock — never received the produced bottles
+                // at all. Add them to the bottle instead, exactly like
+                // adjustProductStock() already does for every other bale
+                // stock movement (restocks, sales, returns).
+                const bottleProduct = products.find(b => b.code === target.linkedBottleCode && b.category === 'bottled');
+                if (bottleProduct) {
+                    bottleProduct.qty = round2((bottleProduct.qty || 0) + bottles);
+                    logStockMovement(bottleProduct.code, bottleProduct.name, bottles, `Produced via "${target.name}"`);
+                }
+                syncLinkedBaleQuantities();
             } else if (target.category === 'bale') {
                 const bpb = productBottlesPerBale(target);
                 target.qty = round2((target.qty || 0) + baleBreakdownToDecimal(getBaleBreakdown(bottles, bpb)));
@@ -23135,8 +23173,34 @@
             });
 
             if (kind === 'product') {
-                target.qty = round2((target.qty || 0) + qty);
-                logStockMovement(target.code, target.name, qty, 'Production');
+                // Same three-way split as the Production Wizard: a bale
+                // tracked independently at the bottle level (trackBottles)
+                // updates its own bottleStock; a bale CONNECTED to a
+                // Sealed Bottle product (linkedBottleCode, trackBottles
+                // off) has no stock of its own at all — its displayed qty
+                // is derived live from that bottle — so production has to
+                // credit the bottle, not the bale, or the bottle (the
+                // thing actually sold) never sees the produced stock while
+                // the bale's own qty gets silently overwritten by the next
+                // sync anyway. Only a genuinely standalone bale (no link)
+                // or a plain item uses its own qty directly.
+                if (target.category === 'bale' && target.trackBottles) {
+                    const bpb = productBottlesPerBale(target);
+                    target.bottleStock = (target.bottleStock || 0) + round2(qty * bpb);
+                    syncBaleTrackingFields(target);
+                    logStockMovement(target.code, target.name, qty, 'Production');
+                } else if (target.category === 'bale' && target.linkedBottleCode) {
+                    const bottleProduct = products.find(b => b.code === target.linkedBottleCode && b.category === 'bottled');
+                    const bpb = productBottlesPerBale(target);
+                    if (bottleProduct) {
+                        bottleProduct.qty = round2((bottleProduct.qty || 0) + qty * bpb);
+                        logStockMovement(bottleProduct.code, bottleProduct.name, qty * bpb, `Produced via "${target.name}"`);
+                    }
+                    syncLinkedBaleQuantities();
+                } else {
+                    target.qty = round2((target.qty || 0) + qty);
+                    logStockMovement(target.code, target.name, qty, 'Production');
+                }
             } else {
                 target.stockQty = round2((target.stockQty || 0) + qty);
             }
