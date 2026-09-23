@@ -19262,6 +19262,19 @@ function ackLocalDirty(seqAtPushStart) {
             const newHash = await hashPassword(newEl.value);
             safeSetItem('aqua_pw_hash', newHash);
             safeSetItem('aqua_admin_pw_hash', newHash);
+            // Force this push to stamp _fieldTimes for both hashes, rather
+            // than relying on the normal auto-diff (which only stamps a
+            // field when this session already has a prior baseline for it
+            // to compare against — see slimPayloadForPush). If this happens
+            // to be the first sync-affecting action of the session, that
+            // baseline doesn't exist yet, and an unstamped password change
+            // can be silently overwritten by another device's own routine,
+            // unaware push moments later. A password change is exactly the
+            // kind of edit that must never lose that race.
+            if (window.__fieldAck) { window.__fieldAck.delete('pwHash'); window.__fieldAck.delete('adminPwHash'); }
+            else { window.__fieldAck = new Map(); }
+            window.__fieldAck.set('pwHash', '__force_stamp__');
+            window.__fieldAck.set('adminPwHash', '__force_stamp__');
             const ok = await pushNowOrWarn('Password');
 
             let recoveryWarning = '';

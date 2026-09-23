@@ -89,3 +89,37 @@ for (const app of SHOPS) {
     close();
   });
 }
+
+for (const app of SHOPS) {
+  test(`${app}: changing the password on the FIRST sync action of a fresh session still stamps _fieldTimes (so it can't be undone by another device's stale push)`, async () => {
+    const pwKey = app.startsWith('water/') ? 'aqua_pw_hash' : 'pos_pw_hash';
+    const adminKey = app.startsWith('water/') ? 'aqua_admin_pw_hash' : 'pos_admin_pw_hash';
+    const storage = { pos_biz_name: 'Biz', [pwKey]: sha('old-pass'), [adminKey]: sha('old-pass'), pos_staff: '[]' };
+    let capturedBody = null;
+    const fetch = async (url, opts = {}) => {
+      if (String(url).includes('/api/pos-sync') && (opts.method || 'GET') === 'POST') {
+        // Only capture the push that actually carries the password change —
+        // an app may fire an earlier housekeeping push during boot itself.
+        const body = JSON.parse(opts.body);
+        if (body[pwKey.startsWith('aqua') ? 'pwHash' : 'pwHash'] === sha('new-password')) capturedBody = body;
+        return { ok: true, status: 200, json: async () => ({ ok: true, updatedAt: Date.now() }) };
+      }
+      return Promise.reject(new Error('offline'));
+    };
+    const { w, d, errors, close } = await boot(app, { storage, fetch, wait: 900 });
+    w.eval("showToast = function () {}");
+    // Deliberately the FIRST sync-affecting action of this session — no prior edit,
+    // no prior push, exactly the scenario where the generic auto-diff stamping
+    // mechanism has no baseline yet (see changePassword()'s own comment).
+    d.getElementById('change-pw-current').value = 'old-pass';
+    d.getElementById('change-pw-new').value = 'new-password';
+    d.getElementById('change-pw-new-confirm').value = 'new-password';
+    await w.eval('changePassword()');
+    assert.ok(capturedBody, 'the password-change push was sent');
+    assert.equal(capturedBody.pwHash, sha('new-password'));
+    assert.ok(capturedBody._fieldTimes && typeof capturedBody._fieldTimes.pwHash === 'number', 'pwHash is stamped even as the very first push of the session');
+    assert.ok(capturedBody._fieldTimes && typeof capturedBody._fieldTimes.adminPwHash === 'number', 'adminPwHash is stamped too');
+    assert.deepEqual(errors, []);
+    close();
+  });
+}

@@ -146,6 +146,28 @@ test('owner reset-password and cross-shop writes reach a database shop (they go 
   const got = await s.pull();
   assert.notEqual(got.pwHash, 'old-hash', 'the reset password hash is what devices now see');
   assert.equal(got.adminPwHash, 'old-admin', 'the other password is untouched');
+  // A till that's still active (mid-sale, editing stock — anything that
+  // triggers its own routine sync) doesn't know the password just changed,
+  // so it keeps pushing its own stale copy of the OLD hash. Without the
+  // reset stamping _fieldTimes, that stale push would silently win and
+  // undo the reset within moments — which is exactly what was reported as
+  // "resetting via the owner console isn't working."
+  await s.push({ updatedAt: Date.now(), pwHash: 'old-hash', salesLog: [{ id: 's1', total: 500 }] });
+  const afterStalePush = await s.pull();
+  assert.notEqual(afterStalePush.pwHash, 'old-hash', 'an unaware device\'s routine push cannot undo the reset');
+});
+
+test('owner reset-password on a plain (non-database) shop also survives an unaware device\'s stale push', async () => {
+  const s = await setup();
+  await s.push({ updatedAt: Date.now(), pwHash: 'old-hash', adminPwHash: 'old-admin' });
+  const lock = await load('owner-lock.js');
+  const r = await lock.onRequestPost({ request: new Request('https://x.pages.dev/api/owner-lock', { method: 'POST', body: JSON.stringify({ c: 'C1', action: 'resetPassword', target: 'login' }), headers: { Authorization: 'Bearer tok', 'content-type': 'application/json' } }), env: s.env });
+  assert.equal(r.status, 200);
+  const got = await s.pull();
+  assert.notEqual(got.pwHash, 'old-hash', 'the reset password hash is what devices now see');
+  await s.push({ updatedAt: Date.now(), pwHash: 'old-hash', salesLog: [{ id: 's1', total: 500 }] });
+  const afterStalePush = await s.pull();
+  assert.notEqual(afterStalePush.pwHash, 'old-hash', 'an unaware device\'s routine push cannot undo the reset');
 });
 
 test('backups: a database shop is protected by point-in-time history instead, and says so instead of restoring a stale copy', async () => {

@@ -101,10 +101,24 @@ export async function onRequestPost(context) {
 
     const tempPassword = generateTempPassword();
     const hash = await hashPassword(tempPassword);
-    if (target === 'login' || target === 'both') state.pwHash = hash;
-    if (target === 'admin' || target === 'both') state.adminPwHash = hash;
+    const now = Date.now();
+    // Stamping _fieldTimes here is what makes this reset actually stick.
+    // Without it, any device that's still active on this shop (mid-sale,
+    // editing stock — anything that triggers its own routine sync) keeps
+    // pushing its own stale, unaware copy of the OLD password hash, and
+    // since that push carries no competing stamp of its own, plain
+    // last-write-wins let it silently overwrite this reset within moments —
+    // "the reset isn't working" because it never had a chance to survive.
+    // A stamped field only loses to a push that itself carries an equal-or-
+    // newer stamp, which a device that doesn't know the password changed
+    // never sends (see the same rule in _merge.js/mergeIncomingState and
+    // shop-store.js/push()).
+    const fieldTimes = { ...(state._fieldTimes || {}) };
+    if (target === 'login' || target === 'both') { state.pwHash = hash; fieldTimes.pwHash = now; }
+    if (target === 'admin' || target === 'both') { state.adminPwHash = hash; fieldTimes.adminPwHash = now; }
+    state._fieldTimes = fieldTimes;
 
-    await writeState(context.env, stateKey(body.c), { ...state, updatedAt: Date.now() });
+    await writeState(context.env, stateKey(body.c), { ...state, updatedAt: now });
     return jsonResponse({ tempPassword, target });
   }
 
