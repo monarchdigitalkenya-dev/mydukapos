@@ -1,4 +1,38 @@
-# Zips 24 - 69 — what changed
+# Zips 24 - 70 — what changed
+
+## Zip 70 — HMIS Phases 2 & 3 complete: outpatient pipeline, patient registry
+Finishes the Hospital HMIS request: a queue-and-transfer system covering all 12 named stages, and a genuinely
+comprehensive patient registry. Combined with Phase 1 (triage vitals, zip 67) and Phase 5 (minimum-price
+guardrails, zip 68), all five phases of the original spec are now built and tested.
+
+* **Phase 2 — Queue & Station Transfer System.** Rather than building 12 separate tabs (a lot of duplicated
+  infrastructure for no real gain over one shared view), extended the existing Queue/Triage board into a full
+  pipeline: every queue entry now carries a `stage` field and a `stageHistory` audit trail, covering all 12
+  named steps from the spec — Reception, Appointment, Triage, Consultation, Laboratory, Diagnosis, Recommend
+  Medication, Dispensing, Pharmacy, Clinic, Check-up, Cashier. The queue table shows each patient's current
+  stage plus a dropdown any station operator can use to push them to any other stage, satisfying "explicitly
+  push/transfer the patient to the next appropriate stage." Starting a consultation auto-advances to
+  Consultation; joining the queue starts at Triage, since Reception (the patient record) and Appointment
+  (advance booking) are already separate tabs completed before someone joins today's active queue.
+* **Phase 3 — Patient Registry.** The stage history now survives from the transient queue entry onto the
+  permanent visit record and displays in the patient's visit history (added last turn's vitals display gets
+  a companion 🔄 stage-hop line). Also found two real gaps against the spec's own list while building this:
+  Appointments and Billing/Payment history were never surfaced anywhere in a patient's own profile, only
+  reachable by searching the separate Appointments/Cashier tabs directly — added both as new sections in the
+  patient record modal, so opening one patient's record now genuinely aggregates registration, triage vitals,
+  consultation notes, lab requests/results, medications, appointments, and billing/payment history in one place.
+* New test file `tests/hmis-pipeline.test.mjs` (4 cases) actually exercises the queue, pushes a patient through
+  multiple stages, saves a visit, and checks the rendered HTML — not just the underlying data. Ran the full
+  existing `patient-billing` suite (18 cases covering consultation, dispensing, cashier billing, two-till sync)
+  to confirm the stage additions didn't disturb any of the working billing/stock flow.
+
+**Verified exhaustively this turn:** every one of the project's 68 test files run in 4 batches (not just the
+targeted subset touched by this change) — 0 failures across all of them. `npm run check`/`npm run lint` clean.
+
+**What's left, if anything further is wanted:** water's Minimum Price input UI (flagged, not built, per an
+earlier explicit instruction to skip it); beyond that, all 5 phases of the HMIS request and the standalone bug
+reports from this session (Sales Counter forced role, Cash-default UX, Stay Signed In, cart/tab-reload
+persistence, blank/faded receipts, connected bale/bottle production, Stock Take per-item apply) are complete.
 
 ## Zip 69 — Aqua POS: connected bale/bottle production fixed; Stock Take gets a per-item apply
 Both reported bugs, fixed and verified with real tests (not just "it parses") given how much this exact class

@@ -3159,6 +3159,16 @@
             <h4 style="margin-bottom:8px;">Past Visits</h4>
             <div id="patient-visit-history-list"></div>
 
+            <hr class="settings-divider">
+
+            <h4 style="margin-bottom:8px;">📅 Appointment History</h4>
+            <div id="patient-appointment-history-list"></div>
+
+            <hr class="settings-divider">
+
+            <h4 style="margin-bottom:8px;">💳 Billing &amp; Payment History</h4>
+            <div id="patient-billing-history-list"></div>
+
             <button class="settings-small-btn" style="width:100%; margin-top:14px;" onclick="closePatientVisitModal()">Close</button>
         </div>
     </div>
@@ -3184,7 +3194,8 @@
             </div>
 
             <div class="panel">
-                <h3>📋 Today's Queue</h3>
+                <h3>📋 Today's Queue — Patient Flow</h3>
+                <p style="margin-bottom:10px; color:#7f8c8d; font-size:13px;">Every active patient's current station, and where to push them next — the same queue whether they're waiting on Reception, Triage, Consultation, a Lab result, Pharmacy, a Clinic follow-up, or the Cashier.</p>
                 <div class="table-scroll">
                 <table id="queue-table">
                     <thead>
@@ -3193,7 +3204,7 @@
                             <th>Triage</th>
                             <th>Waiting</th>
                             <th>Vitals</th>
-                            <th>Status</th>
+                            <th>Stage <span style="font-weight:normal; color:#7f8c8d;">— push to move station</span></th>
                             <th></th>
                         </tr>
                     </thead>
@@ -18134,8 +18145,58 @@ function stockTakeApplyOne(code) {
         let currentVisitRef = '', visitServiceDraft = [], visitLabIds = [];
         let patientNotes = safeJSONParse('pos_patient_notes', []);
         // Queue / Triage board: { id, patientId, arrivedAt, triageLevel: 'emergency'|'urgent'|'routine',
-        // status: 'waiting'|'in-consult'|'done', vitals: {bp,pulse,temp,spo2,weightKg,heightCm,bmi}, notes }
+        // status: 'waiting'|'in-consult'|'done', vitals: {bp,pulse,temp,spo2,weightKg,heightCm,bmi},
+        // notes, stage: one of PIPELINE_STAGES' ids, stageHistory: [{stage,at,by}] }
         let queue = safeJSONParse('pos_queue', []);
+        // The full outpatient pipeline this app's queue positions a patient
+        // along. Reception and Appointment are usually already done by the
+        // time someone joins today's queue (they're separate tabs — the
+        // patient record and any advance booking), so a walk-in normally
+        // starts at 'triage' — but every stage is a real, selectable queue
+        // position, so a shop that DOES want to track someone as still
+        // waiting on Reception or a scheduled Appointment can. Diagnosis and
+        // Recommend Medication happen on the same screen as Consultation in
+        // this app (one visit record, not two separate ones) — they're
+        // still included as their own stages so a patient can be explicitly
+        // parked there (e.g. handed to a second clinician) rather than only
+        // ever living inside "Consultation" as a single opaque step.
+        const PIPELINE_STAGES = [
+            { id: 'reception', label: '🛎️ Reception', short: 'Reception' },
+            { id: 'appointment', label: '📅 Appointment', short: 'Appointment' },
+            { id: 'triage', label: '🚦 Triage', short: 'Triage' },
+            { id: 'consultation', label: '🩺 Consultation', short: 'Consultation' },
+            { id: 'laboratory', label: '🧪 Laboratory', short: 'Laboratory' },
+            { id: 'diagnosis', label: '🔬 Diagnosis', short: 'Diagnosis' },
+            { id: 'recommend-medication', label: '💊 Recommend Medication', short: 'Recommend Meds' },
+            { id: 'dispensing', label: '📦 Dispensing', short: 'Dispensing' },
+            { id: 'pharmacy', label: '💊 Pharmacy', short: 'Pharmacy' },
+            { id: 'clinic', label: '🏥 Clinic', short: 'Clinic' },
+            { id: 'checkup', label: '🔁 Check-up', short: 'Check-up' },
+            { id: 'cashier', label: '💳 Cashier', short: 'Cashier' },
+        ];
+        function pipelineStageLabel(id) {
+            const s = PIPELINE_STAGES.find(x => x.id === id);
+            return s ? s.label : (id || 'Triage');
+        }
+        // The single place a queue entry's stage ever changes — every
+        // station/tab's "push to next stage" action goes through this, so
+        // the audit trail (stageHistory, used by the Patient Registry's
+        // pipeline history — see renderPatientVisitHistory) is never
+        // missing a hop no matter which button triggered it.
+        function pushQueueStage(id, newStage) {
+            const entry = queue.find(q => q.id === id);
+            if (!entry) return;
+            if (!PIPELINE_STAGES.some(s => s.id === newStage)) return;
+            entry.stage = newStage;
+            if (!Array.isArray(entry.stageHistory)) entry.stageHistory = [];
+            entry.stageHistory.push({ stage: newStage, at: Date.now(), by: activeServerName() });
+            safeSetItem('pos_queue', JSON.stringify(queue));
+            const patient = patients.find(p => p.id === entry.patientId);
+            logAudit('Patient moved stage', patient ? patient.name : entry.patientId, pipelineStageLabel(newStage));
+            queuePush();
+            renderQueueTable();
+            showToast(`${patient ? patient.name : 'Patient'} moved to ${pipelineStageLabel(newStage)}.`);
+        }
         let pendingQueueCompletion = null;
         let pendingVitalsQueueId = null;
         // IPD admissions: { id, patientId, bedLabel, wardType, diagnosis, admittedAt,
@@ -18831,6 +18892,8 @@ function stockTakeApplyOne(code) {
                 status: 'waiting',
                 vitals: null,
                 notes: '',
+                stage: 'triage',
+                stageHistory: [{ stage: 'triage', at: Date.now(), by: activeServerName() }],
             });
             safeSetItem('pos_queue', JSON.stringify(queue));
             queuePush();
@@ -18885,13 +18948,18 @@ function stockTakeApplyOne(code) {
             tbody.innerHTML = active.map(q => {
                 const patient = patients.find(p => p.id === q.patientId);
                 const name = patient ? `${escapeHtml(patient.name)} <span style="color:#95a5a6;">(${patient.id})</span>` : '(removed patient)';
+                const stage = q.stage || (q.status === 'in-consult' ? 'consultation' : 'triage');
+                const stageOptions = PIPELINE_STAGES.map(s => `<option value="${s.id}" ${s.id === stage ? 'selected' : ''}>${escapeHtml(s.short)}</option>`).join('');
                 return `
                 <tr>
                     <td>${name}</td>
                     <td>${triageBadge(q.triageLevel)}</td>
                     <td>${formatWaitingTime(q.arrivedAt)}</td>
                     <td>${vitalsSummary(q.vitals)}</td>
-                    <td>${q.status === 'in-consult' ? '🩺 In Consultation' : '⏳ Waiting'}</td>
+                    <td>
+                        <div style="font-size:12px; margin-bottom:3px;">${pipelineStageLabel(stage)}</div>
+                        <select style="font-size:12px; padding:2px 4px;" onchange="pushQueueStage('${q.id}', this.value)" title="Push this patient to a different station">${stageOptions}</select>
+                    </td>
                     <td style="white-space:nowrap;">
                         <button class="settings-small-btn" onclick="openVitalsModal('${q.id}')">Vitals</button>
                         <button class="settings-small-btn" style="background:var(--success, #27ae60); color:#fff;" onclick="startConsultFromQueue('${q.id}')">Start</button>
@@ -18969,6 +19037,9 @@ function stockTakeApplyOne(code) {
             const entry = queue.find(q => q.id === id);
             if (!entry) return;
             entry.status = 'in-consult';
+            entry.stage = 'consultation';
+            if (!Array.isArray(entry.stageHistory)) entry.stageHistory = [];
+            entry.stageHistory.push({ stage: 'consultation', at: Date.now(), by: activeServerName() });
             safeSetItem('pos_queue', JSON.stringify(queue));
             queuePush();
             pendingQueueCompletion = id;
@@ -20252,6 +20323,8 @@ function stockTakeApplyOne(code) {
             document.getElementById('visit-charge-now-check').checked = false;
             document.getElementById('patient-visit-modal-sub').textContent += ` · Visit ref ${currentVisitRef}`;
             renderPatientVisitHistory(patientId);
+            renderPatientAppointmentHistory(patientId);
+            renderPatientBillingHistory(patientId);
             document.getElementById('lab-test-name-input').value = '';
             renderPatientLabResults(patientId);
             document.getElementById('patient-note-input').value = '';
@@ -20412,9 +20485,54 @@ function stockTakeApplyOne(code) {
                         v.vitals.spo2 ? `SpO2 ${escapeHtml(String(v.vitals.spo2))}%` : '',
                         v.vitals.bmi ? `BMI ${escapeHtml(String(v.vitals.bmi))}` : '',
                     ].filter(Boolean).join(' · ') || 'recorded'}${v.vitals.notes ? `<br><span style="color:#555;">${escapeHtml(v.vitals.notes)}</span>` : ''}</div>` : ''}
+                    ${v.stageHistory && v.stageHistory.length ? `<div style="font-size:11px; color:#7f8c8d; margin:2px 0;">🔄 ${v.stageHistory.map(h => pipelineStageLabel(h.stage)).join(' → ')}</div>` : ''}
                     <div style="font-size:13px; color:#555; margin:4px 0;">${escapeHtml(v.notes || '')}</div>
                     <div style="font-size:12px; color:#7f8c8d;">${v.ref ? 'Ref ' + escapeHtml(v.ref) + ' · ' : ''}Seen by ${escapeHtml(v.seenBy || '?')}${v.medications && v.medications.length ? ' · Meds: ' + v.medications.map(m => escapeHtml(m.name) + ' x' + m.qty + (m.dosage ? ` (${escapeHtml(m.dosage)})` : '')).join(', ') : ''}</div>
                 </div>`).join('');
+        }
+
+        // Completes item #3's "comprehensive... aggregate data from all
+        // stages" requirement alongside renderPatientVisitHistory above —
+        // Appointments/Registration and Cashier billing/payment weren't
+        // previously surfaced anywhere in a patient's own profile at all,
+        // only reachable by searching the separate Appointments/Cashier
+        // tabs directly.
+        function renderPatientAppointmentHistory(patientId) {
+            const list = document.getElementById('patient-appointment-history-list');
+            if (!list) return;
+            const rows = appointments.filter(a => a.patientId === patientId).sort((a, b) => b.scheduledFor - a.scheduledFor);
+            if (rows.length === 0) { list.innerHTML = `<p style="color:#7f8c8d; font-size:13px;">No appointments on file.</p>`; return; }
+            list.innerHTML = rows.map(a => `
+                <div style="padding:6px 0; border-bottom:1px solid var(--light); font-size:13px;">
+                    <strong>${new Date(a.scheduledFor).toLocaleString('en-GB')}</strong>
+                    <span style="color:${a.status === 'completed' ? '#1e8449' : a.status === 'cancelled' ? '#c0392b' : '#7f8c8d'};"> — ${escapeHtml(a.status || 'scheduled')}</span>
+                    <div style="color:#555;">${escapeHtml(a.reason || '')}${a.doctorAssigned ? ' · ' + escapeHtml(a.doctorAssigned) : ''}${a.type ? ' · ' + escapeHtml(a.type) : ''}</div>
+                </div>`).join('');
+        }
+
+        function renderPatientBillingHistory(patientId) {
+            const list = document.getElementById('patient-billing-history-list');
+            if (!list) return;
+            const rows = patientCharges.filter(c => c.patientId === patientId);
+            if (rows.length === 0) { list.innerHTML = `<p style="color:#7f8c8d; font-size:13px;">No billing history on file.</p>`; return; }
+            const byRef = new Map();
+            rows.forEach(c => {
+                if (!byRef.has(c.ref)) byRef.set(c.ref, { ref: c.ref, charges: [], createdAt: c.createdAt });
+                byRef.get(c.ref).charges.push(c);
+            });
+            const groups = [...byRef.values()].sort((a, b) => b.createdAt - a.createdAt);
+            list.innerHTML = groups.map(g => {
+                const total = g.charges.reduce((s, c) => s + c.price * c.qty, 0);
+                const allPaid = g.charges.every(c => c.status === 'paid');
+                const anyPaid = g.charges.some(c => c.status === 'paid');
+                const statusLabel = allPaid ? '✅ Paid' : anyPaid ? '🟡 Partially paid' : '🔴 Unpaid';
+                return `
+                <div style="padding:6px 0; border-bottom:1px solid var(--light); font-size:13px;">
+                    <strong>Ref ${escapeHtml(g.ref || '—')}</strong> — ${money(total)} <span>${statusLabel}</span>
+                    <div style="color:#555;">${g.charges.map(c => escapeHtml(c.name) + ' x' + c.qty).join(', ')}</div>
+                    <div style="color:#7f8c8d; font-size:12px;">${new Date(g.createdAt).toLocaleString('en-GB')}</div>
+                </div>`;
+            }).join('');
         }
 
         // Only the diagnosis/notes text is editable here — deliberately not the
@@ -20714,6 +20832,7 @@ function stockTakeApplyOne(code) {
                 institutionName: institution ? institution.name : null,
                 triageLevel: queueEntry ? queueEntry.triageLevel : null,
                 vitals: queueEntry ? queueEntry.vitals : null,
+                stageHistory: queueEntry && Array.isArray(queueEntry.stageHistory) ? queueEntry.stageHistory : null,
             };
             visits.push(visit);
             safeSetItem('pos_visits', JSON.stringify(visits));
