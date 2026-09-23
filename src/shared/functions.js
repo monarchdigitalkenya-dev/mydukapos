@@ -5369,9 +5369,12 @@ function renderNewStaffRoleCheckboxes() {
             const container = document.getElementById('new-staff-roles');
             if (!container) return;
             container.innerHTML = ROLE_TABS.map(t => {
-                if (t.id === 'sales-tab') {
-                    return `<label><input type="checkbox" checked disabled> ${t.label}</label>`;
-                }
+                // Sales Counter is a normal, unchecked-if-desired role now
+                // (was hardcoded checked+disabled) — an admin creating a
+                // Deliveries-only staff member can leave it unticked. Still
+                // pre-checked by default (see where newStaffSelectedRoles
+                // gets reset when the Add Staff form opens) so the common
+                // case — most staff do need the counter — needs no extra tap.
                 const checked = newStaffSelectedRoles.includes(t.id) ? 'checked' : '';
                 return `<label><input type="checkbox" ${checked} onchange="toggleNewStaffRole('${t.id}', this.checked)"> ${t.label}</label>`;
             }).join('');
@@ -13056,14 +13059,40 @@ function reportBuildStaff(range) {
 //@fn reportBuildStock
 function reportBuildStock(range) {
             const limit = typeof LOW_STOCK_THRESHOLD !== 'undefined' ? LOW_STOCK_THRESHOLD : 3;
-            const stock = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
-            const sold = {}; reportSales(range).forEach((s) => (s.items || []).forEach((it) => { if (it.code != null) sold[it.code] = (sold[it.code] || 0) + (Number(it.qty) || 0); }));
+            const rawStock = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
+            // Variant-bearing items are replaced by their own variants here
+            // — same reasoning as Stock Take (stockTakeItems): the parent's
+            // own qty/price are just an aggregate ("5 sizes, 23 units
+            // total"), not something to report low-stock/out-of-stock/value
+            // on directly; each variant needs its own line. __soldKey
+            // matches how a variant sale is actually recorded — cart lines
+            // for a variant store the PARENT's code plus a separate
+            // variantId (see addToCart), not the variant's own code, so
+            // "sold" has to be looked up the same compound way below or
+            // every variant of one item would wrongly share one sold count.
+            const stock = [];
+            rawStock.forEach((p) => {
+                if (p.hasVariants && Array.isArray(p.variants) && p.variants.length > 0) {
+                    p.variants.forEach((v) => stock.push(Object.assign({}, v, {
+                        name: `${p.name} — ${v.name}`,
+                        unit: p.unit, category: p.category,
+                        __soldKey: `${p.code}::${v.id}`,
+                    })));
+                } else {
+                    stock.push(Object.assign({}, p, { __soldKey: p.code }));
+                }
+            });
+            const sold = {}; reportSales(range).forEach((s) => (s.items || []).forEach((it) => {
+                if (it.code == null) return;
+                const key = it.variantId ? `${it.code}::${it.variantId}` : it.code;
+                sold[key] = (sold[key] || 0) + (Number(it.qty) || 0);
+            }));
             const cost = stock.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0), 0);
             const retail = stock.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.price) || 0), 0);
             const low = stock.filter((p) => (Number(p.qty) || 0) > 0 && (Number(p.qty) || 0) <= limit);
             const out = stock.filter((p) => (Number(p.qty) || 0) <= 0);
-            const dead = stock.filter((p) => (Number(p.qty) || 0) > 0 && !sold[p.code]);
-            const row = (p) => [p.name, p.code || '', p.category || '', `${Math.round((Number(p.qty) || 0) * 100) / 100} ${p.unit || ''}`, reportMoney((Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0)), reportMoney((Number(p.qty) || 0) * (Number(p.price) || 0)), sold[p.code] || 0];
+            const dead = stock.filter((p) => (Number(p.qty) || 0) > 0 && !sold[p.__soldKey]);
+            const row = (p) => [p.name, p.code || '', p.category || '', `${Math.round((Number(p.qty) || 0) * 100) / 100} ${p.unit || ''}`, reportMoney((Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0)), reportMoney((Number(p.qty) || 0) * (Number(p.price) || 0)), sold[p.__soldKey] || 0];
             const head = ['Item', 'Code', 'Category', 'In stock', 'Value (cost)', 'Value (retail)', 'Sold in period'];
             const all = stock.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
             const html = reportCards([['Items stocked', stock.length], ['Stock value (cost)', reportMoney(cost)], ['Stock value (retail)', reportMoney(retail)], ['Low stock', low.length], ['Out of stock', out.length]])

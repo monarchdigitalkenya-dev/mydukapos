@@ -11,7 +11,12 @@ const screenUp = (d) => ['login-screen', 'registration-screen'].some((id) => { c
 async function firstVisit(app) {
   const aqua = app.startsWith('water');
   const PW = aqua ? 'aqua_pw_hash' : 'pos_pw_hash', ST = aqua ? 'aqua_staff' : 'pos_staff';
-  const b = await boot(app, { storage: { [aqua ? 'aqua_biz_name' : 'pos_biz_name']: 'Demo Shop', pos_owner_name: 'Sam' }, wait: 1500 });
+  // pos_stay_signed_in: '1' — the feature is OFF by default (a shop opts in
+  // per device from Settings), so these tests, which are specifically about
+  // what happens WHILE it's on, turn it on in the initial storage rather
+  // than relying on a default that no longer exists. The dedicated
+  // "off by default" test below covers the actual default.
+  const b = await boot(app, { storage: { [aqua ? 'aqua_biz_name' : 'pos_biz_name']: 'Demo Shop', pos_owner_name: 'Sam', pos_stay_signed_in: '1' }, wait: 1500 });
   const { w, d } = b;
   await w.eval("(async () => { safeSetItem('" + PW + "', await hashPassword('secret123')); safeSetItem('" + ST + "', JSON.stringify([{ id: 's1', name: 'Jane', pinHash: await hashPassword('1234'), roles: [] }, { id: 's2', name: 'Peter', pinHash: await hashPassword('5678'), roles: [] }])); staff = JSON.parse(localStorage.getItem('" + ST + "')); })()");
   await sleep(100);
@@ -82,4 +87,20 @@ test('a wrong password never creates a session; a plain first visit still shows 
   assert.equal(a.w.localStorage.getItem('pos_session_keep'), null);
   assert.ok(screenUp(a.d));
   a.close();
+});
+
+test('off by default: a device that never touched the setting does not resume, even right after a successful login', async () => {
+  const b = await boot('index.html', { storage: { pos_biz_name: 'Demo Shop', pos_owner_name: 'Sam' }, wait: 1500 }); // no pos_stay_signed_in at all — a genuinely untouched device
+  const { w, d } = b;
+  await w.eval("(async () => { safeSetItem('pos_pw_hash', await hashPassword('secret123')); })()");
+  await sleep(100);
+  w.eval("document.getElementById('registration-screen').style.display = 'none'; document.getElementById('login-screen').style.display = 'flex'; showLoginPickerStep()");
+  assert.equal(w.localStorage.getItem('pos_stay_signed_in'), null, 'genuinely untouched, not merely falsy');
+  w.eval('selectLoginAdmin()'); d.getElementById('login-password-input').value = 'secret123'; await w.eval('loginSubmit()');
+  assert.ok(!screenUp(d), 'logged in fine this once');
+  assert.equal(w.localStorage.getItem('pos_session_keep'), null, 'but nothing was remembered — the setting was never turned on');
+  const store = snapshot(w); await sleep(1500); b.close();
+  const c = await boot('index.html', { storage: store, wait: 1800 }); // "reload"
+  assert.ok(screenUp(c.d), 'the picker is back — off by default means off, not "on until explicitly disabled"');
+  c.close();
 });

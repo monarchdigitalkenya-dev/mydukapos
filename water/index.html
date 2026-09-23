@@ -8021,9 +8021,12 @@
             const container = document.getElementById('new-staff-roles');
             if (!container) return;
             container.innerHTML = ROLE_TABS.map(t => {
-                if (t.id === 'sales-tab') {
-                    return `<label><input type="checkbox" checked disabled> ${t.label}</label>`;
-                }
+                // Sales Counter is a normal, unchecked-if-desired role now
+                // (was hardcoded checked+disabled) — an admin creating a
+                // Deliveries-only staff member can leave it unticked. Still
+                // pre-checked by default (see where newStaffSelectedRoles
+                // gets reset when the Add Staff form opens) so the common
+                // case — most staff do need the counter — needs no extra tap.
                 const checked = newStaffSelectedRoles.includes(t.id) ? 'checked' : '';
                 return `<label><input type="checkbox" ${checked} onchange="toggleNewStaffRole('${t.id}', this.checked)"> ${t.label}</label>`;
             }).join('');
@@ -12144,6 +12147,24 @@
         // to match AquaPOS's current scope: one shared login, just enough
         // staff attribution to know who served each sale.
         let staff = safeJSONParse('aqua_staff', []);
+        // ONE-TIME MIGRATION: Sales Counter access used to be hardcoded as
+        // always-on for every staff member (applyServerVisibility() special-
+        // cased 'sales-tab-btn' to never hide, regardless of roles), so it
+        // was never actually stored in anyone's .roles array. Now that it's
+        // a normal, admin-toggleable role like any other, every EXISTING
+        // staff member needs it granted explicitly exactly once, or they'd
+        // silently lose access the moment this update reaches their shop.
+        // salesTabMigrated guards this to run only once per staff member —
+        // after that, unchecking the box is a real, permanent choice.
+        let __salesTabMigrated = false;
+        staff.forEach((m) => {
+            if (!m || m.salesTabMigrated) return;
+            if (!Array.isArray(m.roles)) m.roles = [];
+            if (!m.roles.includes('sales-tab')) m.roles.push('sales-tab');
+            m.salesTabMigrated = true;
+            __salesTabMigrated = true;
+        });
+        if (__salesTabMigrated) { safeSetItem('aqua_staff', JSON.stringify(staff)); }
         // Standalone Attendance Register — a shared-device clock-in/out
         // terminal for EVERYONE physically present, not just people who
         // log into the till. Every existing POS staff member is already
@@ -12289,7 +12310,7 @@
         let staffShifts = safeJSONParse('pos_staff_shifts', []);
         let pendingInvites = safeJSONParse('pos_pending_invites', []);
         let expandedStaffRosterId = null;
-        let newStaffSelectedRoles = [];
+        let newStaffSelectedRoles = ['sales-tab']; // pre-checked by default, but now a genuinely optional role — see renderNewStaffRoleCheckboxes()
         let pendingRemoveStaffId = null;
         let pendingChangeStaffPinId = null;
         let pendingChangeStaffPinValue = null;
@@ -13744,6 +13765,9 @@
             document.querySelectorAll('.tab-link').forEach(el => el.classList.remove('active'));
             document.getElementById(tabId).classList.add('active');
             if (buttonEl) buttonEl.classList.add('active');
+            // Remembered so a reload restores whatever tab was actually open
+            // instead of always landing back on Sales Counter.
+            try { sessionStorage.setItem('pos_last_active_tab', tabId); } catch (e) { /* not fatal — just no restore this time */ }
             closeTabsOverflowMenu();
             collapseTabsIfNeeded();
             updateMobileCartFab();
@@ -13833,6 +13857,7 @@
             setItemFilter('all');
             setOrderType('walkin');
             setPaymentMethod('cash');
+            restoreInProgressCart(); // before the plain renderCart() below — see saveInProgressCart()/restoreInProgressCart()
             renderCart();
         }
 
@@ -14937,6 +14962,13 @@
             if (!code || !product) return;
             const value = parseFloat(document.getElementById('price-select-custom-input').value);
             if (isNaN(value) || value < 0) { errEl.textContent = 'Enter a valid price.'; return; }
+            // Minimum-price guardrail — only applies to a manually typed/
+            // quoted price. NOTE: water doesn't yet have an Add/Edit
+            // Product field to actually set minimumPrice (its Inventory UI
+            // is a different, table/modal-based paradigm from the other
+            // modules' Add Item form) — this check is here and correct,
+            // but inert until that input is added.
+            if (product.minimumPrice > 0 && value < product.minimumPrice) { errEl.textContent = `Entered price is below the minimum allowed threshold of ${money(product.minimumPrice)}.`; return; }
             const key = `product:${code}`;
             const beforeQty = currentCart[key] ? currentCart[key].qty : 0;
             addBottledToCart(code);
@@ -15402,6 +15434,34 @@
             if (currentPaymentMethod === 'cash') syncCashTenderedDefault();
             updateChangeDue();
             updateMobileCartFab();
+            // Persists the in-progress cart so a page reload — whatever
+            // causes it (the device reclaiming an idle installed-app tab
+            // is the common real-world case on budget Android hardware,
+            // a service worker update taking effect, anything) restores
+            // it instead of silently discarding a half-built sale.
+            // sessionStorage, not localStorage: this is THIS TAB's
+            // currently-open, not-yet-completed transaction.
+            saveInProgressCart();
+        }
+
+        function saveInProgressCart() {
+            try {
+                if (Object.keys(currentCart).length === 0) { sessionStorage.removeItem('aqua_cart_in_progress'); return; }
+                sessionStorage.setItem('aqua_cart_in_progress', JSON.stringify(currentCart));
+            } catch (e) { /* storage full or unavailable — the cart still works, just isn't reload-safe this one time */ }
+        }
+
+        function restoreInProgressCart() {
+            try {
+                const raw = sessionStorage.getItem('aqua_cart_in_progress');
+                if (!raw) return;
+                const restored = JSON.parse(raw);
+                if (restored && typeof restored === 'object' && Object.keys(restored).length > 0) {
+                    currentCart = restored;
+                    renderCart();
+                    showToast('Restored your in-progress sale after the page reloaded.');
+                }
+            } catch (e) { /* corrupt/unavailable — start with an empty cart rather than fail to load */ }
         }
 
         // A pure preview — computes what WOULD be deducted if the current
@@ -19988,7 +20048,6 @@
                         : `<span class="status-pill offline">⚪ Offline</span>`;
 
                 const roleChips = ROLE_TABS.map(t => {
-                    if (t.id === 'sales-tab') return `<span class="role-chip">${t.label}</span>`;
                     if (t.id === 'profits-tab') {
                         const level = staffExpensesAccessLevel(member);
                         if (level === 'full') return `<span class="role-chip">💰 Profits &amp; Expenses</span>`;
@@ -19999,9 +20058,6 @@
                 }).join('');
 
                 const roleCheckboxes = ROLE_TABS.map(t => {
-                    if (t.id === 'sales-tab') {
-                        return `<label><input type="checkbox" checked disabled> ${t.label}</label>`;
-                    }
                     if (t.id === 'profits-tab') {
                         const level = staffExpensesAccessLevel(member);
                         return `<label style="grid-column: span 2; display:flex; align-items:center; gap:6px;">💰 Profits &amp; Expenses:
@@ -20666,7 +20722,7 @@
             linkInput.value = link;
             resultBox.style.display = 'block';
             nameInput.value = '';
-            newStaffSelectedRoles = [];
+            newStaffSelectedRoles = ['sales-tab']; // reset for the next invite, pre-checked by default
             const managerCheckbox = document.getElementById('new-staff-is-manager');
             if (managerCheckbox) managerCheckbox.checked = false;
             renderNewStaffRoleCheckboxes();
@@ -20689,7 +20745,14 @@
             const roles = (member && Array.isArray(member.roles)) ? member.roles : [];
 
             document.querySelectorAll('.tabs .tab-link').forEach((btn) => {
-                if (btn.id === 'sales-tab-btn') return; // always visible — never lockable
+                // Sales Counter used to be hardcoded as always-visible here
+                // regardless of roles — now it's a normal role like any
+                // other (roles.includes(tabId) below already handles it
+                // correctly), so a Deliveries-only staff member can
+                // genuinely have no Sales Counter access. Existing staff
+                // were migrated to have it explicitly granted once (see
+                // the staff = safeJSONParse(...) migration above) so this
+                // change doesn't silently take access away from anyone.
                 if (!serving) { btn.style.display = ''; return; }
                 if (btn.id === 'staff-tab-btn') { btn.style.display = 'none'; return; } // never a role
                 if (btn.id === 'settings-tab-btn') { btn.style.display = 'none'; return; } // never a role
@@ -27072,10 +27135,11 @@
 
 <!-- @shared-block:session-keep:begin -->
 <!-- SESSION KEEP --------------------------------------------------------------
-         Stay signed in on this device. The login (admin, or a staff member's PIN) used to live only in the open tab's memory, so ANYTHING that reloaded the page —
-         switching to WhatsApp / the printer / the camera and back on a phone (the system drops the page to free memory), an installed app being reopened, a
-         browser refresh, a software update — brought the "Who's logging in?" screen back, often every few clicks.
-         Now a successful login is remembered on the device (never the password: only who signed in, with a fingerprint of the current password so changing the
+         Stay signed in on this device. OFF BY DEFAULT — a shop opts in per device from Settings ▸ Security & Access, rather than it being on until
+         someone notices and turns it off. When it IS turned on: the login (admin, or a staff member's PIN) used to live only in the open tab's memory, so
+         ANYTHING that reloaded the page — switching to WhatsApp / the printer / the camera and back on a phone (the system drops the page to free memory),
+         an installed app being reopened, a browser refresh, a software update — brought the "Who's logging in?" screen back, often every few clicks.
+         A successful login is remembered on the device (never the password: only who signed in, with a fingerprint of the current password so changing the
          password signs everyone out) and the picker is skipped while the session is fresh: it lasts 12 hours after the last tap and is ended by Clock out /
          switching user, by the staff member being removed or locked out for the day, or by turning "Stay signed in" off in Settings ▸ Security & Access. -->
     <script>
@@ -27084,7 +27148,7 @@
         if (window.__sessionKeepLoaded) return;
         window.__sessionKeepLoaded = true;
         var KEY = 'pos_session_keep', IDLE_MS = 12 * 60 * 60 * 1000, lastTouch = 0;
-        function enabled() { try { return localStorage.getItem('pos_stay_signed_in') !== '0'; } catch (e) { return false; } }
+        function enabled() { try { return localStorage.getItem('pos_stay_signed_in') === '1'; } catch (e) { return false; } }
         function fp() { try { return localStorage.getItem('pos_pw_hash') || localStorage.getItem('aqua_pw_hash') || ''; } catch (e) { return ''; } }
         function read() { try { var s = JSON.parse(localStorage.getItem(KEY) || 'null'); return s && s.at ? s : null; } catch (e) { return null; } }
         function write(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* storage full: they just log in next time */ } }
@@ -27180,7 +27244,7 @@
             if (!sec || document.getElementById('stay-signed-in-toggle')) return;
             var box = document.createElement('div');
             box.style.cssText = 'margin:12px 0; padding:10px 12px; background:#f8f9fa; border-radius:8px;';
-            box.innerHTML = '<label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer; margin:0;"><input type="checkbox" id="stay-signed-in-toggle" style="width:auto; margin-top:3px;"><span><strong>Stay signed in on this device</strong><br><span style="font-size:13px; color:#555;">Skips the "Who\u2019s logging in?" screen when the app is reopened or reloaded — for 12 hours after the last tap. It ends when you Clock out or switch user. Turn this off on a shared device.</span></span></label>';
+            box.innerHTML = '<label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer; margin:0;"><input type="checkbox" id="stay-signed-in-toggle" style="width:auto; margin-top:3px;"><span><strong>Stay signed in on this device</strong><br><span style="font-size:13px; color:#555;">Skips the "Who\u2019s logging in?" screen when the app is reopened or reloaded — for 12 hours after the last tap. It ends when you Clock out or switch user. Only turn this on for a device you trust \u2014 never a shared one.</span></span></label>';
             sec.insertBefore(box, sec.firstChild);
             var cb = document.getElementById('stay-signed-in-toggle');
             cb.checked = enabled();

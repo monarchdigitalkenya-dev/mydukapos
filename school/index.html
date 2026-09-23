@@ -9083,9 +9083,12 @@
             const container = document.getElementById('new-staff-roles');
             if (!container) return;
             container.innerHTML = ROLE_TABS.map(t => {
-                if (t.id === 'sales-tab') {
-                    return `<label><input type="checkbox" checked disabled> ${t.label}</label>`;
-                }
+                // Sales Counter is a normal, unchecked-if-desired role now
+                // (was hardcoded checked+disabled) — an admin creating a
+                // Deliveries-only staff member can leave it unticked. Still
+                // pre-checked by default (see where newStaffSelectedRoles
+                // gets reset when the Add Staff form opens) so the common
+                // case — most staff do need the counter — needs no extra tap.
                 const checked = newStaffSelectedRoles.includes(t.id) ? 'checked' : '';
                 return `<label><input type="checkbox" ${checked} onchange="toggleNewStaffRole('${t.id}', this.checked)"> ${t.label}</label>`;
             }).join('');
@@ -15056,14 +15059,40 @@ function stockTakeResyncParent(parent) {
 
         function reportBuildStock(range) {
             const limit = typeof LOW_STOCK_THRESHOLD !== 'undefined' ? LOW_STOCK_THRESHOLD : 3;
-            const stock = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
-            const sold = {}; reportSales(range).forEach((s) => (s.items || []).forEach((it) => { if (it.code != null) sold[it.code] = (sold[it.code] || 0) + (Number(it.qty) || 0); }));
+            const rawStock = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
+            // Variant-bearing items are replaced by their own variants here
+            // — same reasoning as Stock Take (stockTakeItems): the parent's
+            // own qty/price are just an aggregate ("5 sizes, 23 units
+            // total"), not something to report low-stock/out-of-stock/value
+            // on directly; each variant needs its own line. __soldKey
+            // matches how a variant sale is actually recorded — cart lines
+            // for a variant store the PARENT's code plus a separate
+            // variantId (see addToCart), not the variant's own code, so
+            // "sold" has to be looked up the same compound way below or
+            // every variant of one item would wrongly share one sold count.
+            const stock = [];
+            rawStock.forEach((p) => {
+                if (p.hasVariants && Array.isArray(p.variants) && p.variants.length > 0) {
+                    p.variants.forEach((v) => stock.push(Object.assign({}, v, {
+                        name: `${p.name} — ${v.name}`,
+                        unit: p.unit, category: p.category,
+                        __soldKey: `${p.code}::${v.id}`,
+                    })));
+                } else {
+                    stock.push(Object.assign({}, p, { __soldKey: p.code }));
+                }
+            });
+            const sold = {}; reportSales(range).forEach((s) => (s.items || []).forEach((it) => {
+                if (it.code == null) return;
+                const key = it.variantId ? `${it.code}::${it.variantId}` : it.code;
+                sold[key] = (sold[key] || 0) + (Number(it.qty) || 0);
+            }));
             const cost = stock.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0), 0);
             const retail = stock.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.price) || 0), 0);
             const low = stock.filter((p) => (Number(p.qty) || 0) > 0 && (Number(p.qty) || 0) <= limit);
             const out = stock.filter((p) => (Number(p.qty) || 0) <= 0);
-            const dead = stock.filter((p) => (Number(p.qty) || 0) > 0 && !sold[p.code]);
-            const row = (p) => [p.name, p.code || '', p.category || '', `${Math.round((Number(p.qty) || 0) * 100) / 100} ${p.unit || ''}`, reportMoney((Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0)), reportMoney((Number(p.qty) || 0) * (Number(p.price) || 0)), sold[p.code] || 0];
+            const dead = stock.filter((p) => (Number(p.qty) || 0) > 0 && !sold[p.__soldKey]);
+            const row = (p) => [p.name, p.code || '', p.category || '', `${Math.round((Number(p.qty) || 0) * 100) / 100} ${p.unit || ''}`, reportMoney((Number(p.qty) || 0) * (Number(p.wholesalePrice) || 0)), reportMoney((Number(p.qty) || 0) * (Number(p.price) || 0)), sold[p.__soldKey] || 0];
             const head = ['Item', 'Code', 'Category', 'In stock', 'Value (cost)', 'Value (retail)', 'Sold in period'];
             const all = stock.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
             const html = reportCards([['Items stocked', stock.length], ['Stock value (cost)', reportMoney(cost)], ['Stock value (retail)', reportMoney(retail)], ['Low stock', low.length], ['Out of stock', out.length]])
@@ -15604,6 +15633,24 @@ function stockTakeResyncParent(parent) {
 
         /* ---------- STAFF ACCOUNTS ---------- */
         let staff = safeJSONParse('pos_staff', []);
+        // ONE-TIME MIGRATION: Sales Counter access used to be hardcoded as
+        // always-on for every staff member (applyServerVisibility() special-
+        // cased 'sales-tab-btn' to never hide, regardless of roles), so it
+        // was never actually stored in anyone's .roles array. Now that it's
+        // a normal, admin-toggleable role like any other, every EXISTING
+        // staff member needs it granted explicitly exactly once, or they'd
+        // silently lose access the moment this update reaches their shop.
+        // salesTabMigrated guards this to run only once per staff member —
+        // after that, unchecking the box is a real, permanent choice.
+        let __salesTabMigrated = false;
+        staff.forEach((m) => {
+            if (!m || m.salesTabMigrated) return;
+            if (!Array.isArray(m.roles)) m.roles = [];
+            if (!m.roles.includes('sales-tab')) m.roles.push('sales-tab');
+            m.salesTabMigrated = true;
+            __salesTabMigrated = true;
+        });
+        if (__salesTabMigrated) { safeSetItem('pos_staff', JSON.stringify(staff)); }
         let attendanceRoster = safeJSONParse('pos_attendance_roster', []);
         let attendanceLog = safeJSONParse('pos_attendance_log', []);
         let adminActivityLog = safeJSONParse('pos_admin_activity_log', []);               // [{ id, name, pinHash, roles: [tabId,...], lockedDates: ['YYYY-MM-DD',...] }]
@@ -15629,7 +15676,7 @@ function stockTakeResyncParent(parent) {
 
         // Tracks which role checkboxes are ticked in the "new staff" invite form, before
         // that staff member has an id of their own yet.
-        let newStaffSelectedRoles = [];
+        let newStaffSelectedRoles = ['sales-tab']; // pre-checked by default, but now a genuinely optional role — see renderNewStaffRoleCheckboxes()
 
         // True when this session checked in purely via a staff member's personal ?staff=
         // link/PIN — never proving the shop password. "Clock Out" must re-lock everything
@@ -21632,14 +21679,10 @@ function stockTakeResyncParent(parent) {
                         : `<span class="status-pill offline">⚪ Offline</span>`;
 
                 const roleChips = ROLE_TABS.map(t => {
-                    if (t.id === 'sales-tab') return `<span class="role-chip">${t.label}</span>`;
                     return roles.includes(t.id) ? `<span class="role-chip">${t.label}</span>` : '';
                 }).join('');
 
                 const roleCheckboxes = ROLE_TABS.map(t => {
-                    if (t.id === 'sales-tab') {
-                        return `<label><input type="checkbox" checked disabled> ${t.label}</label>`;
-                    }
                     const checked = roles.includes(t.id) ? 'checked' : '';
                     return `<label><input type="checkbox" ${checked} onchange="updateStaffRole('${member.id}', '${t.id}', this.checked)"> ${t.label}</label>`;
                 }).join('');
@@ -21941,7 +21984,7 @@ function stockTakeResyncParent(parent) {
             linkInput.value = link;
             resultBox.style.display = 'block';
             nameInput.value = '';
-            newStaffSelectedRoles = [];
+            newStaffSelectedRoles = ['sales-tab']; // reset for the next invite, pre-checked by default
             const managerCheckbox = document.getElementById('new-staff-is-manager');
             if (managerCheckbox) managerCheckbox.checked = false;
             renderNewStaffRoleCheckboxes();
@@ -22207,7 +22250,14 @@ function stockTakeResyncParent(parent) {
             const roles = (member && Array.isArray(member.roles)) ? member.roles : [];
 
             document.querySelectorAll('.tabs .tab-link').forEach((btn) => {
-                if (btn.id === 'sales-tab-btn') return; // always visible — never lockable
+                // Sales Counter used to be hardcoded as always-visible here
+                // regardless of roles — now it's a normal role like any
+                // other (roles.includes(tabId) below already handles it
+                // correctly), so a Deliveries-only staff member can
+                // genuinely have no Sales Counter access. Existing staff
+                // were migrated to have it explicitly granted once (see
+                // the staff = safeJSONParse(...) migration above) so this
+                // change doesn't silently take access away from anyone.
                 if (!serving) { btn.style.display = ''; return; }
                 if (btn.id === 'staff-tab-btn') { btn.style.display = 'none'; return; } // never a role
                 if (btn.id === 'settings-tab-btn') { btn.style.display = 'none'; return; } // never a role
@@ -26619,6 +26669,24 @@ function stockTakeResyncParent(parent) {
         function updateChangeDue() {
             if (currentPaymentMethod === 'cash') {
                 const total = cartTotal();
+                // Auto-fills "Cash Tendered" with the running total by
+                // default, so a cashier taking exact cash can check out
+                // without typing anything — an empty/zero tendered amount
+                // otherwise always failed checkout's "less than total"
+                // check with a confusing error. Guarded on the field NOT
+                // being focused so this never fights typing: this same
+                // function also runs on every keystroke via the field's
+                // own oninput, and touching .value mid-type would corrupt
+                // whatever the cashier is currently entering.
+                const input = document.getElementById('cash-tendered-input');
+                if (input && document.activeElement !== input) {
+                    const current = input.value.trim();
+                    const stillFollowing = current === '' || (window.__cashTenderedAutoFillValue != null && Math.abs(parseFloat(current) - window.__cashTenderedAutoFillValue) < 0.005);
+                    if (stillFollowing) {
+                        input.value = total > 0 ? total.toFixed(2) : '';
+                        window.__cashTenderedAutoFillValue = total > 0 ? total : null;
+                    }
+                }
                 const tendered = parseFloat(document.getElementById('cash-tendered-input').value) || 0;
                 const line = document.getElementById('change-due-line');
                 if (!line) return;
@@ -30375,10 +30443,11 @@ function stockTakeResyncParent(parent) {
 
 <!-- @shared-block:session-keep:begin -->
 <!-- SESSION KEEP --------------------------------------------------------------
-         Stay signed in on this device. The login (admin, or a staff member's PIN) used to live only in the open tab's memory, so ANYTHING that reloaded the page —
-         switching to WhatsApp / the printer / the camera and back on a phone (the system drops the page to free memory), an installed app being reopened, a
-         browser refresh, a software update — brought the "Who's logging in?" screen back, often every few clicks.
-         Now a successful login is remembered on the device (never the password: only who signed in, with a fingerprint of the current password so changing the
+         Stay signed in on this device. OFF BY DEFAULT — a shop opts in per device from Settings ▸ Security & Access, rather than it being on until
+         someone notices and turns it off. When it IS turned on: the login (admin, or a staff member's PIN) used to live only in the open tab's memory, so
+         ANYTHING that reloaded the page — switching to WhatsApp / the printer / the camera and back on a phone (the system drops the page to free memory),
+         an installed app being reopened, a browser refresh, a software update — brought the "Who's logging in?" screen back, often every few clicks.
+         A successful login is remembered on the device (never the password: only who signed in, with a fingerprint of the current password so changing the
          password signs everyone out) and the picker is skipped while the session is fresh: it lasts 12 hours after the last tap and is ended by Clock out /
          switching user, by the staff member being removed or locked out for the day, or by turning "Stay signed in" off in Settings ▸ Security & Access. -->
     <script>
@@ -30387,7 +30456,7 @@ function stockTakeResyncParent(parent) {
         if (window.__sessionKeepLoaded) return;
         window.__sessionKeepLoaded = true;
         var KEY = 'pos_session_keep', IDLE_MS = 12 * 60 * 60 * 1000, lastTouch = 0;
-        function enabled() { try { return localStorage.getItem('pos_stay_signed_in') !== '0'; } catch (e) { return false; } }
+        function enabled() { try { return localStorage.getItem('pos_stay_signed_in') === '1'; } catch (e) { return false; } }
         function fp() { try { return localStorage.getItem('pos_pw_hash') || localStorage.getItem('aqua_pw_hash') || ''; } catch (e) { return ''; } }
         function read() { try { var s = JSON.parse(localStorage.getItem(KEY) || 'null'); return s && s.at ? s : null; } catch (e) { return null; } }
         function write(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) { /* storage full: they just log in next time */ } }
@@ -30483,7 +30552,7 @@ function stockTakeResyncParent(parent) {
             if (!sec || document.getElementById('stay-signed-in-toggle')) return;
             var box = document.createElement('div');
             box.style.cssText = 'margin:12px 0; padding:10px 12px; background:#f8f9fa; border-radius:8px;';
-            box.innerHTML = '<label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer; margin:0;"><input type="checkbox" id="stay-signed-in-toggle" style="width:auto; margin-top:3px;"><span><strong>Stay signed in on this device</strong><br><span style="font-size:13px; color:#555;">Skips the "Who\u2019s logging in?" screen when the app is reopened or reloaded — for 12 hours after the last tap. It ends when you Clock out or switch user. Turn this off on a shared device.</span></span></label>';
+            box.innerHTML = '<label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer; margin:0;"><input type="checkbox" id="stay-signed-in-toggle" style="width:auto; margin-top:3px;"><span><strong>Stay signed in on this device</strong><br><span style="font-size:13px; color:#555;">Skips the "Who\u2019s logging in?" screen when the app is reopened or reloaded — for 12 hours after the last tap. It ends when you Clock out or switch user. Only turn this on for a device you trust \u2014 never a shared one.</span></span></label>';
             sec.insertBefore(box, sec.firstChild);
             var cb = document.getElementById('stay-signed-in-toggle');
             cb.checked = enabled();

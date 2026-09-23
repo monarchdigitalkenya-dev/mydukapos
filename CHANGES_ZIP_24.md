@@ -1,4 +1,108 @@
-# Zips 24 - 65 — what changed
+# Zips 24 - 68 — what changed
+
+## Zip 68 — HMIS Phase 5: minimum-price guardrails, genuinely verified this time
+Finished the minimum-price feature from last turn and, given how much silent-corruption risk this session has
+already turned up, wrote real tests for it rather than just re-confirming "it parses."
+
+* **Minimum Price field** added to the inventory schema in all 6 modules with an Add Item form (root, hospital,
+  hotel, production, services, pharmacy): the Add Item form, the existing-item Edit modal (root, production,
+  services, pharmacy), and the form's own reset-between-entries logic — a value typed for one item can no
+  longer leak into the next new item's form by accident.
+* **Enforcement, verified working end-to-end:** a manually typed/quoted custom price below an item's minimum
+  is blocked with the exact message the spec asked for ("Entered price is below the minimum allowed threshold
+  of KES X"), and the sale is genuinely refused — nothing gets added to the cart, not just a warning shown
+  alongside it going through anyway. A price exactly at the floor is correctly allowed. An item with no
+  minimum set behaves exactly as it always did (no new restriction). Deliberately scoped to custom/quoted
+  prices only — picking a preset Retail or Wholesale tier is never blocked, even if that tier happens to sit
+  below the floor, since those are the admin's own configured prices, not a staff-negotiated one.
+* **Caught my own mistake while building this, again:** a batch edit meant to add the field to both the
+  service-type and item-type object literals in 6 files instead duplicated it into one and skipped the other,
+  because of the same kind of indentation-substring overlap that bit the Sales Counter role fix earlier this
+  session. Caught by checking the actual diff rather than trusting a "patched" message, and fixed properly in
+  all 6 before anything shipped.
+* New test file (`tests/minimum-price.test.mjs`, 8 cases across root and hospital's two different code
+  shapes) actually exercises the modal and checkout path rather than just asserting the code is syntactically
+  valid — given how many silent, structurally-plausible-but-wrong edits this exact feature produced while
+  being built, "it parses" was not enough confidence to ship on this time.
+* Water's guardrail check exists and is correct but is currently inert — flagged again honestly: water's
+  Inventory UI is a different paradigm (table/modal-based) from the other 6 modules' Add Item form, and
+  doesn't yet have an input to actually set `minimumPrice` on a product.
+
+**Verified:** `npm run check`/`npm run lint` clean; the new test file passes 8/8 on a genuine first run (not
+after debugging failures — a good sign the underlying logic, once the duplication bug was caught, was sound);
+broader regression batch (`dosing`, `sales-and-print`, `smoke`, `static`, `lint-globals`) 51/51, 0 failures.
+
+**Still open:** water's Minimum Price input UI; the whole-sale "quote a custom total for the whole cart" path
+(deliberately not given the same per-item floor check — a blended discount can legitimately put one item
+below its own floor while the deal stays profitable overall, and enforcing that cleanly needs more thought
+than a quick pass); HMIS Phases 2-4 (the queue/transfer pipeline, remaining stations, registry history beyond
+vitals) — all of Phase 5 is otherwise done.
+
+## Zip 67 — Stay Signed In off by default, cart/tab persistence ported everywhere, HMIS Phase 1 done
+* **Stay Signed In — off by default, across all 9 files (all 8 apps + Owner Console).** Was on by default;
+  now a shop opts in per device from Settings ▸ Security & Access instead of it being on until someone
+  notices. Updated the Settings toggle's own description to say so explicitly. The existing test suite
+  assumed the old default and needed updating — not weakened, corrected: every existing test now explicitly
+  turns the setting on first (since they're testing what happens *while* it's on), and a new test confirms a
+  genuinely untouched device — the actual default now — never resumes a session on its own.
+* **Cart/tab-reload persistence — ported from root to hotel, hospital, production, services, pharmacy, and
+  water.** School skipped (confirmed again: its Sales Counter is the dead/repurposed-into-Dashboard one found
+  earlier, nothing to persist). Water got the cart-restore half but not the active-tab-restore half — its
+  startup sequence is structured differently enough from the other 6 that I didn't want to rush an insertion
+  there; flagging it as a known small gap rather than guessing.
+* **HMIS Phase 1 (Triage vitals) — done.** Better news than my last assessment suggested: hospital already had
+  a full vitals capture modal (BP, pulse, temperature, SpO2, weight/height with live BMI) AND already correctly
+  copied it into the permanent visit record when a visit is saved — I'd been wrong to flag that as a gap.
+  What was genuinely missing: a nursing assessment notes field (added), and vitals were never actually
+  *displayed* anywhere in the patient's visit history despite being stored — added a vitals summary line to
+  each visit history entry, so Phase 1's "saved permanently AND visible in the registry" requirement is now
+  both true, not just the storage half.
+
+**Verified:** `npm run check`/`npm run lint` clean across every change. Ran every test file touching what
+changed this turn — `stay-signed-in` (8/8, including the new default test), `hold-sale`, `sales-and-print`,
+`smoke`, `static`, `patient-billing`, `lint-globals` — 87 individual subtests this turn, 0 failures.
+
+**Still open, unchanged in scope:** water's active-tab restore; HMIS Phases 2-4 (the full 12-station queue
+with explicit push-to-next-stage transfers, the remaining stations — Consultation, Diagnosis, Recommend
+Medication, Dispensing, Clinic, Check-up — and further patient registry history beyond vitals); HMIS Phase 5
+(minimum price guardrails). These are each substantial builds in their own right, not bug fixes — continuing
+in the same reply.
+
+## Zip 66 — Sales Counter forced-role fix and Cash-default UX finished across all 8 modules
+Two items that had been outstanding since an earlier message, now fully done and verified everywhere (they
+also turned out to be items #4 and #6 of the new HMIS request — already complete for hospital as part of this).
+
+* **"Sales Counter forced on every staff member" — finished.** Last turn's fix only reached root/Shop; this
+  turn applied the identical fix (remove the hardcoded checked+disabled checkbox, respect real role state) to
+  the existing-staff edit view in water, hotel, hospital, school, production, services, and pharmacy — hospital
+  needed a third, structurally different spot too (`renderEditStaffRoleCheckboxes`, its own modal-based edit
+  flow, not the inline-edit pattern the others use). An admin can now genuinely create or edit a staff member
+  with no Sales Counter access (e.g. Deliveries-only, or — for hospital — Triage/Lab/Pharmacy-only with no
+  Cashier access) in every module, with the migration from last turn ensuring no existing staff member lost
+  access when this landed.
+* **Cash pre-selected + Cash Tendered auto-fill — finished everywhere.** Water already had this via its own
+  mechanism; applied the identical fix (fold into `updateChangeDue()`, guarded on the field not currently
+  being typed into so it never fights a cashier mid-entry) to root/Shop, hotel, hospital, school, production,
+  services, and pharmacy. "Cash" was already visually pre-selected by default in every module's markup — the
+  actual bug was the empty Cash Tendered field always failing checkout's "less than total" check; it now
+  defaults to the running total and updates live as the cart changes, while still respecting a manually-typed
+  amount (change is owed) without ever overwriting it.
+* **Auto-refresh investigation (root/Shop only so far):** couldn't pin down a single definite JS-level trigger
+  despite checking every timer, every `location.reload()`, and the service worker's update logic — the leading
+  explanation is the OS reclaiming an idle installed-app's tab on budget Android hardware, which isn't
+  something a code fix can prevent. What IS fixed: the actual damage. The Sales Counter cart previously lived
+  only in JS memory with zero persistence until checkout — now it saves itself continuously to sessionStorage
+  and restores automatically (with a toast) if the page ever reloads, and the app remembers and restores
+  whichever tab was actually open instead of always landing back on Sales Counter. Not yet ported to the other
+  7 modules.
+
+**Verified:** `npm run check`/`npm run lint` clean; ran every staff, sales/print, receipts, hold-sale, and
+smoke/static test file relevant to these changes — 128 individual subtests across this session's batches,
+0 failures.
+
+**Still open from this session:** Stay Signed In toggle-off/removal; cart/tab-persistence ported to the other
+7 modules; the new HMIS request's outpatient pipeline, triage vitals module, patient registry history, and
+minimum-price guardrails (assessed, not yet built — see the reply for the phased plan).
 
 ## Zip 65 — the real fix for blank/faded receipts (all 8 modules), plus the variant work verified
 Investigated the "receipt printed is completely blank and fades sometimes" report on Shop by tracing the
