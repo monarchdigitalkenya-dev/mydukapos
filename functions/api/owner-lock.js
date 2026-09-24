@@ -49,6 +49,27 @@ function jsonResponse(body, status = 200) {
   });
 }
 
+// A per-PERSON running ledger of quotes/payments — separate from the
+// per-LINK agreedAmount/paidAmount/revenue fields the "billing" and
+// "recordRevenue" actions below write (those stay exactly as they were,
+// untouched, for anything already using them). One person can have several
+// links (see groupNameKey() in owner/index.html); this tracks money
+// agreed/paid against the PERSON as a whole, as more than one entry over
+// time — e.g. the original quote, then a later entry for an extra service
+// — rather than a single one-time figure tied to one link. Keyed by the
+// same case-insensitive, trimmed name key the client list already groups
+// by, so it lines up with whichever links currently carry that name.
+const GROUP_INCOME_KEY = 'owner-group-income:v1';
+
+async function readGroupIncome(env) {
+  const raw = await env.mydukapos_kv.get(GROUP_INCOME_KEY);
+  return raw ? JSON.parse(raw) : {};
+}
+
+async function writeGroupIncome(env, data) {
+  await env.mydukapos_kv.put(GROUP_INCOME_KEY, JSON.stringify(data));
+}
+
 function stateKey(clientId) {
   return `pos-data:state:${clientId}`;
 }
@@ -79,6 +100,33 @@ export async function onRequestPost(context) {
     body = await context.request.json();
   } catch (e) {
     return jsonResponse({ error: 'Invalid request body.' }, 400);
+  }
+
+  if (body.action === 'recordGroupIncome') {
+    // c is any one client id belonging to this person's group — used only
+    // as a light sanity check that this is a real link the owner can see,
+    // not as the record being written to (see the comment on
+    // GROUP_INCOME_KEY above for why this is separate from that record).
+    const anyRecord = await getLicense(context.env, body.c);
+    if (!anyRecord) return jsonResponse({ error: 'Client not found.' }, 404);
+    const groupKey = String(body.groupKey || '').trim().toLowerCase();
+    if (!groupKey) return jsonResponse({ error: 'Missing group.' }, 400);
+    const agreed = Number(body.agreedAmount);
+    const paidRaw = body.paidAmount;
+    const paid = paidRaw === undefined || paidRaw === null || paidRaw === '' ? 0 : Number(paidRaw);
+    if (!Number.isFinite(agreed) || agreed <= 0) return jsonResponse({ error: 'Enter the money agreed.' }, 400);
+    if (!Number.isFinite(paid) || paid < 0) return jsonResponse({ error: 'Enter the money paid (0 if nothing yet).' }, 400);
+    if (paid > agreed + 0.004) return jsonResponse({ error: 'The money paid cannot be more than the money agreed.' }, 400);
+    const note = String(body.note || '').trim().slice(0, 200);
+    const method = body.method === 'cash' ? 'cash' : 'mpesa';
+
+    const all = await readGroupIncome(context.env);
+    const group = all[groupKey] || { label: String(body.groupLabel || groupKey).trim(), entries: [] };
+    group.label = String(body.groupLabel || group.label || groupKey).trim(); // keeps the display name current if it was renamed since
+    group.entries.push({ id: crypto.randomUUID(), at: Date.now(), agreed, paid, method, note });
+    all[groupKey] = group;
+    await writeGroupIncome(context.env, all);
+    return jsonResponse({ entries: group.entries });
   }
 
   if (body.action === 'delete') {

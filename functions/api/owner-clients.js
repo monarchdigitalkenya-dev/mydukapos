@@ -64,8 +64,16 @@ export async function onRequestGet(context) {
     };
   });
 
+  // The per-person quote/payment ledger (see GROUP_INCOME_KEY in
+  // owner-lock.js) — fetched here too, alongside the client list, so the
+  // grouped client view has it ready without a separate round trip when a
+  // person's detail is opened.
+  const groupIncomeRaw = await env.mydukapos_kv.get('owner-group-income:v1');
+  const groupIncome = groupIncomeRaw ? JSON.parse(groupIncomeRaw) : {};
+
   return jsonResponse({
     clients: enriched,
+    groupIncome,
     serverNow: Date.now(),
     products: listProducts(),
     rootDomain: getRootDomain(env),

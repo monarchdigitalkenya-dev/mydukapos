@@ -5576,9 +5576,9 @@
            are exactly the kind of thing that goes stale fast. */
 
         let ownerClientsCache = [];
-
         let ownerClientsCacheAt = 0;
         let ownerClientsCacheQuery = null;
+        let groupIncomeCache = {}; // { [groupKey]: { label, entries: [...] } } — see GROUP_INCOME_KEY in owner-lock.js
         const OWNER_CLIENTS_CACHE_MS = 5000; // short — admin actions (lock/delete/confirm) always force a fresh fetch anyway
 
         // At scale (hundreds+ of links) switching between Hotel / General Shop /
@@ -5599,10 +5599,12 @@
             if (!res.ok) throw new Error('Could not load client links.');
             const data = await res.json();
             ownerClientsCache = data.clients || [];
+            groupIncomeCache = data.groupIncome || {};
             ownerClientsCacheAt = now;
             ownerClientsCacheQuery = q;
             return ownerClientsCache;
         }
+
 
         function formatClientRemaining(client) {
             if (client.type === 'permanent') return '—';
@@ -5709,8 +5711,144 @@
             if (phone) { phoneEl.textContent = `📞 ${phone}`; phoneEl.style.display = 'block'; }
             else phoneEl.style.display = 'none';
 
-            document.getElementById('client-detail-records').innerHTML = records.map(r => renderClientRecordBlock(r)).join('');
+            const groupLabel = groupDisplayName(records[0]);
+            document.getElementById('client-detail-records').innerHTML =
+                (type === 'permanent' ? groupIncomeHtml(key, groupLabel) : '') +
+                records.map(r => renderClientRecordBlock(r)).join('');
             document.getElementById('client-detail-modal-backdrop').style.display = 'flex';
+        }
+
+        // ---------- PER-PERSON QUOTE & PAYMENTS (combined across all their links) ----------
+        // A simpler replacement for the old per-link "Income recorded" toggle
+        // below (renderClientRecordBlock/revenueToggleHtml — left in place,
+        // untouched, so anything already recorded that way keeps showing
+        // exactly as it did). This tracks money agreed/paid against the
+        // PERSON, inline rather than in a popup, and as a running list of
+        // entries rather than a one-time figure — so a later entry for an
+        // extra service just adds another line instead of needing to be
+        // squeezed into the original figure or blocked outright.
+        let groupIncomeDraftMethod = 'mpesa';
+
+        function groupIncomeHtml(groupKey, groupLabel) {
+            const group = groupIncomeCache[groupKey];
+            const entries = (group && group.entries) || [];
+            const fmt = (n) => Number(n || 0).toLocaleString();
+            const totalAgreed = entries.reduce((s, e) => s + (e.agreed || 0), 0);
+            const totalPaid = entries.reduce((s, e) => s + (e.paid || 0), 0);
+            const totalBalance = Math.max(0, Math.round((totalAgreed - totalPaid) * 100) / 100);
+
+            const rows = entries.length === 0
+                ? '<tr><td colspan="4" style="color:#7f8c8d; font-size:12.5px;">No quote recorded yet — add one below.</td></tr>'
+                : entries.slice().reverse().map((e) => {
+                    const bal = Math.max(0, Math.round(((e.agreed || 0) - (e.paid || 0)) * 100) / 100);
+                    return `<tr>
+                        <td style="font-size:12px; color:#7f8c8d; white-space:nowrap;">${new Date(e.at).toLocaleDateString('en-GB')}${e.note ? `<br>${escapeHtml(e.note)}` : ''}</td>
+                        <td style="text-align:right;">KES ${fmt(e.agreed)}</td>
+                        <td style="text-align:right;">KES ${fmt(e.paid)}</td>
+                        <td style="text-align:right; color:${bal > 0.004 ? 'var(--danger)' : '#27ae60'};">${bal > 0.004 ? `KES ${fmt(bal)}` : 'Paid'}</td>
+                    </tr>`;
+                }).join('');
+
+            return `<div style="margin-top:4px; padding:12px; background:#f8f9fa; border-radius:8px;">
+                <p style="margin:0 0 8px; font-weight:bold;">💰 Quote &amp; Payments <span style="font-weight:normal; color:#7f8c8d; font-size:12.5px;">— combined across all of ${escapeHtml(groupLabel)}'s links</span></p>
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead><tr style="color:#7f8c8d; font-size:12px; text-align:left;"><th style="text-align:left;">Date / Note</th><th style="text-align:right;">Agreed</th><th style="text-align:right;">Paid</th><th style="text-align:right;">Balance</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                    ${entries.length > 0 ? `<tfoot><tr style="font-weight:bold; border-top:1px solid var(--light);"><td>Total</td><td style="text-align:right;">KES ${fmt(totalAgreed)}</td><td style="text-align:right;">KES ${fmt(totalPaid)}</td><td style="text-align:right; color:${totalBalance > 0.004 ? 'var(--danger)' : '#27ae60'};">${totalBalance > 0.004 ? `KES ${fmt(totalBalance)}` : 'Paid'}</td></tr></tfoot>` : ''}
+                </table>
+
+                <div style="margin-top:10px; padding-top:10px; border-top:1px dashed var(--light); display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+                    <div>
+                        <label class="label" style="margin:0;">Agreed (KES)</label>
+                        <input type="number" id="group-income-agreed-input" min="0" step="1" style="width:110px;" placeholder="e.g. 5000">
+                    </div>
+                    <div>
+                        <label class="label" style="margin:0;">Paid now (KES)</label>
+                        <input type="number" id="group-income-paid-input" min="0" step="1" style="width:110px;" placeholder="0">
+                    </div>
+                    <div style="flex:1; min-width:140px;">
+                        <label class="label" style="margin:0;">Note (optional)</label>
+                        <input type="text" id="group-income-note-input" style="width:100%;" placeholder="e.g. extra service">
+                    </div>
+                    <div id="group-income-pay-toggle" style="display:flex; border:1px solid var(--light); border-radius:6px; overflow:hidden;">
+                        <button type="button" class="settings-small-btn active" style="border-radius:0;" onclick="setGroupIncomePayMethod(this, 'mpesa')">M-Pesa</button>
+                        <button type="button" class="settings-small-btn" style="border-radius:0;" onclick="setGroupIncomePayMethod(this, 'cash')">Cash</button>
+                    </div>
+                    <button type="button" class="btn-main" style="padding:8px 14px;" onclick="submitGroupIncomeEntry('${escapeQuotes(groupKey)}', '${escapeQuotes(groupLabel)}')">+ Add Entry</button>
+                </div>
+                <p id="group-income-error" style="color:var(--danger); font-size:12.5px; margin:6px 0 0;"></p>
+            </div>`;
+        }
+
+        function setGroupIncomePayMethod(btnEl, method) {
+            groupIncomeDraftMethod = method === 'cash' ? 'cash' : 'mpesa';
+            const wrap = document.getElementById('group-income-pay-toggle');
+            if (wrap) Array.from(wrap.children).forEach((b) => b.classList.toggle('active', b === btnEl));
+        }
+
+        async function submitGroupIncomeEntry(groupKey, groupLabel) {
+            const errEl = document.getElementById('group-income-error');
+            errEl.textContent = '';
+            const agreed = parseFloat(document.getElementById('group-income-agreed-input').value);
+            const paidRaw = document.getElementById('group-income-paid-input').value;
+            const paid = paidRaw === '' ? 0 : parseFloat(paidRaw);
+            const note = document.getElementById('group-income-note-input').value.trim();
+            if (isNaN(agreed) || agreed <= 0) { errEl.textContent = 'Enter the money agreed.'; return; }
+            if (isNaN(paid) || paid < 0) { errEl.textContent = 'Enter the money paid (0 if nothing yet).'; return; }
+            if (paid > agreed + 0.004) { errEl.textContent = 'The money paid cannot be more than the money agreed.'; return; }
+            const g = clientDetailCurrentGroup;
+            if (!g || !g.records.length) return;
+            // Any one link in this person's group works — the server only uses
+            // it as a sanity check, not as what gets written to (see
+            // recordGroupIncome in owner-lock.js).
+            const anyClientId = g.records[0].id;
+
+            try {
+                const res = await fetch('/api/owner-lock', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() },
+                    body: JSON.stringify({ c: anyClientId, action: 'recordGroupIncome', groupKey, groupLabel, agreedAmount: agreed, paidAmount: paid, method: groupIncomeDraftMethod, note }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.error) { errEl.textContent = data.error || 'Could not save that.'; return; }
+                groupIncomeCache[groupKey] = { label: groupLabel, entries: data.entries || [] };
+            } catch (e) {
+                errEl.textContent = 'Could not reach the server — check your connection.';
+                return;
+            }
+
+            // Same as the old per-link flow: the paid portion becomes a sale
+            // (so it shows in Daily Sales/Revenue), and any balance still
+            // owing becomes a bill — but tagged groupIncomeDebt (not
+            // licenseDebt), a deliberately different shape so it's never
+            // picked up by the existing per-link settle/reminder logic that
+            // specifically looks for licenseDebt.clientId, which would be
+            // wrong here since this debt belongs to the person, not one link.
+            const now = new Date().toISOString();
+            if (paid > 0) {
+                salesLog.push({
+                    id: genSaleId(), timestamp: now, servedBy: activeServerName(), customerName: groupLabel,
+                    items: [{ name: note ? `Quote — ${groupLabel} (${note})` : `Quote — ${groupLabel}`, price: paid, qty: 1, unit: 'quote' }],
+                    paymentMethod: groupIncomeDraftMethod, paid: true,
+                    cashAmount: groupIncomeDraftMethod === 'cash' ? paid : 0, mpesaAmount: groupIncomeDraftMethod === 'mpesa' ? paid : 0,
+                    amountTendered: groupIncomeDraftMethod === 'cash' ? paid : 0, change: 0,
+                });
+                safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+            }
+            const balance = Math.round((agreed - paid) * 100) / 100;
+            if (balance > 0.004) {
+                bills.push({
+                    id: genSaleId(), timestamp: now, servedBy: activeServerName(), customerName: groupLabel,
+                    items: [{ name: note ? `Quote balance — ${groupLabel} (${note})` : `Quote balance — ${groupLabel}`, price: balance, qty: 1, unit: 'quote' }],
+                    groupIncomeDebt: { groupKey, groupLabel },
+                    paymentMethod: 'bill', paid: false, updatedAt: Date.now(),
+                });
+                safeSetItem('pos_bills', JSON.stringify(bills));
+            }
+            queuePush();
+            if (typeof renderDailySales === 'function') renderDailySales();
+            showToast('Entry saved.');
+            openGroupedClientDetail(g.key, g.type);
         }
 
         // A branch group's sub-branches list right under their main branch's
@@ -9633,6 +9771,23 @@
             if (!name) {
                 showToast('Enter the staff member’s name first.', true);
                 return;
+            }
+            // The exact source of a name showing twice on "Who's logging in?":
+            // clicking this again for a name that already has a pending
+            // invite (a double-click, or not realizing one was already made)
+            // creates a second, separate token — a genuinely different
+            // account once accepted, with its own PIN, which dedupeStaff()'s
+            // name+PIN matching has no reason to ever merge. Catching it here,
+            // before a second token even exists, is the reliable fix; nothing
+            // downstream can un-create two already-separate people.
+            const existingInvite = pendingInvites.find((i) => String(i.name || '').trim().toLowerCase() === name.toLowerCase());
+            if (existingInvite) {
+                const existingLink = `${window.location.origin}${window.location.pathname}?${clientToken ? 'c=' + encodeURIComponent(clientToken) + '&' : ''}invite=${existingInvite.token}`;
+                if (!confirm(`"${name}" already has an invite link waiting to be accepted. If this is the same person, close this and share their existing link instead:\n\n${existingLink}\n\nPress OK only if you mean a DIFFERENT person who also happens to be named "${name}".`)) return;
+            }
+            const existingStaff = staff.find((s) => s && !s.removed && String(s.name || '').trim().toLowerCase() === name.toLowerCase());
+            if (existingStaff) {
+                if (!confirm(`"${name}" is already an active staff member here. Press OK only if you mean a DIFFERENT person who also happens to be named "${name}" — otherwise close this and use their existing account.`)) return;
             }
             const token = generateToken();
             const roles = [...newStaffSelectedRoles]; // sales-tab is implicit, added on account creation

@@ -13797,6 +13797,7 @@ function ackLocalDirty(seqAtPushStart) {
             updateServerBtnLabel();
             renderLockTabsList();
             applyServerVisibility();
+            ensureActiveTabAllowed();
             renderStaffPanel();
             renderReceivingAccountSelect();
             updateDeliveriesBadge();
@@ -13808,6 +13809,7 @@ function ackLocalDirty(seqAtPushStart) {
                 updateServerBtnLabel();
                 renderLockTabsList();
                 applyServerVisibility();
+                ensureActiveTabAllowed();
                 renderStaffPanel();
                 renderReceivingAccountSelect();
                 checkStockAndExpiryAlerts();
@@ -13821,6 +13823,29 @@ function ackLocalDirty(seqAtPushStart) {
         }
 
         /* ---------- TAB SWITCHING ---------- */
+        // Called right after any login/clock-in completes. applyServerVisibility()
+        // only hides/shows the tab BUTTONS by role — it never moves away from
+        // whatever tab-content panel was already the active one underneath the
+        // login screen. Without this, clocking out while on e.g. Settings and a
+        // different staff member signing in would show THEM that same tab's
+        // content for a moment before they clicked anything themselves — a real
+        // information leak between accounts sharing one device, not just a
+        // cosmetic glitch. Always lands on whichever tab is first and currently
+        // visible, matching how the tab bar itself is ordered for a safe default.
+        function ensureActiveTabAllowed() {
+            // Guarded like the rest of this app's housekeeping calls — this can
+            // run from an async callback (e.g. after a pull finishes) that in
+            // rare cases outlives the page itself; failing silently here is
+            // strictly safer than an unhandled error, and never worse than a
+            // no-op.
+            try {
+                const activeBtn = document.querySelector('.tab-link.active');
+                if (activeBtn && activeBtn.style.display !== 'none') return;
+                const fallback = Array.from(document.querySelectorAll('.tab-link[data-tab]')).find((b) => b.style.display !== 'none');
+                if (fallback) performTabSwitch(fallback, fallback.dataset.tab);
+            } catch (e) { /* best effort */ }
+        }
+
         function performTabSwitch(buttonEl, tabId) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.tab-link').forEach(el => el.classList.remove('active'));
@@ -20696,6 +20721,7 @@ function ackLocalDirty(seqAtPushStart) {
             updateServerBtnLabel();
             renderLockTabsList();
             applyServerVisibility();
+            ensureActiveTabAllowed();
             renderStaffPanel();
             renderReceivingAccountSelect();
             showToast(`You're now serving as ${member.name}.`);
@@ -20774,6 +20800,7 @@ function ackLocalDirty(seqAtPushStart) {
             updateServerBtnLabel();
             renderLockTabsList();
             applyServerVisibility();
+            ensureActiveTabAllowed();
             renderStaffPanel();
             document.getElementById('server-dropdown').classList.remove('show');
             showToast(`You're now serving as ${member.name}.`);
@@ -27086,6 +27113,18 @@ function ackLocalDirty(seqAtPushStart) {
                 myIsMainBranch = !!data.isMainBranch;
                 if (branchInfoChanged && typeof renderBranchesPanel === 'function') renderBranchesPanel();
                 if (branchInfoChanged) fetchBranchesSummary(true).then(() => { renderAllBranchSwitchers(); renderStaffPanel(); });
+                // The license check can complete AFTER the Dashboard has
+                // already rendered once (it runs in parallel with the app's
+                // normal startup, not before it) — so if this is the moment
+                // this shop first learns it's part of a branch group, and
+                // Dashboard happens to be the tab already showing, its
+                // branch switcher/aggregate figures were never told to
+                // refresh. Without this, seeing them required switching to
+                // another tab and back — the tab switch itself is what
+                // triggers a fresh render, not anything about branches.
+                if (branchInfoChanged && document.getElementById('dashboard-tab') && document.getElementById('dashboard-tab').classList.contains('active') && typeof renderAquaDashboard === 'function') {
+                    renderAquaDashboard();
+                }
                 saveLicenseCheckpoint(data);
                 applyLicenseUI();
                 try { handleOwnerNotice(data.notice); } catch (e) { /* the reminder is a nicety, never a reason to fail the license check */ }

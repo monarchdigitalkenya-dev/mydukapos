@@ -20128,6 +20128,18 @@ function ackLocalDirty(seqAtPushStart) {
                 myIsMainBranch = !!data.isMainBranch;
                 if (branchInfoChanged && typeof renderBranchesPanel === 'function') renderBranchesPanel();
                 if (branchInfoChanged) fetchBranchesSummary(true).then(() => { renderAllBranchSwitchers(); renderStaffPanel(); });
+                // The license check can complete AFTER the Dashboard has
+                // already rendered once (it runs in parallel with the app's
+                // normal startup, not before it) — so if this is the moment
+                // this shop first learns it's part of a branch group, and
+                // Dashboard happens to be the tab already showing, its
+                // branch switcher/aggregate figures were never told to
+                // refresh. Without this, seeing them required switching to
+                // another tab and back — the tab switch itself is what
+                // triggers a fresh render, not anything about branches.
+                if (branchInfoChanged && document.getElementById('dashboard-tab') && document.getElementById('dashboard-tab').classList.contains('active') && typeof renderShopDashboard === 'function') {
+                    renderShopDashboard();
+                }
                 if (branchInfoChanged && typeof fetchReceiptSettingsSharing === 'function') fetchReceiptSettingsSharing();
                 saveLicenseCheckpoint(data);
                 applyLicenseUI();
@@ -21410,6 +21422,7 @@ function ackLocalDirty(seqAtPushStart) {
             updateServerBtnLabel();
             renderLockTabsList();
             applyServerVisibility();
+            ensureActiveTabAllowed();
             renderStaffPanel();
             showToast(`You're now serving as ${member.name}.`);
         }
@@ -21954,6 +21967,7 @@ function ackLocalDirty(seqAtPushStart) {
             updateServerBtnLabel();
             renderLockTabsList();
             applyServerVisibility();
+            ensureActiveTabAllowed();
         }
 
         function triggerHelp() {
@@ -22014,6 +22028,29 @@ function ackLocalDirty(seqAtPushStart) {
 
         /* -> shared: switchTab */
 
+        // Called right after any login/clock-in completes. applyServerVisibility()
+        // only hides/shows the tab BUTTONS by role — it never moves away from
+        // whatever tab-content panel was already the active one underneath the
+        // login screen. Without this, clocking out while on e.g. Settings and a
+        // different staff member signing in would show THEM that same tab's
+        // content for a moment before they clicked anything themselves — a real
+        // information leak between accounts sharing one device, not just a
+        // cosmetic glitch. Always lands on whichever tab is first and currently
+        // visible, matching how the tab bar itself is ordered for a safe default.
+        function ensureActiveTabAllowed() {
+            // Guarded like the rest of this app's housekeeping calls — this can
+            // run from an async callback (e.g. after a pull finishes) that in
+            // rare cases outlives the page itself; failing silently here is
+            // strictly safer than an unhandled error, and never worse than a
+            // no-op.
+            try {
+                const activeBtn = document.querySelector('.tab-link.active');
+                if (activeBtn && activeBtn.style.display !== 'none') return;
+                const fallback = Array.from(document.querySelectorAll('.tab-link[data-tab]')).find((b) => b.style.display !== 'none');
+                if (fallback) performTabSwitch(fallback, fallback.dataset.tab);
+            } catch (e) { /* best effort */ }
+        }
+
         function performTabSwitch(buttonEl, tabId) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.tab-link').forEach(el => el.classList.remove('active'));
@@ -22072,6 +22109,18 @@ function ackLocalDirty(seqAtPushStart) {
             }
             if (tabId === 'orders-tab') {
                 renderOrdersTab();
+            }
+            if (tabId === 'stock-take-tab') {
+                // stockTakeInstall() (shared) used to be the ONLY thing that
+                // ever called renderStockTake() — via a raw click listener on
+                // the tab button itself, bypassing this switch entirely. That
+                // meant any other way of landing on this tab (a reload that
+                // restores the last-active tab, or a programmatic switch like
+                // ensureActiveTabAllowed()) left the tab showing its static
+                // "Open this tab to load your items" placeholder forever,
+                // fixed only by clicking away and back — a real click firing
+                // the listener the reload/programmatic path never did.
+                try { if (typeof renderStockTake === 'function') renderStockTake(); } catch (e) { /* the tab is an extra */ }
             }
             if (tabId === 'staff-tab') {
                 renderStaffPanel();
@@ -24619,6 +24668,7 @@ function ackLocalDirty(seqAtPushStart) {
             updateServerBtnLabel();
             renderLockTabsList();
             applyServerVisibility();
+            ensureActiveTabAllowed();
             renderStaffPanel();
             showToast(`You're now serving as ${member.name}.`);
         }
@@ -26867,6 +26917,7 @@ function ackLocalDirty(seqAtPushStart) {
             updateServerBtnLabel();
             renderLockTabsList();
             applyServerVisibility();
+            ensureActiveTabAllowed();
             renderStaffPanel();
             document.getElementById('server-dropdown').classList.remove('show');
             showToast(`You're now serving as ${member.name}.`);

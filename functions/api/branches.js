@@ -198,6 +198,17 @@ export async function onRequestPost(context) {
     const branch = await createClient(env, 'permanent', branchLabel, record.product, {
       branchGroupId: record.branchGroupId,
       isMainBranch: false,
+      // Inherits the calling shop's own clientName (the owner's private
+      // record of who this actually is — see createClient() above) so a
+      // new branch groups together with its siblings in the owner's
+      // Permanent Clients list automatically, exactly like they already do
+      // if the owner sets it manually afterward. Previously this was left
+      // blank, so every new branch stood alone until the owner noticed and
+      // renamed it to match — an easy thing to forget, and the reason two
+      // branches of the same real person could show as two separate
+      // entries. A caller with no clientName of their own (never set)
+      // leaves the new branch exactly as before — nothing to inherit.
+      clientName: record.clientName || '',
     });
     await addToBranchGroup(env, record.branchGroupId, branch.id);
 
