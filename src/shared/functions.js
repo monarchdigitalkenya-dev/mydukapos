@@ -170,7 +170,7 @@ function addTradeCreditManually() {
 
 //@fn addVariantRow
 function addVariantRow() {
-            variantsDraft.push({ id: genSaleId(), name: '', code: '', price: '', wholesaleSellingPrice: '', wholesalePrice: '', qty: '', dualUnit: false, unitsPerBox: '', pieceCode: '', piecePrice: '', pieceWholesalePrice: '', pieceQty: '', image: null });
+            variantsDraft.push({ id: genSaleId(), name: '', code: '', price: '', wholesaleSellingPrice: '', wholesalePrice: '', minimumPrice: '', qty: '', dualUnit: false, unitsPerBox: '', pieceCode: '', piecePrice: '', pieceWholesalePrice: '', pieceQty: '', image: null });
             renderVariantRows();
         }
 
@@ -3944,12 +3944,62 @@ function performCartPriceChange(key, price) {
             renderCart();
         }
 
+//@fn cartLineMinimumPrice
+// The lowest unit price staff may set on one cart line, 0 if none applies.
+// A variant line uses that variant's own minimum; a variant saved before
+// per-variant minimums existed has none of its own, so it falls back to the
+// parent item's. A loose-piece line (dual-unit piece mode) has no minimum:
+// the minimum is set against the box/whole-unit price, and applying it to a
+// piece price would block every piece sale. Items not in this shop's own
+// inventory (e.g. a cross-branch line) have no local minimum to apply.
+function cartLineMinimumPrice(line) {
+            if (!line || line.isCrossBranch) return 0;
+            // Water (Aqua) keeps its items in `products` and has no way to set
+            // a minimum price yet, so there is nothing to enforce there.
+            if (typeof inventory === 'undefined' || !Array.isArray(inventory)) return 0;
+            const product = inventory.find(p => p.code === line.code);
+            if (!product) return 0;
+            if (line.variantId) {
+                if (line.variantSaleMode === 'piece') return 0;
+                const variant = (product.variants || []).find(v => v.id === line.variantId);
+                if (!variant) return 0;
+                const own = variant.minimumPrice;
+                const hasOwn = own !== undefined && own !== null && own !== '';
+                return Math.max(0, Number(hasOwn ? own : product.minimumPrice) || 0);
+            }
+            if (line.saleMode === 'piece') return 0;
+            return Math.max(0, Number(product.minimumPrice) || 0);
+        }
+
+//@fn cartTotalBelowMinimumMessage
+// A custom total quote rescales every line by the same ratio, so the lowest
+// total that keeps every line at or above its own minimum is the current
+// total times the largest (minimum / current price) ratio across the lines.
+// Returns the refusal message if newTotal is below that, otherwise null.
+function cartTotalBelowMinimumMessage(newTotal) {
+            const entries = Object.values(currentCart);
+            const itemsTotal = entries.reduce((sum, l) => sum + l.price * l.qty, 0);
+            if (itemsTotal <= 0) return null;
+            let ratio = 0;
+            let blocker = null;
+            entries.forEach((l) => {
+                const min = cartLineMinimumPrice(l);
+                if (min > 0 && l.price > 0 && l.qty > 0 && min / l.price > ratio) { ratio = min / l.price; blocker = l; }
+            });
+            if (!blocker) return null;
+            const floor = Math.ceil(itemsTotal * ratio);
+            if (newTotal >= floor - 0.005) return null;
+            return `That total is too low: "${blocker.name}" has a minimum price of ${money(cartLineMinimumPrice(blocker))}. The lowest total you can quote for this sale is ${money(floor)}.`;
+        }
+
 //@fn performCartTotalQuote
 function performCartTotalQuote(newTotal) {
             const entries = Object.values(currentCart);
             if (entries.length === 0) return;
             const itemsTotal = entries.reduce((sum, l) => sum + l.price * l.qty, 0);
             if (itemsTotal <= 0) { showToast('Cannot quote a total on a cart with no priced items.', true); renderCart(); return; }
+            const belowMin = cartTotalBelowMinimumMessage(newTotal);
+            if (belowMin) { showToast(belowMin, true); renderCart(); return; }
 
             const scale = newTotal / itemsTotal;
             let allocated = 0;
@@ -6607,6 +6657,7 @@ function saveVariantsModal() {
                     id: v.id, name: vName, code: vCode, price: vPrice,
                     wholesaleSellingPrice: parseFloat(v.wholesaleSellingPrice) || 0,
                     wholesalePrice: parseFloat(v.wholesalePrice) || 0,
+                    minimumPrice: parseFloat(v.minimumPrice) || 0,
                     qty: vQty, dualUnit: vDualUnit, unitsPerBox: vUnitsPerBox,
                     pieceCode: vPieceCode, piecePrice: vPiecePrice,
                     pieceWholesalePrice: vPieceWholesalePrice, pieceQty: vPieceQty,
@@ -8603,7 +8654,7 @@ function toggleVariantsBuilder() {
                 document.getElementById('inv-has-dual-unit').checked = false;
                 document.getElementById('dual-unit-builder').style.display = 'none';
                 if (variantsDraft.length === 0) {
-                    variantsDraft.push({ id: genSaleId(), name: '', code: '', price: '', wholesaleSellingPrice: '', wholesalePrice: '', qty: '', dualUnit: false, unitsPerBox: '', pieceCode: '', piecePrice: '', pieceWholesalePrice: '', pieceQty: '', image: null });
+                    variantsDraft.push({ id: genSaleId(), name: '', code: '', price: '', wholesaleSellingPrice: '', wholesalePrice: '', minimumPrice: '', qty: '', dualUnit: false, unitsPerBox: '', pieceCode: '', piecePrice: '', pieceWholesalePrice: '', pieceQty: '', image: null });
                 }
                 renderVariantRows();
             } else {
