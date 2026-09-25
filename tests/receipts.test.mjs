@@ -30,7 +30,7 @@ for (const app of APPS) {
 }
 
 // The system-dialog receipt uses the same column titles as the printed one.
-for (const app of APPS.filter((a) => !['school/index.html', 'water/index.html'].includes(a))) {
+for (const app of APPS.filter((a) => a !== 'water/index.html')) {
   test(`${app}: on-screen / system receipt table titles`, async () => {
     const { w, d, close } = await boot(app);
     w.eval('renderReceipt(' + JSON.stringify(SAMPLE_SALE) + ')');

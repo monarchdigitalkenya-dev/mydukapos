@@ -69,6 +69,38 @@ export function compareBillProgress(a, b) {
   return 0;
 }
 
+// Aqua POS products are ONE shared catalogue whose stock is held per site inside the record
+// (`stock` = { siteId: qty }, `bottleStockBySite` for bottle-tracked bales). Merging the whole record
+// last-write-wins let a stale push from one site (a Shop till selling one bottle) wipe out what another
+// site (Production) had just produced. So the record-level winner still decides every ordinary field, but
+// each SITE's stock is taken from whichever side changed THAT site most recently (`siteTimes[siteId]`, stamped
+// by the app whenever it changes a site's stock). A site with no stamp on either side (older data) simply
+// follows the record winner, exactly as before.
+export function mergeProductRecords(stored, incoming) {
+  const st = Number(stored && stored.updatedAt) || 0, it = Number(incoming && incoming.updatedAt) || 0;
+  const incWins = it >= st;
+  const winner = incWins ? incoming : stored;
+  if (!stored || !incoming || stored._deleted === true || incoming._deleted === true) return winner;
+  const MAPS = ['stock', 'bottleStockBySite'];
+  const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  if (!MAPS.some((m) => isObj(stored[m]) || isObj(incoming[m]))) return winner;
+  const tS = isObj(stored.siteTimes) ? stored.siteTimes : {}, tI = isObj(incoming.siteTimes) ? incoming.siteTimes : {};
+  const sites = new Set([...Object.keys(tS), ...Object.keys(tI)]);
+  MAPS.forEach((m) => { [stored[m], incoming[m]].forEach((o) => { if (isObj(o)) Object.keys(o).forEach((k) => sites.add(k)); }); });
+  const out = { ...winner };
+  MAPS.forEach((m) => { out[m] = { ...(isObj(winner[m]) ? winner[m] : {}) }; });
+  const times = { ...(isObj(winner.siteTimes) ? winner.siteTimes : {}) };
+  sites.forEach((k) => {
+    const a = typeof tS[k] === 'number' ? tS[k] : 0, b = typeof tI[k] === 'number' ? tI[k] : 0;
+    if (!a && !b) return;                                  // neither side ever stamped this site: the record winner decides
+    const src = b >= a ? incoming : stored;                // tie: the incoming push
+    MAPS.forEach((m) => { if (isObj(src[m]) && typeof src[m][k] === 'number') out[m][k] = src[m][k]; });
+    times[k] = Math.max(a, b);
+  });
+  if (Object.keys(times).length) out.siteTimes = times;
+  return out;
+}
+
 export function mergeRecordsById(existingArr, incomingArr, finalTombstones = false, field = '') {
   if (!Array.isArray(incomingArr)) return existingArr;
   if (!Array.isArray(existingArr) || existingArr.length === 0) return incomingArr;
@@ -104,7 +136,7 @@ export function mergeRecordsById(existingArr, incomingArr, finalTombstones = fal
     }
     const existingTs = existing.updatedAt || 0;
     const incomingTs = incoming.updatedAt || 0;
-    merged.set(key, incomingTs >= existingTs ? incoming : existing);
+    merged.set(key, field === 'products' ? mergeProductRecords(existing, incoming) : (incomingTs >= existingTs ? incoming : existing));
   }
   // Keyed records in their merged-map order (existing order, with
   // incoming-only records appended), then incoming's keyless records (if
@@ -166,6 +198,19 @@ export const MERGE_BY_ID_FIELDS = [
   // Orders tab: supplier purchase orders. Edited in place (status, per-line receivedQty), so they need the
   // per-record merge. Removal is a `removed: true` tombstone, like staff.
   'purchaseOrders',
+  // Hospital/HMIS clinical records. Previously replaced as whole arrays, so two devices (reception + triage + doctor) could overwrite each
+  // other. Now per-record newest-updatedAt-wins; removals (patients, notes, lab requests, appointments, queue entries) are tombstones.
+  'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes',
+  // Hospital cashier shifts (open -> closed -> approval / adjustments). Merged per record so two tills' shifts both survive.
+  'cashShifts',
+  // Refund / approval requests (pending -> approved / rejected / cancelled).
+  'approvalRequests',
+  // Hospital insurers/institutions and their claim lines (claim lifecycle). Per-record merge instead of whole-array replace.
+  'institutions', 'institutionCharges',
+  // Hospital radiology / imaging orders (requested -> ... -> verified).
+  'radiologyOrders',
+  // Hospital theatre / procedure cases.
+  'theatreCases',
 ];
 
 // --- Quantity reconciliation (fixes the lost-update problem) ---------------

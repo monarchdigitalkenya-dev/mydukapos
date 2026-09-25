@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { boot } from './helpers.mjs';
 
-const SHOP = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'school/index.html'];
+const SHOP = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html'];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const at = (daysAgo, hour, min = 0) => { const d = new Date(); d.setDate(d.getDate() - daysAgo); d.setHours(hour, min, 0, 0); return d.toISOString(); };
 const sale = (id, ts, who, lines, method = 'cash') => ({ id, refNumber: 'REF-' + id, timestamp: ts, paymentMethod: method, paid: true, servedBy: who, items: lines.map(([code, name, qty, price, cost]) => ({ code, name, qty, price, wholesalePrice: cost })) });

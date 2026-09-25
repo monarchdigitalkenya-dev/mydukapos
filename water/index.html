@@ -3265,6 +3265,12 @@
                     <p style="font-size:13px; color:#7f8c8d; margin-top:-6px;">Pick an item and how many you produced — its saved Production Recipe (materials + optional cost, set once in Inventory → 🏭 Recipe) is deducted automatically and finished stock updates instantly. No recipe set yet? It'll just add the quantity with nothing deducted. For a repeatable, named multi-step process instead, use the <a href="javascript:void(0)" onclick="openProductionWizardModal()">🧙 Production Wizard</a> below — same result either way, straight into Production's stock, ready to dispatch to Shop.</p>
                     <button type="button" class="btn-main" style="background:#8E44AD; margin-bottom:14px;" onclick="openProductionWizardModal()">🧙 Open Multi-Step Production Wizard</button>
 
+                    <div id="custom-orders-panel" style="border:1px dashed #8e44ad; border-radius:8px; padding:10px 12px; margin-bottom:14px;">
+                        <strong style="color:#8e44ad;">🎨 Custom / Executive Orders</strong>
+                        <p style="font-size:12px; color:#7f8c8d; margin:4px 0 8px;">Made to order for a client — never stocked and never counted from existing bales. Produce it here, then it goes straight to checkout for payment and delivery.</p>
+                        <div id="custom-orders-list" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                    </div>
+
                     <div class="form-group">
                         <label>What are you producing?</label>
                         <select id="production-target-select" onchange="renderProductionForm()"></select>
@@ -5503,10 +5509,7 @@
 
             <div class="form-group">
                 <label>Fulfilment</label>
-                <div class="type-toggle-row">
-                    <button type="button" id="branded-bale-source-existing-btn" class="type-toggle-btn active" onclick="setBrandedBaleSource('existing')">📦 Convert Existing Standard Bale</button>
-                    <button type="button" id="branded-bale-source-new-btn" class="type-toggle-btn" onclick="setBrandedBaleSource('new')">🆕 Produce New Custom Bale</button>
-                </div>
+                <p style="font-size:13px; margin:0; color:#2c3e50;">🆕 Produced fresh for this client — never taken from existing bale or bottle stock.</p>
                 <p id="branded-bale-source-hint" style="font-size:12px; color:#7f8c8d; margin:6px 0 0;"></p>
             </div>
 
@@ -10277,11 +10280,12 @@
             const MERGED = new Set(['staff', 'pendingInvites', 'inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers',
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
-                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs']);
+                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs', 'cashShifts', 'approvalRequests', 'radiologyOrders', 'theatreCases', 'institutions', 'institutionCharges',
+                'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
-            const TRACKED = ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites'];
+            const TRACKED = ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions'];
             if (!window.__keyAck) window.__keyAck = loadKeyAck();
             const keysNow = {}, gone = {};
             TRACKED.forEach((col) => {
@@ -11008,7 +11012,7 @@
                 Object.keys(p).forEach((f) => { if (f !== 'updatedAt' && p[f] !== undefined) window.__fieldAck.set(f, pushSigOf(p[f])); });
                 // ...and which records of the deletable lists exist now (a record missing later = the person deleted it; see slimPayloadForPush)
                 if (!window.__keyAck) window.__keyAck = loadKeyAck();
-                ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites'].forEach((col) => {
+                ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions'].forEach((col) => {
                     if (!Array.isArray(p[col])) return;
                     const set = new Set();
                     p[col].forEach((r) => { const k = pushKeyOf(r); if (k != null) set.add(k); });
@@ -11626,7 +11630,7 @@
         function heldSaleInstall() {
             if (window.__heldSaleInstalled) return;
             window.__heldSaleInstalled = true;
-            if (!document.getElementById('cart-table')) return;                     // this app has no Sales Counter cart (School)
+            if (!document.getElementById('cart-table')) return;                     // this app has no Sales Counter cart
             const orig = window.renderCart;
             if (typeof orig === 'function') {
                 window.renderCart = function (...args) {
@@ -12076,6 +12080,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
                 // existed — anything without an explicit baleKind is a
                 // Standard (company-branded, directly sellable) bale.
                 if (p.baleKind !== 'standard' && p.baleKind !== 'custom') p.baleKind = 'standard';
+                if (p.baleKind === 'custom') { p.trackBottles = false; p.linkedBottleCode = null; }   // made to order: never stocked, never derived from other bales
                 syncBaleTrackingFields(p);
             });
         }
@@ -12666,10 +12671,21 @@ function cartTotalBelowMinimumMessage(newTotal) {
             const v = p.stock[siteId];
             return typeof v === 'number' ? v : 0;
         }
+        // Each site's stock carries its OWN change time (p.siteTimes[siteId]) so
+        // the server can merge Production's and every Shop's stock separately.
+        // Before this, the whole product record was last-write-wins: a Shop
+        // till pushing a stale copy of "20L Sealed Bottle" (after selling one)
+        // silently overwrote what Production had just produced.
+        function stampSiteStock(p, siteId) {
+            if (!p.siteTimes) p.siteTimes = {};
+            p.siteTimes[siteId] = Date.now();
+        }
         function setStockAt(p, siteId, value) {
             if (!p) return;
             if (!p.stock) p.stock = {};
-            p.stock[siteId] = Math.max(0, round2(value));
+            const next = Math.max(0, round2(value));
+            if (stockAt(p, siteId) !== next) stampSiteStock(p, siteId);
+            p.stock[siteId] = next;
         }
         function addStockAt(p, siteId, delta) {
             setStockAt(p, siteId, stockAt(p, siteId) + delta);
@@ -12691,7 +12707,9 @@ function cartTotalBelowMinimumMessage(newTotal) {
         function setBottleStockAt(p, siteId, value) {
             if (!p) return;
             if (!p.bottleStockBySite) p.bottleStockBySite = {};
-            p.bottleStockBySite[siteId] = Math.max(0, Math.round(value));
+            const next = Math.max(0, Math.round(value));
+            if (bottleStockAt(p, siteId) !== next) stampSiteStock(p, siteId);
+            p.bottleStockBySite[siteId] = next;
         }
         function addBottleStockAt(p, siteId, delta) {
             setBottleStockAt(p, siteId, bottleStockAt(p, siteId) + delta);
@@ -12872,7 +12890,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             const branches = shopBranches();
             const results = [];
             branches.forEach(branch => {
-                products.filter(p => !p.customQuote && stockAt(p, branch.id) <= lowStockThreshold)
+                products.filter(p => isStockedProduct(p) && stockAt(p, branch.id) <= lowStockThreshold)
                     .forEach(p => results.push({ product: p, branch }));
             });
             return results;
@@ -13001,6 +13019,8 @@ function cartTotalBelowMinimumMessage(newTotal) {
         if (migrateToSharedCatalogue()) {
             safeSetItem('aqua_products', JSON.stringify(products));
         }
+        // Custom/Executive bales are made to order: never stock-tracked, never derived from other bales.
+        products.forEach(p => { if (p.category === 'bale' && p.baleKind === 'custom' && (p.trackBottles || p.linkedBottleCode)) { p.trackBottles = false; p.linkedBottleCode = null; } });
         syncQtyView(activeSiteId);
         let waterCostPerLiter = parseFloat(localStorage.getItem('aqua_water_cost_per_liter') || '1.5');
         // Restocking Tab: one unified log of every stock addition made
@@ -13252,6 +13272,20 @@ function cartTotalBelowMinimumMessage(newTotal) {
         function collectSyncPayload() {
             return { businessName, ownerName, sites, products, refillSizes, tanks, salesLog, stockMovementLog, bulkOrders, staff, bills, lowStockThreshold, rawMaterials, waterCostPerLiter, suppliers, deliveryZones, deliveryAgents, deliveryNotifications, vatRateA, vatRateB, kraEtimsReceiptsEnabled, expiryWarningDays, paymentAccounts, billPaymentDetails, receiptFooterNotes, receiptLogoData, receiptShowLogo, receiptEmail, receiptContact, receiptExtraInfo, receiptQrData, receiptShowQr, receiptQrCaption, customers, loyaltyEnabled, tokenValueKES, loyaltyTiers, lockedTabs, requireCartRemovePw, requireCartPricePw, returns, debts, expenses, recurringExpenses, pendingInvites, staffShifts, pendingExchanges, attendanceRoster, attendanceLog, adminActivityLog, offers, restockLog, productionLog, dispatchLog, stockRequests, defaultBottlesPerBale, productionStepsTemplate, pwHash: localStorage.getItem('aqua_pw_hash') || '', adminPwHash: localStorage.getItem('aqua_admin_pw_hash') || '' };
         }
+        // After a push the device may only say "I'm up to date with the server"
+        // if the server had NOTHING newer than what this device already held
+        // when the push arrived. If another device (Production's tablet, say)
+        // changed something in between (data.prev = the server's time before
+        // our push), our push merged into that change and this device hasn't
+        // SEEN it yet — so the marker stays put and we pull straight away.
+        // Without this, a device that pushed right after another one's change
+        // kept showing stale stock until somebody else pushed again.
+        function markPushedThroughServerTime(data) {
+            const held = parseInt(localStorage.getItem('aqua_last_synced_at') || '0', 10);
+            const missedSomething = !!data && typeof data.prev === 'number' && data.prev > held && held > 0;
+            if (!missedSomething) safeSetItem('aqua_last_synced_at', String((data && data.updatedAt) || Date.now()));
+            else setTimeout(() => { try { pullFromServer(); } catch (e) { /* the 7s poll will */ } }, 50);
+        }
         async function doPush() {
             return trackPush(doPushImpl);
         }
@@ -13277,7 +13311,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
                     // Bookmark what we just pushed as "already seen" so the
                     // 7-second poll below doesn't turn around and re-apply this
                     // device's own change back onto itself a moment later.
-                    safeSetItem('aqua_last_synced_at', String(data.updatedAt || Date.now()));
+                    markPushedThroughServerTime(data);
                     ackLocalDirty(seqAtStart);
                     snapshotProductsSync();
                     snapshotExtraSyncedFields();
@@ -13327,7 +13361,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
                 if (res.ok) {
                     slim.commit();
                     const data = await res.json();
-                    safeSetItem('aqua_last_synced_at', String(data.updatedAt || Date.now()));
+                    markPushedThroughServerTime(data);
                     ackLocalDirty(seqAtStart);
                     snapshotProductsSync();
                     snapshotExtraSyncedFields();
@@ -13558,7 +13592,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
         }
         // Polls the shared server record every 7 seconds — the same interval
         // the rest of the app suite (Shop, hotel, hospital, production,
-        // services, school, pharmacy) already uses — so an item added, a
+        // services, pharmacy) already uses — so an item added, a
         // sale rung up, or a restock logged on one device shows up on every
         // other device signed into the same link without anyone needing to
         // hit refresh. This was previously missing entirely from the water
@@ -14249,6 +14283,13 @@ function cartTotalBelowMinimumMessage(newTotal) {
         function isCustomBale(p) {
             return !!p && p.category === 'bale' && p.baleKind === 'custom';
         }
+        // A finished-goods item that physically sits in stock. A Custom Quote
+        // item and a Custom/Executive bale are both made/quoted to order and
+        // never hold stock, so they're left out of every stock list, low-stock
+        // alert, restock/produce picker and Stock Report.
+        function isStockedProduct(p) {
+            return !!p && !p.customQuote && !isCustomBale(p);
+        }
         function baleBrandColor(isCustom) {
             return isCustom ? '#8e44ad' : '#7f8c8d';
         }
@@ -14467,7 +14508,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             ).map(p => ({
                 kind: 'product', id: p.code, name: p.name,
                 priceLabel: p.customQuote ? 'Custom Quote' : (Array.isArray(p.priceTiers) && p.priceTiers.length > 0 ? `From ${money(getTieredPrice(p, 1))}` : money(p.price)),
-                subLabel: p.customQuote ? 'Call for pricing' : `#${p.code} · ${p.qty} in stock`,
+                subLabel: p.customQuote ? 'Call for pricing' : isCustomBale(p) ? `#${p.code} · Made to order` : `#${p.code} · ${p.qty} in stock`,
             }));
 
             const matches = [...refillMatches, ...productMatches].slice(0, 15);
@@ -14558,6 +14599,10 @@ function cartTotalBelowMinimumMessage(newTotal) {
         function addBottledToCart(code, quotedPrice, addQty) {
             const product = products.find(p => p.code === code);
             if (!product) return;
+            // A Custom/Executive bale is never sold off a shelf — it is made to
+            // order, so it always goes through the order form (client details,
+            // quantity, price), never the plain add-to-cart stock check.
+            if (isCustomBale(product) && !product.customQuote) { openBrandedBaleModal(code); return; }
             if (product.category === 'bale') product.qty = effectiveBaleQty(product);
             const qtyToAdd = (typeof addQty === 'number' && addQty > 0) ? addQty : 1;
             if (qtyToAdd < 1 && product.category === 'bale' && product.allowHalfBale === false) {
@@ -14613,7 +14658,8 @@ function cartTotalBelowMinimumMessage(newTotal) {
                see the Production Tab), that recipe is deducted instead;
                otherwise it falls back to the same linked bottle stock. */
         let brandedBaleModalCode = null;
-        let brandedBaleSourceMode = 'existing'; // 'existing' | 'new'
+        let brandedBaleSourceMode = 'new'; // custom bales are always produced fresh — never converted from existing stock
+        let brandedBaleFromProduction = false; // opened from the Production tab (goes straight to checkout/delivery afterwards)
 
         // The Sealed Bottle a bale's bottles come from — prefers the
         // explicit linkedBottleCode set when the bale was created,
@@ -14628,7 +14674,8 @@ function cartTotalBelowMinimumMessage(newTotal) {
                 || products.find(p => p.category === 'bottled');
         }
 
-        function openBrandedBaleModal(code) {
+        function openBrandedBaleModal(code, fromProduction) {
+            brandedBaleFromProduction = !!fromProduction;
             syncLinkedBaleQuantities();
             const product = products.find(p => p.code === code);
             if (!product) return;
@@ -14642,7 +14689,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             document.getElementById('branded-bale-notes-input').value = '';
             document.getElementById('branded-bale-price-input').value = '';
             document.getElementById('branded-bale-modal-error').textContent = '';
-            setBrandedBaleSource('existing');
+            setBrandedBaleSource('new');
             document.getElementById('branded-bale-modal').style.display = 'flex';
         }
 
@@ -14652,24 +14699,14 @@ function cartTotalBelowMinimumMessage(newTotal) {
         }
 
         function setBrandedBaleSource(mode) {
-            brandedBaleSourceMode = mode;
-            document.getElementById('branded-bale-source-existing-btn').classList.toggle('active', mode === 'existing');
-            document.getElementById('branded-bale-source-new-btn').classList.toggle('active', mode === 'new');
+            brandedBaleSourceMode = 'new';
             const product = products.find(p => p.code === brandedBaleModalCode);
             const hintEl = document.getElementById('branded-bale-source-hint');
-            if (product) {
+            if (product && hintEl) {
                 const hasRecipe = Array.isArray(product.productionRecipe) && product.productionRecipe.length > 0;
-                const bottleProduct = baseBottleProductFor(product);
-                if (mode === 'new' && hasRecipe) {
-                    hintEl.textContent = `Deducts this item's own Production Recipe × qty (set in Inventory → 🏭 Recipe).`;
-                } else if (bottleProduct) {
-                    const bpb = product.bottlesPerBale || defaultBottlesPerBale;
-                    hintEl.textContent = mode === 'existing'
-                        ? `Converts qty × ${bpb} bottles from "${bottleProduct.name}" (${bottleProduct.qty} on hand) into this custom order.`
-                        : `No Production Recipe set for this item — falls back to qty × ${bpb} bottles from "${bottleProduct.name}" (${bottleProduct.qty} on hand).`;
-                } else {
-                    hintEl.textContent = 'No linked Sealed Bottle or Production Recipe found — set one in Inventory before fulfilling this order.';
-                }
+                hintEl.textContent = hasRecipe
+                    ? `Deducts this item's own Production Recipe × qty from raw materials (set in Inventory → 🏭 Recipe).`
+                    : `No Production Recipe set for this item — the run is recorded but no materials are deducted. Set one in Inventory → 🏭 Recipe to auto-deduct.`;
             }
             updateBrandedBaleTotal();
         }
@@ -14703,12 +14740,14 @@ function cartTotalBelowMinimumMessage(newTotal) {
             const orderNotes = (document.getElementById('branded-bale-notes-input').value || '').trim();
             const bottlesPerBale = product.bottlesPerBale || defaultBottlesPerBale;
             const hasRecipe = Array.isArray(product.productionRecipe) && product.productionRecipe.length > 0;
-            const useRecipe = brandedBaleSourceMode === 'new' && hasRecipe;
+            const useRecipe = hasRecipe;
 
+            // Custom bales are produced fresh: only the item's own Production
+            // Recipe (raw materials) is used. Nothing is ever taken from
+            // existing bale or bottle stock. Check every material first so a
+            // shortfall never leaves a half-applied run.
             const componentsUsed = [];
             if (useRecipe) {
-                // Produce New, with a saved recipe: check every material
-                // has enough stock BEFORE deducting anything.
                 for (const row of product.productionRecipe) {
                     const material = rawMaterials.find(m => m.id === row.materialId);
                     if (!material) continue;
@@ -14723,24 +14762,6 @@ function cartTotalBelowMinimumMessage(newTotal) {
                     const material = rawMaterials.find(m => m.id === c.materialId);
                     material.stockQty = round2((material.stockQty || 0) - c.qtyUsed);
                 });
-            } else {
-                // Convert Existing (or Produce New with no recipe set) —
-                // either way, draws straight from the linked Sealed Bottle
-                // stock, the same pool a Standard Bale sale draws from.
-                const bottleProduct = baseBottleProductFor(product);
-                const bottlesNeeded = bottlesPerBale * qty;
-                if (!bottleProduct) {
-                    errEl.textContent = 'No linked Sealed Bottle found for this custom bale — set one in Inventory, or add a Production Recipe.';
-                    return;
-                }
-                if ((bottleProduct.qty || 0) < bottlesNeeded) {
-                    errEl.textContent = `Not enough "${bottleProduct.name}" in stock — need ${bottlesNeeded}, have ${bottleProduct.qty}.`;
-                    return;
-                }
-                bottleProduct.qty = round2((bottleProduct.qty || 0) - bottlesNeeded);
-                logStockMovement(bottleProduct.code, bottleProduct.name, -bottlesNeeded, `Custom bale order → ${product.name}`);
-                componentsUsed.push({ materialId: null, productCode: bottleProduct.code, name: bottleProduct.name, qtyUsed: bottlesNeeded });
-                syncLinkedBaleQuantities();
             }
 
             const orderDetails = { customerName: customerName || null, customerPhone: customerPhone || null, logoSpecs: logoSpecs || null, orderNotes: orderNotes || null };
@@ -14749,7 +14770,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
                 id: genSaleId(), timestamp: new Date().toISOString(),
                 siteId: recordSiteId(), producedBy: (currentServer && currentServer.name) || 'Admin',
                 targetKind: 'product', targetId: product.code, targetName: product.name, qty,
-                sourceMode: useRecipe ? 'recipe' : (brandedBaleSourceMode === 'existing' ? 'deduct' : 'new-batch'),
+                sourceMode: useRecipe ? 'recipe' : 'no-recipe',
                 componentsUsed, bottlesPerBale, stages: null,
                 notes: noteParts.length > 0 ? `Custom bale order — ${noteParts.join(' · ')}` : 'Custom bale order',
                 workflow: 'custom-bale-order', orderDetails,
@@ -14775,8 +14796,17 @@ function cartTotalBelowMinimumMessage(newTotal) {
             if (typeof renderProductsTable === 'function') renderProductsTable();
             renderAllItemsGrid();
             queuePush();
+            const goCheckout = brandedBaleFromProduction;
             closeBrandedBaleModal();
-            showToast(`${qty} × "${product.name}" added to cart for ${customerName || 'this order'}.`);
+            renderRawMaterialsTable();
+            showToast(`${qty} × "${product.name}" produced and added to cart for ${customerName || 'this order'}.`);
+            if (goCheckout) {
+                // Straight to the Sales Counter's payment screen — pay now, Bill/Pay Later, or set delivery there.
+                const salesTabBtn = document.getElementById('sales-tab-btn');
+                if (salesTabBtn) salesTabBtn.click();
+                const paymentToggle = document.getElementById('payment-toggle');
+                if (paymentToggle && typeof paymentToggle.scrollIntoView === 'function') paymentToggle.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
         }
 
         // Direct Factory Sale — a convenience shortcut from the Factory
@@ -14861,6 +14891,11 @@ function cartTotalBelowMinimumMessage(newTotal) {
             } else {
                 const product = products.find(p => p.code === line.code);
                 const available = availableStockForLine(product);
+                if (line.customBaleOrder) {
+                    showToast('A custom order is produced for a fixed quantity — remove it and create a new order to change it.', true);
+                    renderCart();
+                    return;
+                }
                 if (product && !product.customQuote && qty > available) {
                     showToast(`Only ${available} of "${line.name}" in stock.`, true);
                     renderCart();
@@ -14904,6 +14939,10 @@ function cartTotalBelowMinimumMessage(newTotal) {
             } else {
                 const product = products.find(p => p.code === line.code);
                 const available = availableStockForLine(product);
+                if (line.customBaleOrder) {
+                    showToast('A custom order is produced for a fixed quantity — remove it and create a new order to change it.', true);
+                    return;
+                }
                 // Custom Quote items were never given real stock (they're
                 // special-order, not counted units) — the same exception
                 // addBottledToCart() already makes has to apply here too,
@@ -15876,6 +15915,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
 
         function deductProductStockForSale(product, qtyBales) {
             if (!product) return;
+            if (isCustomBale(product)) return; // made to order — never has stock to deduct
             if (product.trackBottles) {
                 const bpb = productBottlesPerBale(product);
                 const bottlesNeeded = Math.round(qtyBales * bpb);
@@ -15910,7 +15950,9 @@ function cartTotalBelowMinimumMessage(newTotal) {
                     line.materialsUsed = deductBomForLine(refillSizes.find(s => s.id === line.refillSizeId), line.qty, line.materialsOverride);
                 } else {
                     const product = products.find(p => p.code === line.code);
-                    if (product) deductProductStockForSale(product, line.qty);
+                    // A custom bale order was already produced (materials used, run logged)
+                    // when the order was confirmed — deducting stock again here double-counted it.
+                    if (product && !line.customBaleOrder) deductProductStockForSale(product, line.qty);
                     line.materialsUsed = deductBomForLine(product, line.qty, line.materialsOverride);
                 }
                 // Toggled accessory materials are genuinely sold, chargeable
@@ -17378,8 +17420,8 @@ function cartTotalBelowMinimumMessage(newTotal) {
                     <td><select class="inv-edit-input" onchange="updateProductField('${escapeJsAttr(p.code)}', 'supplierId', this.value)">${supplierOptionsHtml(p.supplierId || '')}</select></td>
                     <td>
                         <button class="settings-small-btn" style="margin-bottom:4px;" onclick="openEditProductModal('${escapeJsAttr(p.code)}')">✏️ Edit</button><br>
-                        ${currentSite().type === 'production' ? `<button class="settings-small-btn" style="background:var(--success); color:#fff; margin-bottom:4px;" onclick="openDispatchModal('${escapeJsAttr(p.code)}')">🚚 Dispatch</button><br>` : ''}
-                        ${currentSite().type === 'shop' ? `<button class="settings-small-btn" style="background:var(--secondary, #2980b9); color:#fff; margin-bottom:4px;" onclick="requestStockFromProduction('${escapeJsAttr(p.code)}')">📢 Request</button><br>` : ''}
+                        ${(currentSite().type === 'production' && !isCustomBaleRow) ? `<button class="settings-small-btn" style="background:var(--success); color:#fff; margin-bottom:4px;" onclick="openDispatchModal('${escapeJsAttr(p.code)}')">🚚 Dispatch</button><br>` : ''}
+                        ${(currentSite().type === 'shop' && !isCustomBaleRow) ? `<button class="settings-small-btn" style="background:var(--secondary, #2980b9); color:#fff; margin-bottom:4px;" onclick="requestStockFromProduction('${escapeJsAttr(p.code)}')">📢 Request</button><br>` : ''}
                         <button class="remove-btn" onclick="removeProduct('${escapeJsAttr(p.code)}')">Remove</button>
                     </td>
                 </tr>`;
@@ -17403,6 +17445,17 @@ function cartTotalBelowMinimumMessage(newTotal) {
         // Deliberately its own row (colspan across the whole table) rather
         // than new columns, so it doesn't widen every other product's row.
         function baleNestedRowHtml(p) {
+            if (isCustomBale(p)) {
+                return `
+                <tr class="bale-nested-row">
+                    <td></td>
+                    <td colspan="12">
+                        <div class="bale-nested-wrap" style="font-size:12.5px; color:#7f8c8d;">
+                            🎨 Made to order — never stocked and never counted from other bales. Produce it from Production → Custom / Executive Orders, or on the Sales Counter.
+                        </div>
+                    </td>
+                </tr>`;
+            }
             const bpb = productBottlesPerBale(p);
             const halfPrice = getHalfBalePrice(p);
             const breakdownHtml = p.trackBottles
@@ -17674,7 +17727,17 @@ function cartTotalBelowMinimumMessage(newTotal) {
             renderSupplierDropdowns();
         }
 
+        function renderCustomOrdersPanel() {
+            const wrap = document.getElementById('custom-orders-list');
+            if (!wrap) return;
+            const customs = products.filter(p => isCustomBale(p) && !p.customQuote);
+            wrap.innerHTML = customs.length === 0
+                ? `<span style="font-size:12px; color:#95a5a6;">No Custom/Executive bale items yet — add one in Inventory (Wholesale Bale → Custom/Executive).</span>`
+                : customs.map(p => `<button type="button" class="settings-small-btn" style="background:#8e44ad; color:#fff;" onclick="openBrandedBaleModal('${escapeJsAttr(p.code)}', true)">🎨 Produce Order — ${escapeHtml(p.name)}</button>`).join('');
+        }
+
         function renderProductionTab() {
+            renderCustomOrdersPanel();
             renderProductionTargetSelect();
             renderProductionHistoryTable();
             renderFactoryStockTable();
@@ -17715,7 +17778,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
         // it's now just a convenient view of the same stock number shown
         // in Inventory, with quick Sell/Dispatch actions right here.
         function factoryStockEligibleProducts() {
-            return products.filter(p => (p.category === 'bale' || p.category === 'bottled') && !p.customQuote);
+            return products.filter(p => (p.category === 'bale' || p.category === 'bottled') && isStockedProduct(p));
         }
 
         // Prefers the live qty mirror when we're actually viewing
@@ -18290,7 +18353,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             const materialsRows = Object.entries(materialsTotals).sort((a, b) => b[1] - a[1]);
             const totalMaterialsUsed = materialsRows.reduce((sum, [, qty]) => sum + qty, 0);
 
-            const stockRows = products.filter(p => !p.customQuote)
+            const stockRows = products.filter(p => isStockedProduct(p))
                 .map(p => ({ name: p.name, qty: p.qty }))
                 .sort((a, b) => a.name.localeCompare(b.name));
             const tankRows = siteTanks().map(t => ({ name: (activeSiteId === 'both' ? `${(sites.find(x => x.id === t.siteId) || {}).name || 'Site'} — ` : '') + t.name, qty: `${t.currentVolumeLiters.toLocaleString()} L` }));
@@ -18814,7 +18877,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
         }
 
         function buildStockReportRows(range) {
-            return products.filter(p => !p.customQuote).map(p => {
+            return products.filter(p => isStockedProduct(p)).map(p => {
                 const closing = (p.qty || 0) - stockMovementDeltaAfter(p.code, range.to) + soldQtyAfter(p.code, range.to);
                 const added = stockMovementDeltaWithinRange(p.code, range.from, range.to, true);
                 const removed = stockMovementDeltaWithinRange(p.code, range.from, range.to, false);
@@ -22342,9 +22405,9 @@ function cartTotalBelowMinimumMessage(newTotal) {
             wrap.style.display = 'block';
             const today = todayDateString();
             tbody.innerHTML = sites.map(site => {
-                const itemsTracked = products.filter(p => stockAt(p, site.id) > 0).length;
+                const itemsTracked = products.filter(p => isStockedProduct(p) && stockAt(p, site.id) > 0).length;
                 const unitsInStock = round2(products.reduce((sum, p) => sum + stockAt(p, site.id), 0));
-                const lowStockItems = products.filter(p => !p.customQuote && stockAt(p, site.id) <= lowStockThreshold).length;
+                const lowStockItems = products.filter(p => isStockedProduct(p) && stockAt(p, site.id) <= lowStockThreshold).length;
                 const siteSales = salesLog.filter(s => s.paid !== false && (s.siteId || null) === site.id);
                 const todaySiteSales = siteSales.filter(s => s.timestamp.slice(0, 10) === today);
                 const todayRevenue = todaySiteSales.reduce((sum, s) => sum + s.total, 0);
@@ -22392,7 +22455,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
                 ? `Infinite tank across ${siteTanks().length} tank${siteTanks().length === 1 ? '' : 's'}`
                 : `${currentVol.toLocaleString()} / ${capacity.toLocaleString()} L across ${siteTanks().length} tank${siteTanks().length === 1 ? '' : 's'}`;
 
-            const lowStockCount = products.filter(p => p.qty <= lowStockThreshold).length;
+            const lowStockCount = products.filter(p => isStockedProduct(p) && p.qty <= lowStockThreshold).length;
             document.getElementById('dash-low-stock-count').textContent = String(lowStockCount);
 
             const openBills = getOpenBillsList();
@@ -23152,7 +23215,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
                     ? `<option value="">No materials yet — tick "brand-new" above</option>`
                     : restockSiteMaterials.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)} (${m.stockQty} in stock)</option>`).join('');
             } else {
-                const restockableProducts = products.filter(p => !p.customQuote);
+                const restockableProducts = products.filter(p => isStockedProduct(p));
                 select.innerHTML = restockableProducts.length === 0
                     ? `<option value="">No products yet — tick "brand-new" above</option>`
                     : restockableProducts.map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)} (${p.qty} in stock)</option>`).join('');
@@ -23308,7 +23371,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             // linked bottle's stock (see effectiveBaleQty). Producing more
             // of it means producing bottles instead, which is already in
             // this same list.
-            const productOpts = products.filter(p => !p.customQuote && !(p.category === 'bale' && p.linkedBottleCode && !p.trackBottles)).map(p =>
+            const productOpts = products.filter(p => isStockedProduct(p) && !(p.category === 'bale' && p.linkedBottleCode && !p.trackBottles)).map(p =>
                 `<option value="product:${escapeQuotes(p.code)}">${escapeHtml(p.name)} (${p.qty} in stock)</option>`);
             const materialOpts = rawMaterials.filter(m => m.siteId === activeSiteId).map(m =>
                 `<option value="material:${escapeQuotes(m.id)}">${escapeHtml(m.name)} — material (${m.stockQty} in stock)</option>`);
@@ -24879,7 +24942,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             const today = todayDateString();
             if (localStorage.getItem('aqua_stock_alerts_last_shown') === today) return;
 
-            const lowStockItems = products.filter(p => !p.customQuote && p.qty <= lowStockThreshold);
+            const lowStockItems = products.filter(p => isStockedProduct(p) && p.qty <= lowStockThreshold);
             const expiringItems = products.filter(p => {
                 if (!p.expiryDate) return false;
                 const days = Math.ceil((new Date(p.expiryDate) - new Date()) / 86400000);

@@ -6,7 +6,7 @@ import { boot } from './helpers.mjs';
 // double-tap on a slow tablet re-submitting the same delivery twice — which
 // would silently add the same quantity to stock a second time (e.g. "I
 // added 6 and it became 12").
-const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'school/index.html'];
+const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html'];
 const INV = JSON.stringify([{ code: 'A1', type: 'item', name: 'Widget', price: 100, wholesalePrice: 20, qty: 4, unit: 'pcs', vatCategory: 'A' }]);
 const setDraft = (w, qty) => w.eval(`restockDraft = [{ rowId: 1, code: 'A1', name: 'Widget', qty: '${qty}', cost: '20', sellPrice: '', wholesaleSell: '', unit: 'pcs' }];`);
 const qtyOf = (w) => w.eval("inventory.find(p => p.code === 'A1').qty");

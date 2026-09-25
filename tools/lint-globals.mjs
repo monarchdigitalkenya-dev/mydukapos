@@ -7,7 +7,7 @@ import { parse } from 'acorn';
 import { JSDOM } from 'jsdom';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');       // (not URL.pathname: on Windows that is "/C:/dev/..." and became "C:\\C:\\dev")
-const APPS = ['index.html', 'water/index.html', 'hotel/index.html', 'hospital/index.html', 'school/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'owner/index.html'];
+const APPS = ['index.html', 'water/index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'owner/index.html'];
 const win = new JSDOM('<html></html>').window;
 const BUILTIN = new Set([...Object.getOwnPropertyNames(win), ...Object.getOwnPropertyNames(globalThis),
   'undefined', 'NaN', 'Infinity', 'arguments', 'BarcodeDetector', 'webkitSpeechRecognition', 'SpeechRecognition', 'webkitAudioContext', 'ResizeObserver', 'IntersectionObserver',

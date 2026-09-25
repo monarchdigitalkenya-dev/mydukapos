@@ -54,7 +54,7 @@ test('Owner Console: a staff invite / staff link opens for the staff member (PIN
 });
 
 // ---------- 3. "webpage not available": the service workers ----------
-const SW_FILES = ['sw.js', ...['water', 'hotel', 'hospital', 'school', 'production', 'services', 'pharmacy', 'owner'].map((a) => `${a}/sw.js`)];
+const SW_FILES = ['sw.js', ...['water', 'hotel', 'hospital', 'production', 'services', 'pharmacy', 'owner'].map((a) => `${a}/sw.js`)];
 function loadSw(file, { fetchImpl, cachesImpl }) {
   const handlers = {};
   const code = fs.readFileSync(path.join(ROOT, file), 'utf8').replace('NAVIGATION_NETWORK_TIMEOUT_MS = 3500', 'NAVIGATION_NETWORK_TIMEOUT_MS = 40');
@@ -153,7 +153,7 @@ test('the receipt preview text is built by the same code: a sale that is not sav
 });
 
 // ---------- 6. restock / order name box: type, or pick from the inventory ----------
-for (const app of ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'school/index.html']) {
+for (const app of ['index.html', 'hotel/index.html', 'pharmacy/index.html']) {
   test(`${app}: the Restock and Order name boxes drop down the inventory as you type; picking fills the code, unit and buying price; a new name just stays typed`, async () => {
     const { w, d, errors, close } = await boot(app, { storage: { pos_inventory: INV }, wait: 1500 });
     w.eval("showToast = function () {}");

@@ -9,7 +9,7 @@ import { boot } from './helpers.mjs';
 // programmatic tab switch) left the table showing its static "Open this tab
 // to load your items" placeholder — fixed only by a real click, i.e.
 // switching to another tab and back.
-const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'school/index.html'];
+const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html'];
 const INV = JSON.stringify([{ code: 'A1', type: 'item', name: 'Widget', price: 100, wholesalePrice: 50, qty: 7, unit: 'pcs', vatCategory: 'A' }]);
 
 for (const app of APPS) {

@@ -160,7 +160,7 @@ test('the print queue is not blocked for ever by a phone that never reports the 
 });
 
 // ---------- 5. the order ticket through the system printer: slip-sized paper, crisp black text ----------
-for (const app of ['hotel/index.html', 'index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'school/index.html']) {
+for (const app of ['hotel/index.html', 'index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html']) {
   test(`${app}: the order ticket sets a receipt-width, auto-length page (no wasted paper) and prints in pure heavy black like the receipt`, async () => {
     const html = fs.readFileSync(path.join(ROOT, app), 'utf8');
     assert.match(html, /body\.printing-kitchen-ticket \.receipt-paper \* \{ color: #000 !important; background: transparent !important; \}/);

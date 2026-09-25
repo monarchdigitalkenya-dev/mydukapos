@@ -52,7 +52,7 @@ const CONTENT_KEY = 'website-marketing';
 const DEFAULT_CONTENT = {
   logoDataUrl: '',
   heroHeadline: 'The till that keeps working even when the internet doesn\u2019t.',
-  heroSubhead: 'One app for your shop, hotel, restaurant, bar, hospital, school, or workshop. Every sale recorded, every receipt printed, every shilling accounted for \u2014 online or off.',
+  heroSubhead: 'One app for your shop, hotel, restaurant, bar, hospital, or workshop. Every sale recorded, every receipt printed, every shilling accounted for \u2014 online or off.',
   // The homepage's 6-icon feature grid ("Inventory", "Receipts", etc.) —
   // icon/background color stay fixed in the page's own code (design system,
   // not content), but the tag/title/description text shown on each card is
@@ -62,7 +62,7 @@ const DEFAULT_CONTENT = {
     { tag: 'Receipts', title: 'A receipt for every sale', desc: 'Printed on Bluetooth, USB, or any system printer \u2014 or shared straight to WhatsApp.' },
     { tag: 'Insights', title: 'Know your numbers, daily', desc: 'Sales summaries and charts that show exactly where the money came from \u2014 and went.' },
     { tag: 'Alerts', title: 'Never sell out by surprise', desc: 'Low-stock warnings before an item runs out, not after a customer walks away empty-handed.' },
-    { tag: 'Any business', title: 'Built for six industries', desc: 'Shop, hotel, restaurant, bar, hospital, school, or workshop \u2014 the same reliable core, tailored.' },
+    { tag: 'Any business', title: 'Built for five industries', desc: 'Shop, hotel, restaurant, bar, hospital, or workshop \u2014 the same reliable core, tailored.' },
     { tag: 'Staff', title: 'Everyone gets their own login', desc: 'Give each till worker their own account, and see exactly who served what, and when.' },
   ],
   // The homepage's second feature section ("Why owners switch and stay") —
@@ -121,19 +121,6 @@ const DEFAULT_CONTENT = {
         { title: 'Trade Credits & Bills', desc: 'Track outstanding balances and money owed to or from outside parties.' },
         { title: 'M-Pesa built in', desc: 'Send an STK push straight from checkout \u2014 no separate till number to manage.' },
         { title: 'Works with zero signal', desc: 'A clinic with unreliable power or internet still runs, uninterrupted.' },
-      ],
-    },
-    school: {
-      tagline: 'Fee collection and student records built for how a Kenyan school bursar\u2019s office actually works.',
-      screenshotDataUrl: '',
-      screenshots: [],
-      features: [
-        { title: 'Student registry', desc: 'Admission number, class, guardian details \u2014 searchable in seconds.' },
-        { title: 'Fee balances at a glance', desc: 'See who\u2019s paid, who owes, and how much, without digging through a ledger.' },
-        { title: 'Instant receipts', desc: 'Every payment gets a receipt on the spot \u2014 no disputes at term opening.' },
-        { title: 'Canteen sales too', desc: 'A shop/canteen counter runs alongside fee collection in the same app.' },
-        { title: 'M-Pesa built in', desc: 'Parents can pay by STK push directly at the counter.' },
-        { title: 'Works with zero signal', desc: 'Every payment is saved on the device first, and syncs the moment you\u2019re back online.' },
       ],
     },
     production: {

@@ -11,7 +11,7 @@ import { boot } from './helpers.mjs';
 // they clicked anywhere themselves — a real leak between accounts sharing
 // one device.
 const sha = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
-const APPS = ['index.html', 'water/index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'school/index.html'];
+const APPS = ['index.html', 'water/index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html'];
 
 for (const app of APPS) {
   test(`${app}: clocking out on Settings, then a staff PIN login, does not leave Settings' content showing`, async () => {

@@ -88,7 +88,7 @@ test('if stock changed while it was held the sale still comes back, with a warni
   b.close();
 });
 
-test('Aqua POS: hold and bring back work on its cart too; School (no cart) is left alone without errors', async () => {
+test('Aqua POS: hold and bring back work on its cart too', async () => {
   const b = await boot('water/index.html', { wait: 1500 });
   b.w.eval("showToast = function (m) { window.__toasts = (window.__toasts || []).concat(m); }");
   b.w.eval("currentCart = { 'X::1': { code: 'X', cartKey: 'X::1', name: 'Test refill', price: 100, qty: 2, unit: 'pcs', vatCategory: 'A' } }; renderCart()");
@@ -99,8 +99,4 @@ test('Aqua POS: hold and bring back work on its cart too; School (no cart) is le
   assert.equal(b.w.eval("currentCart['X::1'].qty"), 2);
   assert.deepEqual(b.errors, []);
   b.close();
-  const s = await boot('school/index.html', { wait: 1200 });
-  assert.equal(s.d.getElementById('hold-sale-btn'), null);
-  assert.deepEqual(s.errors, []);
-  s.close();
 });

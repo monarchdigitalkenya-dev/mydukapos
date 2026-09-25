@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { boot } from './helpers.mjs';
 
-const APPS = { shop: 'index.html', hotel: 'hotel/index.html', hospital: 'hospital/index.html', pharmacy: 'pharmacy/index.html', school: 'school/index.html', production: 'production/index.html', services: 'services/index.html', water: 'water/index.html', owner: 'owner/index.html' };
+const APPS = { shop: 'index.html', hotel: 'hotel/index.html', hospital: 'hospital/index.html', pharmacy: 'pharmacy/index.html', production: 'production/index.html', services: 'services/index.html', water: 'water/index.html', owner: 'owner/index.html' };
 const stem = (t) => t.replace(/^[^\p{L}]+/u, '').replace(/\d+$/, '').replace(/\s+/g, ' ').trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -69,7 +69,6 @@ test('each guide is about ITS module (and only that module)', () => {
   has('hospital', /visit reference/); has('hospital', /Reception \/ Registration/); has('hospital', /Wards & Beds/); has('hospital', /Insurance/); not('hospital', /Gas Refill/);
   has('hotel', /Kitchen/); has('hotel', /Open New Tab/); has('hotel', /Dish/); has('hotel', /optional but recommended/); not('hotel', /Bazaar/);
   has('pharmacy', /soonest-expiring batch/); has('pharmacy', /Dosage/); not('pharmacy', /Wards/);
-  has('school', /Bazaar Fund/); has('school', /Promote a Class/); has('school', /Fee Balances/); not('school', /Hold sale/); not('school', /Bill \(Pay Later\)/);
   has('production', /Hiring Counter/); has('production', /Assemble & Add to Stock/);
   has('services', /Client Registry/); has('services', /Print Intake Tag/); has('services', /Bookings/);
   has('water', /Bulk Tank/); has('water', /Price per Litre/); has('water', /Both sites/); not('water', /Stock Take/); not('water', /Low-stock|low-stock button/);

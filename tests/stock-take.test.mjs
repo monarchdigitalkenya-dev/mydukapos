@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { boot } from './helpers.mjs';
 
 // Stock Take tab: count the shelf, type the counts, update the system's quantities in one go (only counted items change; recorded as "Stock take").
-const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'school/index.html'];
+const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html'];
 const INV = JSON.stringify([
   { code: 'A1', type: 'item', name: 'Alpha Tin', price: 100, wholesalePrice: 20, qty: 10, unit: 'pcs', vatCategory: 'A' },
   { code: 'B2', type: 'item', name: 'Beta Pack', price: 50, wholesalePrice: 10, qty: 5, unit: 'pcs', vatCategory: 'A' },

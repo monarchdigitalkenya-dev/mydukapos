@@ -1,7 +1,7 @@
 // Shared helpers for the tools in this folder.
 //
 // WHY THESE TOOLS EXIST
-// Each app (root/Shop, water, hotel, hospital, school, production, services,
+// Each app (root/Shop, water, hotel, hospital, production, services,
 // pharmacy) is one big index.html, and most of their logic was copy-pasted
 // between them. A fix made in one copy silently never reached the others. The
 // tools here keep the apps as the single-file PWAs they are (deploy is
@@ -21,7 +21,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 // Every app that carries POS logic. (owner/ is an admin console with its own code.)
 export const MODULES = [
   'index.html', 'water/index.html', 'hotel/index.html', 'hospital/index.html',
-  'school/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html',
+  'production/index.html', 'services/index.html', 'pharmacy/index.html',
 ];
 
 // Files that also receive the shared HTML/script blocks (the owner console has no shared functions region).

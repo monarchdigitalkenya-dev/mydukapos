@@ -1,4 +1,23 @@
-# Zips 24 - 70 — what changed
+# Zips 24 - 86 — what changed
+
+## Zip 86 — Aqua POS: produced stock reflecting everywhere; Custom/Executive bales made-to-order
+Two reported problems, both traced to real defects.
+
+* **"I produced it but Floor Stock / Inventory don't show it."** Two sync defects fixed:
+  1. Water's own push code marked the device "up to date" after every push, even when another device (e.g. Production's
+     tablet) had changed something first, so it kept showing stale stock. It now pulls straight away when the server
+     was ahead (the same `data.prev` rule the other apps already had).
+  2. Shared products keep each site's stock inside one record that merged last-write-wins, so a stale Shop push could wipe
+     what Production had just produced. Each site's stock now carries its own change time (`siteTimes`) and the server
+     (`functions/api/_merge.js` `mergeProductRecords`, also used by `wildcard-router/shop-store.js`) merges Production and
+     each Shop separately. Old data without stamps behaves exactly as before.
+* **Custom/Executive bales are made to order.** They are never stocked and never counted from other bales: removed from
+  Factory Stock, the Produce dropdown, the Wizard, low-stock alerts (the bell), Stock Report, Restock and dashboard counts;
+  no "Track by bottle count" row. New **🎨 Custom / Executive Orders** panel on the Production tab: capture client, quantity
+  and price, produce fresh (only the item's own recipe materials are deducted), then straight to checkout/delivery.
+  Also fixed: searching a custom bale said "Only 0 in stock"; the order form deducted bottles and checkout deducted them
+  again (double deduction); cart +/- on a produced order was blocked by 0 stock (quantity is now fixed by the order).
+* New tests: `tests/water-custom-bale-and-site-stock.test.mjs` (6 cases; the push test fails on the old code).
 
 ## Zip 70 — HMIS Phases 2 & 3 complete: outpatient pipeline, patient registry
 Finishes the Hospital HMIS request: a queue-and-transfer system covering all 12 named stages, and a genuinely

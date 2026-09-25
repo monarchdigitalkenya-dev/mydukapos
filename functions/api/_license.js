@@ -104,7 +104,6 @@ export const PRODUCTS = {
   shop: { label: 'Shop POS', path: '/' },
   hotel: { label: 'Hotel/Restaurant/Bar POS', path: '/hotel/' },
   hospital: { label: 'Hospital Management', path: '/hospital/' },
-  school: { label: 'School Fees Management', path: '/school/' },
   production: { label: 'Production POS', path: '/production/' },
   pharmacy: { label: 'Pharmacy POS', path: '/pharmacy/' },
   services: { label: 'Services POS (Bookings)', path: '/services/' },

@@ -211,16 +211,6 @@ function trouble(M) {
   });
 }
 const OVR = {
-  schoolPayments: (M) => ch('payments', '💳', 'Taking payment', {
-    intro: 'The School POS collects **fees** and other money by **cash or M-Pesa**.',
-    steps: [
-      'Fees: **💰 Fees & Payments ▸ Record a Payment** — pick the student, type the amount and date, choose **cash** or **M-Pesa**, then **+ Record Payment**. A receipt is made; print it or share it as a PDF.',
-      'For M-Pesa either type the M-Pesa code the guardian received, or use **Settings ▸ 💳 Payment Gateway** to send a payment prompt to the guardian\u2019s phone.',
-      'A part-payment lowers the balance; the student stays on the **Fee Balances** list until fully paid.',
-      'Other money owed to the school (for example a stationery account) goes under **📒 Debts**.',
-    ],
-    tips: ['Print any receipt once; reprints ask "already printed — another copy?" so copies are always deliberate.'],
-  }),
   waterPayments: (M) => ch('payments', '💳', 'Taking payment', {
     steps: [
       '**Cash** — type the amount the customer gave; the change shows.',
@@ -388,7 +378,7 @@ MODS.hotel = {
 MODS.hospital = {
   name: 'Hospital POS', title: 'Hospital POS — User Guide', tagline: 'Clinics and hospitals — registration, queue, consultation charges, laboratory, pharmacy, wards and beds, insurance and reports.',
   itemsPlural: 'medications and supplies', itemWord: 'medication', addTab: '➕ Add Medication', restockTab: '📥 Restock',
-  tabs: ['💊 Dispense / Bill', '🛎️ Reception / Registration', '📅 Appointments', '🚦 Queue / Triage', '🧪 Laboratory', '💊 Pharmacy', '➕ Add Medication', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🏬 Store', '🔖 Barcode', '🏥🛏️ Wards & Beds', '↩️ Returned Goods', '🚚 Deliveries', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Medication Demand', '🧾 Patient Bills', '📒 Debts', '📊 Hospital Report', '👤 My Customers', '🏥 Insurance / Institutions', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['💊 Dispense / Bill', '🛎️ Reception / Registration', '📅 Appointments', '🚦 Queue / Triage', '🧪 Laboratory', '💊 Pharmacy', '➕ Add Medication', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🏬 Store', '🔖 Barcode', '🏥🛏️ Wards & Beds', '↩️ Returned Goods', '🚚 Deliveries', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Medication Demand', '🧾 Patient Bills', '📒 Debts', '📊 Hospital Report', '👤 My Customers', '🏥 Insurance / Institutions', '💵 Cashier Shift', '🩻 Radiology', '🔪 Theatre', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
   tabText: {
     'Dispense / Bill': 'The cashier\u2019s counter: load a patient\u2019s bill, dispense medicines with dosage, take payment, print.',
     'Reception / Registration': 'Register patients (details, next of kin, allergies) and open a patient\u2019s profile and visits.',
@@ -402,6 +392,9 @@ MODS.hospital = {
     'Patient Bills': 'Bills waiting to be paid (Pay Later) and outstanding balances; settle them here.',
     'Hospital Report': 'Illness statistics, ICD-10 coded diagnoses, doctor consultation volumes and the audit log.',
     'Insurance / Institutions': 'Register NHIF, insurers and employers; bill visits to their account and track claims.',
+    'Cashier Shift': 'Open a shift with a cash float, count and close it, and request/approve refunds.',
+    'Radiology': 'X-ray, ultrasound, CT, MRI: request, schedule, perform, report and verify imaging.',
+    'Theatre': 'Surgical cases: schedule, consent, pre-op, team, procedure/anaesthesia/post-op notes, consumables.',
   },
   custom: [
     ch('flow', '🏥', 'The patient journey, step by step', {
@@ -479,67 +472,6 @@ MODS.pharmacy = {
       steps: ['**🧑‍⚕️ Patients ▸ + Register New Patient**: registering is always optional — walk-in customers can still be sold prescription items. Register regulars to build a purchase history.', '**🧪 Laboratory ▸ + New Lab Request**: order a test here or from a patient\u2019s profile; results are linked back to the patient.'],
     }),
   ],
-};
-
-MODS.school = {
-  name: 'School POS', title: 'School POS — User Guide', tagline: 'Schools — students, classes, term fees and balances, stationery stock, bazaar fund, expenses and reports.',
-  itemsPlural: 'stationery items', itemWord: 'stationery item', addTab: '➕ Add Stationery', restockTab: '📥 Restock',
-  tabs: ['💰 Fees & Payments', '📊 Dashboard', '🎓 Students', '🏫 Classes', '📖 Subjects', '📚 Stationery Stock', '➕ Add Stationery', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🏬 Store', '📦 Distribute to Classes', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '🧾 Fee Payment Records', '📦 Stock Report', '💰 Profit Report', '📊 Demand Trends', '📒 Debts', '💸 Expenses', '🎪 Bazaar Fund', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
-  tabText: {
-    'Fees & Payments': 'Set term fees, record payments, see every student\u2019s balance, add penalties.',
-    'Students': 'Register students; promote a whole class at year end.',
-    'Classes': 'Generate classes and streams; take the whole-school register.',
-    'Subjects': 'The school-wide subject list.',
-    'Stationery Stock': 'Stationery and books you stock, with stock valuation.',
-    'Add Stationery': 'Add stationery items one by one or in bulk.',
-    'Distribute to Classes': 'Give stationery out to a class: stock goes down, nothing is charged.',
-    'Fee Payment Records': 'Every fee payment by day / week / month with printing.',
-    'Profit Report': 'Income against expenses for any period.',
-    'Debts': 'Money owed to the school outside fees.',
-    'Expenses': 'Day-to-day costs (food, transport, rent); restocking logs its own expense.',
-    'Bazaar Fund': 'Money a student leaves with the school to hold; separate from fees.',
-    'Dashboard': 'Fees collected, balances outstanding and stock alerts at a glance.',
-  },
-  custom: [
-    ch('setup2', '🏫', 'Set up the school: classes, subjects, students', {
-      steps: [
-        '**🏫 Classes:** Step 1 — type a name prefix and how many (for example "Grade" × 8) ▸ **Generate Classes**. Add **streams** (East, West) under a class if needed.',
-        '**📖 Subjects ▸ + Add Subject:** add every subject taught once (Mathematics, English…).',
-        '**🎓 Students ▸ Register New Student:** admission number, full name, class (and stream), guardian name and phone ▸ **Register Student**. Edit a student any time from the registry.',
-        '**At year end:** **🎓 Students ▸ Promote a Class** — move every student from one class to another in one action.',
-        '**📋 Take Whole-School Register** (Classes tab) marks who is present for the day.',
-      ],
-    }),
-    ch('fees', '💰', 'Fees: set, collect, balances, penalties', {
-      steps: [
-        'Open **💰 Fees & Payments**. Under **Term Fees**, add each term with its **fee amount** (**Generate** creates a year of terms quickly). Every registered student is billed that amount per term.',
-        '**Record a Payment:** pick the student, type the amount and date ▸ **+ Record Payment**. Choose cash or M-Pesa. A receipt prints or can be shared to the guardian.',
-        '**Fee Balances** lists every student with balance and last payment date; sort or filter (for example only those who owe), and **⬇️ Download CSV**.',
-        '**⚠️ Add Penalty:** apply a late fee to a class or term.',
-        'Review payments under **🧾 Fee Payment Records** (Daily / Weekly / Monthly / Custom range, by cash or M-Pesa) and **🖨️ Print Payment Report**.',
-      ],
-      tips: ['Use **Settings ▸ 📢 SMS Broadcast** to text guardians about balances.'],
-    }),
-    ch('stationery', '📚', 'Stationery: stock, restock, distribute', {
-      steps: [
-        '**➕ Add Stationery** to add books and supplies; **📚 Stationery Stock** shows what you have and its value.',
-        '**📥 Restock** when stock arrives (an expense is logged automatically); **📋 Stock Take** to count.',
-        '**📦 Distribute to Classes ▸ + Record Distribution:** choose the item, the class, the quantity and the date. Stock goes down but **nothing is charged**. The **Distribution Status by Class** table shows who has received what.',
-        'Stationery can also be sold at the counter where enabled.',
-      ],
-    }),
-    ch('bazaar', '🎪', 'Bazaar Fund and Expenses', {
-      steps: [
-        '**🎪 Bazaar Fund:** money a student gives you to hold (snacks, a bazaar day). Choose the student, type the amount and reason, then **➕ Deposit** or **➖ Withdrawal**. **💰 Balances Held** shows what you hold for each student. It never affects fees.',
-        '**💸 Expenses ▸ + Add Expense:** log food, transport, rent, deliveries. **🖨️ Print Expenses Report** for any period. **💰 Profit Report** compares income with expenses.',
-      ],
-    }),
-  ],
-  noPastSale: true,
-  overrides: { payments: 'schoolPayments' },
-  billsTitle: 'Debts',
-  billsSteps: ['**📒 Debts** records money owed to the school outside term fees (for example a stationery account). Add a debt with the name and amount; settle in parts or in full.', 'Fee balances are managed in **💰 Fees & Payments**, not here.'],
-  saleFallback: true,
 };
 
 MODS.production = {
@@ -689,7 +621,7 @@ MODS.owner = {
     }),
     ch('links', '🔗', 'Creating a client link', {
       steps: [
-        'Open **🔗 Generate Link**. Choose the **Product** (Shop, Hotel, Hospital, School, Production, Services, Pharmacy or Aqua), type the **client name** (and phone/email), a **link name** and the **Link type**.',
+        'Open **🔗 Generate Link**. Choose the **Product** (Shop, Hotel, Hospital, Production, Services, Pharmacy or Aqua), type the **client name** (and phone/email), a **link name** and the **Link type**.',
         '**🕐 Demo (72 hours)** lets the client try it; **✅ Permanent** is a paid link. Tap **Generate Link** and **Copy** — it is live on its own subdomain at once.',
         'Send the client the link. On the client\u2019s first visit they sign up and become that shop\u2019s Admin.',
       ],

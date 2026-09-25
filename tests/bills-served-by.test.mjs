@@ -7,7 +7,7 @@ const BILL = (id, servedBy, customer, siteId) => ({ id, siteId, total: 100, time
 const cellsOf = (tr) => [...tr.querySelectorAll('td')].map((td) => td.textContent.trim());
 
 // The Bills list shows who served each bill; an old bill saved with nobody shows the admin.
-for (const app of APPS.filter((a) => a !== 'school/index.html')) {
+for (const app of APPS) {
   test(`${app}: Bills tab has a "Served By" column`, async () => {
     const { w, d, errors, close } = await boot(app);
     const heads = [...d.querySelectorAll('#bills-table thead th')].map((th) => th.textContent.trim());

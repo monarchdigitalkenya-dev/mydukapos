@@ -4,7 +4,7 @@ import { boot } from './helpers.mjs';
 
 // Restock and Orders: low-stock items as tappable buttons that add themselves to the form (quantity box ready); send the order to the supplier
 // on WhatsApp.
-const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'school/index.html'];
+const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html'];
 const INV = JSON.stringify([
   { code: 'A1', type: 'item', name: 'Alpha Tin', price: 100, wholesalePrice: 60, qty: 1, unit: 'pcs', vatCategory: 'A' },
   { code: 'B2', type: 'item', name: 'Beta Pack', price: 50, wholesalePrice: 30, qty: 3, unit: 'pcs', vatCategory: 'A' },

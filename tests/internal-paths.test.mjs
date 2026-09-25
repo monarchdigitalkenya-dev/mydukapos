@@ -37,7 +37,7 @@ test('the files it hides are really the internal ones (nothing an app or the pub
   const fs = await import('node:fs');
   const { isInternalPath } = await mw();
   const refs = new Set();
-  for (const f of ['index.html', 'water/index.html', 'hotel/index.html', 'hospital/index.html', 'school/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'owner/index.html', 'public-site/index.html', 'public-site/app.html', 'public-site/dashboard.html', 'sw.js']) {
+  for (const f of ['index.html', 'water/index.html', 'hotel/index.html', 'hospital/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html', 'owner/index.html', 'public-site/index.html', 'public-site/app.html', 'public-site/dashboard.html', 'sw.js']) {
     const text = fs.readFileSync(path.join(ROOT, f), 'utf8');
     for (const m of text.matchAll(/(?:src|href)=["'](\/[^"'#?]+)["']/g)) refs.add(m[1]);
   }

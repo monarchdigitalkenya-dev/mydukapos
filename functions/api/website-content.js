@@ -55,7 +55,7 @@ const DEFAULT_CONTENT = {
   // switcher — a hidden product's own detail page (app.html?product=X)
   // still works fine for anyone with a direct link; this only controls
   // discovery surfaces, not whether the page itself exists.
-  visibleProducts: ['shop', 'hotel', 'hospital', 'school', 'production', 'pharmacy', 'services', 'water'],
+  visibleProducts: ['shop', 'hotel', 'hospital', 'production', 'pharmacy', 'services', 'water'],
   // Extra ways to pay, shown alongside the main M-Pesa number — e.g. a bank
   // transfer written out as text, or a till/QR code as a photo. Empty by
   // default; the M-Pesa number above is the only option until the owner
@@ -67,7 +67,6 @@ const DEFAULT_CONTENT = {
     { quote: 'Running two branches used to mean two sets of books and constant phone calls to check stock. Now I see both branches from my own phone, in real time, from home.', name: 'Faith Njeri', role: 'Minimart owner, Nakuru \u2014 2 branches' },
     { quote: 'My waiters used to argue with guests over the bill. Now the kitchen ticket prints itself the second an order\u2019s taken, and the receipt matches every time. Guests trust us more for it.', name: 'Samuel Kariuki', role: 'Restaurant manager, Thika' },
     { quote: 'I was paying almost this much every single month for a system that still went down constantly. Paid once for mydukapos over a year ago and it has never asked me for another shilling.', name: 'Dorcas Achieng', role: 'Pharmacy owner, Mombasa' },
-    { quote: 'Fee collection during term opening used to be chaos \u2014 long queues, lost receipts, parents disputing balances. Now every parent gets an instant receipt and I can see exactly who still owes what.', name: 'Mr. James Mwangi', role: 'School bursar, Eldoret' },
   ],
 };
 

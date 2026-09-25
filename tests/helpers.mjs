@@ -7,7 +7,7 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const APPS = [
   'index.html', 'water/index.html', 'hotel/index.html', 'hospital/index.html',
-  'school/index.html', 'production/index.html', 'services/index.html', 'pharmacy/index.html',
+  'production/index.html', 'services/index.html', 'pharmacy/index.html',
 ];
 
 // A sale that exercises accents-free ASCII edge cases, a long name, a quote, an en dash and two VAT classes.

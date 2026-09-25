@@ -9,7 +9,7 @@ import { boot, APPS } from './helpers.mjs';
 //   * cash + M-Pesa + card paid == total (nothing gained or lost), change is exactly tendered - total
 //   * stock falls by exactly the quantity sold; a sale is recorded exactly once
 //   * an invalid payment (short cash, split that doesn't add up) creates NO sale and moves NO stock
-const SHOP_APPS = APPS.filter((a) => a !== 'water/index.html' && a !== 'school/index.html');
+const SHOP_APPS = APPS.filter((a) => a !== 'water/index.html');
 const ITEMS = [
   { code: '00001', type: 'item', name: 'Widget', price: 100, wholesaleSellingPrice: 80, wholesalePrice: 50, qty: 50, unit: 'pcs', vatCategory: 'A' },
   { code: '00002', type: 'item', name: 'Gadget', price: 33.33, wholesaleSellingPrice: 30, wholesalePrice: 20, qty: 10, unit: 'pcs', vatCategory: 'B' },

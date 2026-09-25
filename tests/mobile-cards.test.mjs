@@ -5,7 +5,7 @@ import path from 'node:path';
 import { boot, ROOT } from './helpers.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'pharmacy/index.html', 'school/index.html', 'production/index.html', 'services/index.html', 'water/index.html', 'owner/index.html'];
+const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'water/index.html', 'owner/index.html'];
 
 test('every app carries the phone card styles and the fix for tiny form fields', () => {
   for (const a of APPS) {

@@ -11,8 +11,8 @@
 //     to the Leads tab itself is gated client-side, the same way every
 //     other Owner Console tab is granted to a staff PIN — there is no
 //     separate multi-user backend anymore.
-//   - "Business type" is now one of the 6 mydukapos products (shop, hotel,
-//     hospital, school, production, pharmacy) rather than a general
+//   - "Business type" is now one of the mydukapos products (shop, hotel,
+//     hospital, production, pharmacy) rather than a general
 //     category list — a lead's product IS which mydukapos product it's a
 //     prospect for.
 //   - The whole "Projects" concept (ownership, assignment, invoicing) is

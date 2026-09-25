@@ -20,7 +20,7 @@
 // Talks to the Pages Function (functions/api/pos-sync.js) over fetch(): POST /push /state /changes /history /import /export /stats.
 
 import {
-  MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
+  MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
 
@@ -79,8 +79,8 @@ export class ShopStore {
 
   // Same rule as mergeRecordsById: an incoming record replaces the stored one unless the stored one is strictly newer.
   upsert(col, rk, rec) {
-    const upd = Number(rec && rec.updatedAt) || 0;
-    const json = JSON.stringify(rec);
+    let upd = Number(rec && rec.updatedAt) || 0;
+    let json = JSON.stringify(rec);
     const code = rec && rec.code != null ? String(rec.code) : null;
     const row = this.getRow(col, rk);
     if (!row) {
@@ -92,6 +92,15 @@ export class ShopStore {
     if (row.del === 1 && !(rec && rec._deleted === true) && rk.startsWith('id:') && FINAL_TOMBSTONE_FIELDS.includes(col)) return false;
     // Bills only move forward (see billProgress in _merge.js): the more advanced record wins whatever the times say.
     let forceReplace = false;
+    // Aqua POS products: each site's stock is merged by its own change time, not by the whole record (see mergeProductRecords).
+    if (col === 'products' && row.del !== 1 && !(rec && rec._deleted === true)) {
+      let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
+      if (stored) {
+        rec = mergeProductRecords(stored, rec);
+        upd = Number(rec && rec.updatedAt) || 0;
+        json = JSON.stringify(rec);
+      }
+    }
     if (col === 'bills' && row.del !== 1 && !(rec && rec._deleted === true)) {
       let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
       if (stored) {
