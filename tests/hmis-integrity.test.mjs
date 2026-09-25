@@ -1123,3 +1123,225 @@ test('a patient with no SHA number or national ID triggers a confirmation before
   assert.ok(!w.eval("institutionCharges[0].shaSubmissions"), 'declining the warning stops the submission');
   b.close();
 });
+
+// ---- Zip 100: Reception/Diagnosis split (search-first, least-privilege) ----
+async function navSession() {
+  const b = await boot(APP, { storage: {
+    pos_patients: JSON.stringify([PATIENT]),
+    pos_appointments: JSON.stringify([{ id: 'A1', patientId: 'PT-1', patientName: 'Jane Mwangi', scheduledFor: now + 3600000, status: 'scheduled' }]),
+  }, wait: 1200 });
+  b.w.eval("showToast = function () {}; window.confirm = () => true");
+  return b;
+}
+
+test('searchPatientsAny matches by name, patient no., phone, national ID or SHA no. — never returns everyone on an empty query', async () => {
+  const b = await navSession(); const { w } = b;
+  assert.equal(w.eval("searchPatientsAny('').length"), 0, 'empty query = no browsing');
+  assert.equal(w.eval("searchPatientsAny('jane').length"), 1);
+  assert.equal(w.eval("searchPatientsAny('PT-1').length"), 1);
+  assert.equal(w.eval("searchPatientsAny('0712345678').length"), 1);
+  assert.equal(w.eval("searchPatientsAny('nobody-matches-this').length"), 0);
+  b.close();
+});
+
+test('searchPatientsOrVisitRef also matches a visit reference directly (patient ID or visit ID or any identifier)', async () => {
+  const b = await boot(APP, { storage: { pos_patients: JSON.stringify([PATIENT]), pos_visits: JSON.stringify([VISIT]) }, wait: 1200 });
+  const { w } = b;
+  const byRef = JSON.parse(w.eval(`JSON.stringify(searchPatientsOrVisitRef('${VISIT.ref}'))`));
+  assert.equal(byRef.length, 1);
+  assert.equal(byRef[0].id, 'PT-1');
+  b.close();
+});
+
+test('Reception tab: shows only identity + routing (no allergies, no diagnosis, no timeline/merge) and can send to Triage', async () => {
+  const b = await navSession(); const { w, d } = b;
+  w.eval("renderReceptionTab()");
+  w.eval("onReceptionPatientPicked('PT-1')");
+  const card = d.getElementById('reception-search-card').innerHTML;
+  assert.ok(card.includes('Jane Mwangi'));
+  assert.ok(card.includes('Has an appointment today'));
+  assert.ok(!/Timeline|openPatientTimeline|Merge|mergePatients|Maternity|openMaternity|Allerg/i.test(card), 'no clinical/admin tools leak into Reception');
+  w.eval("receptionSendToTriage('PT-1')");
+  assert.equal(w.eval("queue.length"), 1);
+  assert.equal(w.eval("queue[0].patientId"), 'PT-1');
+  assert.equal(w.eval("queue[0].stage"), 'triage');
+  b.close();
+});
+
+test('Diagnosis tab: search-first, and once found gives full clinical context (allergies, queue status, history, consultation)', async () => {
+  const b = await boot(APP, { storage: {
+    pos_patients: JSON.stringify([PATIENT]),
+    pos_queue: JSON.stringify([{ id: 'Q1', patientId: 'PT-1', arrivedAt: now, triageLevel: 'urgent', status: 'waiting', vitals: { bp: '120/80' }, stage: 'triage' }]),
+  }, wait: 1200 });
+  const { w, d } = b;
+  w.eval("showToast = function () {}");
+  w.eval("renderDiagnosisTab()");
+  assert.equal(d.getElementById('diagnosis-search-card').innerHTML.trim(), '', 'nothing shown before a search');
+  w.eval("onDiagnosisPatientPicked('PT-1')");
+  const card = d.getElementById('diagnosis-search-card').innerHTML;
+  assert.ok(card.includes('ALLERGIES: Penicillin'));
+  assert.ok(card.includes('urgent'));
+  assert.ok(card.includes('vitals recorded'));
+  assert.ok(/openPatientVisitModal\('PT-1'\)/.test(card));
+  assert.ok(/openPatientTimeline\('PT-1'\)/.test(card));
+  b.close();
+});
+
+test('the search-and-pick widget stores the chosen id into the target input, matching what the four converted pickers rely on', async () => {
+  const b = await navSession(); const { w, d } = b;
+  d.body.insertAdjacentHTML('beforeend', '<div id="test-picker"></div><input type="hidden" id="test-target">');
+  w.eval("renderPatientSearchPicker('test-picker', 'test-target', 'placeholder')");
+  d.getElementById('test-picker-q').value = 'jane';
+  w.eval("runPatientSearchPicker('test-picker', 'test-target')");
+  assert.ok(d.getElementById('test-picker-results').innerHTML.includes('Jane Mwangi'));
+  w.eval("pickPatientFromSearch('test-picker', 'test-target', 'PT-1')");
+  assert.equal(d.getElementById('test-target').value, 'PT-1');
+  assert.ok(d.getElementById('test-picker-chosen').textContent.includes('Jane Mwangi'));
+  b.close();
+});
+
+test('Queue and Laboratory request pickers are now search-first (no plain <select> listing every patient)', async () => {
+  const b = await navSession(); const { w, d } = b;
+  assert.equal(d.querySelector('#queue-add-patient-select').tagName, 'INPUT');
+  assert.equal(d.querySelector('#lab-tab-patient-select').tagName, 'INPUT');
+  w.eval("renderQueuePatientSelect()");
+  assert.ok(d.getElementById('queue-add-patient-picker').innerHTML.includes('queue-add-patient-picker-q'));
+  d.getElementById('queue-add-patient-picker-q').value = 'jane';
+  w.eval("runPatientSearchPicker('queue-add-patient-picker', 'queue-add-patient-select')");
+  w.eval("pickPatientFromSearch('queue-add-patient-picker', 'queue-add-patient-select', 'PT-1')");
+  w.eval("addPatientToQueue()");
+  assert.equal(w.eval("queue.length"), 1);
+  b.close();
+});
+
+test('sales-tab (Pharmacy & Cashier) role is never forced: an admin assigning only Laboratory to a new staff member sticks', async () => {
+  const b = await navSession(); const { w } = b;
+  assert.equal(w.eval("newStaffSelectedRoles.length"), 0, 'nothing pre-checked for a new invite');
+  w.eval("toggleNewStaffRole('laboratory-tab', true)");
+  w.eval("document.getElementById('new-staff-name-input') && (document.getElementById('new-staff-name-input').value = 'Dr Lab')");
+  const rolesBeforeSave = JSON.parse(w.eval("JSON.stringify(newStaffSelectedRoles)"));
+  assert.deepEqual(rolesBeforeSave, ['laboratory-tab']);
+  assert.ok(!rolesBeforeSave.includes('sales-tab'), 'sales-tab is not silently added');
+  b.close();
+});
+
+// ---- Zip 101: prescribe medicine not in stock, carry/not-carry ticking at dispensing ----
+async function rxSession() {
+  const b = await session(); const { w } = b;
+  w.eval("showToast = function () {}; window.confirm = () => true");
+  return b;
+}
+
+test('a doctor can prescribe a medicine this facility does not stock; it is never charged or stock-deducted', async () => {
+  const b = await rxSession(); const { w, d } = b;
+  w.eval("openPatientVisitModal('PT-1')");
+  d.getElementById('visit-diagnosis-input').value = 'Hypertension';
+  w.eval("addVisitMedicationRow()");
+  w.eval("toggleVisitMedNotStocked(0, true)");
+  const rows = w.document.querySelectorAll('#visit-medication-rows input[type=text]');
+  // first free-text input for the row is the medicine name (qty/dosage are separate inputs after it)
+  w.eval("updateVisitMedicationRow(0, 'freeName', 'Amlodipine 10mg')");
+  w.eval("updateVisitMedicationRow(0, 'dosage', '1 tablet daily')");
+  w.eval("saveVisit()");
+  const v = JSON.parse(w.eval("JSON.stringify(visits.find(x => x.diagnosis === 'Hypertension'))"));
+  assert.equal(v.medications.length, 1);
+  assert.equal(v.medications[0].name, 'Amlodipine 10mg');
+  assert.equal(v.medications[0].notStocked, true);
+  assert.equal(v.medications[0].dosage, '1 tablet daily');
+  assert.equal(w.eval("patientCharges.filter(c => c.kind === 'medication').length"), 0, 'never charged');
+  b.close();
+});
+
+test('an empty not-stocked row is silently skipped, same as an empty stocked row always was', async () => {
+  const b = await rxSession(); const { w, d } = b;
+  w.eval("openPatientVisitModal('PT-1')");
+  d.getElementById('visit-diagnosis-input').value = 'Checkup';
+  w.eval("addVisitMedicationRow()");
+  w.eval("toggleVisitMedNotStocked(0, true)");
+  w.eval("saveVisit()");
+  const v = JSON.parse(w.eval("JSON.stringify(visits.find(x => x.diagnosis === 'Checkup'))"));
+  assert.equal(v.medications.length, 0);
+  b.close();
+});
+
+test('not-stocked medicine shows in the visit history and patient timeline with dosage, and a print-slip button appears', async () => {
+  const b = await rxSession(); const { w, d } = b;
+  w.eval("openPatientVisitModal('PT-1')");
+  d.getElementById('visit-diagnosis-input').value = 'Diabetes';
+  w.eval("addVisitMedicationRow(); toggleVisitMedNotStocked(0, true); updateVisitMedicationRow(0, 'freeName', 'Insulin glargine'); updateVisitMedicationRow(0, 'dosage', '10 units at night')");
+  w.eval("saveVisit()");
+  w.eval("renderPatientVisitHistory('PT-1')");
+  const histHtml = d.getElementById('patient-visit-history-list').innerHTML;
+  assert.ok(histHtml.includes('Insulin glargine') && histHtml.includes('10 units at night'));
+  assert.ok(/printExternalPrescriptionForRef/.test(histHtml));
+  const kinds = JSON.parse(w.eval("JSON.stringify(buildPatientTimeline('PT-1'))"));
+  const rx = kinds.find(e => e.kind === 'Prescription' && e.detail.includes('Insulin glargine'));
+  assert.ok(rx && rx.detail.includes('not stocked here'));
+  b.close();
+});
+
+test('carry checklist: a bill with a stocked medication shows the panel; unticking declines it, keeps it off the loaded cart, and it never lingers as unpaid', async () => {
+  const b = await boot(APP, { storage: {
+    pos_patients: JSON.stringify([PATIENT]),
+    pos_patient_charges: JSON.stringify([
+      { id: 'C1', ref: 'V1REF', patientId: 'PT-1', patientName: 'Jane Mwangi', kind: 'medication', name: 'Amoxicillin', code: 'AMX', qty: 2, price: 100, unit: 'pcs', status: 'unpaid', dosage: '1 cap x2 daily', createdAt: now },
+      { id: 'C2', ref: 'V1REF', patientId: 'PT-1', patientName: 'Jane Mwangi', kind: 'consultation', name: 'Consultation Fee', code: '', qty: 1, price: 500, unit: 'use', status: 'unpaid', isService: true, createdAt: now },
+    ]),
+  }, wait: 1200 });
+  const { w, d } = b;
+  w.eval("showToast = function () {}");
+  w.eval("loadPatientBill('V1REF')");
+  assert.equal(d.getElementById('med-carry-panel').style.display, 'block');
+  assert.ok(d.getElementById('med-carry-list').innerHTML.includes('Amoxicillin'));
+  assert.ok(d.getElementById('med-carry-list').innerHTML.includes('1 cap x2 daily'), 'dosage shown at dispensing');
+  d.getElementById('carry-C1').checked = false;
+  w.prompt = () => 'cannot afford';
+  w.eval("confirmMedicationCarry()");
+  assert.equal(w.eval("patientCharges.find(c => c.id === 'C1').status"), 'declined');
+  assert.equal(w.eval("patientCharges.find(c => c.id === 'C1').declinedReason"), 'cannot afford');
+  assert.equal(w.eval("Object.keys(currentCart).some(k => k.includes('C1'))"), false, 'declined med never enters the cart');
+  assert.equal(w.eval("Object.keys(currentCart).some(k => k.includes('C2'))"), true, 'the consultation fee still loads normally');
+  assert.ok(JSON.parse(w.eval("JSON.stringify(auditLog)")).some(a => a.action === 'Medication not carried'));
+  // reloading the same ref later must not show the declined charge again
+  w.eval("Object.keys(currentCart).forEach(k => delete currentCart[k])");
+  w.eval("loadPatientBill('V1REF')");
+  assert.equal(d.getElementById('med-carry-panel').style.display, 'none', 'no medication left to ask about');
+  b.close();
+});
+
+test('carry checklist: leaving everything ticked behaves exactly as a normal bill load (no items declined)', async () => {
+  const b = await boot(APP, { storage: {
+    pos_patients: JSON.stringify([PATIENT]),
+    pos_patient_charges: JSON.stringify([
+      { id: 'C1', ref: 'V2REF', patientId: 'PT-1', patientName: 'Jane Mwangi', kind: 'medication', name: 'Paracetamol', code: 'PCM', qty: 1, price: 50, unit: 'pcs', status: 'unpaid', createdAt: now },
+    ]),
+  }, wait: 1200 });
+  const { w, d } = b;
+  w.eval("showToast = function () {}");
+  w.eval("loadPatientBill('V2REF')");
+  w.eval("confirmMedicationCarry()");
+  assert.equal(w.eval("patientCharges.find(c => c.id === 'C1').status"), 'unpaid');
+  assert.equal(w.eval("Object.keys(currentCart).length"), 1);
+  b.close();
+});
+
+test('printExternalPrescriptionForRef prints the not-stocked and declined medicines together, with dosage, and refuses when there is nothing to print', async () => {
+  const b = await boot(APP, { storage: {
+    pos_patients: JSON.stringify([PATIENT]),
+    pos_visits: JSON.stringify([{ ...VISIT, ref: 'V3REF', medications: [{ name: 'Metformin', qty: 30, dosage: '1 tab twice daily', notStocked: true }] }]),
+    pos_patient_charges: JSON.stringify([{ id: 'C9', ref: 'V3REF', patientId: 'PT-1', patientName: 'Jane Mwangi', kind: 'medication', name: 'Ibuprofen', qty: 1, price: 20, status: 'declined', declinedReason: 'out of stock', dosage: '1 tab as needed' }]),
+  }, wait: 1200 });
+  const { w } = b;
+  w.eval("showToast = function () {}");
+  let opened = null;
+  w.eval("window.open = () => { window.__win = { document: { write(h) { window.__html = h; }, close(){} }, focus(){}, print(){} }; return window.__win; }");
+  w.eval("printExternalPrescriptionForRef('V3REF')");
+  const html = w.eval("window.__html");
+  assert.ok(html.includes('Metformin') && html.includes('1 tab twice daily'));
+  assert.ok(html.includes('Ibuprofen') && html.includes('out of stock'));
+  let refused = false;
+  w.eval("window.open = () => { window.__called = true; return window.__win; }; window.__called = false;");
+  w.eval("printExternalPrescriptionForRef('NO-SUCH-REF')");
+  assert.equal(w.eval("window.__called"), false, 'nothing to print -> no window opened');
+  b.close();
+});

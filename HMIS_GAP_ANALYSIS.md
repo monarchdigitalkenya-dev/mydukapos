@@ -98,3 +98,54 @@ Done: **SHA / DHA eClaims credentials, per hospital** — Settings -> Insurance 
 **Submit to SHA** button on any not-yet-paid claim in Insurance / Institutions (sha-claim-submit.js): builds a best-effort FHIR R4 Claim inside a Bundle from the Kenya eClaims Implementation Guide and POSTs it. IMPORTANT CAVEAT, and shown in the UI itself: this payload has NOT been validated against a live DHA sandbox or gone through DHA's mandatory certification - the endpoint only ever reports exactly what SHA's API returned (including the raw response) and NEVER changes the claim's status itself; the existing "Update status" flow still requires a human decision, unchanged.
 11 server tests (tests/sha-integration.test.mjs) + 4 client tests (in hmis-integrity.test.mjs) — credential scoping/isolation, partial-save behaviour, connection test success/failure, claim payload shape, acceptance/rejection/network-failure handling, no-SHA-number warning, and confirming claimStatus is never auto-changed.
 Still open: getting a real facility through DHA certification and validating the payload against their actual sandbox (only the facility can do this — it needs their own SHA-issued sandbox access); prescription-ready/balance SMS messages; real-device testing.
+
+## Correction (this session)
+Two items I'd listed as "still open" turned out not to be:
+- **Outstanding-balance SMS reminders already existed** in the shared codebase before this session (the 🔔 Remind button on Patient Bills, `sendBillReminderSms()` — sends a generic "you owe KES X" text). Not new work, just mislabeled as a gap.
+- **Prescription-ready notifications don't fit this app's design.** The Dispense / Bill tab IS the pharmacy counter — a patient's medication is billed and handed over in the same motion at the cashier, the same single-counter model every app in this suite uses. There is no separate "prescription filled, waiting for pickup" state to notify about, so building that notification would be adding a workflow state the app doesn't have, not closing a real gap.
+
+## Zip 100 update — least-privilege station split (Reception / Diagnosis) + no forced roles
+Done, per explicit user request: the hospital module now separates "search for the one patient you're handling" from
+"browse the whole registry" for the walk-in journey.
+- **New "Reception" tab**: search-first (name, patient no., phone) lookup + registration form. Shows only identity,
+  phone, next-of-kin and a routing hint (has an appointment today / returning patient) — no allergies, diagnosis,
+  timeline, merge or maternity tools. A found patient can be sent straight to Triage.
+- **New "Diagnosis" tab**, positioned between Queue/Triage and Laboratory: search-first (name, patient no., phone, OR
+  a visit reference), and only once a patient is found does the doctor see full clinical context — allergies banner,
+  queue/triage status, a "Full History" (timeline) button and "Open Consultation" (the existing visit modal:
+  diagnosis, SOAP, medications, lab/institution billing). Nothing is listed until a search is run.
+- **Old full-registry tab relabelled "Patient Records"**, moved to the admin area (next to Staff) — kept fully intact
+  (edit, merge, timeline, maternity/newborn) for admin/records use; day-to-day stations no longer default there.
+- **Tab order** now follows the walk-in journey: Reception -> Appointments -> Queue/Triage -> Diagnosis -> Laboratory
+  -> Radiology -> Theatre -> Pharmacy & Cashier (still one combined counter, see limits) -> Pharmacy Stock -> rest.
+- **Queue, Laboratory, Radiology and Theatre "pick a patient to request/add" dropdowns converted** from a full
+  <select> listing every patient to the same search-first widget (shared `renderPatientSearchPicker`).
+- **Sales Counter access is no longer ever forced.** Found and removed a one-time migration that unconditionally
+  pushed 'sales-tab' into any staff member's roles lacking a migration flag — including brand-new staff — which
+  silently overrode an admin's explicit "Lab only" assignment. New-staff invites now start with nothing pre-checked;
+  every tab, Sales Counter included, is the admin's deliberate choice and nothing is auto-added.
+- Existing per-tab role-visibility system (already in the app) picked up the two new tabs automatically once added
+  to LOCKABLE_TABS/ROLE_TABS — no new access-control mechanism needed.
+Limits / known simplification, stated plainly: Pharmacy dispensing and Cashier billing remain ONE combined counter
+("Pharmacy & Cashier") as in the rest of this app suite — splitting them into two separate stations/queue states
+was judged too large a change for this pass and was not attempted. Appointments' own patient-select dropdown and
+this sales-tab/cashier split were left out of scope; flag if you want either addressed next.
+7 new tests (search matching, visit-ref search, Reception's minimal card, Diagnosis's full-context card, the picker
+widget itself, the converted Queue/Lab pickers, and the no-forced-role guarantee) — all passing, alongside the full
+81-file suite with zero failures.
+
+## Zip 102 update — prescribe medicine not in stock + carry/not-carry ticking at dispensing
+Done, per explicit user request: a doctor can now prescribe a medicine this facility does NOT stock —
+each medication row in the visit form has a "Not stocked here — prescribe only" checkbox that swaps the
+inventory dropdown for a free-text name field. These entries save with dosage on the visit record but are
+NEVER charged and never touch stock. At the cashier, loading a bill that includes a stocked medication now
+shows a carry-checklist (ticked by default, dosage shown) before it enters the cart; unticking one asks for
+a reason (cost / unavailable), marks that specific charge "declined" (not left dangling as unpaid forever),
+audits it, and excludes it from the sale. A "Print slip" button (on the visit history, and automatically
+after declining anything) prints every not-stocked and declined medicine together — name, quantity, dosage,
+and why — for the patient to take to an outside chemist. Dosage now shows at every step: the visit form,
+visit history, patient timeline, the carry-checklist, and the printed slip.
+Regression caught and fixed: `loadPatientBill()` behavior change required updating tests/patient-billing.test.mjs
+(6 call sites) to also call the new confirmMedicationCarry() step — all 9 of its tests pass again.
+6 new tests in hmis-integrity.test.mjs (free-text prescribing, the empty-row edge case, history/timeline
+display, the full decline flow, the all-ticked-normal-path case, and the print function) — all passing.

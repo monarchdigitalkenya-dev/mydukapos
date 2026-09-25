@@ -23,7 +23,7 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { requireOwnerAuth, getOwnerAccount } from './_owner-auth.js';
-import { listClientSummaries, createClient, evaluateLicense, listProducts, clientLink, getRootDomain } from './_license.js';
+import { listClientSummaries, createClient, evaluateLicense, listProducts, clientLink, getRootDomain, purgeExpiredTrash } from './_license.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -39,8 +39,13 @@ export async function onRequestGet(context) {
   const { request, env } = context;
   const url = new URL(request.url);
   const q = url.searchParams.get('q') || '';
+  const trashOnly = url.searchParams.get('trash') === '1';
 
-  const summaries = await listClientSummaries(env, { q });
+  // Sweep anything past its 30-day trash window before listing — cheap (one index read; per-client
+  // KV work only for entries actually old enough), and keeps Trash self-cleaning with no cron needed.
+  if (trashOnly) await purgeExpiredTrash(env);
+
+  const summaries = await listClientSummaries(env, { q, trashOnly });
   // The owner's own account has a real, permanent client record behind it
   // (see _owner-auth.js — this is what lets the owner actually use Shop POS
   // themselves, not just the admin dashboard). It's infrastructure, not a

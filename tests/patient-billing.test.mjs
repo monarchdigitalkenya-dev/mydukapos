@@ -79,6 +79,7 @@ test('the cashier finds the bill by reference, patient number or name, loads it 
     w.eval('currentCart = {}; renderCart()');
     d.getElementById('patient-bill-input').value = q;
     w.eval('loadPatientBillFromInput()');
+    w.eval('confirmMedicationCarry()');
     assert.equal(w.eval('Object.keys(currentCart).length'), 5, `"${q}" loads the whole bill`);
   }
   const lines = JSON.parse(w.eval('JSON.stringify(Object.values(currentCart))'));
@@ -109,11 +110,13 @@ test('loading refuses a busy cart, and payment refuses when the stock is not the
   const { w, d } = b;
   w.eval("addToCart('AX')");
   w.eval(`loadPatientBill('${ref}')`);
+  w.eval('confirmMedicationCarry()');
   assert.match(w.__toasts.slice(-1)[0], /cart isn.t empty/);
   assert.equal(w.eval('Object.keys(currentCart).length'), 1, 'unchanged');
   w.eval('currentCart = {}; renderCart()');
   w.eval("inventory.find(p => p.code === 'AX').qty = 5");                                    // only 5 of the 12 prescribed
   w.eval(`loadPatientBill('${ref}')`);
+  w.eval('confirmMedicationCarry()');
   assert.match(w.__toasts.join(' | '), /Not enough stock for: Amoxicillin/);
   const s = await pay(b);
   assert.equal(w.eval('salesLog.length'), 0, 'refused: no sale');
@@ -128,6 +131,7 @@ test('a patient bill put on Pay Later is not marked paid: its lines are "billed"
   const ref = await doctorVisit(b);
   const { w, d } = b;
   w.eval(`loadPatientBill('${ref}')`);
+  w.eval('confirmMedicationCarry()');
   w.eval("currentPaymentMethod = 'bill'");
   d.getElementById('bill-customer-name-input').value = 'John Doe';
   await w.eval('checkoutCart()');
@@ -157,6 +161,7 @@ test('voiding the paid sale opens the bill again (and the lab test goes back to 
   const ref = await doctorVisit(b);
   const { w } = b;
   w.eval(`loadPatientBill('${ref}')`);
+  w.eval('confirmMedicationCarry()');
   const sale = await pay(b);
   assert.equal(w.eval('pendingBillGroups("").length'), 0);
   w.eval(`pendingVoidSaleSource = 'sales'; pendingVoidReason = 'wrong patient'; performVoidSale('${sale.id}')`);
@@ -194,6 +199,7 @@ test('two tills: the doctor\'s till files the bill, the cashier\'s till loads an
   await cash.w.eval('flushThenPull()');
   assert.equal(cash.w.eval('pendingBillGroups("").length'), 1, 'the cashier\'s till has the doctor\'s bill');
   cash.w.eval(`loadPatientBill('${ref}')`);
+  cash.w.eval('confirmMedicationCarry()');
   assert.equal(cash.w.eval('Object.keys(currentCart).length'), 5);
   const sale = await pay(cash);
   await cash.w.eval('pushNow()');

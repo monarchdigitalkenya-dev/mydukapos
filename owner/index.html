@@ -2025,6 +2025,7 @@
         <button id="sales-tab-btn" class="tab-link" data-tab="sales-tab" onclick="guardedSwitchTab(event, &#39;sales-tab&#39;)">🔗 Generate Link</button>
         <button id="demo-links-tab-btn" class="tab-link" data-tab="demo-links-tab" onclick="guardedSwitchTab(event, &#39;demo-links-tab&#39;)">🕐 Demo</button>
         <button id="permanent-links-tab-btn" class="tab-link" data-tab="permanent-links-tab" onclick="guardedSwitchTab(event, &#39;permanent-links-tab&#39;)">✅ Permanent</button>
+        <button id="trash-tab-btn" class="tab-link" data-tab="trash-tab" onclick="guardedSwitchTab(event, &#39;trash-tab&#39;)">🗑️ Trash</button>
         <button id="tables-rooms-tab-btn" class="tab-link" data-tab="tables-rooms-tab" onclick="guardedSwitchTab(event, &#39;tables-rooms-tab&#39;)">🍽️🛏️ Tables &amp; Rooms</button>
         <button class="tab-link" data-tab="website-tab" onclick="guardedSwitchTab(event, &#39;website-tab&#39;)">🌐 Website</button>
         <button class="tab-link" data-tab="leads-tab" onclick="guardedSwitchTab(event, &#39;leads-tab&#39;)">📋 Leads</button>
@@ -2205,6 +2206,14 @@
                 <input type="text" id="permanent-links-search" placeholder="Search by name..." oninput="renderGroupedClientsList('permanent')">
             </div>
             <div id="permanent-links-list"></div>
+        </div>
+    </div>
+
+    <div id="trash-tab" class="tab-content">
+        <div class="panel">
+            <h3>🗑️ Trash</h3>
+            <p style="margin-bottom: 15px; color: #7f8c8d; font-size: 14px;">Deleted links land here first. Restore any of them within 30 days of deletion — after that they\'re removed for good, automatically.</p>
+            <div id="trash-list"></div>
         </div>
     </div>
 
@@ -6328,12 +6337,10 @@
             }
         }
 
-        // Deletion is permanent — the license record, its subdomain slug (which
-        // becomes free for reuse), and its entry in this list are all gone for
-        // good (see deleteClient() in _license.js). Confirmed explicitly since
-        // there's no undo, unlike Lock which can always be reversed.
+        // Deletion now moves the client to 🗑️ Trash (see deleteClient() in _license.js) — the link goes
+        // offline immediately, but it's fully restorable from Trash for 30 days before it's gone for good.
         async function requestDeleteOwnerLink(clientId, label, product) {
-            if (!confirm(`Permanently delete the link for "${label}"?\n\nThis cannot be undone — the subdomain will stop working immediately and becomes free for a future link.`)) {
+            if (!confirm(`Delete the link for "${label}"?\n\nThe subdomain stops working immediately. It's recoverable from 🗑️ Trash for 30 days, after which it's removed for good.`)) {
                 return;
             }
             try {
@@ -6347,11 +6354,52 @@
                     showToast(data.error || 'Could not delete that link.', true);
                     return;
                 }
-                showToast(`Deleted "${label}".`);
+                showToast(`Moved "${label}" to Trash — restorable for 30 days.`);
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
             } catch (e) {
                 showToast('Could not reach the server — check your connection.', true);
             }
+        }
+
+        // 🗑️ Trash: lists soft-deleted clients (see deleteClient()/restoreClient() in _license.js). A
+        // separate fetch from the main Clients list — ?trash=1 also sweeps anything past its 30-day
+        // window for good, so opening this tab is what keeps Trash self-cleaning.
+        let trashCache = [];
+        async function fetchTrash() {
+            try {
+                const res = await fetch('/api/owner-clients?trash=1', { headers: ownerAuthHeaders() });
+                const data = await res.json();
+                trashCache = Array.isArray(data.clients) ? data.clients : [];
+            } catch (e) { trashCache = []; }
+            renderTrashList();
+        }
+        function renderTrashList() {
+            const box = document.getElementById('trash-list');
+            if (!box) return;
+            if (trashCache.length === 0) { box.innerHTML = `<p style="color:#7f8c8d;">Trash is empty.</p>`; return; }
+            const DAY = 86400000;
+            box.innerHTML = trashCache.map(c => {
+                const daysLeft = Math.max(0, 30 - Math.floor((Date.now() - (c.deletedAt || Date.now())) / DAY));
+                return `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid var(--light); flex-wrap:wrap;">
+                    <span><strong>${escapeHtml(c.label || c.slug || c.id)}</strong> <span style="color:#7f8c8d; font-size:12px;">(${escapeHtml(c.product || '')}) — deleted ${new Date(c.deletedAt).toLocaleDateString('en-GB')}, ${daysLeft} day(s) left</span></span>
+                    <button class="settings-small-btn" style="background:#27ae60; color:#fff;" onclick="restoreOwnerLink('${escapeQuotes(c.id)}','${escapeQuotes(c.label || c.slug || c.id)}')">↩️ Restore</button>
+                </div>`;
+            }).join('');
+        }
+        async function restoreOwnerLink(clientId, label) {
+            try {
+                const res = await fetch('/api/owner-lock', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() },
+                    body: JSON.stringify({ c: clientId, action: 'restore' }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.error) { showToast(data.error || 'Could not restore that link.', true); return; }
+                showToast(`Restored "${label}" — the link is live again.`);
+                ownerClientsCacheAt = 0;
+                fetchTrash();
+                renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
+            } catch (e) { showToast('Could not reach the server — check your connection.', true); }
         }
 
         // Only the label (display name) is editable — the subdomain slug itself
@@ -8293,6 +8341,9 @@
             }
             if (tabId === 'permanent-links-tab') {
                 renderGroupedClientsList('permanent');
+            }
+            if (tabId === 'trash-tab') {
+                fetchTrash();
             }
             if (tabId === 'website-tab') {
                 loadWebsiteContent();
@@ -10417,6 +10468,7 @@
             { id: 'dashboard-tab', label: '📊 Dashboard' },
             { id: 'demo-links-tab', label: '🕐 Demo' },
             { id: 'permanent-links-tab', label: '✅ Permanent' },
+            { id: 'trash-tab', label: '🗑️ Trash' },
             { id: 'bills-tab', label: '🧾 Bills' },
             { id: 'daily-sales-tab', label: '🧾 Daily Sales' },
             { id: 'profits-tab', label: '💰 Profits &amp; Expenses' },
@@ -18105,7 +18157,7 @@ async function storageMeasureUnknown() {
 
 <!-- @shared-block:guide-data:begin -->
 <!-- GUIDE DATA (owner) — generated by tools/build-guides.mjs; edit that file, not this one. -->
-<script>window.__GUIDE_DATA = {"key":"owner","title":"Owner Console — User Guide","tagline":"For the owner of the software business — create and manage client links, watch their health, and run your own shop.","module":"Owner Console","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Owner Console works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"signin","icon":"🔑","title":"Signing in","steps":["Open the Owner Console address. The **first time**, tap **Create Account** and make the owner account (email or phone and a password). After that, sign in with the same details — you stay signed in on that device.","**Staff do not use your email.** A staff member opens their own invite / personal link and signs in with their PIN."]},{"id":"links","icon":"🔗","title":"Creating a client link","steps":["Open **🔗 Generate Link**. Choose the **Product** (Shop, Hotel, Hospital, Production, Services, Pharmacy or Aqua), type the **client name** (and phone/email), a **link name** and the **Link type**.","**🕐 Demo (72 hours)** lets the client try it; **✅ Permanent** is a paid link. Tap **Generate Link** and **Copy** — it is live on its own subdomain at once.","Send the client the link. On the client’s first visit they sign up and become that shop’s Admin."]},{"id":"manage","icon":"✅","title":"Managing demo and permanent clients","steps":["Open **🕐 Demo** or **✅ Permanent** and tap a client for full details: link, product, notes, storage size.","From there you can **lock/unlock**, **extend** a demo, **confirm** a demo as permanent (its data is moved to its own database), and **delete**.","Under **Permanent**, use the **💰 income toggle** to record money agreed and paid: paying part creates a bill for the balance with **Settle** and **Remind** (the client’s admin sees a payment reminder banner until they press OK)."]},{"id":"website","icon":"🌐","title":"The public website","steps":["Open **🌐 Website** to change the logo, headline, feature cards, showcase photos, **price** and **payment methods**, and testimonials. **Save & Publish Changes** updates the public site and the upgrade prompt every demo shows when its trial ends."]},{"id":"leads","icon":"📋","title":"Leads, meetings and WhatsApp ad leads","steps":["Open **📋 Leads**. A new sheet is created each day; **only leads not yet contacted carry forward**. Use **+ Add lead** or **+ Bulk add**, mark leads contacted, schedule a **meeting** (it moves to 🗓️ Meetings) or generate a client link straight from a lead.","**WhatsApp ad leads:** with the WhatsApp connection set up (see WHATSAPP_SETUP.md), everyone who starts a chat by clicking your **Meta Click-to-WhatsApp ad** becomes a lead automatically, with the ad headline and their message. Ordinary texts to your number are ignored.","**🌐 Website Leads** shows enquiries from the public site."]},{"id":"health","icon":"🐞","title":"Errors and Storage","steps":["**🐞 Errors** lists errors reported by every client app in the last 7 days; the same bug on many devices is one line with a count. Tap a line for the stack and device.","**💾 Storage** shows every shop’s data size. Use **🗜️ Compress all large shops**, **📏 Measure unknown**, **🗄️ Move all to database** (permanent shops), **🖼️ Shrink all photos**, and **🧪 Test the database**.","A shop that gets very large is told to archive old history; Storage shows which shops are near their limit."]},{"id":"ownpos","icon":"🛒","title":"Using the console as your own shop","steps":["The tabs **Bills, Daily Sales, Profits & Expenses, Staff** and the Settings sections work like the Shop POS for your own business — see the Shop guide chapters for making sales, receipts and printers (Settings ▸ Hardware)."]},{"id":"offline","icon":"📶","title":"Backups and your own data","steps":["The console keeps working through short internet cuts and catches up when it is back.","Settings ▸ 🗄️ Backups keeps your own business data safe; every client’s data is stored on the server and can be restored by you.","Use **Settings ▸ ✉️ Email (Password Resets)** so clients (and you) can reset a forgotten password by email, and **📸 AI Capture List** to add the AI key that reads photos of stock lists for your clients."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**A client says the app is slow or broken:** open **🐞 Errors** and **💾 Storage** — a shop that is too big or repeating an error shows up there.","**A client is locked out:** find them under **Demo** or **Permanent** and unlock, or extend the demo.","**A staff member cannot sign in:** send them a fresh staff link from **👥 Staff** (an old link may pre-date a change).","**A payment reminder keeps showing for a client:** it stays until their admin taps OK; settle or remove the bill under their record."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Owner Console, in the order they appear:","tabs":[["Dashboard","Your business at a glance: clients, demos, income."],["Generate Link","Create a demo or permanent POS link for a client on their own address."],["Demo","Every demo link across all products, grouped by client."],["Permanent","Every permanent (paid) client: manage, record income, remind, storage."],["Tables & Rooms","Set-up used by your own hospitality POS."],["Website","Edit the public website, pricing, payment methods and testimonials."],["Leads","Prospects: daily sheets, meetings, website leads and WhatsApp ad leads."],["Bills","What clients owe you (permanent-link balances) — settle or remind."],["Daily Sales","Your own sales and income records."],["Profits & Expenses","Your expenses and profit."],["Staff","Your own staff and their access to the console."],["Errors","Errors reported by every client’s app, grouped so one bug on many devices is one line."],["Storage","How big each shop’s data is; compress, move to a database, shrink photos."],["Settings","Business details, email for password resets, AI capture key, security, backups."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
+<script>window.__GUIDE_DATA = {"key":"owner","title":"Owner Console — User Guide","tagline":"For the owner of the software business — create and manage client links, watch their health, and run your own shop.","module":"Owner Console","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Owner Console works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"signin","icon":"🔑","title":"Signing in","steps":["Open the Owner Console address. The **first time**, tap **Create Account** and make the owner account (email or phone and a password). After that, sign in with the same details — you stay signed in on that device.","**Staff do not use your email.** A staff member opens their own invite / personal link and signs in with their PIN."]},{"id":"links","icon":"🔗","title":"Creating a client link","steps":["Open **🔗 Generate Link**. Choose the **Product** (Shop, Hotel, Hospital, Production, Services, Pharmacy or Aqua), type the **client name** (and phone/email), a **link name** and the **Link type**.","**🕐 Demo (72 hours)** lets the client try it; **✅ Permanent** is a paid link. Tap **Generate Link** and **Copy** — it is live on its own subdomain at once.","Send the client the link. On the client’s first visit they sign up and become that shop’s Admin."]},{"id":"manage","icon":"✅","title":"Managing demo and permanent clients","steps":["Open **🕐 Demo** or **✅ Permanent** and tap a client for full details: link, product, notes, storage size.","From there you can **lock/unlock**, **extend** a demo, **confirm** a demo as permanent (its data is moved to its own database), and **delete**.","Under **Permanent**, use the **💰 income toggle** to record money agreed and paid: paying part creates a bill for the balance with **Settle** and **Remind** (the client’s admin sees a payment reminder banner until they press OK)."]},{"id":"website","icon":"🌐","title":"The public website","steps":["Open **🌐 Website** to change the logo, headline, feature cards, showcase photos, **price** and **payment methods**, and testimonials. **Save & Publish Changes** updates the public site and the upgrade prompt every demo shows when its trial ends."]},{"id":"leads","icon":"📋","title":"Leads, meetings and WhatsApp ad leads","steps":["Open **📋 Leads**. A new sheet is created each day; **only leads not yet contacted carry forward**. Use **+ Add lead** or **+ Bulk add**, mark leads contacted, schedule a **meeting** (it moves to 🗓️ Meetings) or generate a client link straight from a lead.","**WhatsApp ad leads:** with the WhatsApp connection set up (see WHATSAPP_SETUP.md), everyone who starts a chat by clicking your **Meta Click-to-WhatsApp ad** becomes a lead automatically, with the ad headline and their message. Ordinary texts to your number are ignored.","**🌐 Website Leads** shows enquiries from the public site."]},{"id":"health","icon":"🐞","title":"Errors and Storage","steps":["**🐞 Errors** lists errors reported by every client app in the last 7 days; the same bug on many devices is one line with a count. Tap a line for the stack and device.","**💾 Storage** shows every shop’s data size. Use **🗜️ Compress all large shops**, **📏 Measure unknown**, **🗄️ Move all to database** (permanent shops), **🖼️ Shrink all photos**, and **🧪 Test the database**.","A shop that gets very large is told to archive old history; Storage shows which shops are near their limit."]},{"id":"ownpos","icon":"🛒","title":"Using the console as your own shop","steps":["The tabs **Bills, Daily Sales, Profits & Expenses, Staff** and the Settings sections work like the Shop POS for your own business — see the Shop guide chapters for making sales, receipts and printers (Settings ▸ Hardware)."]},{"id":"offline","icon":"📶","title":"Backups and your own data","steps":["The console keeps working through short internet cuts and catches up when it is back.","Settings ▸ 🗄️ Backups keeps your own business data safe; every client’s data is stored on the server and can be restored by you.","Use **Settings ▸ ✉️ Email (Password Resets)** so clients (and you) can reset a forgotten password by email, and **📸 AI Capture List** to add the AI key that reads photos of stock lists for your clients."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**A client says the app is slow or broken:** open **🐞 Errors** and **💾 Storage** — a shop that is too big or repeating an error shows up there.","**A client is locked out:** find them under **Demo** or **Permanent** and unlock, or extend the demo.","**A staff member cannot sign in:** send them a fresh staff link from **👥 Staff** (an old link may pre-date a change).","**A payment reminder keeps showing for a client:** it stays until their admin taps OK; settle or remove the bill under their record."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Owner Console, in the order they appear:","tabs":[["Dashboard","Your business at a glance: clients, demos, income."],["Generate Link","Create a demo or permanent POS link for a client on their own address."],["Demo","Every demo link across all products, grouped by client."],["Permanent","Every permanent (paid) client: manage, record income, remind, storage."],["Trash","Deleted links, restorable for 30 days before they’re removed for good."],["Tables & Rooms","Set-up used by your own hospitality POS."],["Website","Edit the public website, pricing, payment methods and testimonials."],["Leads","Prospects: daily sheets, meetings, website leads and WhatsApp ad leads."],["Bills","What clients owe you (permanent-link balances) — settle or remind."],["Daily Sales","Your own sales and income records."],["Profits & Expenses","Your expenses and profit."],["Staff","Your own staff and their access to the console."],["Errors","Errors reported by every client’s app, grouped so one bug on many devices is one line."],["Storage","How big each shop’s data is; compress, move to a database, shrink photos."],["Settings","Business details, email for password resets, AI capture key, security, backups."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
 <!-- @shared-block:guide-data:end -->
 
 <!-- @shared-block:error-reporting:begin -->

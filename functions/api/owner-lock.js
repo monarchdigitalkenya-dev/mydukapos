@@ -31,16 +31,15 @@
 // DOMContentLoaded), so the new password takes effect within moments,
 // without the device needing to do anything itself.
 //
-// "delete" is permanent — see deleteClient() in _license.js for exactly
-// what it removes. There's no undo, so the front-end confirms with the
-// owner before ever sending this action.
+// "delete" moves a client to Trash (see deleteClient() in _license.js) — restorable for 30 days via
+// "restore", after which purgeExpiredTrash() removes it for good. The front-end still confirms with the
+// owner before sending "delete", since it takes the link offline immediately even though it's recoverable.
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { requireOwnerAuth } from './_owner-auth.js';
 import { readState, writeState } from './_state-store.js';
-import { getLicense, saveLicense, deleteClient, PRODUCTS, getDemoDurationHours } from './_license.js';
-import { removeClientLink } from './account-recovery.js';
+import { getLicense, saveLicense, deleteClient, restoreClient, PRODUCTS, getDemoDurationHours } from './_license.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -132,12 +131,16 @@ export async function onRequestPost(context) {
   if (body.action === 'delete') {
     const removed = await deleteClient(context.env, body.c);
     if (!removed) return jsonResponse({ error: 'Client not found.' }, 404);
-    // Also frees up any email this link was signed up/logged in with (see
-    // account-recovery.js) — otherwise that email would still show as
-    // "already linked" to a client id that no longer exists, permanently
-    // blocking it from ever being used to set up a new link.
-    await removeClientLink(context.env, body.c);
+    // Unlike the old permanent delete, the signup email is deliberately left linked here — restoring
+    // within the 30-day trash window should just work, with nothing to re-free or re-claim. It's only
+    // freed by purgeExpiredTrash() once the client is actually gone for good.
     return jsonResponse({ deleted: true });
+  }
+
+  if (body.action === 'restore') {
+    const restored = await restoreClient(context.env, body.c);
+    if (!restored) return jsonResponse({ error: 'Client not found, or not in Trash.' }, 404);
+    return jsonResponse({ restored: true });
   }
 
   if (body.action === 'resetPassword') {

@@ -225,6 +225,8 @@ function summaryFromRecord(record) {
   return {
     id: record.id,
     slug: record.slug || '',
+    deleted: !!record.deleted,
+    deletedAt: record.deletedAt || null,
     type: record.type,
     product: record.product,
     label: record.label || '',
@@ -439,9 +441,10 @@ export async function getGroupMainRecord(env, record) {
 // this stays cheap however many clients exist. Accepts an optional case-
 // insensitive text filter (matched against label/slug) for the Licenses
 // tab's search box once the list gets long.
-export async function listClientSummaries(env, { q } = {}) {
-  const list = await readIndex(env);
-  list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+export async function listClientSummaries(env, { q, trashOnly } = {}) {
+  let list = await readIndex(env);
+  list = list.filter((e) => !!e.deleted === !!trashOnly);
+  list.sort((a, b) => (trashOnly ? (b.deletedAt || 0) - (a.deletedAt || 0) : (b.createdAt || 0) - (a.createdAt || 0)));
   if (!q) return list;
   const needle = q.trim().toLowerCase();
   if (!needle) return list;
@@ -467,31 +470,63 @@ async function removeIndexSummary(env, clientId) {
   await env.mydukapos_kv.put(INDEX_KEY, JSON.stringify(next));
 }
 
-// Permanently removes a client link — the license record, its slug
-// reservation (so the subdomain becomes available again for a future link),
-// and its entry in the Licenses tab's index. This is NOT the same as
-// locking: a locked link still exists and can be unlocked later; this one
-// is gone for good, and there's no undo. Deliberately does not touch that
-// client's own pos-sync state/backups (pos-data:state:<id>,
-// pos-data:backup:<id>:*) — those are cheap to leave behind and harmless
-// since nothing can reach them without the deleted id, but could be added
-// here later if reclaiming that storage ever matters. It also does NOT
-// unlink any account-recovery email tied to this clientId — callers that
-// need that (Owner Console's "delete" in owner-lock.js, and a demo
-// account deleting its own demo in demo-account.js) call
-// removeClientLink() from account-recovery.js right after this, so the
-// email frees up for a brand-new link instead of staying stuck "already
-// linked" to an id that no longer exists.
+// Soft delete: moves the client to Trash rather than removing anything. The slug and the client's own
+// synced business data are left completely alone — restoreClient() undoes this exactly. Nothing here is
+// permanent; permanentlyDeleteClient() (below) is what actually removes data, and only after 30 days
+// unrestored. Deliberately does not touch pos-sync state/backups either way — see that function's own
+// comment for why leaving those behind is fine.
 export async function deleteClient(env, clientId) {
   const record = await getLicense(env, clientId);
-  if (!record) return false;
+  if (!record || record.deleted) return false;
+  record.deleted = true;
+  record.deletedAt = Date.now();
+  await saveLicense(env, record);
+  return true;
+}
 
+// Undoes deleteClient(). Available any time before the 30-day trash window closes it out for good.
+export async function restoreClient(env, clientId) {
+  const record = await getLicense(env, clientId);
+  if (!record || !record.deleted) return false;
+  delete record.deleted;
+  delete record.deletedAt;
+  await saveLicense(env, record);
+  return true;
+}
+
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+// The actual, unrecoverable removal — what deleteClient() used to do directly. Only reached once something
+// has sat in Trash for the full 30 days; see purgeExpiredTrash(), which is what calls this.
+// The real, unrecoverable removal — the license record, its slug reservation (so the subdomain becomes
+// available again), and its entry in the Licenses tab's index. Deliberately does not touch that client's
+// own pos-sync state/backups (pos-data:state:<id>, pos-data:backup:<id>:*) — those are cheap to leave
+// behind and harmless since nothing can reach them without the deleted id, but could be reclaimed here
+// later if that ever matters. Only reached via purgeExpiredTrash() once 30 days have passed unrestored.
+async function permanentlyDeleteClient(env, clientId, record) {
   await env.mydukapos_kv.delete(LICENSE_PREFIX + clientId);
-  if (record.slug) {
+  if (record && record.slug) {
     await env.mydukapos_kv.delete(SLUG_PREFIX + record.slug);
   }
   await removeIndexSummary(env, clientId);
-  return true;
+}
+
+// Sweeps Trash for anything past its 30-day window and permanently removes it — including freeing up the
+// email it was signed up with. Cheap to call on every Trash-tab load (one index read, and only per-client
+// KV work for entries actually old enough to purge, which should be rare).
+export async function purgeExpiredTrash(env) {
+  const list = await readIndex(env);
+  const now = Date.now();
+  const due = list.filter((e) => e.deleted && e.deletedAt && now - e.deletedAt > TRASH_RETENTION_MS);
+  for (const entry of due) {
+    const record = await getLicense(env, entry.id);
+    await permanentlyDeleteClient(env, entry.id, record);
+    try {
+      const { removeClientLink } = await import('./account-recovery.js');
+      await removeClientLink(env, entry.id);
+    } catch (e) { /* best effort — a stuck email link is recoverable by hand, unlike lost data */ }
+  }
+  return due.length;
 }
 
 // The single source of truth for "can this client use the app right now" —
@@ -504,6 +539,7 @@ export async function deleteClient(env, clientId) {
 export function evaluateLicense(record) {
   const now = Date.now();
   if (!record) return { valid: false, reason: 'not_found', now };
+  if (record.deleted) return { valid: false, reason: 'deleted', record, now };
   if (record.locked) return { valid: false, reason: 'locked', record, now };
   if (record.type === 'permanent') return { valid: true, reason: 'permanent', record, now };
   const remainingMs = (record.expiresAt || 0) - now;
