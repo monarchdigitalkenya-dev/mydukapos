@@ -345,3 +345,41 @@ export async function dropArchivedIncoming(env, clientId, body, cutoff) {
   }
   return out;
 }
+
+// ---- Archived history, read back (zip 128) -------------------------------------------------------------------------------
+// Old history that a shop moved into archive records (automatically at 80% of its size limit, or from the Owner Console) used to be
+// invisible to every device: /api/history and the day check read only the live shop — and a shop later moved to its own database
+// never took its archives along. These records are read back here, so Daily Sales / Reports / the missing-sales check show them.
+// An archive only holds records older than its cutoff (archivedAt - keepDays), so a range after that never opens it.
+const archiveCache = new Map();          // key -> { at, fields } (per isolate, short-lived)
+export async function archivedLogRecords(env, clientId, col, from = 0, to = Number.MAX_SAFE_INTEGER) {
+  const out = [];
+  if (!env || !env.mydukapos_kv || typeof env.mydukapos_kv.list !== 'function') return out;
+  let cursor;
+  for (let guard = 0; guard < 200; guard++) {
+    let page;
+    try { page = await env.mydukapos_kv.list({ prefix: ARCHIVE_PREFIX + clientId + ':', cursor }); } catch (e) { return out; }
+    for (const k of page.keys || []) {
+      const meta = k.metadata || {};
+      if (meta.counts && !meta.counts[col]) continue;
+      if (meta.archivedAt && meta.keepDays && from >= meta.archivedAt - meta.keepDays * 86400000 + 86400000) continue;
+      let fields;
+      const hit = archiveCache.get(k.name);
+      if (hit && Date.now() - hit.at < 60000) fields = hit.fields;
+      else {
+        try {
+          const raw = await env.mydukapos_kv.get(k.name);
+          if (!raw) continue;
+          fields = (JSON.parse(await decodeStateText(raw)) || {}).fields || {};
+          archiveCache.set(k.name, { at: Date.now(), fields });
+          if (archiveCache.size > 20) archiveCache.delete(archiveCache.keys().next().value);
+        } catch (e) { continue; }
+      }
+      for (const r of fields[col] || []) { const t = recordTime(r); if (Number.isFinite(t) && t >= from && t < to) out.push(r); }
+    }
+    if (page.list_complete || !page.cursor) break;
+    cursor = page.cursor;
+  }
+  return out;
+}
+

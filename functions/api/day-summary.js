@@ -10,7 +10,7 @@
 
 import { requireValidLicense } from './_license.js';
 import { corsHeadersFor } from './_cors.js';
-import { readState, shopMode, shopCall } from './_state-store.js';
+import { readState, shopMode, shopCall, archivedLogRecords } from './_state-store.js';
 import { deviceGuard } from './_device-auth.js';
 
 const saleTotal = (s) => (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => sum + (Number(it && it.price) || 0) * (Number(it && it.qty) || 0), 0);
@@ -67,5 +67,8 @@ export async function onRequestGet(context) {
   } else {
     sales = ((await readState(env, 'pos-data:state:' + clientId, {})) || {}).salesLog || [];
   }
+  // sales moved into the shop's archives count too (zip 128); the live copy of a sale wins
+  const have = new Set(sales.map((s) => s && String(s.id)));
+  (await archivedLogRecords(env, clientId, 'salesLog', from, to + 1)).forEach((s) => { if (s && !have.has(String(s.id))) { have.add(String(s.id)); sales.push(s); } });
   return reply(summarizeDay(sales, from, to, site));
 }

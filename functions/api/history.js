@@ -11,7 +11,8 @@
 
 import { requireValidLicense } from './_license.js';
 import { corsHeadersFor } from './_cors.js';
-import { readState, shopMode, shopCall, ARCHIVE_LOG_FIELDS, recordTime } from './_state-store.js';
+import { readState, shopMode, shopCall, ARCHIVE_LOG_FIELDS, recordTime, archivedLogRecords } from './_state-store.js';
+import { recordKey } from './_merge.js';
 import { deviceGuard } from './_device-auth.js';
 
 const ms = (v, d) => { if (v == null || v === '') return d; const n = Number(v); if (Number.isFinite(n) && n > 1e11) return n; const t = Date.parse(v); return Number.isFinite(t) ? t : d; };
@@ -39,16 +40,34 @@ export async function onRequestGet(context) {
   let after = null;
   if (afterRaw) { const i = afterRaw.indexOf(':'); after = { ts: Number(afterRaw.slice(0, i)), rk: afterRaw.slice(i + 1) }; }
 
+  // Records in the shop's archives (zip 128) join the live ones; the live copy of a record wins. Same ordering and cursor as before.
+  const archived = (await archivedLogRecords(env, clientId, col, from, to)).map((r) => ({ r, t: recordTime(r), k: String(recordKey(r) || '') }));
+  const byOrder = (a, b) => a.t - b.t || (a.k < b.k ? -1 : a.k > b.k ? 1 : 0);
+  const afterCursor = (x) => !after || x.t > after.ts || (x.t === after.ts && x.k > after.rk);
   if ((await shopMode(env, clientId)) === 'do') {
     const res = await shopCall(env, clientId, 'history', { col, from, to, limit, after });
     const out = await res.json();
-    return reply({ records: out.records, next: out.next ? `${out.next.ts}:${out.next.rk}` : null }, res.status);
+    if (!res.ok || !archived.length) return reply({ records: out.records, next: out.next ? `${out.next.ts}:${out.next.rk}` : null }, res.status);
+    const live = (out.records || []).map((r) => ({ r, t: recordTime(r), k: String(recordKey(r) || '') }));
+    const liveKeys = new Set(live.map((x) => x.k));
+    // archived records not in the database (a record the database has is found there; one it lost is served from the archive)
+    let extra = archived.filter((x) => Number.isFinite(x.t) && !liveKeys.has(x.k) && afterCursor(x)).sort(byOrder);
+    const lastLive = live[live.length - 1];
+    if (out.next && lastLive) extra = extra.filter((x) => byOrder(x, lastLive) <= 0);          // later ones belong to later pages
+    const all = live.concat(extra).sort(byOrder);
+    const page = all.slice(0, limit);
+    const lastShown = page[page.length - 1];
+    const hasMore = !!out.next || all.length > limit
+      || (!!lastShown && archived.some((x) => Number.isFinite(x.t) && !liveKeys.has(x.k) && byOrder(x, lastShown) > 0));
+    return reply({ records: page.map((x) => x.r), next: hasMore && page.length ? `${page[page.length - 1].t}:${page[page.length - 1].k}` : null });
   }
   const state = (await readState(env, 'pos-data:state:' + clientId, {})) || {};
-  const rows = (state[col] || []).map((r) => ({ r, t: recordTime(r), k: String(r && (r.id ?? r.code ?? '')) }))
+  const liveRows = (state[col] || []).map((r) => ({ r, t: recordTime(r), k: String(recordKey(r) || '') }));
+  const have = new Set(liveRows.map((x) => x.k));
+  const rows = liveRows.concat(archived.filter((x) => !have.has(x.k)))
     .filter((x) => Number.isFinite(x.t) && x.t >= from && x.t < to)
-    .sort((a, b) => a.t - b.t || (a.k < b.k ? -1 : 1))
-    .filter((x) => !after || x.t > after.ts || (x.t === after.ts && x.k > after.rk));
+    .sort(byOrder)
+    .filter(afterCursor);
   const page = rows.slice(0, limit);
   return reply({ records: page.map((x) => x.r), next: rows.length > limit ? `${page[page.length - 1].t}:${page[page.length - 1].k}` : null });
 }

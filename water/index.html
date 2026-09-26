@@ -30393,7 +30393,7 @@ function bizDayBounds(key) {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-127';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-128';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -31148,7 +31148,7 @@ function bizDayBounds(key) {
             }).catch(function (e) {
                 dbBroken = true; loaded = true; readyResolve(0);
                 try { console.warn('sales journal unavailable', e); } catch (e2) {}
-            }).then(function () { tidy(); decorateSoon(); });
+            }).then(function () { tidy(); decorateSoon(); setTimeout(function () { window.salesJournalRecoverHidden(); }, window.__hiddenRecoveryDelayMs != null ? window.__hiddenRecoveryDelayMs : 12000); });
         }
 
         /* ---- the receipt: "saved" line; closing it never cancels the sale ---- */
@@ -31216,6 +31216,7 @@ function bizDayBounds(key) {
                     if (state) counts[state]++;
                     var cell = tr.querySelector('td');
                     if (!cell || cell.querySelector('.sj-badge')) return;
+                    if (extrasById[m[1]] && !(arrOf('salesLog') || []).some(function (x) { return x && String(x.id) === m[1]; })) { cell.insertAdjacentHTML('beforeend', ' <span class="sj-badge sj-synced" title="Kept in the shop\'s history (server or this device\'s archive) — shown here in full">📦 history</span>'); return; }
                     if (state && state !== 'unconfirmed') cell.insertAdjacentHTML('beforeend', ' ' + badgeHtml(state));
                 });
                 var table = document.getElementById('daily-sales-table');
@@ -31244,14 +31245,198 @@ function bizDayBounds(key) {
         }
         var decTimer = null;
         function decorateSoon() { clearTimeout(decTimer); decTimer = setTimeout(decorate, 0); }
+        /* ---- older and "hidden" sales: every range shows everything the shop has (zip 128) ----
+           Sales can be missing from this device's list although they exist: moved to this device's archive to save space, kept only
+           on the server (a new device, a database shop's older history, a list lost on this device before zip 127), or in the SERVER's
+           archive of a shop's old history (which no device could reach before zip 128). Whenever Daily Sales or a report shows a
+           range, those sales are fetched for that range — from this device's archive and from the server — and shown with the
+           rest (marked 📦). They are not added to the device's own list (that is what keeps it from filling up), except a sale that
+           is voided or reprinted, which is taken in first. */
+        var extras = {};          // range key -> { at, list: [sales not in the device's list], busy }
+        var extrasById = {};
+        function rangeKeys() {
+            var r = null;
+            try { if (typeof salesTablePeriodRange === 'function') r = salesTablePeriodRange(); else if (typeof salesPeriodRange === 'function') r = salesPeriodRange(); } catch (e) { r = null; }
+            if (!r) return null;
+            var f = typeof r.from === 'string' ? r.from : bizDay(r.from), t = typeof r.to === 'string' ? r.to : bizDay(r.to);
+            return f && t ? { from: f, to: t } : null;
+        }
+        function readDeviceArchive(inRange) {
+            return new Promise(function (res) {
+                if (!hasIDB()) { res([]); return; }
+                var q;
+                try { q = indexedDB.open('pos_local_archive', 1); } catch (e) { res([]); return; }
+                q.onupgradeneeded = function () { try { q.result.createObjectStore('archives', { keyPath: 'id' }); } catch (e) {} };
+                q.onsuccess = function () {
+                    try {
+                        var db = q.result, t = db.transaction('archives', 'readonly'), g = t.objectStore('archives').getAll();
+                        g.onsuccess = function () { db.close(); var out = []; (g.result || []).forEach(function (a) { ((a.fields || {}).salesLog || []).forEach(function (s) { if (s && inRange(s)) out.push(s); }); }); res(out); };
+                        g.onerror = function () { db.close(); res([]); };
+                    } catch (e) { res([]); }
+                };
+                q.onerror = function () { res([]); };
+            });
+        }
+        async function readServerHistory(fromMs, toMs) {
+            var out = [], after = '';
+            for (var page = 0; page < 25; page++) {
+                var path = '/api/history?col=salesLog&from=' + fromMs + '&to=' + toMs + '&limit=2000' + (after ? '&after=' + encodeURIComponent(after) : '');
+                var res = await fetch(typeof apiUrl === 'function' ? apiUrl(path) : path);
+                if (!res.ok) break;
+                var body = await res.json();
+                out = out.concat(body.records || []);
+                if (!body.next) break;
+                after = body.next;
+            }
+            return out;
+        }
+        async function loadExtras(key, fromKey, toKey, rerender) {
+            var e = extras[key];
+            if (e && (e.busy || Date.now() - e.at < 5 * 60000)) return;
+            extras[key] = e = { at: Date.now(), list: (e && e.list) || [], busy: true };
+            try {
+                var b1 = bizDayBounds(fromKey), b2 = bizDayBounds(toKey);
+                if (!b1 || !b2) return;
+                var inRange = function (x) { var k = bizDay(x.timestamp); return k >= fromKey && k <= toKey; };
+                var found = await readDeviceArchive(inRange);
+                if (navigator.onLine !== false) { try { found = found.concat(await readServerHistory(b1.from, b2.to + 1)); } catch (err) { /* offline: the device's own archive only */ } }
+                var have = new Set((arrOf('salesLog') || []).map(function (x) { return String(x && x.id); }));
+                var seen = new Set(), list = [];
+                found.forEach(function (x) {
+                    if (!x || x.id == null || x._deleted || have.has(String(x.id)) || seen.has(String(x.id)) || !inRange(x)) return;
+                    seen.add(String(x.id)); list.push(x); extrasById[String(x.id)] = x;
+                });
+                var changed = list.length !== e.list.length;
+                e.list = list; e.at = Date.now();
+                if (changed && rerender) rerender();
+            } catch (err) { /* tried again next time */ } finally { e.busy = false; }
+        }
+        // Runs fn with the sales of `extra` added to the list for that one render (nothing is saved while it runs).
+        function withExtras(extra, fn) {
+            if (!extra || !extra.length || scoped()) return fn();
+            var have = new Set((salesLog || []).map(function (x) { return String(x && x.id); }));
+            var add = extra.filter(function (x) { return !have.has(String(x.id)); });
+            if (!add.length) return fn();
+            var saved = salesLog;
+            salesLog = saved.concat(add);
+            try { return fn(); } finally { salesLog = saved; }
+        }
+        // A sale shown from history that is voided / reprinted / marked paid is first taken into the device's own list.
+        window.salesJournalAdopt = function (id) {
+            var x = extrasById[String(id)];
+            var a = arrOf('salesLog');
+            if (!x || !Array.isArray(a) || a.some(function (s) { return s && String(s.id) === String(id); })) return false;
+            a.push(x);
+            try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); } catch (e) { /* in memory for this session */ }
+            Object.keys(extras).forEach(function (k) { extras[k].list = extras[k].list.filter(function (s) { return String(s.id) !== String(id); }); });
+            return true;
+        };
+        ['reprintSale', 'requestVoidSale', 'requestUnvoidSale', 'togglePaidStatus'].forEach(function (name) {
+            var orig = window[name];
+            if (typeof orig !== 'function' || orig.__journal) return;
+            var w = function (id) { try { window.salesJournalAdopt(id); } catch (e) { /* carry on */ } return orig.apply(this, arguments); };
+            w.__journal = true;
+            window[name] = w;
+        });
         function wrapRender() {
             if (typeof window.renderDailySales !== 'function' || window.renderDailySales.__journal) return;
             var orig = window.renderDailySales;
-            var w = function () { var r = orig.apply(this, arguments); decorate(); return r; };
+            var w = function () {
+                var self = this, args = arguments;
+                var rk = rangeKeys();
+                var key = rk ? rk.from + '|' + rk.to : '';
+                var r = withExtras(key && extras[key] ? extras[key].list : null, function () { return orig.apply(self, args); });
+                decorate();
+                if (rk && !scoped() && dailyVisible() && document.getElementById('daily-sales-tab')) loadExtras(key, rk.from, rk.to, function () { try { window.renderDailySales(); } catch (e) { /* cosmetic */ } });
+                return r;
+            };
             w.__journal = true;
             window.renderDailySales = w;
             try { renderDailySales = w; } catch (e) { /* not assignable: the window property is enough */ }
+            if (typeof window.reportsGenerate === 'function' && !window.reportsGenerate.__journal) {
+                var origRep = window.reportsGenerate;
+                var wr = function (kind) {
+                    var self = this, args = arguments;
+                    if (kind === 'xreport' || kind === 'zreport' || typeof reportsRange !== 'function') return origRep.apply(self, args);
+                    var rr = null; try { rr = reportsRange(); } catch (e) { rr = null; }
+                    if (!rr) return origRep.apply(self, args);
+                    var fk = bizDay(rr.from), tk = bizDay(rr.to), key = fk + '|' + tk;
+                    var out = withExtras(extras[key] ? extras[key].list : null, function () { return origRep.apply(self, args); });
+                    loadExtras(key, fk, tk, function () { try { if (window.__reportKind === kind) window.reportsGenerate(kind); } catch (e) { /* cosmetic */ } });
+                    return out;
+                };
+                wr.__journal = true;
+                window.reportsGenerate = wr;
+            }
         }
+        window.salesJournalExtras = function () { var all = []; Object.keys(extras).forEach(function (k) { all = all.concat(extras[k].list); }); return all; };
+
+        /* ---- once per device (zip 128): bring back sales that were hidden before this release ---- */
+        function impossibleDate(s) { var t = Date.parse(s && s.timestamp); return !isFinite(t) || t > Date.now() + 36 * 3600000 || t < Date.UTC(2015, 0, 1); }
+        function repairRecords() {
+            // A sale with no usable date (or no item list) could never show on any day and could stop Daily Sales from drawing at all.
+            var a = arrOf('salesLog');
+            if (!Array.isArray(a)) return 0;
+            var fixed = 0;
+            a.forEach(function (s) {
+                if (!s || typeof s !== 'object') return;
+                if (!Array.isArray(s.items)) { s.items = []; fixed++; }
+                s.items.forEach(function (it) { if (it && typeof it.name !== 'string') it.name = it.name == null ? String(it.code || 'Item') : String(it.name); });
+                if (isFinite(Date.parse(s.timestamp))) return;
+                var guess = NaN;
+                if (typeof s.timestamp === 'number') guess = s.timestamp;
+                ['createdAt', 'date', 'at', 'paidAt'].forEach(function (f) { if (!isFinite(guess) && s[f] != null) guess = typeof s[f] === 'number' ? s[f] : Date.parse(s[f]); });
+                if (!isFinite(guess)) { var m = /^(\d{12,13})\b/.exec(String(s.id || '')); if (m) guess = Number(m[1]); }
+                if (!isFinite(guess) && Array.isArray(s.paymentHistory) && s.paymentHistory[0]) guess = Date.parse(s.paymentHistory[0].timestamp);
+                if (isFinite(guess)) { s.timestampRecovered = s.timestamp == null ? '' : String(s.timestamp); s.timestamp = new Date(guess).toISOString(); fixed++; }
+            });
+            if (fixed) { try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); } catch (e) { /* the journal holds it */ } try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll */ } }
+            return fixed;
+        }
+        window.salesJournalImpossibleDates = function () { return (arrOf('salesLog') || []).filter(function (s) { return s && !s.voided && impossibleDate(s); }); };
+        window.salesJournalMoveToToday = function (id) {
+            var a = arrOf('salesLog') || [];
+            var s = a.find(function (x) { return x && String(x.id) === String(id); });
+            if (!s) return false;
+            s.deviceTimestamp = s.deviceTimestamp || s.timestamp;
+            s.timestamp = new Date().toISOString();
+            s.dateCorrectedAt = Date.now();
+            try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); } catch (e) { /* in memory */ }
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll */ }
+            return true;
+        };
+        var RECOVER_KEY = 'pos_hidden_sales_recovery_v1';
+        window.salesJournalRecoverHidden = async function (force) {
+            var done = null; try { done = localStorage.getItem(RECOVER_KEY); } catch (e) { /* private mode */ }
+            if (done && !force) return { skipped: true };
+            var before = (arrOf('salesLog') || []).length;
+            var repaired = repairRecords();
+            if (navigator.onLine === false) return { repaired: repaired, online: false };
+            // a full fetch (not "changes since"): sales this device lost, that the server still has, come back into its list
+            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ }
+            var ok = false;
+            try {
+                if (typeof flushPendingPush === 'function') await flushPendingPush();
+                window.__pullInFlight = false;
+                if (typeof pullStateOnce === 'function') await pullStateOnce();
+                else if (typeof pullFromServerOnce === 'function') await pullFromServerOnce();
+                var dot = document.getElementById('sync-status');
+                ok = !(dot && (dot.dataset.state === 'error' || dot.dataset.state === 'offline'));
+            } catch (e) { ok = false; }
+            if (window.__lastHotFrom && typeof hydrateOlderHistory === 'function') {
+                try { localStorage.removeItem('pos_hydrated_v1'); localStorage.removeItem('aqua_hydrated_v1'); } catch (e) { /* optional */ }
+                try { await hydrateOlderHistory(window.__lastHotFrom); } catch (e) { /* next session */ }
+            }
+            var after = (arrOf('salesLog') || []).length;
+            if (ok) {
+                try { localStorage.setItem(RECOVER_KEY, String(Date.now())); } catch (e) { /* tried again next start */ }
+                if (after > before || repaired) {
+                    auditAppend({ at: Date.now(), by: 'Device', kind: 'recovered', what: (after > before ? (after - before) + ' sale' + (after - before === 1 ? '' : 's') + ' that were missing on this device fetched from the server' : '') + (after > before && repaired ? '; ' : '') + (repaired ? repaired + ' sale' + (repaired === 1 ? '' : 's') + ' with a broken date or item list repaired' : ''), refs: [], device: deviceId() });
+                }
+                try { if (typeof renderAllViews === 'function') renderAllViews(); else if (typeof renderDailySales === 'function') renderDailySales(); } catch (e) { /* cosmetic */ }
+            }
+            return { repaired: repaired, fetched: after - before, ok: ok };
+        };
         setInterval(function () {                                   // the sync state moves on by itself: keep the badges true
             if (dailyVisible() && document.getElementById('daily-sales-tab')) {
                 Array.prototype.forEach.call(document.querySelectorAll('#daily-sales-table .sj-badge'), function (b) { b.remove(); });
@@ -31334,6 +31519,9 @@ function bizDayBounds(key) {
             else li.push('<li>✓ Every receipt printed on this device has its sale in the list.</li>');
             if (r.archived.length) li.push('<li>' + r.archived.length + ' older sale' + (r.archived.length === 1 ? ' was' : 's were') + ' moved to this device\'s archive to save space. <button type="button" class="settings-small-btn" data-sj="archived">Show ' + (r.archived.length === 1 ? 'it' : 'them') + ' here</button></li>');
             if (r.clockOdd.length) li.push('<li>' + r.clockOdd.length + ' sale' + (r.clockOdd.length === 1 ? ' was' : 's were') + ' made while this device\'s clock was wrong; ' + (r.clockOdd.length === 1 ? 'it is' : 'they are') + ' listed under the correct date instead: ' + r.clockOdd.map(function (x) { return (x.ref || x.id) + ' → ' + bizDay(x.rec.timestamp); }).join(', ') + '.</li>');
+            var odd = window.salesJournalImpossibleDates();
+            if (odd.length) li.push('<li style="color:#b9770e;">' + odd.length + ' sale' + (odd.length === 1 ? ' has' : 's have') + ' an impossible date (the device clock was wrong when ' + (odd.length === 1 ? 'it was' : 'they were') + ' made), so ' + (odd.length === 1 ? 'it shows' : 'they show') + ' on no normal day: '
+                + odd.slice(0, 20).map(function (x) { return (x.refNumber || x.id) + ' (' + (x.timestamp ? String(x.timestamp).slice(0, 10) : 'no date') + ') <button type="button" class="settings-small-btn" data-sj="today" data-id="' + String(x.id).replace(/"/g, '') + '">Move to today</button>'; }).join(', ') + '</li>');
             if (!r.server) li.push('<li>Server check: not available (offline) — nothing is lost; it is checked again when online.</li>');
             else if (r.server.ok) li.push('<li>✓ Server: holds the same ' + r.server.srv.count + ' sale' + (r.server.srv.count === 1 ? '' : 's') + ' (' + money(r.server.srv.gross) + ').</li>');
             else {
@@ -31351,6 +31539,7 @@ function bizDayBounds(key) {
                     if (what === 'archived') { var k = window.salesJournalShowArchived(r.archived); if (typeof showToast === 'function') showToast(k + ' archived sale(s) shown.'); }
                     if (what === 'fetch') { var g = await window.salesJournalFetchFromServer(r.server.missingHere); if (typeof showToast === 'function') showToast(g + ' sale(s) fetched from the server.'); }
                     if (what === 'send' && typeof syncRetryNow === 'function') await syncRetryNow();
+                    if (what === 'today') { window.salesJournalMoveToToday(b.getAttribute('data-id')); if (typeof showToast === 'function') showToast('Moved to today — the original date is kept on the sale.'); }
                 } catch (e) { if (typeof showToast === 'function') showToast('Could not finish — try again.', true); }
                 try { renderDailySales(); } catch (e) { /* cosmetic */ }
                 window.salesJournalReconcileUi();
@@ -31421,6 +31610,7 @@ function bizDayBounds(key) {
         };
 
         seed();                                              // now: the app has loaded its lists; anything saved from here on is new
+        try { repairRecords(); } catch (e) { /* never block the start */ }   // before the app first draws (a broken record used to stop it)
         function boot() {
             wrapRender();
             clockBanner();
