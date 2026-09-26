@@ -428,7 +428,13 @@
             FIELDS.forEach(function (f) {
                 var a = ARR[f](), old = [];
                 if (!Array.isArray(a)) return;
-                for (var i = 0; i < a.length; i++) { var t = recordTime(a[i]); if (isFinite(t) && t < cutoff) old.push(a[i]); }
+                for (var i = 0; i < a.length; i++) {
+                    var t = recordTime(a[i]);
+                    if (!isFinite(t) || t >= cutoff) continue;
+                    // never move a record the server has not got yet: it stays in the list (and is sent) until it is on the server (zip 127)
+                    if (a[i] && a[i].id != null && typeof window.salesJournalIsPending === 'function' && window.salesJournalIsPending(f, a[i].id)) continue;
+                    old.push(a[i]);
+                }
                 if (old.length) { out[f] = old; moved += old.length; }
             });
             return { fields: out, moved: moved };
@@ -438,6 +444,7 @@
                 var a = ARR[f](), gone = new Set(fields[f]);      // by object identity: anything added meanwhile is untouched
                 if (!Array.isArray(a)) return;
                 var keep = a.filter(function (r) { return !gone.has(r); });
+                try { if (typeof window.salesJournalArchived === 'function') window.salesJournalArchived(f, fields[f].map(function (r) { return r && r.id; }).filter(function (x) { return x != null; })); } catch (e) { /* bookkeeping */ }
                 a.length = 0;
                 for (var i = 0; i < keep.length; i++) a.push(keep[i]);
             });

@@ -58,7 +58,9 @@ test('a brand-new device that has never reached the server still issues unique r
   a.close(); b.close();
 });
 
-test('every sale carries its till, device, cashier and shift; movements carry device/till and send count; the Audit tab shows sync failures, retries and conflicts', async () => {
+// Zip 127 (the owner's request): the Audit shows only what went right — successful syncs and the conflicts the server resolved.
+// Failed sends and retries stay in the technical sync journal (Settings ▸ Devices & Security ▸ Sync diagnostics).
+test('every sale carries its till, device, cashier and shift; movements carry device/till and send count; the Audit shows successful syncs and conflicts, never send failures', async () => {
   const s = makeServer();
   const a = await openDevice('index.html', s, { pos_inventory: JSON.stringify(ITEMS) }); quiet(a.w);
   await a.w.eval('pushNow()'); await a.w.eval('pullState()');
@@ -87,7 +89,10 @@ test('every sale carries its till, device, cashier and shift; movements carry de
   await a.w.eval('flushThenPull()'); await a.w.eval('pullState()');                        // ... superseded by a later one
   a.w.eval("document.getElementById('audit-module-select').value = 'Sync'; renderAuditTab()");
   const audit = a.d.getElementById('audit-tab').textContent;
-  assert.match(audit, /send failed/); assert.match(audit, /retry/); assert.match(audit, /conflict resolved by server/);
+  assert.match(audit, /Synced to the server/); assert.match(audit, /conflict resolved by the server/);
+  assert.doesNotMatch(audit, /send failed|busy|refused|no answer/i, 'no failure noise in the business Audit');
+  const diag = a.w.localStorage.getItem('pos_sync_journal_v1');
+  assert.match(diag, /"kind":"failed"/); assert.match(diag, /"kind":"retry"/);            // still recorded for diagnostics
   a.close(); other.close();
 });
 

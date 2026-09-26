@@ -4094,10 +4094,91 @@
 
         let ownerSessionToken = localStorage.getItem('pos_owner_session_token') || '';
         let ownerSignedIn = false;
+        let consoleStaffMode = false;       // this PAGE is a staff session (staff link): owner requests carry no owner token
 
+        // ONE place that decides whether a request is sent as the owner (zip 127). It reads the saved session each time, so signing in
+        // in another tab is picked up at once, and a staff session on this page never carries the owner's token.
         function ownerAuthHeaders() {
+            if (consoleStaffMode) return {};
+            const t = localStorage.getItem('pos_owner_session_token') || ownerSessionToken;
+            if (t && t !== ownerSessionToken) ownerSessionToken = t;
             return ownerSessionToken ? { Authorization: `Bearer ${ownerSessionToken}` } : {};
         }
+
+        // Is the saved owner session valid? true / false = the server said so; null = no answer (offline, server busy) — which is NOT
+        // "signed out". Asks up to 3 times, so a moment of network trouble is never mistaken for a lost session.
+        async function verifyOwnerSession() {
+            for (let i = 0; i < 3; i++) {
+                try {
+                    const res = await (window.__ownerRealFetch || fetch)('/api/owner-auth', { headers: ownerAuthHeaders(), cache: 'no-store' });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && data.authenticated) return data;
+                        if (data && data.authenticated === false) { if (i === 2) return false; }
+                    }
+                } catch (e) { /* no answer: try again */ }
+                if (i < 2) await new Promise((r) => setTimeout(r, window.__ownerVerifyWaitMs != null ? window.__ownerVerifyWaitMs : 600 * (i + 1)));
+            }
+            return null;
+        }
+
+        async function ownerOnlyMessage(res) {
+            try { const b = await res.clone().json(); if (b && b.error && b.error !== 'Unauthorized') return b.error; } catch (e) { /* no body */ }
+            return consoleStaffMode ? 'Owner only — this page is signed in as staff.' : 'Your owner session has ended — sign in again (the sign-in form is open).';
+        }
+
+        // Owner session ended for real (signed out elsewhere, password changed): say so and show the sign-in form — never a dead
+        // "Sign in as the owner" message on a screen that has no way to sign in.
+        function ownerSessionEnded() {
+            ownerSessionToken = '';
+            ownerSignedIn = false;
+            try { localStorage.removeItem('pos_owner_session_token'); } catch (e) { /* private mode */ }
+            const screen = document.getElementById('owner-auth-screen');
+            if (screen) screen.style.display = 'flex';
+            if (typeof showOwnerAuthForm === 'function') showOwnerAuthForm('login');
+            const err = document.getElementById('owner-auth-error');
+            if (err) err.textContent = 'Your owner session has ended — please sign in again.';
+        }
+
+        // Every owner-only request (errors, health, storage, links, leads, website...): an "Unauthorized" answer is checked before it is
+        // believed. Owner session valid -> the request is sent again and the owner sees the data. Staff page -> a clear "owner only"
+        // answer. Session really ended -> the sign-in form. (It used to show "Sign in as the owner to see this" to a signed-in owner.)
+        (function installOwnerFetchGuard() {
+            if (window.__ownerRealFetch) return;
+            const realFetch = window.fetch;
+            window.__ownerRealFetch = realFetch;
+            const isOwnerApi = (url) => /\/api\/(owner-|client-log|leads|website-|demo-account|email-config|gemini-capture-config)/.test(url);
+            window.fetch = async function (input, init) {
+                const url = typeof input === 'string' ? input : (input && input.url) || '';
+                const res = await realFetch.apply(this, arguments);
+                if (res.status !== 401 || !isOwnerApi(url) || /\/api\/owner-auth/.test(url)) return res;
+                const hdrs = new Headers((init && init.headers) || (typeof input !== 'string' && input && input.headers) || {});
+                if (!hdrs.get('Authorization')) {
+                    if (consoleStaffMode || !(localStorage.getItem('pos_owner_session_token'))) {
+                        const body = { error: consoleStaffMode ? 'Owner only — this page is signed in as staff. Open the console without the staff link and sign in as the owner to see this.' : 'Owner only — sign in as the owner to see this.' };
+                        if (typeof Response === 'function') return new Response(JSON.stringify(body), { status: 401, headers: { 'Content-Type': 'application/json' } });
+                        const fake = { ok: false, status: 401, headers: { get: () => 'application/json' }, json: async () => body, text: async () => JSON.stringify(body) };
+                        fake.clone = () => fake;
+                        return fake;
+                    }
+                    // the owner signed in (maybe in another tab) after this request was built: send it again as the owner
+                    const again = Object.assign({}, init || {}, { headers: Object.assign({}, Object.fromEntries(hdrs.entries()), ownerAuthHeaders()) });
+                    return realFetch.call(this, input, again);
+                }
+                const v = await verifyOwnerSession();
+                if (v && v.authenticated) {
+                    const again = Object.assign({}, init || {}, { headers: Object.assign({}, Object.fromEntries(hdrs.entries()), ownerAuthHeaders()) });
+                    for (let i = 0; i < 2; i++) {
+                        const r2 = await realFetch.call(this, input, again);
+                        if (r2.status !== 401) return r2;
+                        await new Promise((r) => setTimeout(r, window.__ownerVerifyWaitMs != null ? window.__ownerVerifyWaitMs : 2000));
+                    }
+                    return res;
+                }
+                if (v === false) ownerSessionEnded();
+                return res;
+            };
+        })();
 
         /* ---------- WEBSITE CONTENT (public site + every app's upgrade prompt) ---------- */
 
@@ -5293,10 +5374,10 @@
                         // case this fix targets) — without this, a background API
                         // call during what's now a staff session could still carry
                         // the owner's Authorization header via ownerAuthHeaders().
-                        if (ownerSessionToken) {
-                            ownerSessionToken = '';
-                            localStorage.removeItem('pos_owner_session_token');
-                        }
+                        // The owner's own saved session is LEFT ALONE (zip 127): it used to be deleted here, which signed the owner out on
+                        // this device for good just because they had opened a staff link — the console then quietly opened as staff and
+                        // every owner tab said "Sign in as the owner". This page simply does not send it (consoleStaffMode).
+                        consoleStaffMode = true;
                         clientToken = cid;
                         myClientId = cid;
                         ownerSignedIn = false;
@@ -5308,26 +5389,31 @@
             }
 
             if (ownerSessionToken) {
-                try {
-                    const res = await fetch('/api/owner-auth', { headers: ownerAuthHeaders() });
-                    const data = await res.json();
-                    if (data.authenticated && data.ownerClientId) {
-                        ownerSignedIn = true;
-                        clientToken = data.ownerClientId;
-                        myClientId = data.ownerClientId;
-                        safeSetItem('pos_owner_client_id', clientToken);
-                        if (screen) screen.style.display = 'none';
-                        return true;
-                    }
-                } catch (e) {
-                    // Network hiccup — fall through to showing sign-in below
-                    // rather than silently locking the console out.
+                const data = await verifyOwnerSession();
+                if (data && data.authenticated && data.ownerClientId) {
+                    ownerSignedIn = true;
+                    clientToken = data.ownerClientId;
+                    myClientId = data.ownerClientId;
+                    safeSetItem('pos_owner_client_id', clientToken);
+                    if (screen) screen.style.display = 'none';
+                    return true;
                 }
-                // Stored token turned out invalid (revoked, or a stale copy from
-                // a different deployment) — clear it so the form doesn't loop.
-                ownerSessionToken = '';
-                localStorage.removeItem('pos_owner_session_token');
-                localStorage.removeItem('pos_owner_client_id');
+                const savedClient = localStorage.getItem('pos_owner_client_id');
+                if (data === null && savedClient) {
+                    // No answer (offline, server busy) is NOT "signed out" (zip 127 — a network hiccup at start-up used to delete the owner's
+                    // session): open as the owner with the saved session; owner-only tabs check again when they load.
+                    ownerSignedIn = true;
+                    clientToken = savedClient;
+                    myClientId = savedClient;
+                    if (screen) screen.style.display = 'none';
+                    return true;
+                }
+                if (data === false) {
+                    // The server said, three times, that this session is not valid (signed out elsewhere, password changed): sign in again.
+                    ownerSessionToken = '';
+                    localStorage.removeItem('pos_owner_session_token');
+                    localStorage.removeItem('pos_owner_client_id');
+                }
             }
 
             // Not signed in — find out whether this is first-run (show sign-up)
@@ -16028,14 +16114,17 @@
             return salesLog.filter(s => s.paid !== false && !s.voided).reduce((sum, s) => sum + s.items.reduce((t, it) => t + it.price * it.qty, 0), 0);
         }
 
+        // A timestamp's calendar day on this device (the owner console's own bills; zip 127 — was the UTC date of the ISO string).
+        function dayKeyOf(ts) { return dateKey(new Date(ts)); }
+
         function revenueForDate(dateStr) {
             return salesLog
-                .filter(s => s.paid !== false && !s.voided && s.timestamp.slice(0, 10) === dateStr)
+                .filter(s => s.paid !== false && !s.voided && dayKeyOf(s.timestamp) === dateStr)
                 .reduce((sum, s) => sum + s.items.reduce((t, it) => t + it.price * it.qty, 0), 0);
         }
 
         function expensesForDate(dateStr) {
-            return expenses.filter(e => e.timestamp.slice(0, 10) === dateStr);
+            return expenses.filter(e => dayKeyOf(e.timestamp) === dateStr);
         }
 
         function saveExpenses() {
@@ -17393,7 +17482,7 @@ async function loadClientErrors() {
     list.innerHTML = '<p class="settings-msg">Loading…</p>';
     try {
         const res = await fetch('/api/client-log', { headers: ownerAuthHeaders() });
-        if (res.status === 401) throw new Error('Sign in as the owner to see this.');
+        if (res.status === 401) throw new Error(await ownerOnlyMessage(res));
         if (!res.ok) throw new Error('Could not load errors (' + res.status + ').');
         clientErrorsData = await res.json();
         const apps = [...new Set(clientErrorsData.errors.map(e => e.app))].sort();
@@ -17464,7 +17553,7 @@ async function storageApi(method, body) {
         headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() },
         body: body ? JSON.stringify(body) : undefined,
     });
-    if (res.status === 401) throw new Error('Sign in as the owner to see this.');
+    if (res.status === 401) throw new Error(await ownerOnlyMessage(res));
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ').'));
     return data;
@@ -17496,7 +17585,7 @@ setInterval(checkStorageAlert, 10 * 60 * 1000);
 let healthData = null;
 async function healthApi(method, query, body) {
     const res = await fetch('/api/owner-health' + (query || ''), { method, headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() }, body: body ? JSON.stringify(body) : undefined });
-    if (res.status === 401) throw new Error('Sign in as the owner to see this.');
+    if (res.status === 401) throw new Error(await ownerOnlyMessage(res));
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || ('Request failed (' + res.status + ').'));
     return data;

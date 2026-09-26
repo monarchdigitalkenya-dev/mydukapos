@@ -78,7 +78,7 @@ export async function onRequestPost(context) {
     }
     try {
       const account = await createOwnerAccount(env, identifier, password);
-      const token = await createOwnerSession(env);
+      const token = await createOwnerSession(env, account);
       return jsonResponse({ token, ownerClientId: account.ownerClientId });
     } catch (e) {
       return jsonResponse({ error: e.message || 'Could not create the owner account.' }, 500);
@@ -92,7 +92,7 @@ export async function onRequestPost(context) {
     if (!account) {
       return jsonResponse({ error: 'Incorrect email/phone or password.' }, 401);
     }
-    const token = await createOwnerSession(env);
+    const token = await createOwnerSession(env, account);
     return jsonResponse({ token, ownerClientId: account.ownerClientId });
   }
 

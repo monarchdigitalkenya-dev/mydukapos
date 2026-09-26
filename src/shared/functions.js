@@ -2411,12 +2411,25 @@ function syncJournal(kind, detail) {
         }
 
 //@fn syncJournalAuditEvents
-// The journal as Audit-tab events (module "Sync").
+// The Audit tab's "Sync" events (zip 127): only what went RIGHT and matters to the business — one line per batch of new sales /
+// stock changes / returns / expenses that reached the server (a retry never adds a second line: each record is announced once, when it
+// first reaches the server), sales recovered from this device's journal, "Sync to this device", and stock conflicts the server
+// resolved. A failed send, a busy server, a timeout or a retry is NOT a business event: it stays in the technical sync journal
+// (Settings ▸ Devices & Security ▸ Sync diagnostics) and the data stays queued on the device until it goes through.
 function syncJournalAuditEvents() {
+            const out = [];
+            let ok = [];
+            try { ok = JSON.parse(localStorage.getItem('pos_sync_audit_v1') || '[]'); } catch (e) { ok = []; }
+            (window.__syncAuditMem || []).forEach((m) => { if (!m.saved) ok.push(m); });       // not stored (device full): still shown
+            ok.forEach((e) => {
+                if (!e || !e.at) return;
+                out.push({ at: e.at, user: e.by || 'Device', module: 'Sync', action: e.kind === 'recovered' ? 'Sales recovered on this device' : /^Synced to this device/.test(e.what || '') ? 'Synced to this device' : 'Synced to the server',
+                    detail: (e.what || '') + (e.refs && e.refs.length ? ' — ' + e.refs.join(', ') : ''), ref: '' });
+            });
             let list = [];
             try { list = JSON.parse(localStorage.getItem('pos_sync_journal_v1') || '[]'); } catch (e) { list = []; }
-            const label = { sent: 'Sync: sent', failed: 'Sync: send failed', retry: 'Sync: retry', conflict: 'Sync: conflict resolved by server' };
-            return list.map((e) => ({ at: e.at, user: e.by || 'Device', module: 'Sync', action: label[e.kind] || ('Sync: ' + e.kind), detail: e.detail || '', ref: '' }));
+            list.forEach((e) => { if (e && e.kind === 'conflict') out.push({ at: e.at, user: e.by || 'Device', module: 'Sync', action: 'Sync: stock conflict resolved by the server', detail: e.detail || '', ref: '' }); });
+            return out;
         }
 
 //@fn syncJournalConflicts
@@ -4350,6 +4363,7 @@ function performResetExceptInventory() {
                 }
             });
             safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+            try { if (typeof window.salesJournalForget === 'function') window.salesJournalForget('reset (all sales cleared, stock kept)'); } catch (e) { /* bookkeeping */ }
             safeSetItem('pos_bills', JSON.stringify(bills));
             safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
             safeSetItem('pos_inventory', JSON.stringify(inventory));
@@ -4919,6 +4933,8 @@ function preparePulledPayload(data) {
             // the server's copy of every record wins, and records only this device has are kept. Never removes anything.
             try {
                 if (!data || typeof data !== 'object') return data;
+                try { if (typeof window.salesJournalSeen === 'function') window.salesJournalSeen(data); } catch (e) { /* housekeeping */ }
+                if (data._hotFrom) window.__lastHotFrom = data._hotFrom;
                 const local = {
                     salesLog: typeof salesLog === 'undefined' ? null : salesLog,
                     stockMovementLog: typeof stockMovementLog === 'undefined' ? null : stockMovementLog,
@@ -7852,6 +7868,7 @@ function ackServerRecords(field, records) {
             // Records that CAME FROM the server (a pull, or older history fetched on demand) are already there: mark them
             // acknowledged so the next push doesn't send them back. Only matters once this session has pushed at least once
             // (before that, everything is sent anyway).
+            try { if (typeof window.salesJournalSeenRecords === 'function') window.salesJournalSeenRecords(field, records); } catch (e) { /* housekeeping */ }
             try {
                 const ack = window.__pushAck && window.__pushAck[field];
                 if (!ack) return;
@@ -7961,6 +7978,14 @@ function slimPayloadForPush(payload) {
                 pending[field] = sigs;
                 if (ack) body[field] = changed;
             });
+            // What this push carries of each log, by version (zip 127): once the server answers OK, the sales journal marks exactly these
+            // versions "on the server" — a record changed while the push was on its way stays waiting for the next one.
+            const sentVersions = {};
+            if (typeof window.salesJournalSig === 'function') {
+                ['salesLog', 'stockMovementLog', 'returns', 'expenses'].forEach((f) => {
+                    if (Array.isArray(body[f])) sentVersions[f] = body[f].filter((r) => r && r.id != null && !r._deleted).map((r) => [String(r.id), window.salesJournalSig(r)]);
+                });
+            }
             // WHOLE-VALUE SETTINGS (receipt text, VAT rates, tab locks, loyalty tiers, tables ...): stamp the ones THIS device changed since
             // it last agreed with the server, so the server can tell a real change from a stale copy (see mergeIncomingState in
             // functions/api/_merge.js). Before this device has agreed with the server once, nothing is stamped (old behaviour).
@@ -8018,6 +8043,7 @@ function slimPayloadForPush(payload) {
                     Object.keys(keysNow).forEach((c) => { window.__keyAck[c] = keysNow[c]; });
                     saveKeyAck();
                     window.__pushFailed = false;
+                    try { if (typeof window.salesJournalSent === 'function') window.salesJournalSent(sentVersions); } catch (e) { /* never block a push */ }
                 },
             };
         }
@@ -8142,6 +8168,7 @@ async function trackPush(fn) {
             // queued (see queuePush), in flight, or failed. commit() (called only when the server says OK) clears "failed".
             window.__pushInFlight = (window.__pushInFlight || 0) + 1;
             window.__pushQueued = false;
+            try { if (typeof window.salesJournalPushStarted === 'function') window.salesJournalPushStarted(); } catch (e) { /* bookkeeping */ }
             const wasFailing = (window.__pushFails || 0) > 0;
             const jitter = (ms) => ms + Math.floor(Math.random() * ms * 0.6);
             try {
@@ -9176,8 +9203,7 @@ function textToPngBlob(text, opts) {
 
 //@fn todayLocalDateStr
 function todayLocalDateStr() {
-            const d = new Date();
-            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            return bizDayKey(Date.now());
         }
 
 //@fn toggleAdhocBorrowedFields
@@ -10501,6 +10527,7 @@ function renderSharedReceipt(sale, hooks) {
             lastReceiptItemSection = doc.items;
             lastReceiptFooter = doc.footer;
             currentReceiptSale = sale;
+            try { if (typeof window.salesJournalReceiptStatus === 'function') window.salesJournalReceiptStatus(sale); } catch (e) { /* cosmetic */ }
             if (typeof applyReceiptAlignToPaper === 'function') applyReceiptAlignToPaper();
 
             // Logo / QR: shown only when an image is saved AND its checkbox is ticked.
@@ -12091,9 +12118,17 @@ async function printReceipt() {
             window.__receiptPrinting = true;
             window.__lastPrintOk = null;                                   // set to false by the USB / Bluetooth printers when a print fails
             try {
+                // A receipt is only printed for a sale that is durably saved (zip 127): on this device, in its journal, or on the server.
+                // The journal write takes milliseconds; only a device whose storage is full AND has no journal is ever asked.
+                if (sale && sale.id != null && typeof window.salesJournalDurable === 'function') {
+                    const d = await window.salesJournalDurable(sale.id);
+                    if (d.tracked && !d.local && !d.journal && !d.server
+                        && !confirm('This sale could NOT be saved on this device (its storage is full). It is being sent to the server — keep the app open until the sync dot is green.\n\nPrint the receipt anyway?')) return;
+                }
                 await queuePrintJob(printReceiptJob);
                 if (window.__lastPrintOk === false) return;                // failed: the printer already said so; the preview stays for another try
                 markReceiptPrinted(sale);
+                try { if (sale && typeof window.salesJournalMarkPrinted === 'function') window.salesJournalMarkPrinted(sale.id); } catch (e) { /* bookkeeping */ }
                 closeReceiptAfterPrint();
             } catch (e) {
                 showToast('The receipt could not be printed. Try again.', true);
@@ -12343,8 +12378,8 @@ function renderEtimsLog() {
             // the feature was ever turned on has none, and correctly
             // doesn't show up here at all rather than as a false "failed".
             const rows = salesLog.filter(s => s.etimsStatus &&
-                (s.timestamp || '').slice(0, 10) >= range.from &&
-                (s.timestamp || '').slice(0, 10) <= range.to)
+                dayKeyOf(s.timestamp) >= range.from &&
+                dayKeyOf(s.timestamp) <= range.to)
                 .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
             const counts = { submitted: 0, failed: 0, pending: 0, not_registered: 0 };
@@ -13849,8 +13884,71 @@ function authWatchInstall() {
 
 //@fn dayKeyOf
 function dayKeyOf(ts) {
-            const d = new Date(ts);
-            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            return bizDayKey(ts);
+        }
+
+//@fn bizTzOffsetMin
+// zip 127: the shop's BUSINESS time zone, in minutes east of UTC. Kenya / East Africa (EAT, UTC+3, no daylight saving) unless this
+// device was told to use its own clock's zone (localStorage pos_business_tz = 'device').
+function bizTzOffsetMin() {
+            // read at most every 30 s: Daily Sales and the reports ask once per sale
+            const c = window.__bizTzCache;
+            if (c && Date.now() - c.at < 30000) return c.v;
+            let v = null;
+            try { v = localStorage.getItem('pos_business_tz'); } catch (e) { /* private mode */ }
+            const n = v != null && v !== '' && v !== 'device' ? Number(v) : NaN;
+            const out = v === 'device' ? null : (isFinite(n) && Math.abs(n) <= 14 * 60 ? n : 180);
+            window.__bizTzCache = { v: out, at: Date.now() };
+            return out;
+        }
+
+//@fn bizDayKey
+// zip 127: the business date (YYYY-MM-DD) of a moment. Daily Sales, reports, X/Z and "today" all use it, so a sale always lands on the
+// same day on every device of the shop — even a till whose time zone is set wrong (a PC left on UTC used to file every sale made
+// between midnight and 3 a.m. under the day before, and showed another till's early-morning sales on the wrong day).
+// On a device already set to East Africa time this is exactly the old calendar date. A Date built on this device as a calendar day
+// (local midnight, or 23:59:59 as an end of day — the date pickers and period presets) keeps its own date.
+function bizDayKey(t) {
+            // Remembered per moment (the dashboard and reports ask for the same sales many times per screen); cleared if the zone changes.
+            const off0 = bizTzOffsetMin();
+            let memo = window.__bizDayMemo;
+            if (!memo || memo.off !== off0 || memo.map.size > 60000) memo = window.__bizDayMemo = { off: off0, map: new Map() };
+            const mk = t instanceof Date ? t.getTime() : t;
+            if (mk != null && (typeof mk === 'string' || typeof mk === 'number')) {
+                const hit = memo.map.get(mk);
+                if (hit !== undefined) return hit;
+                const v = bizDayKeyCompute(t);
+                memo.map.set(mk, v);
+                return v;
+            }
+            return bizDayKeyCompute(t);
+        }
+
+//@fn bizDayKeyCompute
+function bizDayKeyCompute(t) {
+            const d = t instanceof Date ? t : new Date(typeof t === 'string' && /^\d+$/.test(t) ? Number(t) : t);
+            if (isNaN(d.getTime())) return '';
+            const pad = (n) => String(n).padStart(2, '0');
+            const local = () => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+            const off = bizTzOffsetMin();
+            if (off == null || -d.getTimezoneOffset() === off) return local();
+            const h = d.getHours(), mi = d.getMinutes(), se = d.getSeconds(), ms = d.getMilliseconds();
+            if ((h === 0 && mi === 0 && se === 0 && ms === 0) || (h === 23 && mi === 59 && se === 59 && (ms === 999 || ms === 0))) return local();
+            const b = new Date(d.getTime() + off * 60000);
+            return `${b.getUTCFullYear()}-${pad(b.getUTCMonth() + 1)}-${pad(b.getUTCDate())}`;
+        }
+
+//@fn bizDayBounds
+// zip 127: first and last millisecond of a business date (see bizDayKey), as numbers.
+function bizDayBounds(key) {
+            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key || ''));
+            if (!m) return null;
+            const y = +m[1], mo = +m[2] - 1, da = +m[3];
+            const off = bizTzOffsetMin();
+            const localStart = new Date(y, mo, da, 0, 0, 0, 0);
+            if (off == null || -localStart.getTimezoneOffset() === off) return { from: localStart.getTime(), to: new Date(y, mo, da, 23, 59, 59, 999).getTime() };
+            const from = Date.UTC(y, mo, da) - off * 60000;
+            return { from, to: from + 86400000 - 1 };
         }
 
 //@fn assignCustomerNo
@@ -14053,27 +14151,32 @@ function reportShort(n) {
 //@fn reportsRange
 function reportsRange() {
             const preset = (document.getElementById('reports-range-select') || {}).value || 'last30';
-            const now = new Date();
-            const sod = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
-            const eod = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
-            const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
-            let from = sod(now), to = eod(now), label = 'Today';
-            if (preset === 'yesterday') { from = sod(addDays(now, -1)); to = eod(addDays(now, -1)); label = 'Yesterday'; }
-            else if (preset === 'week') { const dow = (now.getDay() + 6) % 7; from = sod(addDays(now, -dow)); label = 'This week'; }
-            else if (preset === 'last7') { from = sod(addDays(now, -6)); label = 'Last 7 days'; }
-            else if (preset === 'month') { from = new Date(now.getFullYear(), now.getMonth(), 1); label = 'This month'; }
-            else if (preset === 'last30') { from = sod(addDays(now, -29)); label = 'Last 30 days'; }
-            else if (preset === 'last90') { from = sod(addDays(now, -89)); label = 'Last 90 days'; }
-            else if (preset === 'year') { from = new Date(now.getFullYear(), 0, 1); label = 'This year'; }
+            // Calendar days are worked out on TODAY's business date (bizDayKey) and turned into business-day bounds (zip 127), so a report
+            // covers the same sales as Daily Sales on every device, whatever time zone the device itself is set to.
+            const pad = (n) => String(n).padStart(2, '0');
+            const kOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+            const tk = bizDayKey(Date.now()).split('-').map(Number);
+            const now = new Date(tk[0], tk[1] - 1, tk[2], 12, 0, 0, 0);
+            const cal = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0);
+            const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, 12);
+            let fromDay = cal(now), toDay = cal(now), label = 'Today';
+            if (preset === 'yesterday') { fromDay = addDays(now, -1); toDay = addDays(now, -1); label = 'Yesterday'; }
+            else if (preset === 'week') { const dow = (now.getDay() + 6) % 7; fromDay = addDays(now, -dow); label = 'This week'; }
+            else if (preset === 'last7') { fromDay = addDays(now, -6); label = 'Last 7 days'; }
+            else if (preset === 'month') { fromDay = new Date(now.getFullYear(), now.getMonth(), 1, 12); label = 'This month'; }
+            else if (preset === 'last30') { fromDay = addDays(now, -29); label = 'Last 30 days'; }
+            else if (preset === 'last90') { fromDay = addDays(now, -89); label = 'Last 90 days'; }
+            else if (preset === 'year') { fromDay = new Date(now.getFullYear(), 0, 1, 12); label = 'This year'; }
             else if (preset === 'custom') {
                 const f = (document.getElementById('reports-from-input') || {}).value, t = (document.getElementById('reports-to-input') || {}).value;
-                if (f) from = sod(new Date(f + 'T00:00:00'));
-                if (t) to = eod(new Date(t + 'T00:00:00'));
+                if (f) fromDay = cal(new Date(f + 'T00:00:00'));
+                if (t) toDay = cal(new Date(t + 'T00:00:00'));
                 label = 'Custom';
             }
-            if (from > to) { const x = from; from = sod(to); to = eod(x); }
+            if (fromDay > toDay) { const x = fromDay; fromDay = toDay; toDay = x; }
+            const from = new Date(bizDayBounds(kOf(fromDay)).from), to = new Date(bizDayBounds(kOf(toDay)).to);
             const fmt = (d) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-            return { from, to, label, text: from.toDateString() === to.toDateString() ? fmt(from) : `${fmt(from)} – ${fmt(to)}` };
+            return { from, to, label, text: kOf(fromDay) === kOf(toDay) ? fmt(fromDay) : `${fmt(fromDay)} – ${fmt(toDay)}` };
         }
 
 //@fn reportSales
@@ -14195,7 +14298,8 @@ function reportBuildInsights(range) {
                 const now = new Date();
                 if (mode === 'daily') {
                     const map = {}; sales.forEach((s) => { const k = dayKeyOf(s.timestamp); map[k] = (map[k] || 0) + reportSaleTotal(s); });
-                    for (let d = new Date(range.from); d <= range.to; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) { labels.push(d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })); values.push(map[dayKeyOf(d)] || 0); }
+                    const k0 = dayKeyOf(range.from).split('-').map(Number), lastKey = dayKeyOf(range.to);
+                    for (let d = new Date(k0[0], k0[1] - 1, k0[2]), guard = 0; guard < 4000; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1), guard++) { const k = dayKeyOf(d); if (k > lastKey) break; labels.push(d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })); values.push(map[k] || 0); }
                 } else if (mode === 'weekly') {
                     const monday = (d) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7)); return x; };
                     const start = monday(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7 * 11));
@@ -14424,9 +14528,8 @@ async function serverDayCheckInto(el, from, to, site) {
 
 //@fn todayBounds
 function todayBounds() {
-            const a = new Date(); a.setHours(0, 0, 0, 0);
-            const b = new Date(a); b.setHours(23, 59, 59, 999);
-            return { from: a, to: b };
+            const r = bizDayBounds(bizDayKey(Date.now()));
+            return { from: new Date(r.from), to: new Date(r.to) };
         }
 
 //@fn zReportPreflight

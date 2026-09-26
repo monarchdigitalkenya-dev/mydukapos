@@ -73,14 +73,51 @@ export async function verifyOwnerLogin(env, identifier, password) {
   return account;
 }
 
-export async function createOwnerSession(env) {
-  const token = randomToken();
-  await env.mydukapos_kv.put(SESSION_PREFIX + token, '1', { expirationTtl: SESSION_TTL_SECONDS });
-  return token;
+// SESSIONS (zip 127). A session used to exist ONLY as a KV record written at sign-in. KV is eventually consistent: a request that reached
+// another Cloudflare location in the first minute after signing in (or one whose "not found" answer was cached there) did not see the
+// record yet, so the Owner Console said "Sign in as the owner" to an owner who had just signed in. A session token is now SIGNED
+// (HMAC-SHA256 with a key derived from the owner account's own salt + password hash, which never changes between sign-ins and never
+// leaves the server): any location can verify it on the spot. Signing out writes a revocation record (checked on every request); a
+// password change changes the key, which ends every older session. The KV record is still written, so a token is also accepted while
+// the account record itself is still spreading (e.g. right after a password change), and older plain tokens keep working.
+const REVOKED_PREFIX = 'owner-session-revoked:';
+async function hmacHex(keyText, msg) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(keyText), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+async function sessionKey(account) {
+  return sha256Hex('owner-session-v2|' + account.salt + '|' + account.passwordHash + '|' + (account.ownerClientId || ''));
+}
+function sameText(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+function parseSigned(token) {
+  const p = String(token || '').split('.');
+  return p.length === 4 && p[0] === 'o2' && /^[0-9a-f]{64}$/.test(p[1]) && /^[0-9a-z]{1,12}$/.test(p[2]) && /^[0-9a-f]{64}$/.test(p[3]) ? { rand: p[1], iat: p[2], sig: p[3] } : null;
+}
+
+export async function createOwnerSession(env, account) {
+  const rand = randomToken();
+  await env.mydukapos_kv.put(SESSION_PREFIX + rand, '1', { expirationTtl: SESSION_TTL_SECONDS });
+  const acct = account || (await getOwnerAccount(env));
+  if (!acct) return rand;                                   // no account to sign with (should not happen): a plain KV session
+  const iat = Date.now().toString(36);
+  return `o2.${rand}.${iat}.${await hmacHex(await sessionKey(acct), rand + '.' + iat)}`;
 }
 
 export async function destroyOwnerSession(env, token) {
-  if (token) await env.mydukapos_kv.delete(SESSION_PREFIX + token);
+  if (!token) return;
+  const s = parseSigned(token);
+  if (s) {
+    await env.mydukapos_kv.put(REVOKED_PREFIX + s.rand, '1', { expirationTtl: SESSION_TTL_SECONDS });
+    await env.mydukapos_kv.delete(SESSION_PREFIX + s.rand);
+    return;
+  }
+  await env.mydukapos_kv.delete(SESSION_PREFIX + token);
 }
 
 function tokenFromRequest(request) {
@@ -88,10 +125,18 @@ function tokenFromRequest(request) {
   return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
 }
 
+// The ONE check every owner-only endpoint uses (client-log, owner-health, owner-storage, owner-clients, owner-lock, leads, website...).
 export async function requireOwnerAuth(context) {
   const { request, env } = context;
   const token = tokenFromRequest(request);
-  if (!token) return false;
+  if (!token || token.length > 300) return false;
+  const s = parseSigned(token);
+  if (s) {
+    if (await env.mydukapos_kv.get(REVOKED_PREFIX + s.rand)) return false;
+    const account = await getOwnerAccount(env);
+    if (account && sameText(await hmacHex(await sessionKey(account), s.rand + '.' + s.iat), s.sig)) return true;
+    return !!(await env.mydukapos_kv.get(SESSION_PREFIX + s.rand));
+  }
   const raw = await env.mydukapos_kv.get(SESSION_PREFIX + token);
   return !!raw;
 }

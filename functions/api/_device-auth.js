@@ -92,8 +92,14 @@ export async function checkDevice(request, env, clientId) {
 
 // The guard every shop-data endpoint calls right after the license check. Returns null (go ahead) or the 401 Response.
 export async function deviceGuard(request, env, clientId, cors = {}) {
-  const r = await checkDevice(request, env, clientId);
+  let r = await checkDevice(request, env, clientId);
   if (r.mode !== 'paired' || r.paired) return null;
+  // zip 127: never refuse on a cached copy — a device paired a moment ago (possibly through another server instance) is not in it yet.
+  if (r.deviceId) {
+    await readDeviceAuth(env, clientId, { fresh: true });
+    r = await checkDevice(request, env, clientId);
+    if (r.mode !== 'paired' || r.paired) return null;
+  }
   return new Response(JSON.stringify({ error: 'This device is not paired with the shop yet. Enter the shop password (or a pairing code) on this device to pair it.', code: 'device_not_paired' }), {
     status: 401, headers: { 'Content-Type': 'application/json', ...cors },
   });

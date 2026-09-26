@@ -99,6 +99,7 @@ function receipts(M) {
   return ch('receipts', '🧾', 'Receipts: print, share, reprint', {
     steps: [
       'When a sale completes a **receipt preview** opens. Tap **🖨️ Print** — it prints **once**, and the preview closes so it cannot be printed twice by accident.',
+      'The sale is **saved before the receipt appears** — the preview says "✓ Sale saved". **Cancel / Save** only closes the screen: it never cancels the sale (to reverse one, **void** it in Daily Sales).',
       'Every receipt of the day carries a **Customer number** (Customer 1, 2, 3…) just above the reference number. It starts again at 1 each day, so the last receipt of the day tells you how many customers you served.',
       'To print the same receipt again later, open it from **Daily Sales** and tap Print — the app asks "already printed at 14:32 — print another copy?" so copies are always deliberate.',
       '**📤 Share** sends the receipt as a **PDF** (WhatsApp shows it as a document). On a phone it opens your apps. On computers and some browsers that cannot hand a file to another app, the PDF is **saved to Downloads** instead — attach it in WhatsApp or email yourself.',
@@ -167,6 +168,7 @@ function people(M) {
       '**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.',
       '**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.',
       '**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.',
+      '**⬇️ Sync to this device** (Settings ▸ 🔐 Devices & Security) sends this device\'s unsent sales first, then fetches everything the shop has on the server — step by step, with nothing deleted or duplicated.',
       '**Settings ▸ 🔐 Devices & security** lists every device that syncs your shop (its till number, app release and last sync). Tap **🔒 Only paired devices may sync** so that knowing your shop link is no longer enough to see or change your data. Your devices pair themselves; a new one needs the shop password once, or a **6-digit pairing code** made here (so staff never need the password). Revoke a lost phone from the same list. Signing in and selling always work offline either way.',
       '**👤 My Customers** keeps your customers and their purchases; **🎟️ Loyalty Tokens** (Settings) rewards repeat customers where enabled.',
     ],
@@ -189,8 +191,10 @@ function hardware(M) {
 function offline(M) {
   return ch('offline', '📶', 'Offline, sync, backups and importing data', {
     steps: [
-      '**Offline:** the app keeps working with no internet. Sales, stock and receipts are saved on the device.',
+      '**Offline:** the app keeps working with no internet. Sales, stock and receipts are saved on the device — and every completed sale is also kept in the device\'s own backup journal until the server has it, so it survives a restart or a full device.',
       '**Sync:** when the internet returns the dot turns green and every device catches up. Several tills can work at once — stock changes from each add up correctly.',
+      '**Daily Sales shows each sale\'s sync state:** ✓ synced, ⏳ not sent yet, 🔄 sending, ⚠ retrying — unsent sales are always listed, and are sent again automatically until the server has them. **🔎 Check for missing sales** compares this device, its journal, its printed receipts and the server for the day, and puts back anything missing.',
+      'Days follow **Kenya time** on every device, whatever the device\'s own time zone; a device whose clock is wrong is told so, and its sales are dated by the correct time.',
       '**If the dot stays black** with internet, wait a few seconds (it checks the server itself and recovers without a refresh). If it stays black, check the device\u2019s connection.',
       '**Backups:** ⚙️ Settings ▸ 🗄️ Backups. Your data is also stored on the server, so a lost phone does not lose your business — log in on another device.',
       '**Importing from Excel/CSV:** on the Inventory tab tap **⬆️ Import from Excel/CSV**. A "please wait" bar shows while the file is read. Check the review list, then **Batch Commit**. Tap **⬇️ Download Excel/CSV** to export.',
@@ -204,7 +208,7 @@ function trouble(M) {
     steps: [
       '**Printer does not print:** check paper and power, then Settings ▸ Hardware ▸ status. Switch it off and on — the app finds it again by itself. As a fallback use the system print dialog.',
       M.key === 'water' ? '**"Only 0 available" when selling:** the product has no stock. Record it in Restocking, or correct it on the Inventory tab.' : '**"Only 0 available" when selling:** the item has no stock. Record it in Restock, or run a Stock Take.',
-      '**A sale is missing from Daily Sales:** Pay-Later bills only count when paid; check Bills. In Aqua POS check the site selected at the top.',
+      '**A sale is missing from Daily Sales:** tap **🔎 Check for missing sales** under the list. Pay-Later bills only count when paid; check Bills. In Aqua POS check the site selected at the top.',
       '**The login window appears again:** just log in; it will not reappear over a running session.',
       '**Forgot the password:** tap **Forgot the password?** on the login screen and use **Email me a reset link**.',
       '**Something looks out of date on a device:** wait for the green dot, then reload the page once.',

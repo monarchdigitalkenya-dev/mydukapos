@@ -1,0 +1,751 @@
+<!-- SALES JOURNAL (zip 127) ------------------------------------------------------------------------------------------------------
+         A completed sale must never disappear. Found in the code (see CHANGES_ZIP_127.md):
+           * The sales list lives in localStorage. When the device's storage was FULL (photos, long history) the save of a new sale
+             failed silently: the sale existed only in memory, the receipt printed, and after the app was closed (offline, or before
+             it reached the server) the sale was gone. Reproduced in tests/sales-journal.test.mjs.
+           * A crash in the middle of saving a big list could make the whole list unreadable at the next start.
+         So every completed sale (and every stock movement, return and expense) is ALSO written, the moment it is saved, to this
+         device's journal: the browser's IndexedDB, a separate and much larger store, written with "strict" durability. The journal:
+           * restores any sale this device completed that is missing from the sales list (after a restart, a failed save, a bad load);
+           * knows each sale's sync state — waiting, sending, retrying, on the server — and shows it in Daily Sales;
+           * marks a sale "on the server" only when the server has accepted THAT version of it (a push answered OK, or the server's
+             copy seen in a pull), so nothing is taken off the list early; entries stay 45 days after that, then are tidied;
+           * never restores a sale that was deliberately removed (reset, purge, delete voided — those call salesJournalForget);
+           * logs ONE "Synced to the server" audit line per batch of NEW sales that reached the server (retries never add another);
+           * dates a new sale by the server's clock when this device's clock is wrong by more than 5 minutes (and says so).
+         Also here: Daily Sales sync badges + "Check for missing sales" (compares this device, its journal, the server and the
+         printed receipts), the receipt's "saved" line, and "Sync to this device" (Settings ▸ Devices & Security).
+         Nothing here is ever deleted because a request failed. Self-contained on purpose (same code in every app). -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__salesJournalInit) return;
+        window.__salesJournalInit = true;
+        if (/[?&]display=/.test(location.search)) return;
+
+        var APP = (location.pathname.split('/')[1] || 'shop').slice(0, 30) || 'shop';
+        var LOGKEYS = window.__LOG_KEYS || { salesLog: 'pos_sales_log' };
+        var FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses'].filter(function (f) { return !!LOGKEYS[f]; });
+        var KEY2FIELD = {}; FIELDS.forEach(function (f) { KEY2FIELD[LOGKEYS[f]] = f; });
+        var DBN = 'pos_sales_journal', STORE = 'records';
+        var KEEP_SYNCED_MS = 45 * 86400000;
+        var PROTECT_DAYS = 3;                                  // on first run, recent history this device holds is journaled too
+        var CLOCK_FIX_MS = 5 * 60000;
+        var AUDIT_KEY = 'pos_sync_audit_v1';
+        var LABEL = { salesLog: 'sale', stockMovementLog: 'stock change', returns: 'return', expenses: 'expense' };
+
+        var meta = {};                                        // field -> Map(id -> { st, sig, at, ls, idb, tries, lastTry, syncedAt })
+        FIELDS.forEach(function (f) { meta[f] = new Map(); });
+        var loaded = false, dbBroken = false, dbp = null;
+        var writes = {};                                      // key -> promise of the IndexedDB write
+        var stats = window.__salesJournalStats = { captured: 0, restored: 0, idbWrites: 0, idbErrors: 0, corrected: 0 };
+
+        function arrOf(f) {
+            try {
+                if (f === 'salesLog') return typeof salesLog === 'undefined' ? null : salesLog;
+                if (f === 'stockMovementLog') return typeof stockMovementLog === 'undefined' ? null : stockMovementLog;
+                if (f === 'returns') return typeof returns === 'undefined' ? null : returns;
+                if (f === 'expenses') return typeof expenses === 'undefined' ? null : expenses;
+            } catch (e) { /* not declared in this app */ }
+            return null;
+        }
+        function scoped() { try { return typeof viewedBranchId !== 'undefined' && viewedBranchId && viewedBranchId !== 'self'; } catch (e) { return false; } }
+        function idOf(r) { return r && typeof r === 'object' && r.id != null && r.id !== '' ? String(r.id) : null; }
+        // What makes two copies of a record "the same version" (never the server's bookkeeping fields such as updatedAt, which the
+        // server may shift for clock drift): the business content.
+        function sigOf(r) {
+            if (!r || typeof r !== 'object') return '';
+            var items = r.items, n = 0, sum = 0;
+            if (items && items.length) { n = items.length; for (var i = 0; i < n; i++) { var it = items[i]; if (it) sum += (+it.price || 0) * (+it.qty || 0); } }
+            return (r.timestamp || r.date || '') + '|' + (r.voided ? 1 : 0) + '|' + (r.voidedAt || '') + '|' + (r.unvoidedAt || '') + '|' + (r.paid === false ? 0 : 1)
+                + '|' + (r.amountPaid == null ? '' : r.amountPaid) + '|' + n + '|' + Math.round(sum * 100) + '|' + (r.qty == null ? '' : r.qty)
+                + '|' + (r.amount == null ? '' : r.amount) + '|' + (r.removed ? 1 : 0) + '|' + (r._deleted ? 1 : 0);
+        }
+        window.salesJournalSig = sigOf;
+        function deviceId() { try { return typeof getOrCreateDeviceId === 'function' ? getOrCreateDeviceId() : (localStorage.getItem('pos_device_id') || ''); } catch (e) { return ''; } }
+        function bizDay(ts) { try { return typeof bizDayKey === 'function' ? bizDayKey(ts) : String(ts).slice(0, 10); } catch (e) { return ''; } }
+        // Aqua POS: the site on screen ('both' = every site)
+        function siteParam() { try { return typeof activeSiteId !== 'undefined' && activeSiteId && activeSiteId !== 'both' ? activeSiteId : ''; } catch (e) { return ''; } }
+        function totalOf(r) { var s = 0; (Array.isArray(r.items) ? r.items : []).forEach(function (it) { s += (Number(it && it.price) || 0) * (Number(it && it.qty) || 0); }); return Math.round(s * 100) / 100; }
+
+        /* ---- IndexedDB ---- */
+        function hasIDB() { try { return !!window.indexedDB; } catch (e) { return false; } }
+        function openDb() {
+            if (dbp) return dbp;
+            if (!hasIDB()) return Promise.reject(new Error('no IndexedDB'));
+            dbp = new Promise(function (resolve, reject) {
+                var req;
+                try { req = indexedDB.open(DBN, 1); } catch (e) { reject(e); return; }
+                req.onupgradeneeded = function () {
+                    var db = req.result;
+                    if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'k' });
+                };
+                req.onsuccess = function () { var db = req.result; db.onversionchange = function () { try { db.close(); } catch (e) {} dbp = null; }; resolve(db); };
+                req.onerror = function () { reject(req.error); };
+                req.onblocked = function () { reject(new Error('blocked')); };
+            });
+            dbp.catch(function () { dbp = null; dbBroken = true; });
+            return dbp;
+        }
+        function tx(mode, fn) {
+            return openDb().then(function (db) {
+                return new Promise(function (resolve, reject) {
+                    var t;
+                    try { t = mode === 'readwrite' ? db.transaction(STORE, mode, { durability: 'strict' }) : db.transaction(STORE, mode); }
+                    catch (e) { try { t = db.transaction(STORE, mode); } catch (e2) { reject(e2); return; } }
+                    var out;
+                    t.oncomplete = function () { resolve(out); };
+                    t.onerror = t.onabort = function () { reject(t.error || new Error('aborted')); };
+                    out = fn(t.objectStore(STORE));
+                });
+            });
+        }
+        function kOf(f, id) { return APP + '|' + f + '|' + id; }
+        function putRecords(recs) {
+            if (!recs.length) return Promise.resolve(true);
+            stats.idbWrites += recs.length;
+            return tx('readwrite', function (st) { recs.forEach(function (r) { st.put(r); }); }).then(function () { return true; }, function (e) {
+                stats.idbErrors++; dbBroken = true;
+                try { console.warn('sales journal: write failed', e); } catch (e2) {}
+                return false;
+            });
+        }
+        function patchRecords(f, ids, patch) {
+            if (!ids.length || dbBroken) return Promise.resolve(false);
+            return tx('readwrite', function (st) {
+                ids.forEach(function (id) {
+                    var g = st.get(kOf(f, id));
+                    g.onsuccess = function () { var r = g.result; if (!r) return; for (var p in patch) r[p] = patch[p]; st.put(r); };
+                });
+            }).then(function () { return true; }, function () { return false; });
+        }
+        function readAll() {
+            return tx('readonly', function (st) {
+                var h = { rows: [] };
+                var q = st.getAll();
+                q.onsuccess = function () { h.rows = (q.result || []).filter(function (r) { return r && r.app === APP; }); };
+                return h;
+            }).then(function (h) { return h.rows; });
+        }
+
+        /* ---- the server's clock (a device whose date or time is wrong dates its sales wrong) ---- */
+        var clock = (function () { try { return JSON.parse(localStorage.getItem('pos_clock_offset') || 'null'); } catch (e) { return null; } })();
+        function clockOffset() { return clock && isFinite(clock.off) && Date.now() - (clock.at || 0) < 7 * 86400000 ? clock.off : 0; }
+        window.salesJournalClockOffset = clockOffset;
+        var realFetch = window.fetch;
+        if (typeof realFetch === 'function' && !realFetch.__journalWrapped) {
+            var wrappedFetch = function (input) {
+                var url = typeof input === 'string' ? input : (input && input.url) || '';
+                var t0 = Date.now();
+                var p = realFetch.apply(this, arguments);
+                if (url.indexOf('/api/pos-sync') === -1) return p;
+                return p.then(function (res) {
+                    try {
+                        var t1 = Date.now(), hd = res && res.headers && res.headers.get && res.headers.get('Date');
+                        var srv = hd ? Date.parse(hd) : NaN;
+                        if (isFinite(srv) && t1 - t0 < 10000) {
+                            var off = srv + 500 - Math.round((t0 + t1) / 2);          // the header has 1-second resolution
+                            clock = { off: Math.abs(off) < 90000 ? 0 : off, at: Date.now() };
+                            try { localStorage.setItem('pos_clock_offset', JSON.stringify(clock)); } catch (e) { /* optional */ }
+                            clockBanner();
+                        }
+                    } catch (e) { /* optional */ }
+                    return res;
+                });
+            };
+            wrappedFetch.__journalWrapped = true;
+            wrappedFetch.__deviceWrapped = realFetch.__deviceWrapped;
+            window.fetch = wrappedFetch;
+        }
+        function fmtOff(ms) {
+            var m = Math.round(Math.abs(ms) / 60000);
+            var txt = m >= 1440 ? Math.round(m / 1440) + ' day' + (Math.round(m / 1440) === 1 ? '' : 's') : m >= 60 ? Math.round(m / 60) + ' hour' + (Math.round(m / 60) === 1 ? '' : 's') : m + ' minute' + (m === 1 ? '' : 's');
+            return txt + (ms > 0 ? ' behind' : ' ahead');
+        }
+        function clockBanner() {
+            try {
+                var off = clockOffset();
+                var el = document.getElementById('journal-clock-banner');
+                if (Math.abs(off) < CLOCK_FIX_MS) { if (el) el.remove(); return; }
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'journal-clock-banner';
+                    el.setAttribute('role', 'alert');
+                    el.style.cssText = 'position:fixed; left:8px; right:8px; bottom:8px; z-index:2147483000; background:#fdecea; color:#922b21; border:1px solid #e6b0aa; border-radius:10px; padding:10px 12px; font-size:13px; line-height:1.4; box-shadow:0 4px 16px rgba(0,0,0,0.2); display:flex; gap:10px; align-items:center;';
+                    el.innerHTML = '<div style="flex:1; min-width:0;"></div><button type="button" style="border:none; background:#922b21; color:#fff; border-radius:6px; padding:6px 12px; font-weight:700;">OK</button>';
+                    el.querySelector('button').onclick = function () { el.style.display = 'none'; };
+                    (document.body || document.documentElement).appendChild(el);
+                }
+                el.firstChild.textContent = '⏰ This device\'s clock is ' + fmtOff(off) + '. New sales are dated by the correct time, but please set the device\'s date and time (automatic) so receipts show it too.';
+            } catch (e) { /* cosmetic */ }
+        }
+
+        /* ---- capture: runs right after the app saves one of the logs ---- */
+        function isFresh(r, now) { var t = Date.parse(r.timestamp); return isFinite(t) && Math.abs(now - t) < 120000; }
+        function recordFor(f, r, st, ls) {
+            var copy; try { copy = JSON.parse(JSON.stringify(r)); } catch (e) { return null; }
+            var id = idOf(r);
+            var base = { k: kOf(f, id), app: APP, field: f, id: id, rec: copy, status: st, localSaved: !!ls, createdAt: Date.now(), attempts: 0, lastAttemptAt: 0, syncedAt: 0, device: deviceId(), sig: sigOf(r) };
+            if (f === 'salesLog') {
+                base.ref = r.refNumber || ''; base.bizDate = bizDay(r.timestamp); base.cashier = r.servedBy || ''; base.total = totalOf(r);
+                base.method = r.paymentMethod || 'cash'; base.printedAt = r.printedAt || 0;
+            }
+            return base;
+        }
+        var capturing = false, lastLen = {};
+        function capture(f, lsOk) {
+            if (capturing || window.__tabInactive || scoped()) return;
+            var a = arrOf(f);
+            if (!Array.isArray(a)) return;
+            capturing = true;
+            try {
+                var m = meta[f], out = [], now = Date.now(), off = f === 'salesLog' ? clockOffset() : 0, fixed = false;
+                // Speed: a stock movement never changes once written, so only the newest end of that (long) list is looked at — the scan
+                // stops after 300 records in a row that are already known. Sales, returns and expenses can be changed (a void, a
+                // settlement), so those lists are looked at whole — a few milliseconds even for a year of sales.
+                var tailOnly = f === 'stockMovementLog', knownRun = 0;
+                for (var i = a.length - 1; i >= 0; i--) {
+                    var r = a[i], id = idOf(r);
+                    if (!id) continue;
+                    var e = m.get(id);
+                    if (tailOnly && e) { if (++knownRun >= 300) break; continue; }
+                    knownRun = 0;
+                    if (!e) {
+                        if (Math.abs(off) >= CLOCK_FIX_MS && !r.recordedLate && !r.deviceTimestamp && isFresh(r, now)) {
+                            r.deviceTimestamp = r.timestamp;
+                            r.timestamp = new Date(Date.parse(r.timestamp) + off).toISOString();
+                            r.clockCorrectedBy = off;
+                            fixed = true; stats.corrected++;
+                        }
+                        // made here just now (or a past sale being recorded now) = not on the server yet; a record that simply appeared
+                        // with an old date (a backup restored, history imported) is protected too, but as "not confirmed"
+                        var t0 = Date.parse(r.timestamp || r.date);
+                        var st0 = r.recordedLate || !isFinite(t0) || Math.abs(now - t0) < 2 * 86400000 ? 'pending' : 'unconfirmed';
+                        e = { st: st0, sig: sigOf(r), at: now, ls: lsOk };
+                        m.set(id, e); out.push(r);
+                    } else {
+                        var sg = sigOf(r);
+                        if (sg !== e.sig) {
+                            e.sig = sg; e.ls = lsOk;
+                            if (e.st !== 'removed') { e.st = 'pending'; out.push(r); }
+                        } else if (e.st === 'pending' || e.st === 'unconfirmed') e.ls = lsOk;
+                    }
+                }
+                if (fixed) { try { localStorage.setItem(LOGKEYS[f], JSON.stringify(a)); } catch (err) { /* the journal below holds it */ } }
+                // Stock changes, returns and expenses have several ways of being deleted on purpose (delete an expense, a stock take...):
+                // once the IndexedDB journal is loaded, one that this device's own SUCCESSFUL save left out was removed on purpose.
+                // Sales are never assumed removed — only the explicit salesJournalForget() calls (reset, purge, delete voided) do that.
+                var shrank = a.length < (lastLen[f] || 0);
+                lastLen[f] = a.length;
+                if (lsOk && loaded && f !== 'salesLog' && shrank) {
+                    var have = new Set(), gone = [];
+                    for (var j = 0; j < a.length; j++) { var jd = idOf(a[j]); if (jd) have.add(jd); }
+                    m.forEach(function (e2, id2) { if ((e2.st === 'pending' || e2.st === 'unconfirmed') && !have.has(id2)) { e2.st = 'removed'; gone.push(id2); } });
+                    if (gone.length) patchRecords(f, gone, { status: 'removed', removedReason: 'removed on this device', removedAt: Date.now() });
+                }
+                if (out.length) {
+                    stats.captured += out.length;
+                    var recs = out.map(function (r) { var me0 = m.get(idOf(r)); return recordFor(f, r, me0 && me0.st === 'unconfirmed' ? 'unconfirmed' : 'pending', lsOk); }).filter(Boolean);
+                    var p = putRecords(recs);
+                    recs.forEach(function (rec) {
+                        writes[rec.k] = p;
+                        var me = m.get(rec.id);
+                        if (me) p.then(function (ok) { me.idb = ok; });
+                    });
+                }
+            } finally { capturing = false; }
+        }
+        // Hook the write itself: whatever part of an app saved the list (a sale, a void, a pull, a restore), the journal sees it.
+        var S = Storage.prototype, baseSet = S.setItem;
+        S.setItem = function (k, v) {
+            var f = this === window.localStorage ? KEY2FIELD[String(k)] : null;
+            if (!f) return baseSet.apply(this, arguments);
+            var ok = true;
+            try { return baseSet.apply(this, arguments); }
+            catch (e) { ok = false; throw e; }
+            finally { try { if (!window.__tabInactive) capture(f, ok && !window.__tabInactive); } catch (e2) { /* never break a save */ } }
+        };
+
+        /* ---- hooks the shared sync code calls ---- */
+        function auditAppend(entry) {
+            // kept in memory too (window.__syncAuditMem, read by syncJournalAuditEvents): a device whose storage is full still shows it
+            var mem = window.__syncAuditMem = window.__syncAuditMem || [];
+            mem.unshift(entry); if (mem.length > 200) mem.length = 200;
+            try {
+                var list = JSON.parse(localStorage.getItem(AUDIT_KEY) || '[]');
+                list.unshift(entry);
+                localStorage.setItem(AUDIT_KEY, JSON.stringify(list.slice(0, 500)));
+                entry.saved = true;
+            } catch (e) { /* the sync itself is what matters */ }
+        }
+        function markSynced(f, list, how) {
+            var m = meta[f]; if (!m) return [];
+            var now = Date.now(), newly = [], ids = [];
+            list.forEach(function (pair) {
+                var id = pair[0], sg = pair[1], e = m.get(id);
+                if (!e) { m.set(id, { st: 'synced', sig: sg, at: now, syncedAt: now }); return; }
+                if (e.st === 'removed' || e.st === 'synced' || e.sig !== sg) return;
+                if (e.st === 'pending') newly.push(id);
+                e.st = 'synced'; e.syncedAt = now; ids.push(id);
+            });
+            if (ids.length) patchRecords(f, ids, { status: 'synced', syncedAt: now });
+            return newly;
+        }
+        function logSynced(byField) {
+            var parts = [], refs = [];
+            FIELDS.forEach(function (f) {
+                var n = (byField[f] || []).length;
+                if (!n) return;
+                parts.push(n + ' ' + LABEL[f] + (n === 1 ? '' : 's'));
+                if (f === 'salesLog') {
+                    var a = arrOf('salesLog') || [];
+                    var want = new Set(byField[f]);
+                    a.forEach(function (s) { if (s && want.has(String(s.id)) && s.refNumber && refs.length < 12) refs.push(s.refNumber); });
+                }
+            });
+            if (!parts.length) return;
+            var who = ''; try { who = typeof activeServerName === 'function' ? activeServerName() : ''; } catch (e) { /* optional */ }
+            auditAppend({ at: Date.now(), by: who || 'Device', what: parts.join(', '), refs: refs, device: deviceId() });
+        }
+        // Called by slimPayloadForPush's commit(): the server answered OK to a push that carried these records.
+        window.salesJournalSent = function (sent) {
+            try {
+                var byField = {};
+                Object.keys(sent || {}).forEach(function (f) { byField[f] = markSynced(f, sent[f] || [], 'push'); });
+                logSynced(byField);
+                tidy();
+            } catch (e) { /* never block a push */ }
+        };
+        // Called with every payload the server sends (pull) and every record fetched from the server's history.
+        window.salesJournalSeen = function (data) {
+            try {
+                if (!data || typeof data !== 'object') return;
+                var byField = {};
+                FIELDS.forEach(function (f) {
+                    if (!Array.isArray(data[f])) return;
+                    byField[f] = markSynced(f, data[f].map(function (r) { return [idOf(r), sigOf(r)]; }).filter(function (p) { return p[0]; }), 'pull');
+                });
+                logSynced(byField);
+            } catch (e) { /* housekeeping */ }
+        };
+        window.salesJournalSeenRecords = function (f, records) { var o = {}; o[f] = records; window.salesJournalSeen(o); };
+        window.salesJournalPushStarted = function () {
+            var now = Date.now();
+            FIELDS.forEach(function (f) { meta[f].forEach(function (e) { if (e.st === 'pending') { e.tries = (e.tries || 0) + 1; e.lastTry = now; } }); });
+        };
+        // A deliberate removal (reset, demo purge, delete voided sales): what is missing from the lists now must not come back.
+        window.salesJournalForget = function (reason) {
+            try {
+                FIELDS.forEach(function (f) {
+                    var a = arrOf(f) || [], have = new Set();
+                    a.forEach(function (r) { var id = idOf(r); if (id) have.add(id); });
+                    var gone = [];
+                    meta[f].forEach(function (e, id) { if (!have.has(id) && e.st !== 'removed') { e.st = 'removed'; gone.push(id); } });
+                    if (gone.length) patchRecords(f, gone, { status: 'removed', removedReason: String(reason || 'removed'), removedAt: Date.now() });
+                });
+            } catch (e) { /* housekeeping */ }
+        };
+        // Made on this device and not on the server yet (the automatic archive never moves these off the device).
+        // The automatic archive moved these to the device's archive (they are kept there): they must not be put back in the list.
+        window.salesJournalArchived = function (f, ids) {
+            try {
+                var m = meta[f]; if (!m || !ids || !ids.length) return;
+                var done = [];
+                ids.forEach(function (id) { var e = m.get(String(id)); if (e && e.st !== 'removed') { e.st = 'removed'; done.push(String(id)); } });
+                if (done.length) patchRecords(f, done, { status: 'removed', removedReason: 'moved to the device archive', removedAt: Date.now() });
+            } catch (e) { /* bookkeeping */ }
+        };
+        window.salesJournalIsPending = function (f, id) {
+            var e = meta[f] && meta[f].get(String(id));
+            return !!e && e.st === 'pending';
+        };
+        // 'synced' | 'pending' | 'syncing' | 'retrying' | 'unconfirmed' | null (not tracked)
+        window.salesSyncStatus = function (id, f) {
+            var e = meta[f || 'salesLog'] && meta[f || 'salesLog'].get(String(id));
+            if (!e || e.st === 'removed') return null;
+            if (e.st === 'synced') return 'synced';
+            if (window.__pushInFlight > 0) return 'syncing';
+            if ((window.__pushFails || 0) > 0) return 'retrying';
+            return e.st;
+        };
+        window.salesJournalPendingCount = function (f) {
+            var n = 0; (meta[f || 'salesLog'] || new Map()).forEach(function (e) { if (e.st === 'pending') n++; }); return n;
+        };
+        // Is this sale durably saved? { local, journal, server } — waits (briefly) for its journal write.
+        window.salesJournalDurable = function (id) {
+            var sid = String(id || ''), e = meta.salesLog && meta.salesLog.get(sid);
+            var res = function (j) { return { local: !!(e && e.ls !== false), journal: !!j, server: !!(e && e.st === 'synced'), tracked: !!e }; };
+            if (!e) return Promise.resolve({ local: true, journal: false, server: false, tracked: false });
+            var p = writes[kOf('salesLog', sid)];
+            if (!p) return Promise.resolve(res(e.idb !== false && !dbBroken && e.st !== 'unconfirmed'));
+            return Promise.race([p, new Promise(function (r) { setTimeout(function () { r(false); }, 2500); })]).then(res);
+        };
+        window.salesJournalMarkPrinted = function (id) {
+            var sid = String(id || '');
+            if (meta.salesLog && meta.salesLog.has(sid)) patchRecords('salesLog', [sid], { printedAt: Date.now() });
+        };
+
+        /* ---- start-up: load the journal, put back anything missing, protect recent history ---- */
+        function seed() {
+            FIELDS.forEach(function (f) {
+                (arrOf(f) || []).forEach(function (r) { var id = idOf(r); if (id && !meta[f].has(id)) meta[f].set(id, { st: 'unconfirmed', sig: sigOf(r), at: 0 }); });
+            });
+        }
+        function restoreMissing(rows) {
+            var restored = {};
+            FIELDS.forEach(function (f) {
+                var a = arrOf(f);
+                if (!Array.isArray(a)) return;
+                var have = new Set(); a.forEach(function (r) { var id = idOf(r); if (id) have.add(id); });
+                rows.forEach(function (row) {
+                    if (row.field !== f || !row.rec || have.has(row.id)) return;
+                    if (row.status !== 'pending' && row.status !== 'unconfirmed') return;
+                    a.push(row.rec); have.add(row.id);
+                    (restored[f] = restored[f] || []).push(row);
+                });
+                if (restored[f]) {
+                    var t = function (r) { var x = Date.parse(r && (r.timestamp || r.date)); return isFinite(x) ? x : 0; };
+                    a.sort(function (x, y) { return t(x) - t(y); });
+                }
+            });
+            var fields = Object.keys(restored);
+            if (!fields.length) return 0;
+            var n = 0, sales = restored.salesLog ? restored.salesLog.length : 0;
+            fields.forEach(function (f) { n += restored[f].length; try { localStorage.setItem(LOGKEYS[f], JSON.stringify(arrOf(f))); } catch (e) { /* the journal still holds them */ } });
+            stats.restored += n;
+            try { if (typeof markLocalDirty === 'function') markLocalDirty(); } catch (e) { /* optional */ }
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll will send them */ }
+            try { if (typeof renderDailySales === 'function') renderDailySales(); } catch (e) { /* cosmetic */ }
+            try { if (typeof renderAllViews === 'function') renderAllViews(); } catch (e) { /* cosmetic */ }
+            if (sales) {
+                auditAppend({ at: Date.now(), by: 'Device', kind: 'recovered', what: sales + ' sale' + (sales === 1 ? '' : 's') + ' recovered from this device\'s journal (they were completed here but missing from the sales list)',
+                    refs: restored.salesLog.map(function (r) { return r.ref; }).filter(Boolean).slice(0, 12), device: deviceId() });
+            }
+            return n;
+        }
+        function protectRecent(rows) {
+            var have = {}; rows.forEach(function (r) { have[r.k] = true; });
+            var cutoff = Date.now() - PROTECT_DAYS * 86400000, recs = [];
+            FIELDS.forEach(function (f) {
+                (arrOf(f) || []).forEach(function (r) {
+                    var id = idOf(r); if (!id || have[kOf(f, id)]) return;
+                    var e = meta[f].get(id); if (!e || e.st !== 'unconfirmed') return;
+                    var t = Date.parse(r.timestamp || r.date); if (!isFinite(t) || t < cutoff) return;
+                    var rec = recordFor(f, r, 'unconfirmed', true); if (rec) recs.push(rec);
+                });
+            });
+            return putRecords(recs);
+        }
+        function tidy() {
+            if (dbBroken || tidy.at && Date.now() - tidy.at < 3600000) return;
+            tidy.at = Date.now();
+            var cutoff = Date.now() - KEEP_SYNCED_MS;
+            tx('readwrite', function (st) {
+                var q = st.getAll();
+                q.onsuccess = function () {
+                    (q.result || []).forEach(function (r) {
+                        if (r.app !== APP) return;
+                        if ((r.status === 'synced' && r.syncedAt && r.syncedAt < cutoff) || (r.status === 'removed' && (r.removedAt || 0) < cutoff)) st.delete(r.k);
+                    });
+                };
+            }).catch(function () { /* next time */ });
+        }
+        var readyResolve, ready = new Promise(function (r) { readyResolve = r; });
+        window.salesJournalReady = ready;
+        function start() {
+            if (!hasIDB()) { dbBroken = true; loaded = true; readyResolve(0); return; }
+            readAll().then(function (rows) {
+                rows.forEach(function (row) {
+                    var m = meta[row.field]; if (!m) return;
+                    var e = m.get(row.id);
+                    if (!e) { m.set(row.id, { st: row.status, sig: row.sig, at: row.createdAt, ls: row.localSaved, idb: true, syncedAt: row.syncedAt }); return; }
+                    if (e.st === 'unconfirmed') { e.st = row.status === 'removed' ? 'removed' : row.status; e.idb = true; if (row.status === 'synced') e.syncedAt = row.syncedAt; }
+                });
+                var n = restoreMissing(rows);
+                loaded = true;
+                readyResolve(n);
+                return protectRecent(rows);
+            }).catch(function (e) {
+                dbBroken = true; loaded = true; readyResolve(0);
+                try { console.warn('sales journal unavailable', e); } catch (e2) {}
+            }).then(function () { tidy(); decorateSoon(); });
+        }
+
+        /* ---- the receipt: "saved" line; closing it never cancels the sale ---- */
+        function receiptStatus(sale) {
+            try {
+                var paper = document.getElementById('receipt-paper');
+                var actions = paper && paper.querySelector('.receipt-actions');
+                if (!actions) return;
+                var el = document.getElementById('receipt-save-status');
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'receipt-save-status';
+                    el.className = 'receipt-save-status no-print';
+                    el.style.cssText = 'margin:8px 0 0; font-size:12px; line-height:1.35; text-align:center;';
+                    actions.parentNode.insertBefore(el, actions.nextSibling);
+                }
+                var inLog = sale && sale.id != null && (arrOf('salesLog') || []).some(function (s) { return s && String(s.id) === String(sale.id); });
+                if (!inLog) { el.textContent = ''; el.style.display = 'none'; return; }
+                el.style.display = '';
+                el.style.color = '#7f8c8d';
+                el.textContent = 'Saving…';
+                window.salesJournalDurable(sale.id).then(function (d) {
+                    if (d.local || d.journal || d.server) {
+                        el.style.color = '#1e8449';
+                        el.textContent = '✓ Sale saved' + (sale.refNumber ? ' (' + sale.refNumber + ')' : '') + ' — it is in Daily Sales' + (d.server ? ' and on the server' : ', and is sent to the server automatically') + '. Closing this screen never cancels it.';
+                    } else {
+                        el.style.color = '#c0392b';
+                        el.textContent = '⚠ This device could not store the sale (its storage is full or blocked). It is kept open and being sent to the server — keep the app open until the sync dot is green.';
+                        try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll will */ }
+                    }
+                });
+            } catch (e) { /* cosmetic */ }
+        }
+        window.salesJournalReceiptStatus = receiptStatus;
+        var st = document.createElement('style');
+        st.textContent = '@media print { .receipt-save-status { display:none !important; } } body.printing-receipt .receipt-save-status, body.printing-kitchen-ticket .receipt-save-status { display:none !important; }'
+            + ' .sj-badge { display:inline-block; margin-left:4px; padding:1px 6px; border-radius:10px; font-size:11px; font-weight:700; white-space:nowrap; vertical-align:middle; }'
+            + ' .sj-synced { background:#e8f8f0; color:#1e8449; } .sj-pending { background:#fef5e7; color:#b9770e; } .sj-syncing { background:#eaf2f8; color:#21618c; } .sj-retrying { background:#fdecea; color:#922b21; }'
+            + ' #sj-summary { margin:8px 0; padding:8px 10px; border-radius:8px; font-size:13px; line-height:1.4; background:#f4f6f7; color:#2c3e50; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }'
+            + ' #sj-summary button { padding:5px 10px; font-size:12px; } #sj-reconcile { margin:8px 0; font-size:13px; } #sj-reconcile table { width:100%; }';
+        (document.head || document.documentElement).appendChild(st);
+
+        /* ---- Daily Sales: every sale shows where it is; a summary; "Check for missing sales" ---- */
+        var BADGE = {
+            synced: ['sj-synced', '✓ synced', 'On the server'],
+            pending: ['sj-pending', '⏳ not sent yet', 'Saved on this device; waiting to be sent to the server'],
+            unconfirmed: ['sj-pending', '⏳ not confirmed', 'Saved on this device; the server has not confirmed it yet'],
+            syncing: ['sj-syncing', '🔄 sending', 'Being sent to the server now'],
+            retrying: ['sj-retrying', '⚠ retrying', 'The last send did not go through — kept on this device and sent again automatically'],
+        };
+        function badgeHtml(state) { var b = BADGE[state]; return b ? '<span class="sj-badge ' + b[0] + '" title="' + b[2] + '">' + b[1] + '</span>' : ''; }
+        window.salesSyncBadgeHtml = function (id) { return badgeHtml(window.salesSyncStatus(id)); };
+        var ID_RE = /(?:reprintSale|requestVoidSale|requestUnvoidSale|togglePaidStatus)\('([^']+)'/;
+        function decorate() {
+            try {
+                var tbody = document.querySelector('#daily-sales-table tbody');
+                if (!tbody || !dailyVisible()) return;
+                var counts = { synced: 0, pending: 0, syncing: 0, retrying: 0, unconfirmed: 0 }, rows = 0;
+                Array.prototype.forEach.call(tbody.querySelectorAll('tr'), function (tr) {
+                    var m = null, btns = tr.getElementsByTagName('button');
+                    for (var bi = 0; bi < btns.length && !m; bi++) m = ID_RE.exec(btns[bi].getAttribute('onclick') || '');
+                    if (!m) return;
+                    rows++;
+                    var state = window.salesSyncStatus(m[1]);
+                    if (state) counts[state]++;
+                    var cell = tr.querySelector('td');
+                    if (!cell || cell.querySelector('.sj-badge')) return;
+                    if (state && state !== 'unconfirmed') cell.insertAdjacentHTML('beforeend', ' ' + badgeHtml(state));
+                });
+                var table = document.getElementById('daily-sales-table');
+                var box = document.getElementById('sj-summary');
+                if (!box && table) {
+                    box = document.createElement('div');
+                    box.id = 'sj-summary';
+                    var host = table.closest('.table-scroll') || table;
+                    host.parentNode.insertBefore(box, host);
+                }
+                if (!box) return;
+                var waiting = counts.pending + counts.syncing + counts.retrying;
+                var line = waiting
+                    ? '<span>⏳ <strong>' + waiting + '</strong> sale' + (waiting === 1 ? '' : 's') + ' listed here ' + (waiting === 1 ? 'is' : 'are') + ' saved on this device and not on the server yet — '
+                        + (counts.retrying ? 'the last send did not go through; it is sent again automatically.' : counts.syncing ? 'sending now.' : 'sent automatically.') + '</span>'
+                    : (counts.synced ? '<span>✓ Every sale listed here that this device made is on the server.</span>' : '<span>Every completed sale is listed here — synced or not.</span>');
+                if (dbBroken) line += '<span style="color:#b9770e;">(This browser has no backup store — sales are kept in its main storage only.)</span>';
+                box.innerHTML = line + '<button type="button" class="settings-small-btn" onclick="salesJournalReconcileUi()">🔎 Check for missing sales</button>'
+                    + (waiting ? '<button type="button" class="settings-small-btn" onclick="syncRetryNow && syncRetryNow()">↻ Send now</button>' : '');
+            } catch (e) { /* cosmetic */ }
+        }
+        function dailyVisible() {
+            var tab = document.getElementById('daily-sales-tab');
+            if (!tab) return true;
+            return tab.classList.contains('active') || tab.style.display === 'block' || window.__journalDecorateAlways === true;
+        }
+        var decTimer = null;
+        function decorateSoon() { clearTimeout(decTimer); decTimer = setTimeout(decorate, 0); }
+        function wrapRender() {
+            if (typeof window.renderDailySales !== 'function' || window.renderDailySales.__journal) return;
+            var orig = window.renderDailySales;
+            var w = function () { var r = orig.apply(this, arguments); decorate(); return r; };
+            w.__journal = true;
+            window.renderDailySales = w;
+            try { renderDailySales = w; } catch (e) { /* not assignable: the window property is enough */ }
+        }
+        setInterval(function () {                                   // the sync state moves on by itself: keep the badges true
+            if (dailyVisible() && document.getElementById('daily-sales-tab')) {
+                Array.prototype.forEach.call(document.querySelectorAll('#daily-sales-table .sj-badge'), function (b) { b.remove(); });
+                decorate();
+            }
+        }, 4000);
+
+        /* ---- reconciliation: this device, its journal, the server, printed receipts ---- */
+        window.salesJournalReconcile = async function (fromKey, toKey) {
+            var today = bizDay(Date.now());
+            fromKey = fromKey || today; toKey = toKey || fromKey;
+            var inRange = function (ts) { var k = bizDay(ts); return k >= fromKey && k <= toKey; };
+            var local = (arrOf('salesLog') || []).filter(function (s) { return s && inRange(s.timestamp); });
+            var localIds = new Set(local.map(function (s) { return String(s.id); }));
+            var rows = [];
+            try { rows = await readAll(); } catch (e) { rows = []; }
+            var jSales = rows.filter(function (r) { return r.field === 'salesLog'; });
+            var journalMissing = jSales.filter(function (r) { return r.rec && inRange(r.rec.timestamp) && (r.status === 'pending' || r.status === 'unconfirmed') && !localIds.has(r.id); });
+            var printedMissing = jSales.filter(function (r) { return r.printedAt && r.rec && !localIds.has(r.id) && r.status !== 'removed' && inRange(r.rec.timestamp); });
+            // sales this device completed that carry a date outside the day (wrong clock at the time)
+            var clockOdd = jSales.filter(function (r) { return r.rec && r.rec.deviceTimestamp && inRange(r.rec.deviceTimestamp) && !inRange(r.rec.timestamp); });
+            var archived = [];
+            try {
+                if (typeof window.storageLocalArchives === 'function') {
+                    var arch = await new Promise(function (res) {
+                        var q = indexedDB.open('pos_local_archive', 1);
+                        q.onupgradeneeded = function () { try { q.result.createObjectStore('archives', { keyPath: 'id' }); } catch (e) {} };
+                        q.onsuccess = function () { try { var db = q.result, t = db.transaction('archives', 'readonly'), g = t.objectStore('archives').getAll(); g.onsuccess = function () { db.close(); res(g.result || []); }; g.onerror = function () { db.close(); res([]); }; } catch (e) { res([]); } };
+                        q.onerror = function () { res([]); };
+                    });
+                    arch.forEach(function (a) { ((a.fields || {}).salesLog || []).forEach(function (s) { if (s && inRange(s.timestamp) && !localIds.has(String(s.id))) archived.push(s); }); });
+                }
+            } catch (e) { /* no archive */ }
+            var server = null;
+            try {
+                var b = typeof bizDayBounds === 'function' ? { from: bizDayBounds(fromKey).from, to: bizDayBounds(toKey).to } : null;
+                if (b && typeof serverDayCheck === 'function') server = await serverDayCheck(b.from, b.to, siteParam());
+            } catch (e) { server = null; }
+            var pending = local.filter(function (s) { var x = window.salesSyncStatus(s.id); return x === 'pending' || x === 'retrying' || x === 'syncing'; });
+            return { from: fromKey, to: toKey, local: local.length, pending: pending.length, journalMissing: journalMissing, printedMissing: printedMissing, archived: archived, clockOdd: clockOdd, server: server };
+        };
+        window.salesJournalRecover = async function () {
+            var rows = [];
+            try { rows = await readAll(); } catch (e) { return 0; }
+            return restoreMissing(rows);
+        };
+        window.salesJournalFetchFromServer = async function (ids) {
+            // Sales the server holds for the day but this device does not (another till, or lost here): fetched with the normal pull.
+            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* the next pull is a full one anyway */ }
+            if (typeof pullStateOnce === 'function') await pullStateOnce();
+            else if (typeof pullFromServerOnce === 'function') await pullFromServerOnce();
+            else if (typeof pullState === 'function') await pullState();
+            var have = new Set((arrOf('salesLog') || []).map(function (s) { return String(s && s.id); }));
+            return (ids || []).filter(function (id) { return have.has(String(id)); }).length;
+        };
+        window.salesJournalShowArchived = function (list) {
+            var a = arrOf('salesLog'); if (!Array.isArray(a) || !list || !list.length) return 0;
+            var have = new Set(a.map(function (s) { return String(s && s.id); })), n = 0;
+            list.forEach(function (s) { if (s && !have.has(String(s.id))) { a.push(s); n++; } });
+            if (n) { try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); } catch (e) { /* in memory for this session */ } try { renderDailySales(); } catch (e) { /* cosmetic */ } }
+            return n;
+        };
+        window.salesJournalReconcileUi = async function () {
+            var table = document.getElementById('daily-sales-table');
+            if (!table) return;
+            var box = document.getElementById('sj-reconcile');
+            if (!box) { box = document.createElement('div'); box.id = 'sj-reconcile'; var sum = document.getElementById('sj-summary'); (sum || table).parentNode.insertBefore(box, (sum || table).nextSibling); }
+            box.innerHTML = '<p class="settings-hint">Checking this device, its journal, the server and the printed receipts…</p>';
+            var range = null;
+            try { if (typeof salesTablePeriodRange === 'function') range = salesTablePeriodRange(); else if (typeof salesPeriodRange === 'function') range = salesPeriodRange(); } catch (e) { range = null; }
+            var fromKey = range && typeof range.from === 'string' ? range.from : range && range.from ? bizDay(range.from) : bizDay(Date.now());
+            var toKey = range && typeof range.to === 'string' ? range.to : range && range.to ? bizDay(range.to) : fromKey;
+            var r = await window.salesJournalReconcile(fromKey, toKey);
+            var money = function (v) { return 'KES ' + (Math.round((Number(v) || 0) * 100) / 100).toLocaleString('en-US'); };
+            var li = [];
+            li.push('<li>This device lists <strong>' + r.local + '</strong> sale' + (r.local === 1 ? '' : 's') + ' for ' + (r.from === r.to ? r.from : r.from + ' – ' + r.to) + (r.pending ? ' (' + r.pending + ' not on the server yet — sent automatically)' : '') + '.</li>');
+            if (r.journalMissing.length) li.push('<li style="color:#c0392b;"><strong>' + r.journalMissing.length + '</strong> sale' + (r.journalMissing.length === 1 ? '' : 's') + ' completed on this device ' + (r.journalMissing.length === 1 ? 'is' : 'are') + ' in its journal but missing from the list: ' + r.journalMissing.map(function (x) { return (x.ref || x.id) + ' ' + money(x.total); }).join(', ') + ' <button type="button" class="settings-small-btn" data-sj="recover">Put ' + (r.journalMissing.length === 1 ? 'it' : 'them') + ' back</button></li>');
+            else li.push('<li>✓ Journal: every sale completed on this device is in the list.</li>');
+            if (r.printedMissing.length) li.push('<li style="color:#c0392b;">Printed receipts with no sale in the list: ' + r.printedMissing.map(function (x) { return x.ref || x.id; }).join(', ') + ' (put back with the button above).</li>');
+            else li.push('<li>✓ Every receipt printed on this device has its sale in the list.</li>');
+            if (r.archived.length) li.push('<li>' + r.archived.length + ' older sale' + (r.archived.length === 1 ? ' was' : 's were') + ' moved to this device\'s archive to save space. <button type="button" class="settings-small-btn" data-sj="archived">Show ' + (r.archived.length === 1 ? 'it' : 'them') + ' here</button></li>');
+            if (r.clockOdd.length) li.push('<li>' + r.clockOdd.length + ' sale' + (r.clockOdd.length === 1 ? ' was' : 's were') + ' made while this device\'s clock was wrong; ' + (r.clockOdd.length === 1 ? 'it is' : 'they are') + ' listed under the correct date instead: ' + r.clockOdd.map(function (x) { return (x.ref || x.id) + ' → ' + bizDay(x.rec.timestamp); }).join(', ') + '.</li>');
+            if (!r.server) li.push('<li>Server check: not available (offline) — nothing is lost; it is checked again when online.</li>');
+            else if (r.server.ok) li.push('<li>✓ Server: holds the same ' + r.server.srv.count + ' sale' + (r.server.srv.count === 1 ? '' : 's') + ' (' + money(r.server.srv.gross) + ').</li>');
+            else {
+                if (r.server.missingHere.length) li.push('<li style="color:#b9770e;">' + r.server.missingHere.length + ' sale' + (r.server.missingHere.length === 1 ? ' is' : 's are') + ' on the server but not on this device yet (another till, or not fetched yet). <button type="button" class="settings-small-btn" data-sj="fetch">Fetch ' + (r.server.missingHere.length === 1 ? 'it' : 'them') + '</button></li>');
+                if (r.server.notOnServer.length) li.push('<li style="color:#b9770e;">' + r.server.notOnServer.length + ' sale' + (r.server.notOnServer.length === 1 ? '' : 's') + ' on this device ' + (r.server.notOnServer.length === 1 ? 'has' : 'have') + ' not reached the server yet — sent automatically. <button type="button" class="settings-small-btn" data-sj="send">Send now</button></li>');
+            }
+            box.innerHTML = '<div style="border:1px solid #d5dbdb; border-radius:8px; padding:8px 12px; background:#fff;"><strong>🔎 Missing-sales check</strong><ul style="margin:6px 0 0; padding-left:18px;">' + li.join('') + '</ul></div>';
+            box.onclick = async function (ev) {
+                var b = ev.target.closest && ev.target.closest('[data-sj]');
+                if (!b) return;
+                var what = b.getAttribute('data-sj');
+                b.disabled = true;
+                try {
+                    if (what === 'recover') { var n = await window.salesJournalRecover(); if (typeof showToast === 'function') showToast(n ? n + ' record(s) put back.' : 'Nothing to put back.'); }
+                    if (what === 'archived') { var k = window.salesJournalShowArchived(r.archived); if (typeof showToast === 'function') showToast(k + ' archived sale(s) shown.'); }
+                    if (what === 'fetch') { var g = await window.salesJournalFetchFromServer(r.server.missingHere); if (typeof showToast === 'function') showToast(g + ' sale(s) fetched from the server.'); }
+                    if (what === 'send' && typeof syncRetryNow === 'function') await syncRetryNow();
+                } catch (e) { if (typeof showToast === 'function') showToast('Could not finish — try again.', true); }
+                try { renderDailySales(); } catch (e) { /* cosmetic */ }
+                window.salesJournalReconcileUi();
+            };
+        };
+
+        /* ---- "Sync to this device" (Settings ▸ Devices & Security) ---- */
+        var syncing = false, autoRetries = 0;
+        window.syncToThisDevice = async function (onStep) {
+            if (syncing) return { ok: false, error: 'Already syncing.' };
+            syncing = true;
+            var say = function (i, state, text) { try { if (onStep) onStep(i, state, text); } catch (e) { /* cosmetic */ } };
+            var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+            var tries = async function (fn, n) { var last; for (var i = 0; i < n; i++) { try { var v = await fn(); if (v !== false) return v; } catch (e) { last = e; } await wait(2000 * Math.pow(2, i)); } if (last) throw last; return false; };
+            var before = (arrOf('salesLog') || []).length;
+            try {
+                if (navigator.onLine === false && typeof probeServer === 'function' && (await probeServer(4000)) === 0) throw new Error('This device is offline. Nothing was changed; try again when it is online.');
+                say(0, 'run', 'Checking this device may sync…');
+                var dp = null;
+                try { var res = await fetch(typeof apiUrl === 'function' ? apiUrl('/api/device-pair') : '/api/device-pair'); dp = await res.json(); } catch (e) { dp = null; }
+                if (dp && dp.mode === 'paired' && !(dp.me && dp.me.paired)) {
+                    say(0, 'bad', 'This shop only syncs with paired devices, and this one is not paired yet.');
+                    if (typeof window.showDevicePairScreen === 'function') window.showDevicePairScreen();
+                    return { ok: false, error: 'Pair this device first (shop password or a pairing code), then tap Sync to this device again.' };
+                }
+                say(0, 'ok', dp ? 'This device may sync.' : 'Could not check pairing — continuing.');
+                say(1, 'run', 'Sending this device\'s unsent sales and changes first…');
+                var sent = await tries(async function () {
+                    if (typeof flushPendingPush === 'function') return await flushPendingPush();
+                    if (typeof doPush === 'function') { await doPush(); return !window.__pushFailed; }
+                    if (typeof pushNow === 'function') return await pushNow();
+                    return true;
+                }, 3);
+                if (!sent) throw new Error('The server did not accept this device\'s unsent changes (they are kept here). It tries again by itself.');
+                say(1, 'ok', 'Everything on this device is on the server.');
+                say(2, 'run', 'Fetching the shop from the server…');
+                try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ }
+                await tries(async function () {
+                    window.__pullInFlight = false;
+                    if (typeof pullStateOnce === 'function') await pullStateOnce();
+                    else if (typeof pullFromServerOnce === 'function') await pullFromServerOnce();
+                    else if (typeof pullState === 'function') await pullState();
+                    var dot = document.getElementById('sync-status');
+                    return !(dot && (dot.dataset.state === 'error' || dot.dataset.state === 'offline'));
+                }, 3);
+                say(2, 'ok', 'Fetched.');
+                say(3, 'run', 'Fetching older history…');
+                if (window.__lastHotFrom && typeof hydrateOlderHistory === 'function') {
+                    try { localStorage.removeItem('pos_hydrated_v1'); localStorage.removeItem('aqua_hydrated_v1'); } catch (e) { /* optional */ }
+                    try { await hydrateOlderHistory(window.__lastHotFrom); } catch (e) { /* fetched again next session */ }
+                }
+                say(3, 'ok', 'Done.');
+                say(4, 'run', 'Checking today\'s sales with the server…');
+                var chk = null;
+                try { var b = bizDayBounds(bizDay(Date.now())); chk = await serverDayCheck(b.from, b.to, siteParam()); } catch (e) { chk = null; }
+                var after = (arrOf('salesLog') || []).length;
+                var summary = (after - before > 0 ? (after - before) + ' sale' + (after - before === 1 ? '' : 's') + ' received. ' : 'No sales were missing. ')
+                    + (chk ? (chk.ok ? 'Today matches the server (' + chk.srv.count + ' sale' + (chk.srv.count === 1 ? '' : 's') + ').' : 'Today: ' + chk.missingHere.length + ' on the server not here, ' + chk.notOnServer.length + ' here not on the server yet.') : '');
+                say(4, chk && !chk.ok ? 'warn' : 'ok', summary);
+                auditAppend({ at: Date.now(), by: (typeof activeServerName === 'function' ? activeServerName() : '') || 'Device', what: 'Synced to this device — ' + summary, refs: [], device: deviceId() });
+                try { if (typeof renderAllViews === 'function') renderAllViews(); else if (typeof renderDailySales === 'function') renderDailySales(); } catch (e) { /* cosmetic */ }
+                autoRetries = 0;
+                return { ok: true, summary: summary };
+            } catch (e) {
+                if (autoRetries < 5) { autoRetries++; setTimeout(function () { if (!syncing) window.syncToThisDevice(); }, 30000); }   // tried again by itself (up to 5 times)
+                return { ok: false, error: (e && e.message) || String(e) };
+            } finally { syncing = false; }
+        };
+
+        seed();                                              // now: the app has loaded its lists; anything saved from here on is new
+        function boot() {
+            wrapRender();
+            clockBanner();
+            start();
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+    })();
+    </script>

@@ -13,7 +13,7 @@
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-126';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-127';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -46,7 +46,7 @@
                 var args = typeof input === 'string' ? [input, Object.assign({}, init, { headers: headers })] : [new Request(input, Object.assign({}, init, { headers: headers }))];
                 return realFetch.apply(this, args).then(function (res) {
                     if (res && res.status === 401) {
-                        res.clone().json().then(function (b) { if (b && b.code === 'device_not_paired') showPairScreen(); }).catch(function () {});
+                        res.clone().json().then(function (b) { if (b && b.code === 'device_not_paired') notPaired(); }).catch(function () {});
                     }
                     return res;
                 });
@@ -78,7 +78,7 @@
             var res = await fetch(apiPath('/api/device-pair'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ action: 'pair', deviceId: deviceId(), name: LS('pos_device_name') || '' }, body)) });
             var out = {};
             try { out = await res.json(); } catch (e) { /* no body */ }
-            if (res.ok && out.token) { LS('pos_device_token', out.token); LS('pos_device_mode', out.mode || ''); return { ok: true }; }
+            if (res.ok && out.token) { LS('pos_device_token', out.token); LS('pos_device_token_at', String(Date.now())); LS('pos_device_mode', out.mode || ''); return { ok: true }; }
             return { ok: false, error: out.error || ('The server answered ' + res.status + '.') };
         }
         // Quietly pair a device that already holds the shop password (every set-up device does — it signs in offline with it).
@@ -112,6 +112,15 @@
         setInterval(autoPair, 10 * 60000);
         window.addEventListener('online', function () { setTimeout(autoPair, 1500); });
 
+        // The server said "not paired" (zip 127). Right after pairing, the shop's device list can take a moment to reach every server
+        // location, so a token issued in the last 3 minutes is kept and simply used again (the next request goes through) — it used to
+        // be thrown away at once, and the device asked to pair again although it just had. An older token really was refused (revoked,
+        // or the shop switched to paired-only): as before, the pairing screen (the device also re-pairs itself quietly when it can).
+        function notPaired() {
+            var at = Number(LS('pos_device_token_at') || 0);
+            if (token() && Date.now() - at < 3 * 60000) return;
+            showPairScreen();
+        }
         var screenShown = false;
         function showPairScreen() {
             if (screenShown || document.getElementById('device-pair-screen')) return;
@@ -167,14 +176,48 @@
             if (!res.ok) throw new Error(out.error || ('The server answered ' + res.status));
             return out;
         }
+        // "Sync to this device" (zip 127) and the technical sync record — shown whatever the connection.
+        function syncBoxHtml() {
+            var pend = typeof window.salesJournalPendingCount === 'function' ? window.salesJournalPendingCount() : 0;
+            var diag = [];
+            try { diag = JSON.parse(LS('pos_sync_journal_v1') || '[]').slice(0, 30); } catch (e) { diag = []; }
+            return '<div id="ds-sync-box" style="margin:0 0 12px; padding:10px 12px; border:1px solid #aed6f1; background:#f4f9fd; border-radius:8px;">'
+                + '<strong>⬇️ Sync to this device</strong>'
+                + '<p class="settings-hint" style="margin:4px 0 8px;">Sends this device\'s unsent sales and changes first, then fetches everything this shop has on the server. Nothing on this device is deleted or duplicated; newer changes made here are kept. Uses this device\'s pairing — a device that is not allowed to sync is asked to pair first.</p>'
+                + (pend ? '<p style="margin:0 0 8px; font-size:13px; color:#b9770e;">⏳ ' + pend + ' sale' + (pend === 1 ? '' : 's') + ' on this device ' + (pend === 1 ? 'is' : 'are') + ' waiting to be sent (retried automatically).</p>' : '')
+                + '<button type="button" class="settings-small-btn" data-ds="syncdown" style="background:#2980b9; color:#fff; font-weight:700;">⬇️ Sync to this device</button>'
+                + '<ol id="ds-sync-steps" style="margin:8px 0 0; padding-left:20px; font-size:13px; line-height:1.5;"></ol>'
+                + '<details style="margin-top:8px;"><summary style="cursor:pointer; font-size:12px; color:#7f8c8d;">Sync diagnostics (technical — failed sends and retries are listed here, not in the Audit)</summary>'
+                + (diag.length ? '<ul style="margin:6px 0 0; padding-left:18px; font-size:12px; color:#566573;">' + diag.map(function (e) { return '<li>' + esc(new Date(e.at).toLocaleString('en-GB')) + ' — ' + esc(e.kind) + ': ' + esc(e.detail) + '</li>'; }).join('') + '</ul>' : '<p class="settings-hint">Nothing recorded.</p>')
+                + '</details></div>';
+        }
+        async function runSyncDown(btn) {
+            if (typeof window.syncToThisDevice !== 'function') return;
+            var list = document.getElementById('ds-sync-steps');
+            var labels = ['Allowed to sync', 'Send this device\'s unsent sales', 'Fetch the shop from the server', 'Fetch older history', 'Check today with the server'];
+            var icons = { run: '⏳', ok: '✅', bad: '⛔', warn: '⚠️' };
+            if (list) list.innerHTML = labels.map(function (l, i) { return '<li id="ds-step-' + i + '" style="color:#95a5a6;">' + esc(l) + '</li>'; }).join('');
+            if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+            var r = await window.syncToThisDevice(function (i, state, text) {
+                var li = document.getElementById('ds-step-' + i);
+                if (li) { li.style.color = state === 'bad' ? '#c0392b' : state === 'warn' ? '#b9770e' : state === 'run' ? '#2c3e50' : '#1e8449'; li.textContent = (icons[state] || '') + ' ' + labels[i] + ' — ' + text; }
+            });
+            if (btn) { btn.disabled = false; btn.textContent = '⬇️ Sync to this device'; }
+            if (list) {
+                var done = document.createElement('li');
+                done.style.cssText = 'list-style:none; margin-left:-20px; margin-top:4px; font-weight:700; color:' + (r.ok ? '#1e8449' : '#c0392b');
+                done.textContent = r.ok ? '✓ This device is up to date. ' + (r.summary || '') : '✗ Not finished: ' + r.error + (/offline|pair/i.test(r.error) ? '' : ' It tries again by itself in 30 seconds.');
+                list.appendChild(done);
+            }
+        }
         async function renderPanel() {
             var box = document.getElementById('device-security-body');
             if (!box) return;
-            if (navigator.onLine === false) { box.innerHTML = '<p class="settings-hint">Offline — the device list needs a connection. This device keeps working normally.</p>'; return; }
+            if (navigator.onLine === false) { box.innerHTML = syncBoxHtml() + '<p class="settings-hint">Offline — the device list needs a connection. This device keeps working normally.</p>'; return; }
             var data;
-            try { var res = await fetch(apiPath('/api/device-pair')); data = await res.json(); } catch (e) { box.innerHTML = '<p class="settings-hint">Could not reach the server — try again when online.</p>'; return; }
+            try { var res = await fetch(apiPath('/api/device-pair')); data = await res.json(); } catch (e) { box.innerHTML = syncBoxHtml() + '<p class="settings-hint">Could not reach the server — try again when online.</p>'; return; }
             var paired = data.me && data.me.paired;
-            var html = (data.serverWarning === 'db_outdated' ? '<div style="background:#fdecea; color:#922b21; border:1px solid #e6b0aa; border-radius:8px; padding:10px; margin:0 0 10px; font-size:14px;">⚠️ <strong>This shop\'s server needs an update.</strong> Till numbers, the device list and some stock protections are off until it is updated. Please tell MyDukaPOS support ("the shop database needs deploy:router"). Selling and syncing still work.</div>' : '')
+            var html = syncBoxHtml() + (data.serverWarning === 'db_outdated' ? '<div style="background:#fdecea; color:#922b21; border:1px solid #e6b0aa; border-radius:8px; padding:10px; margin:0 0 10px; font-size:14px;">⚠️ <strong>This shop\'s server needs an update.</strong> Till numbers, the device list and some stock protections are off until it is updated. Please tell MyDukaPOS support ("the shop database needs deploy:router"). Selling and syncing still work.</div>' : '')
                 + '<p style="margin:0 0 8px;">This device: <strong>' + esc(LS('pos_device_name') || deviceId()) + '</strong> — '
                 + (paired ? '<span style="color:#27ae60; font-weight:700;">✓ paired</span>' : '<span style="color:#c0392b; font-weight:700;">not paired</span>')
                 + (typeof tillNumber === 'function' && tillNumber() ? ' · till ' + tillNumber() : '') + ' · release ' + esc(window.__APP_RELEASE) + '</p>'
@@ -203,6 +246,7 @@
             try {
                 var what = b.getAttribute('data-ds');
                 if (what === 'refresh') return renderPanel();
+                if (what === 'syncdown') return runSyncDown(b);
                 if (what === 'pair') { screenShown = false; showPairScreen(); return; }
                 if (what === 'code') { var c = await post({ action: 'code' }); say('Pairing code: ' + c.code + ' — type it on the new device within 10 minutes. It works once.'); return; }
                 if (what === 'rename') { var n = window.prompt('Name for this device (e.g. "Till 1 — front counter"):', LS('pos_device_name') || ''); if (n === null) return; LS('pos_device_name', n.trim()); await post({ action: 'rename', name: n.trim() }); return renderPanel(); }
