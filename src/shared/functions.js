@@ -6850,7 +6850,50 @@ function selectPastSaleItem(code) {
             document.getElementById('past-sale-item-search').value = '';
             document.getElementById('past-sale-item-results').style.display = 'none';
             document.getElementById('past-sale-selected-item').textContent = `Selected: ${product.name}`;
+            // Retail/Wholesale/Custom, same choice as a live sale — defaults
+            // to Retail (as before) but Wholesale is now one tap away
+            // instead of needing the exact number typed in by hand.
+            pastSalePriceTier = 'retail';
+            const retailBtn = document.getElementById('past-sale-price-retail-btn');
+            const wholesaleBtn = document.getElementById('past-sale-price-wholesale-btn');
+            const customBtn = document.getElementById('past-sale-price-custom-btn');
+            if (retailBtn) {
+                retailBtn.textContent = `Retail — KES ${(product.price || 0).toFixed(2)}`;
+                retailBtn.classList.add('active');
+            }
+            if (wholesaleBtn) {
+                const hasWholesale = Number(product.wholesaleSellingPrice) > 0;
+                wholesaleBtn.textContent = `Wholesale — KES ${(Number(product.wholesaleSellingPrice) || 0).toFixed(2)}`;
+                wholesaleBtn.style.display = hasWholesale ? '' : 'none';
+                wholesaleBtn.classList.remove('active');
+            }
+            if (customBtn) customBtn.classList.remove('active');
             document.getElementById('past-sale-price-input').value = (product.price || 0).toFixed(2);
+            document.getElementById('past-sale-price-input').readOnly = false;
+        }
+
+//@fn choosePastSalePriceTier
+// Same idea as the live Sales Counter's Retail/Wholesale/Custom picker
+// (openPriceSelectModal), adapted for the flat Record-a-Past-Sale/Hire
+// form: Retail/Wholesale fill the field with that tier's price; Custom
+// just clears it and focuses it for a typed amount. The field stays a
+// normal editable number input throughout, so a typed Retail/Wholesale
+// figure can still be nudged afterwards (e.g. a small agreed discount).
+function choosePastSalePriceTier(tier) {
+            pastSalePriceTier = tier;
+            const input = document.getElementById('past-sale-price-input');
+            ['retail', 'wholesale', 'custom'].forEach(t => {
+                const btn = document.getElementById(`past-sale-price-${t}-btn`);
+                if (btn) btn.classList.toggle('active', t === tier);
+            });
+            if (tier === 'retail') {
+                input.value = ((selectedPastSaleItem && selectedPastSaleItem.price) || 0).toFixed(2);
+            } else if (tier === 'wholesale') {
+                input.value = ((selectedPastSaleItem && Number(selectedPastSaleItem.wholesaleSellingPrice)) || 0).toFixed(2);
+            } else {
+                input.value = '';
+                input.focus();
+            }
         }
 
 //@fn selectServerToLogin
@@ -13292,6 +13335,12 @@ function reportsGenerate(kind) {
             if (!out) return;
             const range = reportsRange();
             const builders = { sales: reportBuildSales, insights: reportBuildInsights, staff: reportBuildStaff, stock: reportBuildStock, bills: reportBuildBillsDebts, expenses: reportBuildExpenses };
+            // X/Z Reports are being rolled out module by module — guarded so
+            // a module that doesn't have them yet (reportBuildXReport /
+            // reportBuildZReport not declared there) never throws just
+            // because this shared function mentions their kind keys.
+            if (typeof reportBuildXReport === 'function') builders.xreport = reportBuildXReport;
+            if (typeof reportBuildZReport === 'function') builders.zreport = reportBuildZReport;
             const fn = builders[kind];
             if (!fn) return;
             window.__reportKind = kind;
@@ -13300,7 +13349,7 @@ function reportsGenerate(kind) {
             catch (e) { out.innerHTML = '<p style="color:#c0392b;">This report could not be built: ' + escapeHtml(e.message || String(e)) + '</p>'; return; }
             window.__reportCsv = rep.csv || [];
             window.__reportTitle = rep.title;
-            const noRange = kind === 'bills';
+            const noRange = kind === 'bills' || kind === 'xreport' || kind === 'zreport';
             out.innerHTML = `<div class="report-head" style="margin-bottom:8px;"><h3 style="margin:0;">${escapeHtml(rep.title)}</h3><div style="color:#7f8c8d; font-size:13px;">${escapeHtml(typeof businessName !== 'undefined' ? businessName : '')}${noRange ? ' — as at today' : ' — ' + escapeHtml(range.text)} · generated ${escapeHtml(new Date().toLocaleString('en-GB'))}</div></div>${rep.html}`;
             document.querySelectorAll('#reports-tab .report-kind-btn').forEach((b) => b.classList.toggle('active', b.dataset.kind === kind));
             const act = document.getElementById('reports-actions'); if (act) act.style.display = 'flex';
@@ -13328,7 +13377,7 @@ function reportsCsv() {
 
 //@fn reportsPrint
 function reportsPrint() {
-            if (!window.__reportKind) { showToast('Generate a report first.', true); return; }
+            if (!window.__reportKind) { showToast('Generate a report first.', true); return false; }
             // A4 for a report (the page size a receipt set earlier would make it 80 mm wide), restored afterwards.
             const pageStyle = document.getElementById('print-page-style');
             const previous = pageStyle ? pageStyle.textContent : '';
@@ -13339,13 +13388,14 @@ function reportsPrint() {
             setTimeout(restore, 10000);
             const css = 'table{width:100%; border-collapse:collapse;} svg{max-width:100%; height:auto;} h3,h4{margin:8px 0 4px;} .table-scroll{overflow:visible;}';
             const html = document.getElementById('reports-output').innerHTML;
-            if (typeof printHTMLDirect === 'function' && document.getElementById('aqua-pos-print-area')) { printHTMLDirect(html, css); return; }
+            if (typeof printHTMLDirect === 'function' && document.getElementById('aqua-pos-print-area')) { printHTMLDirect(html, css); return true; }
             // (apps without the in-page print area: print from a fresh window)
             const win = window.open('', '_blank');
-            if (!win) { showToast('Allow pop-ups to print the report.', true); restore(); return; }
+            if (!win) { showToast('Allow pop-ups to print the report.', true); restore(); return false; }
             win.document.write(`<html><head><title>${escapeHtml(window.__reportTitle || 'Report')}</title><style>body{font-family:Arial,sans-serif; padding:16px;} ${css}</style></head><body>${html}</body></html>`);
             win.document.close(); win.focus();
             setTimeout(() => win.print(), 300);
+            return true;
         }
 
 //@fn reportsInstall
@@ -13353,7 +13403,7 @@ function reportsInstall() {
             if (window.__reportsInstalled) return;
             window.__reportsInstalled = true;
             const btn = document.getElementById('reports-tab-btn');
-            if (btn) btn.addEventListener('click', () => setTimeout(() => { try { reportsGenerate(window.__reportKind || 'sales'); } catch (e) { /* the tab is an extra */ } }, 60));
+            if (btn) btn.addEventListener('click', () => setTimeout(() => { try { reportsGenerate(window.__reportKind || 'sales'); } catch (e) { /* the tab is an extra */ } try { if (typeof renderAutoDailyReportStatus === 'function') renderAutoDailyReportStatus(); } catch (e) { /* older module without this yet */ } }, 60));
             // shortcuts to the app's own detailed screens: only the ones this app has
             document.querySelectorAll('#reports-more-links [data-goto]').forEach((b2) => { if (!document.querySelector('.tabs .tab-link[data-tab="' + b2.dataset.goto + '"]')) b2.style.display = 'none'; });
         }
@@ -13398,3 +13448,422 @@ function dedupeStaff() {
             return changed;
         }
 
+
+//@fn vatRateForCategory
+        function vatRateForCategory(cat) {
+            if (cat === 'B') return VAT_RATE_B;
+            // Z (zero-rated), E (exempt) and N (non-VAT) are all 0% but stay
+            // distinct classifications for KRA/eTIMS reporting — never merge
+            // them back into one bucket. 'C' is the pre-migration legacy
+            // code (auto-migrated to 'Z' on load; kept here only as a
+            // defensive fallback in case a synced-in record still has it).
+            if (cat === 'Z' || cat === 'E' || cat === 'N' || cat === 'C') return 0;
+            return VAT_RATE_A; // default / legacy items with no category = standard rate
+        }
+
+        // KRA/eTIMS classification labels shown in the UI and on reports.
+
+//@fn KRA_VAT_CATEGORY_LABELS
+        const KRA_VAT_CATEGORY_LABELS = {
+            A: 'Standard rate (16%)',
+            B: 'Reduced rate (8%)',
+            Z: 'Zero-rated (0%)',
+            E: 'Exempt (0%, no input credit)',
+            N: 'Non-VAT'
+        };
+
+        // Records a KRA/eTIMS classification change on the item itself, so
+        // there is always a trail of who/when/why without needing a
+        // separate audit store. `source` is 'manual' (a person changed it
+        // in Inventory), 'migration' (this app version changed the data
+        // shape) or 'assistant' (the classification helper, once built).
+        // Kept lightweight/append-only; capped so it can't grow unbounded.
+
+//@fn recordKraClassificationChange
+        function recordKraClassificationChange(item, previousValue, newValue, source, reason) {
+            if (!item.kraClassificationHistory) item.kraClassificationHistory = [];
+            item.kraClassificationHistory.push({
+                date: new Date().toISOString(),
+                user: (source === 'migration') ? 'system' : ((typeof activeServerName === 'function' && activeServerName()) || 'admin'),
+                source,
+                previousValue: previousValue || null,
+                newValue: newValue || null,
+                reason: reason || ''
+            });
+            if (item.kraClassificationHistory.length > 50) {
+                item.kraClassificationHistory = item.kraClassificationHistory.slice(-50);
+            }
+        }
+
+        // Per-item KRA/eTIMS classification block (separate from the A/B/Z/E/N
+        // VAT rate category above — this is the item-level identity KRA/eTIMS
+        // needs: class code, item code, unit/package codes, origin, item
+        // type). Never invented — every field defaults to "Not yet
+        // classified" until a person or an authoritative source sets it.
+
+//@fn defaultKraClassification
+        function defaultKraClassification() {
+            return {
+                status: 'Not yet classified', // 'Not yet classified' | 'Confirmed' | 'Suggested'
+                kraClassCode: '',
+                etimsItemCode: '',
+                unitCode: '',
+                packageCode: '',
+                countryOfOrigin: '',
+                itemType: ''
+            };
+        }
+
+        // Reads the Add/Edit Item form's KRA/eTIMS fields, carries forward
+        // `existingKra` for anything left blank, and logs a classification
+        // change (per section 15 of the audit spec) if any field actually
+        // changed. Status becomes 'Confirmed' once every code field is
+        // filled in by a person; stays 'Not yet classified' until then —
+        // never auto-upgraded to Confirmed by a guess.
+        // ---------- KRA CLASSIFICATION ASSISTANT ----------
+        // Spec section 14. Never invents an official KRA class code or
+        // eTIMS item code — this app has no live KRA API to draw from, so
+        // it only ever suggests the VAT/tax CATEGORY (Standard / Reduced /
+        // Zero-rated / Exempt / Non-VAT) from a small, editable reference
+        // table, always labelled as a suggestion the business's own
+        // accountant should confirm — never "CONFIRMED MATCH", since
+        // nothing here is an authoritative source. Codes stay
+        // "Not yet classified" until a person enters a real one.
+        //
+        // Starter reference rules only — genuinely common, widely-known
+        // treatment categories, not a verified live KRA feed. An
+        // authorized admin can add/edit rules below; this is the
+        // "updateable KRA classification data layer" the spec asks for
+        // when no live API is available.
+
+//@fn KRA_REFERENCE_RULES_BUILTIN
+        const KRA_REFERENCE_RULES_BUILTIN = [
+            { id: 'builtin-unprocessed-food', keywords: ['maize', 'flour', 'unga', 'bread', 'milk', 'vegetable', 'vegetables', 'fruit', 'fruits', 'potato', 'potatoes', 'onion', 'onions', 'tomato', 'tomatoes', 'rice', 'beans', 'sugar cane', 'raw', 'unprocessed'], category: 'Z', reason: 'Many basic/unprocessed foodstuffs are zero-rated under the VAT Act — verify this specific item and its processing state with your accountant.' },
+            { id: 'builtin-pharma', keywords: ['medicine', 'drug', 'drugs', 'pharmaceutical', 'tablet', 'tablets', 'capsule', 'capsules', 'syrup', 'antibiotic', 'painkiller', 'vaccine'], category: 'Z', reason: 'Pharmaceuticals are commonly zero-rated — verify the specific product against the current VAT Act schedule.' },
+            { id: 'builtin-lpg', keywords: ['lpg', 'cooking gas', 'gas cylinder', 'gas refill'], category: 'Z', reason: 'LPG/cooking gas has commonly been zero-rated — verify the current rate, as this has changed before.' },
+            { id: 'builtin-medical-equipment', keywords: ['wheelchair', 'hearing aid', 'prosthetic', 'medical equipment', 'x-ray', 'dialysis'], category: 'Z', reason: 'Specialized medical equipment is commonly zero-rated or exempt — verify the specific item.' },
+            { id: 'builtin-financial', keywords: ['insurance', 'loan interest', 'bank charges', 'financial service'], category: 'E', reason: 'Financial and insurance services are commonly VAT-exempt — verify with your accountant.' },
+            { id: 'builtin-education', keywords: ['textbook', 'exercise book', 'school book', 'educational material'], category: 'Z', reason: 'Educational materials are commonly zero-rated — verify the specific item.' },
+            { id: 'builtin-export', keywords: ['export', 'exported'], category: 'Z', reason: 'Exported goods are commonly zero-rated.' },
+            { id: 'builtin-fuel', keywords: ['petrol', 'diesel', 'fuel', 'kerosene'], category: 'B', reason: 'Petroleum products commonly carry a reduced/special VAT rate — verify the current rate, as this changes periodically.' },
+        ];
+
+//@fn kraReferenceRules
+        function kraReferenceRules() {
+            const custom = safeJSONParse('pos_kra_reference_rules', []);
+            return KRA_REFERENCE_RULES_BUILTIN.concat(Array.isArray(custom) ? custom : []);
+        }
+
+//@fn addKraReferenceRule
+        function addKraReferenceRule(keywordsCsv, category, reason) {
+            const custom = safeJSONParse('pos_kra_reference_rules', []);
+            const keywords = keywordsCsv.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+            if (!keywords.length || !category) return false;
+            custom.push({ id: `custom-${generateToken()}`, keywords, category, reason: reason || 'Added by an admin for this business.', addedBy: activeServerName(), addedAt: new Date().toISOString() });
+            safeSetItem('pos_kra_reference_rules', JSON.stringify(custom));
+            return true;
+        }
+
+        // Scores every rule by how many of its keywords appear in the
+        // product's own text (name + category + optional brand/description
+        // typed into the assistant prompt) — a simple, transparent match,
+        // never a black box.
+
+//@fn matchKraReferenceRules
+        function matchKraReferenceRules(text) {
+            const hay = (text || '').toLowerCase();
+            const scored = kraReferenceRules().map(rule => {
+                const hits = rule.keywords.filter(k => hay.includes(k));
+                return { rule, score: hits.length, hits };
+            }).filter(m => m.score > 0);
+            scored.sort((a, b) => b.score - a.score);
+            return scored;
+        }
+
+//@fn runKraClassificationAssistant
+        function runKraClassificationAssistant() {
+            const name = (document.getElementById('inv-name') || {}).value || '';
+            const text = name;
+            const matches = matchKraReferenceRules(text);
+            const box = document.getElementById('inv-kra-assist-result');
+            if (!box) return;
+            if (matches.length === 0) {
+                box.innerHTML = `<div style="border:1px solid #e67e22; background:#fff8ec; border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:13px;">
+                    <strong>NO MATCH FOUND</strong> — manual classification required. Nothing in the reference table matched "${escapeHtml(name)}". Ask your accountant, or add a rule for this kind of item below.
+                    <div style="margin-top:6px; display:flex; gap:4px; flex-wrap:wrap;">
+                        <input type="text" id="inv-kra-new-rule-keywords" placeholder="keywords, comma-separated" style="flex:1; min-width:120px;">
+                        <select id="inv-kra-new-rule-category" style="max-width:220px;">
+                            <option value="A">A — Standard rate (16%)</option>
+                            <option value="B">B — Reduced rate (8%)</option>
+                            <option value="Z">Z — Zero-rated (0%)</option>
+                            <option value="E">E — Exempt (0%, no input credit)</option>
+                            <option value="N">N — Non-VAT</option>
+                        </select>
+                        <button type="button" class="settings-small-btn" onclick="submitNewKraReferenceRule()">Save rule</button>
+                    </div>
+                </div>`;
+                return;
+            }
+            const top = matches[0];
+            const tiedTop = matches.filter(m => m.score === top.score);
+            const optionHtml = (m, idx) => `<div style="border:1px solid #ccd1d6; border-radius:8px; padding:8px 10px; margin-bottom:6px; font-size:13px;">
+                <strong>${escapeHtml(KRA_VAT_CATEGORY_LABELS[m.rule.category] || m.rule.category)}</strong> (category ${escapeHtml(m.rule.category)})
+                <div style="color:#7f8c8d; margin:2px 0;">Matched on: ${m.hits.map(escapeHtml).join(', ')}</div>
+                <div style="margin-bottom:6px;">${escapeHtml(m.rule.reason || '')}</div>
+                <button type="button" class="settings-small-btn" onclick="acceptKraAssistantSuggestion('${m.rule.category}', ${idx})">Use this classification</button>
+            </div>`;
+            const heading = tiedTop.length > 1
+                ? `<strong>${tiedTop.length} possible matches</strong> — multiple classifications fit; pick the right one (or neither) rather than guessing:`
+                : `<strong>SUGGESTED MATCH</strong> — review before accepting, this is not an authoritative source:`;
+            box.innerHTML = `<div style="border:1px solid #2980b9; background:#eef6fb; border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:13px;">${heading}</div>`
+                + matches.slice(0, 5).map(optionHtml).join('');
+        }
+
+//@fn submitNewKraReferenceRule
+        function submitNewKraReferenceRule() {
+            const kw = (document.getElementById('inv-kra-new-rule-keywords') || {}).value || '';
+            const cat = (document.getElementById('inv-kra-new-rule-category') || {}).value || '';
+            if (!kw.trim()) { showToast('Enter at least one keyword.', true); return; }
+            addKraReferenceRule(kw, cat, `Added by ${activeServerName()} while classifying an item.`);
+            showToast('Reference rule saved — it will be suggested for similar items from now on.');
+            runKraClassificationAssistant();
+        }
+
+        // Accepting a suggestion only ever sets the VAT rate category —
+        // never a class/eTIMS code, since those still have to be entered
+        // by a person from a real source. Logged as source 'assistant' so
+        // the classification-history trail shows it was suggested, not
+        // pulled from an authoritative feed.
+
+//@fn acceptKraAssistantSuggestion
+        function acceptKraAssistantSuggestion(category) {
+            const select = document.getElementById('inv-vat-category');
+            if (select) select.value = category;
+            const box = document.getElementById('inv-kra-assist-result');
+            if (box) box.innerHTML = `<div style="border:1px solid #27ae60; background:#eafaf1; border-radius:8px; padding:8px 10px; margin-bottom:8px; font-size:13px;">VAT category set to ${escapeHtml(category)} from the assistant's suggestion — save the item to keep it. This is not yet a confirmed KRA class/eTIMS code; add those separately once you have them.</div>`;
+        }
+
+//@fn readKraClassificationFromForm
+        function readKraClassificationFromForm(item, existingKra) {
+
+
+            const prior = existingKra || defaultKraClassification();
+            const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+            const next = {
+                kraClassCode: val('inv-kra-class-code'),
+                etimsItemCode: val('inv-kra-etims-code'),
+                unitCode: val('inv-kra-unit-code'),
+                packageCode: val('inv-kra-package-code'),
+                countryOfOrigin: val('inv-kra-origin'),
+                itemType: val('inv-kra-item-type')
+            };
+            next.status = (next.kraClassCode && next.etimsItemCode) ? 'Confirmed' : 'Not yet classified';
+            const changedFields = Object.keys(next).filter(k => (prior[k] || '') !== (next[k] || ''));
+            if (changedFields.length > 0 && item) {
+                recordKraClassificationChange(
+                    item,
+                    JSON.stringify({ status: prior.status, kraClassCode: prior.kraClassCode, etimsItemCode: prior.etimsItemCode }),
+                    JSON.stringify({ status: next.status, kraClassCode: next.kraClassCode, etimsItemCode: next.etimsItemCode }),
+                    'manual',
+                    `Fields changed: ${changedFields.join(', ')}`
+                );
+            }
+            return next;
+        }
+
+        // Populates the KRA/eTIMS form fields when opening an item/service to
+        // edit — mirrors readKraClassificationFromForm in reverse.
+
+//@fn populateKraClassificationForm
+        function populateKraClassificationForm(kra) {
+            const k = kra || defaultKraClassification();
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+            set('inv-kra-class-code', k.kraClassCode);
+            set('inv-kra-etims-code', k.etimsItemCode);
+            set('inv-kra-unit-code', k.unitCode);
+            set('inv-kra-package-code', k.packageCode);
+            set('inv-kra-origin', k.countryOfOrigin);
+            set('inv-kra-item-type', k.itemType);
+            const hint = document.getElementById('inv-kra-status-hint');
+            if (hint) hint.textContent = k.status || 'Not yet classified';
+        }
+
+//@fn validateSaleForEtims
+        function validateSaleForEtims(sale) {
+            const errors = [];
+            const warnings = [];
+            (sale.items || []).forEach(it => {
+                if (!it || it.unit === 'payment' || it.isPayment) return;
+                const label = it.name || it.code || 'an item';
+                if (!it.name) {
+                    errors.push({ item: label, issue: 'Missing item name', why: 'KRA requires a described item name on every invoice line.', fix: 'Edit the item in Inventory to give it a proper name, then retry.' });
+                }
+                if (!(Number(it.qty) > 0)) {
+                    errors.push({ item: label, issue: `Invalid quantity (${it.qty})`, why: 'eTIMS rejects lines with zero or negative quantity.', fix: 'Check how this sale line was recorded.' });
+                }
+                if (!(Number(it.price) >= 0)) {
+                    errors.push({ item: label, issue: `Invalid price (${it.price})`, why: 'eTIMS requires a valid, non-negative unit price.', fix: 'Check the price on this sale line.' });
+                }
+                const cat = it.vatCategory || 'A';
+                if (!['A', 'B', 'Z', 'E', 'N'].includes(cat)) {
+                    errors.push({ item: label, issue: `Unknown VAT category "${cat}"`, why: 'KRA requires a recognized tax type for every line.', fix: 'Set a valid VAT category on this item in Inventory.' });
+                }
+                if (it.code) {
+                    const product = inventory.find(p => p.code === it.code);
+                    if (product && (!product.kra || product.kra.status === 'Not yet classified')) {
+                        warnings.push({ item: product.name, issue: 'KRA/eTIMS classification not yet set', why: 'Submitting without a confirmed KRA class code and eTIMS item code risks this item being misreported once KRA cross-checks it.', fix: 'Open the item in Inventory and use "Help me classify this product", or enter its KRA class/eTIMS codes directly.' });
+                    }
+                }
+            });
+            return { errors, warnings };
+        }
+
+
+//@fn autoDailyReportState
+let autoDailyReportEnabled = localStorage.getItem('pos_auto_daily_report_enabled') === 'true';
+        let autoDailyReportTime = localStorage.getItem('pos_auto_daily_report_time') || '20:00';
+        let autoDailyReportMissedBehavior = localStorage.getItem('pos_auto_daily_report_missed_behavior') || 'generate-on-return';
+        let autoDailyReportLog = safeJSONParse('pos_auto_daily_report_log', []);
+
+//@fn setAutoDailyReportEnabled
+function setAutoDailyReportEnabled(checked) {
+            autoDailyReportEnabled = !!checked;
+            localStorage.setItem('pos_auto_daily_report_enabled', String(autoDailyReportEnabled));
+            const opts = document.getElementById('auto-daily-report-options');
+            if (opts) opts.style.opacity = autoDailyReportEnabled ? '1' : '0.5';
+            renderAutoDailyReportStatus();
+            queuePush();
+        }
+
+//@fn setAutoDailyReportTime
+function setAutoDailyReportTime(value) {
+            if (!/^\d{2}:\d{2}$/.test(value || '')) return;
+            autoDailyReportTime = value;
+            localStorage.setItem('pos_auto_daily_report_time', autoDailyReportTime);
+            renderAutoDailyReportStatus();
+            queuePush();
+        }
+
+//@fn setAutoDailyReportMissedBehavior
+function setAutoDailyReportMissedBehavior(value) {
+            autoDailyReportMissedBehavior = (value === 'scheduled-only') ? 'scheduled-only' : 'generate-on-return';
+            localStorage.setItem('pos_auto_daily_report_missed_behavior', autoDailyReportMissedBehavior);
+            queuePush();
+        }
+
+//@fn renderAutoDailyReportStatus
+// Reflects saved settings into the Reports-tab controls, and shows
+// whether today's business date has already had its automatic report
+// run — kept separate from the scheduler logic so opening the tab never
+// itself triggers a run.
+function renderAutoDailyReportStatus() {
+            const toggle = document.getElementById('auto-daily-report-enabled-toggle');
+            const timeInput = document.getElementById('auto-daily-report-time-input');
+            const missedSelect = document.getElementById('auto-daily-report-missed-select');
+            const opts = document.getElementById('auto-daily-report-options');
+            const status = document.getElementById('auto-daily-report-status');
+            if (toggle) toggle.checked = autoDailyReportEnabled;
+            if (timeInput) timeInput.value = autoDailyReportTime;
+            if (missedSelect) missedSelect.value = autoDailyReportMissedBehavior;
+            if (opts) opts.style.opacity = autoDailyReportEnabled ? '1' : '0.5';
+            if (!status) return;
+            if (!autoDailyReportEnabled) { status.textContent = 'Off — the Daily Sales Report is only printed manually.'; return; }
+            const today = todayLocalDateStr();
+            const todays = autoDailyReportLog.find(e => e.businessDate === today);
+            if (!todays) { status.textContent = `Scheduled for ${autoDailyReportTime} today — not yet run.`; return; }
+            const when = new Date(todays.executedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+            const label = todays.printStatus === 'printed' ? `printed at ${when}` : todays.printStatus === 'print-blocked' ? `generated at ${when}, but nothing was printed (${escapeHtml(todays.error || 'no printer path available')})` : todays.printStatus === 'print-failed' ? `generated at ${when}, but printing failed (${escapeHtml(todays.error || 'unknown error')})` : `generated at ${when}`;
+            status.textContent = `Today's report already ${label}.`;
+        }
+
+//@fn runAutoDailyReport
+// Separates GENERATION (always recorded, always attempted) from PRINT
+// OUTPUT (best-effort — a browser/PWA can't silently print without a
+// selected printer, so a failure here still leaves the report generated
+// and logged, never silently lost). Idempotency is enforced by the
+// caller (checkAutoDailyReportSchedule) checking autoDailyReportLog for
+// today's business date before ever calling this.
+function runAutoDailyReport() {
+            const today = todayLocalDateStr();
+            const entry = {
+                id: generateToken(), businessDate: today,
+                scheduledTime: autoDailyReportTime,
+                executedAt: Date.now(),
+                deviceId: (typeof getOrCreateDeviceId === 'function') ? getOrCreateDeviceId() : null,
+                printStatus: 'generated',
+                error: null,
+            };
+            try {
+                const range = (typeof todaysReportRange === 'function') ? todaysReportRange() : { from: new Date(new Date().setHours(0, 0, 0, 0)), to: new Date(new Date().setHours(23, 59, 59, 999)) };
+                const rep = reportBuildSales(range);
+                const out = document.getElementById('reports-output');
+                if (out) {
+                    out.innerHTML = `<div class="report-head" style="margin-bottom:8px;"><h3 style="margin:0;">${escapeHtml(rep.title)}</h3><div style="color:#7f8c8d; font-size:13px;">Automatic Daily Report — ${escapeHtml(today)}</div></div>${rep.html}`;
+                    window.__reportKind = 'sales';
+                    window.__reportCsv = rep.csv || [];
+                    window.__reportTitle = rep.title;
+                    const act = document.getElementById('reports-actions'); if (act) act.style.display = 'flex';
+                }
+                try {
+                    const printed = reportsPrint();
+                    entry.printStatus = printed ? 'printed' : 'print-blocked';
+                    if (!printed) entry.error = 'No pop-up/print path was available (blocked, or no printer flow set up).';
+                } catch (e) {
+                    entry.printStatus = 'print-failed';
+                    entry.error = String((e && e.message) || e);
+                }
+            } catch (e) {
+                entry.printStatus = 'generation-failed';
+                entry.error = String((e && e.message) || e);
+            }
+            autoDailyReportLog.push(entry);
+            if (autoDailyReportLog.length > 90) autoDailyReportLog = autoDailyReportLog.slice(-90);
+            safeSetItem('pos_auto_daily_report_log', JSON.stringify(autoDailyReportLog));
+            queuePush();
+            if (typeof logPosControlReportEvent === 'function') {
+                logPosControlReportEvent('daily', entry.printStatus === 'printed' ? 'auto-printed' : 'auto-generated', { reportId: entry.id, totalsSnapshot: { printStatus: entry.printStatus, error: entry.error } });
+            }
+            renderAutoDailyReportStatus();
+        }
+
+//@fn checkAutoDailyReportSchedule
+// Runs on a timer (installed alongside the other periodic checks) and
+// on load/visibility-change, so a device that was off, asleep or the tab
+// closed at the scheduled time still gets a chance to catch up. Never
+// fires twice for the same business date — that check happens here,
+// before runAutoDailyReport is ever called, not inside it, so a test or
+// a future caller can't accidentally bypass it.
+function checkAutoDailyReportSchedule() {
+            if (!autoDailyReportEnabled) return;
+            const today = todayLocalDateStr();
+            if (autoDailyReportLog.some(e => e.businessDate === today)) return;
+            const now = new Date();
+            const parts = (autoDailyReportTime || '20:00').split(':');
+            const hh = parseInt(parts[0], 10) || 0;
+            const mm = parseInt(parts[1], 10) || 0;
+            const scheduled = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+            if (autoDailyReportMissedBehavior === 'scheduled-only') {
+                // This check runs roughly once a minute — a 3-minute window
+                // comfortably catches the scheduled minute without needing
+                // second-level precision, but a device that was off during
+                // that window still counts as missed (by design).
+                const diff = now.getTime() - scheduled.getTime();
+                if (diff >= 0 && diff < 3 * 60000) runAutoDailyReport();
+            } else if (now.getTime() >= scheduled.getTime()) {
+                runAutoDailyReport();
+            }
+        }
+
+//@fn installAutoDailyReportScheduler
+// Installed once from each app's own startPolling()-equivalent, right
+// alongside the eTIMS retry timer — same reasoning: a background check
+// that needs to keep running for as long as the app is open, and also
+// needs a chance to catch up right after load (the "missed report"
+// case: device was off/asleep/closed at the scheduled time).
+function installAutoDailyReportScheduler() {
+            if (window.__autoDailyReportSchedulerInstalled) return;
+            window.__autoDailyReportSchedulerInstalled = true;
+            checkAutoDailyReportSchedule();
+            setInterval(checkAutoDailyReportSchedule, 60000);
+            document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAutoDailyReportSchedule(); });
+        }
