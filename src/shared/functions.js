@@ -2448,6 +2448,135 @@ function saleCtxText(sale) {
             return [c.till ? 'till ' + c.till : '', c.station ? 'station ' + c.station : '', c.shiftId ? 'shift ' + String(c.shiftId).slice(-6) : ''].filter(Boolean).join(' · ');
         }
 
+//@fn pbkdf2Hex
+async function pbkdf2Hex(secret, salt, iterations) {
+            const enc = new TextEncoder();
+            const key = await crypto.subtle.importKey('raw', enc.encode(String(secret)), 'PBKDF2', false, ['deriveBits']);
+            const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(String(salt)), iterations }, key, 256);
+            return Array.from(new Uint8Array(bits)).map((b) => b.toString(16).padStart(2, '0')).join('');
+        }
+
+//@fn hashSalt
+// The shop's salt for sealHash: derived from the shop link, so every device of one shop seals a given password / PIN to the SAME value
+// (no ping-pong between devices, "Stay signed in" and duplicate-staff detection keep working) while two shops never share a salt.
+async function hashSalt() {
+            let key = '';
+            try { key = (typeof clientToken !== 'undefined' && clientToken) || ''; } catch (e) { /* not declared yet */ }
+            key = key || location.host || 'mydukapos';
+            const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('mydukapos-salt:' + key));
+            return Array.from(new Uint8Array(d)).slice(0, 16).map((b) => b.toString(16).padStart(2, '0')).join('');
+        }
+
+//@fn sealHash
+// SALTED, SLOW PASSWORD / PIN HASHES (zip 121). A stored hash used to be a plain SHA-256 of the password — copied to every device (so
+// signing in works offline), and a short password could be recovered from it with a precomputed table in an instant. It is now stored as
+// "p2$<iterations>$<salt>$<PBKDF2-SHA256(old hash, salt)>": a per-shop salt and 100,000 rounds, so every guess costs 100,000x more and
+// nothing can be precomputed across shops. Because it is built FROM the old hash, existing hashes are upgraded without anyone re-typing a
+// password (sealStoredHashes), and hashMatches() accepts both forms — nobody can be locked out by the change. It also means a device that
+// was revoked can no longer re-pair with the hash it holds: pairing needs the password itself (functions/api/device-pair.js).
+// Without Web Crypto (a non-HTTPS page) the old form is kept, and still works.
+async function sealHash(sha) {
+            if (!sha || typeof sha !== 'string' || sha.startsWith('p2$')) return sha;
+            if (!(window.crypto && crypto.subtle)) return sha;
+            if (!hashSealGateOpen()) return sha;          // a till still on an older release would not recognise the sealed form yet
+            try {
+                const salt = await hashSalt();
+                const iterations = 100000;
+                return `p2$${iterations}$${salt}$${await pbkdf2Hex(sha, salt, iterations)}`;
+            } catch (e) { return sha; }
+        }
+
+//@fn hashSealGateOpen
+// Sealed hashes sync to every device of the shop, and a device still running an OLDER release compares hashes the old way — it would
+// refuse the right password. So nothing is sealed until it is safe: once this device has run zip-121+ for 3 days AND the shop's device
+// list shows every device seen in the last 14 days on zip-121 or later (hashSealGateCheck). Once open it stays open on this device.
+function hashSealGateOpen() {
+            try { return localStorage.getItem('pos_hash_seal_ok') === '1'; } catch (e) { return false; }
+        }
+
+//@fn hashSealGateCheck
+async function hashSealGateCheck() {
+            if (hashSealGateOpen()) return true;
+            if (navigator.onLine === false || typeof fetch !== 'function') return false;
+            let since = 0;
+            try { since = Number(localStorage.getItem('pos_release_since') || 0); } catch (e) { /* none */ }
+            if (!since || Date.now() - since < 3 * 86400000) return false;
+            if (window.__sealGateAt && Date.now() - window.__sealGateAt < 6 * 3600000) return false;    // asked at most every 6 hours (reads the device list)
+            window.__sealGateAt = Date.now();
+            try {
+                const res = await fetch(apiUrl('/api/device-pair'));
+                if (!res.ok) return false;
+                const data = await res.json();
+                const recent = (data.devices || []).filter((d) => d && !d.revoked && d.lastSeen && Date.now() - d.lastSeen < 14 * 86400000);
+                const rel = (v) => { const m = /zip-(\d+)/.exec(String(v || '')); return m ? Number(m[1]) : 0; };
+                if (!recent.length || !recent.every((d) => rel(d.version) >= 121)) return false;
+                localStorage.setItem('pos_hash_seal_ok', '1');
+                return true;
+            } catch (e) { return false; }
+        }
+
+//@fn hashMatches
+// Does the SHA-256 of what was typed match a stored hash of either form (see sealHash)?
+async function hashMatches(enteredSha, stored) {
+            if (!enteredSha || !stored || typeof stored !== 'string') return false;
+            if (!stored.startsWith('p2$')) return enteredSha === stored;
+            const parts = stored.split('$');
+            if (parts.length !== 4 || !(window.crypto && crypto.subtle)) return false;
+            try { return (await pbkdf2Hex(enteredSha, parts[2], Number(parts[1]) || 100000)) === parts[3]; } catch (e) { return false; }
+        }
+
+//@fn sealStoredHashes
+// One-time upgrade of every stored password / PIN hash on this device to the salted form (see sealHash) — also run after a pull, so a
+// password reset done from the Owner Console (which writes the old form) is sealed by the first device that sees it.
+async function sealStoredHashes() {
+            if (window.__sealing || !(window.crypto && crypto.subtle)) return false;
+            window.__sealing = true;
+            let changed = false, pwChanged = false;
+            try {
+                await hashSealGateCheck();
+                for (const k of (hashSealGateOpen() ? ['pos_pw_hash', 'pos_admin_pw_hash', 'aqua_pw_hash', 'aqua_admin_pw_hash'] : [])) {
+                    let v = null;
+                    try { v = localStorage.getItem(k); } catch (e) { /* none */ }
+                    if (v && !v.startsWith('p2$')) { const sealed = await sealHash(v); if (sealed !== v) { safeSetItem(k, sealed); changed = true; pwChanged = true; } }
+                }
+                if (pwChanged) {
+                    // stamp both fields so the sealed form wins on the server, exactly like a password change (see changePassword)
+                    window.__fieldAck = window.__fieldAck || new Map();
+                    window.__fieldAck.set('pwHash', '__force_stamp__');
+                    window.__fieldAck.set('adminPwHash', '__force_stamp__');
+                }
+                if (hashSealGateOpen() && typeof staff !== 'undefined' && Array.isArray(staff)) {
+                    let staffChanged = false;
+                    for (const m of staff) {
+                        if (m && typeof m.pinHash === 'string' && m.pinHash && !m.pinHash.startsWith('p2$')) {
+                            const sealed = await sealHash(m.pinHash);
+                            if (sealed !== m.pinHash) { m.pinHash = sealed; m.updatedAt = Date.now(); staffChanged = true; }
+                        }
+                    }
+                    if (staffChanged) {
+                        changed = true;
+                        if (typeof saveAllLocal === 'function') saveAllLocal(); else safeSetItem('pos_staff', JSON.stringify(staff));
+                    }
+                }
+                // "Stay signed in" remembers the password hash it signed in under (a changed password signs everyone out). The same password,
+                // now sealed, is not a change: carry the session over.
+                try {
+                    const keep = JSON.parse(localStorage.getItem('pos_session_keep') || 'null');
+                    const cur = localStorage.getItem('pos_pw_hash') || localStorage.getItem('aqua_pw_hash') || '';
+                    const pairKey = keep && keep.fp + '|' + cur;
+                    if (keep && keep.fp && cur && keep.fp !== cur && !String(keep.fp).startsWith('p2$') && window.__sealFpChecked !== pairKey) {
+                        window.__sealFpChecked = pairKey;          // checked once per pair, not on every tick
+                        if (await hashMatches(keep.fp, cur)) { keep.fp = cur; localStorage.setItem('pos_session_keep', JSON.stringify(keep)); }
+                    }
+                } catch (e) { /* they sign in once more */ }
+                if (changed) {
+                    if (typeof pushNow === 'function') Promise.resolve(pushNow()).catch(() => {}); else if (typeof queuePush === 'function') queuePush();   // before a pull can bring the old form back
+                }
+            } catch (e) { /* retried next time */ }
+            finally { window.__sealing = false; }
+            return changed;
+        }
+
 //@fn tillNumber
 // This device's till number (1-99), handed out once by the server (see allocateTill in functions/api/_merge.js). 0 = not yet known.
 function tillNumber() {
@@ -8177,7 +8306,7 @@ function stockLedgerOn() {
 function stockLedgerMark(on) {
             // returns true only when this call switched the ledger on
             if (!on || stockLedgerOn()) return false;
-            try { localStorage.setItem('pos_stock_ledger_v1', '1'); } catch (e) { /* retried on the next sync */ }
+            try { localStorage.setItem('pos_stock_ledger_v1', '1'); localStorage.setItem('pos_stock_ledger_since', String(Date.now())); } catch (e) { /* retried on the next sync */ }
             // fetch the whole shop once more, so every item arrives with the server's own figures (_sq) to compare against
             try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* the next change brings them anyway */ }
             try { if (typeof snapshotInventorySync === 'function') snapshotInventorySync(); } catch (e) { /* housekeeping only */ }
@@ -8212,10 +8341,18 @@ function stockMoveDelta(m) {
 
 //@fn stockPendingMoves
 // This device's movements the server has not processed yet (made by this build: `lg`; processed ones carry the server's `_srv`).
+// Also a movement WITHOUT `lg` made after the ledger was switched on: it came from a tab still running an older release on this same
+// device (zip 121) — the server applies it exactly once all the same, so until then it is pending like any other.
 function stockPendingMoves(exceptIds) {
             const log = (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : [];
             const t = (m) => { const x = Date.parse(m.timestamp); return isFinite(x) ? x : 0; };
-            return log.filter((m) => m && m.lg && !m._srv && m.id != null && m.code != null && !(exceptIds && exceptIds.has(String(m.id))))
+            let since = 0;
+            try {
+                since = Number(localStorage.getItem('pos_stock_ledger_since') || 0);
+                if (!since && stockLedgerOn()) { since = Date.now(); localStorage.setItem('pos_stock_ledger_since', String(since)); }  // switched on by an earlier release
+            } catch (e) { /* lg-only */ }
+            const pending = (m) => m.lg || (since && !m.kind && typeof m.delta === 'number' && m.delta !== 0 && t(m) > since);
+            return log.filter((m) => m && !m._srv && m.id != null && m.code != null && pending(m) && !(exceptIds && exceptIds.has(String(m.id))))
                 .sort((a, b) => t(a) - t(b));
         }
 
@@ -9694,7 +9831,7 @@ async function verifyManagerPin() {
                 return null;
             }
             const enteredHash = await hashPassword(input.value);
-            if (enteredHash !== manager.pinHash) {
+            if (!(await hashMatches(enteredHash, manager.pinHash))) {
                 errorEl.textContent = 'Incorrect PIN.';
                 input.value = '';
                 input.focus();

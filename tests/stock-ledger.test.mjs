@@ -291,3 +291,13 @@ test('cash shifts: two managers\' adjustments both kept; a stale "pending" never
   assert.deepEqual(s.adjustments.map((a) => a.id).sort(), ['a1', 'a2']);
   assert.equal(s.approval.status, 'approved'); assert.equal(s.status, 'closed');
 });
+
+test('ZIP 121 — a till whose clock runs a day fast cannot date a stock count into the future and block every later sale', async (b) => {
+  await seed(b);
+  await b.push({ inventory: [item(120)], stockMovementLog: [count(120, 100, Date.now() + 86400000)] });   // the fast clock
+  assert.equal(await qtyOf(b), 120);
+  await new Promise((r) => setTimeout(r, 5));
+  const later = Date.now() + 61000;                                                                        // a normal till, a minute later
+  await b.push({ stockMovementLog: [sale('A', -1, later)] });
+  assert.equal(await qtyOf(b), 119, 'the real sale after the count is applied, not refused as "before the count"');
+});

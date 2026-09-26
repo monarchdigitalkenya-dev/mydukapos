@@ -42,6 +42,7 @@ export async function boot(app, opts = {}) {
       w.IntersectionObserver = class { observe() {} unobserve() {} disconnect() {} };
       w.ResizeObserver = w.IntersectionObserver;
       w.navigator.serviceWorker = { register: () => Promise.resolve({}), addEventListener() {}, ready: Promise.resolve({}) };
+      if (opts.webcrypto) Object.defineProperty(w.crypto, 'subtle', { value: globalThis.crypto.subtle, configurable: true });   // jsdom has none
       if (opts.indexedDB) w.indexedDB = opts.indexedDB;   // jsdom has none; tests pass a fake-indexeddb factory
       if (opts.usb) Object.defineProperty(w.navigator, 'usb', { value: typeof opts.usb === 'function' ? opts.usb(w) : opts.usb, configurable: true });
       if (opts.bluetooth) Object.defineProperty(w.navigator, 'bluetooth', { value: typeof opts.bluetooth === 'function' ? opts.bluetooth(w) : opts.bluetooth, configurable: true });

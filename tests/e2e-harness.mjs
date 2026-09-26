@@ -41,7 +41,7 @@ export function makeServer() {
 // everything a device has in localStorage (raw, so compressed slices survive a "refresh")
 export const deviceStorage = (w) => JSON.parse(w.eval("JSON.stringify(Object.fromEntries(Array.from({length: localStorage.length}, (_, i) => localStorage.key(i)).map(k => [k, (window.__lsRawGet || (k2 => localStorage.getItem(k2)))(k)])))"));
 
-export async function openDevice(app, server, storage = {}, wait = 900) {
-  return boot(app, { storage, fetch: server.fetch, wait });
+export async function openDevice(app, server, storage = {}, wait = 900, extra = {}) {
+  return boot(app, { storage, fetch: server.fetch, wait, ...extra });
 }
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

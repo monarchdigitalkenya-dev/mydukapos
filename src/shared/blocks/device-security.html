@@ -13,7 +13,7 @@
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-120';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-121';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -89,6 +89,11 @@
             try { await pair({ proof: h }); } catch (e) { /* offline or refused: tried again later */ }
         }
         window.devicePairNow = autoPair;
+        // When this device first ran this release line (zip-121+): salted hashes wait a few days so older tills catch up (hashSealGateCheck).
+        if (!LS('pos_release_since')) LS('pos_release_since', String(Date.now()));
+        function seal() { try { if (typeof sealStoredHashes === 'function') sealStoredHashes(); } catch (e) { /* next tick */ } }
+        setTimeout(seal, 5000);
+        setInterval(seal, 2 * 60000);
         setTimeout(autoPair, 4000);
         setInterval(autoPair, 10 * 60000);
         window.addEventListener('online', function () { setTimeout(autoPair, 1500); });

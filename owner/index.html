@@ -7606,7 +7606,7 @@
 
             const pinInput = document.getElementById('login-staffpin-input');
             const pinHash = await hashPassword(pinInput.value);
-            if (pinHash !== member.pinHash) {
+            if (!(await hashMatches(pinHash, member.pinHash))) {
                 errorEl.textContent = 'Incorrect PIN.';
                 pinInput.value = '';
                 pinInput.focus();
@@ -8074,6 +8074,20 @@
             return sha256HexFallback(password);
         }
 
+        // Salted hashes (zip 121, see sealHash in src/shared/functions.js): a stored hash may be "p2$<iterations>$<salt>$<hex>".
+        async function hashMatches(enteredSha, stored) {
+            if (!enteredSha || !stored || typeof stored !== 'string') return false;
+            if (!stored.startsWith('p2$')) return enteredSha === stored;
+            const parts = stored.split('$');
+            if (parts.length !== 4 || !(window.crypto && crypto.subtle)) return false;
+            try {
+                const enc = new TextEncoder();
+                const key = await crypto.subtle.importKey('raw', enc.encode(enteredSha), 'PBKDF2', false, ['deriveBits']);
+                const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(parts[2]), iterations: Number(parts[1]) || 100000 }, key, 256);
+                return Array.from(new Uint8Array(bits)).map((b) => b.toString(16).padStart(2, '0')).join('') === parts[3];
+            } catch (e) { return false; }
+        }
+
         async function registerBusiness() {
             const nameInput = document.getElementById('biz-name-input');
             const pwInput = document.getElementById('biz-password-input');
@@ -8131,7 +8145,7 @@
 
             const enteredHash = await hashPassword(pwInput.value);
 
-            if (enteredHash !== storedHash) {
+            if (!(await hashMatches(enteredHash, storedHash))) {
                 errorEl.textContent = 'Incorrect password. Please try again.';
                 pwInput.value = '';
                 pwInput.focus();
@@ -10045,7 +10059,7 @@
 
             const pin = document.getElementById('staff-login-pin-input').value;
             const pinHash = await hashPassword(pin);
-            if (pinHash !== member.pinHash) {
+            if (!(await hashMatches(pinHash, member.pinHash))) {
                 errorEl.textContent = 'Incorrect PIN.';
                 document.getElementById('staff-login-pin-input').value = '';
                 document.getElementById('staff-login-pin-input').focus();
@@ -10168,7 +10182,7 @@
             }
 
             const currentHash = await hashPassword(currentEl.value);
-            if (!currentEl.value || currentHash !== member.pinHash) {
+            if (!currentEl.value || !(await hashMatches(currentHash, member.pinHash))) {
                 msgEl.textContent = 'Your current PIN is incorrect.';
                 currentEl.value = '';
                 currentEl.focus();
@@ -10311,7 +10325,7 @@
             }
             const pin = document.getElementById('server-pin-input').value;
             const pinHash = await hashPassword(pin);
-            if (pinHash !== member.pinHash) {
+            if (!(await hashMatches(pinHash, member.pinHash))) {
                 errorEl.textContent = 'Incorrect PIN.';
                 return;
             }
@@ -10424,7 +10438,7 @@
 
             msgEl.className = 'settings-msg error';
 
-            if (currentEl.value.length === 0 || currentHash !== storedHash) {
+            if (currentEl.value.length === 0 || !(await hashMatches(currentHash, storedHash))) {
                 msgEl.textContent = 'Current password is incorrect.';
                 return;
             }
@@ -10459,7 +10473,7 @@
 
             msgEl.className = 'settings-msg error';
 
-            if (currentEl.value.length === 0 || currentHash !== storedHash) {
+            if (currentEl.value.length === 0 || !(await hashMatches(currentHash, storedHash))) {
                 msgEl.textContent = 'Current management password is incorrect.';
                 return;
             }
@@ -10883,7 +10897,7 @@
                 const storedHash = localStorage.getItem('pos_admin_pw_hash');
                 const enteredHash = await hashPassword(input.value);
 
-                if (enteredHash !== storedHash) {
+                if (!(await hashMatches(enteredHash, storedHash))) {
                     errorEl.textContent = 'Incorrect management password.';
                     input.value = '';
                     input.focus();

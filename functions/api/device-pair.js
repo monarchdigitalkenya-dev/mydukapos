@@ -1,7 +1,8 @@
 // functions/api/device-pair.js — Cloudflare Pages Function: pairing a device with its shop (see _device-auth.js).
 //
 //   GET  ?c=<link>                         -> { mode, me: { id, paired }, devices: [...] }  (device list: this shop only)
-//   POST { action: 'pair', deviceId, name, proof }   proof = SHA-256 of the shop password or the management password
+//   POST { action: 'pair', deviceId, name, proof }   proof = SHA-256 of the shop password or the management password (while the shop is
+//        'open' a device may also send the sealed hash it keeps — that is how set-up devices pair themselves in the background)
 //   POST { action: 'pair', deviceId, name, code }    code  = a 6-digit pairing code made on a paired device (10 minutes, once)
 //   POST { action: 'code' }                          (paired device) -> { code, expiresIn }
 //   POST { action: 'rename', name }                  (paired device) renames ITSELF
@@ -14,7 +15,7 @@ import { requireValidLicense } from './_license.js';
 import { corsHeadersFor } from './_cors.js';
 import { readState, shopMode, shopCall } from './_state-store.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
-import { readDeviceAuth, writeDeviceAuth, checkDevice, sha256hex, randomToken } from './_device-auth.js';
+import { readDeviceAuth, writeDeviceAuth, checkDevice, sha256hex, randomToken, proofMatches, isSealedProof } from './_device-auth.js';
 
 const CODE_KEY = (clientId, code) => `pair-code:${clientId}:${code}`;
 const clean = (s, n = 60) => String(s || '').replace(/[<>]/g, '').trim().slice(0, n);
@@ -27,10 +28,14 @@ async function shopSecrets(env, clientId) {
   const st = (await readState(env, 'pos-data:state:' + clientId, {})) || {};
   return { pwHash: st.pwHash || '', adminPwHash: st.adminPwHash || '' };
 }
-async function proofOk(env, clientId, proof) {
-  if (!proof || typeof proof !== 'string' || proof.length < 32) return false;
+// `typed`: the proof must come from the password itself (its SHA-256), not from a hash a device keeps — used whenever the shop is
+// "paired only", and for revoke / mode changes. A stolen or revoked device holds only the SEALED hash (zip 121), which cannot be turned
+// back into that proof, so it cannot pair itself again.
+async function proofOk(env, clientId, proof, { typed = false } = {}) {
+  if (!proof || typeof proof !== 'string' || proof.length < 32 || proof.length > 300) return false;
+  if (typed && isSealedProof(proof)) return false;
   const s = await shopSecrets(env, clientId);
-  return (!!s.pwHash && proof === s.pwHash) || (!!s.adminPwHash && proof === s.adminPwHash);
+  return (!!s.pwHash && (await proofMatches(proof, s.pwHash))) || (!!s.adminPwHash && (await proofMatches(proof, s.adminPwHash)));
 }
 async function registry(env, clientId) {
   try {
@@ -89,7 +94,7 @@ export async function onRequestPost(context) {
       if (!raw) return reply({ error: 'That pairing code is wrong or has expired. Make a new one on a paired device.', code: 'bad_code' }, 403);
       await env.mydukapos_kv.delete(CODE_KEY(clientId, code));                // one use only
       by = 'pairing code from ' + (JSON.parse(raw).from || 'a paired device');
-    } else if (await proofOk(env, clientId, body.proof)) {
+    } else if (await proofOk(env, clientId, body.proof, { typed: rec.mode === 'paired' })) {
       by = 'shop password';
     } else {
       return reply({ error: 'Wrong password.', code: 'bad_proof' }, 403);
@@ -121,7 +126,7 @@ export async function onRequestPost(context) {
   if (action === 'revoke' || action === 'mode') {
     const rl = await checkRateLimit(env, 'pair', clientId, 1);
     if (!rl.ok) return rateLimitResponse('attempts', rl, cors);
-    if (!(await proofOk(env, clientId, body.proof))) return reply({ error: 'Wrong password.', code: 'bad_proof' }, 403);
+    if (!(await proofOk(env, clientId, body.proof, { typed: true }))) return reply({ error: 'Wrong password.', code: 'bad_proof' }, 403);
     if (action === 'revoke') {
       const id = clean(body.deviceId, 80);
       if (!rec.devices[id]) return reply({ error: 'Unknown device.' }, 404);

@@ -380,10 +380,16 @@ export function reconcileQuantities(existingArr, mergedArr, mergedLog) {
 // Only `inventory` is ledger-managed. Aqua POS `products` (per-site stock) keep their own per-site merge above.
 export const LEDGER_COLLECTION = 'inventory';
 const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+// A movement's time, as the ledger orders it. A device whose clock runs fast must not be able to date a stock count into the future —
+// that count would then out-rank (and silently refuse) every real sale until the date came round. So a time later than the server's
+// own clock (+1 minute of slack) counts as "now". (zip 121)
+export const MOVE_CLOCK_SLACK_MS = 60000;
 export function moveTime(m) {
   if (!m) return 0;
   const t = typeof m.timestamp === 'number' ? m.timestamp : Date.parse(m.timestamp);
-  return Number.isFinite(t) ? t : 0;
+  if (!Number.isFinite(t)) return 0;
+  const cap = Date.now() + MOVE_CLOCK_SLACK_MS;
+  return t > cap ? cap : t;
 }
 const moveUnit = (m) => (m && m.unit === 'pieceQty' ? 'pieceQty' : 'qty');
 export function isLedgerMove(m) {

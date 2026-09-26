@@ -24,6 +24,30 @@ export async function sha256hex(text) {
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Salted password hashes (zip 121 — sealHash in src/shared/functions.js): "p2$<iterations>$<salt>$<PBKDF2-SHA256(sha256(password), salt)>".
+async function pbkdf2Hex(secret, salt, iterations) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(String(secret)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(String(salt)), iterations: Math.min(100000, Number(iterations) || 100000) }, key, 256);
+  return Array.from(new Uint8Array(bits)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+const parseSealed = (h) => { const p = String(h || '').split('$'); return p.length === 4 && p[0] === 'p2' ? { iter: p[1], salt: p[2], hex: p[3] } : null; };
+
+// Does a pairing proof match a stored shop password hash? Either side may be the plain SHA-256 or the sealed form:
+//   same string -> yes;  plain proof vs sealed stored -> PBKDF2 it with the stored salt;  sealed proof vs plain stored -> seal the stored
+//   hash with the proof's salt. (Two sealed values with different salts cannot be compared — every device of a shop uses the same salt.)
+export async function proofMatches(proof, stored) {
+  if (!proof || !stored || typeof proof !== 'string' || typeof stored !== 'string') return false;
+  if (proof === stored) return true;
+  try {
+    const s = parseSealed(stored), p = parseSealed(proof);
+    if (s && !p) return (await pbkdf2Hex(proof, s.salt, s.iter)) === s.hex;
+    if (p && !s) return (await pbkdf2Hex(stored, p.salt, p.iter)) === p.hex;
+  } catch (e) { /* no match */ }
+  return false;
+}
+export const isSealedProof = (proof) => !!parseSealed(proof);
+
 export function randomToken(bytes = 32) {
   const a = new Uint8Array(bytes);
   crypto.getRandomValues(a);
