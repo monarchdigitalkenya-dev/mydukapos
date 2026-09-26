@@ -13,7 +13,7 @@
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-121';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-125';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -91,6 +91,20 @@
         window.devicePairNow = autoPair;
         // When this device first ran this release line (zip-121+): salted hashes wait a few days so older tills catch up (hashSealGateCheck).
         if (!LS('pos_release_since')) LS('pos_release_since', String(Date.now()));
+        // Tap the sync dot = send and fetch now (zip 123). Sending again after a failure is automatic anyway (see trackPush); this is
+        // for someone who wants it this second.
+        document.addEventListener('click', function (ev) {
+            var dot = ev.target && ev.target.closest && ev.target.closest('#sync-status');
+            if (!dot || typeof syncRetryNow !== 'function') return;
+            syncRetryNow();
+            try { if (typeof showToast === 'function' && dot.dataset.state !== 'synced') showToast('Syncing now…'); } catch (e) { /* cosmetic */ }
+        });
+        // Opening Daily Sales starts on today, unfiltered (zip 124 — see dailySalesOpenOnToday). Capture phase: before the tab's own code.
+        document.addEventListener('click', function (ev) {
+            var t = ev.target && ev.target.closest && ev.target.closest('[data-tab="daily-sales-tab"]');
+            if (t && typeof dailySalesOpenOnToday === 'function') dailySalesOpenOnToday();
+        }, true);
+        (function styleDot() { var d = document.getElementById('sync-status'); if (d) { d.style.cursor = 'pointer'; if (!d.getAttribute('role')) d.setAttribute('role', 'button'); } else if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', styleDot); })();
         function seal() { try { if (typeof sealStoredHashes === 'function') sealStoredHashes(); } catch (e) { /* next tick */ } }
         setTimeout(seal, 5000);
         setInterval(seal, 2 * 60000);
@@ -160,7 +174,8 @@
             var data;
             try { var res = await fetch(apiPath('/api/device-pair')); data = await res.json(); } catch (e) { box.innerHTML = '<p class="settings-hint">Could not reach the server — try again when online.</p>'; return; }
             var paired = data.me && data.me.paired;
-            var html = '<p style="margin:0 0 8px;">This device: <strong>' + esc(LS('pos_device_name') || deviceId()) + '</strong> — '
+            var html = (data.serverWarning === 'db_outdated' ? '<div style="background:#fdecea; color:#922b21; border:1px solid #e6b0aa; border-radius:8px; padding:10px; margin:0 0 10px; font-size:14px;">⚠️ <strong>This shop\'s server needs an update.</strong> Till numbers, the device list and some stock protections are off until it is updated. Please tell MyDukaPOS support ("the shop database needs deploy:router"). Selling and syncing still work.</div>' : '')
+                + '<p style="margin:0 0 8px;">This device: <strong>' + esc(LS('pos_device_name') || deviceId()) + '</strong> — '
                 + (paired ? '<span style="color:#27ae60; font-weight:700;">✓ paired</span>' : '<span style="color:#c0392b; font-weight:700;">not paired</span>')
                 + (typeof tillNumber === 'function' && tillNumber() ? ' · till ' + tillNumber() : '') + ' · release ' + esc(window.__APP_RELEASE) + '</p>'
                 + '<p style="margin:0 0 8px;">Shop setting: <strong>' + (data.mode === 'paired' ? 'Only paired devices can sync' : 'Open (any device with the link can sync)') + '</strong></p>'
@@ -201,22 +216,37 @@
                 }
             } catch (e) { say(e.message || String(e), true); }
         }
+        // Its own Settings section (zip 125) — a "🔐 Devices & Security" button next to "Security & Access", opening a section of its
+        // own, instead of a panel stuck under whichever other section happened to be open.
         function injectPanel() {
             var tab = document.getElementById('settings-tab');
-            if (!tab || document.getElementById('device-security-panel')) return;
-            var p = document.createElement('div');
-            p.className = 'panel';
-            p.id = 'device-security-panel';
-            p.innerHTML = '<h3 style="margin-top:0;">🔐 Devices &amp; security</h3><p class="settings-hint" style="margin-top:-6px;">Which devices sync this shop. Signing in and selling always work offline; pairing only decides who may sync.</p><div id="device-security-body"><p class="settings-hint">Open this section to load the list.</p></div>';
-            (tab.querySelector('.settings-content') || tab).appendChild(p);
-            p.addEventListener('click', onPanelClick);
+            if (!tab || document.getElementById('settings-section-devices')) return;
+            var subnav = document.getElementById('settings-subnav');
+            var sec = document.createElement('div');
+            sec.id = 'settings-section-devices';
+            sec.innerHTML = '<h4>🔐 Devices &amp; Security</h4><p class="settings-hint" style="margin-top:-4px;">Which devices sync this shop. Signing in and selling always work offline; pairing only decides who may sync.</p><div id="device-security-body"><p class="settings-hint">Loading…</p></div>';
+            if (subnav && typeof showSettingsSection === 'function') {
+                sec.className = 'settings-section-content';
+                var btn = document.createElement('button');
+                btn.type = 'button'; btn.className = 'settings-subtab-btn'; btn.setAttribute('data-section', 'settings-section-devices');
+                btn.textContent = '🔐 Devices & Security';
+                btn.addEventListener('click', function () { showSettingsSection('settings-section-devices', btn); if (sec.classList.contains('active')) renderPanel(); });
+                var after = subnav.querySelector('[data-section="settings-section-security"]');
+                if (after && after.nextSibling) subnav.insertBefore(btn, after.nextSibling); else subnav.appendChild(btn);
+                var secAfter = document.getElementById('settings-section-security');
+                if (secAfter && secAfter.parentNode) secAfter.parentNode.insertBefore(sec, secAfter.nextSibling); else subnav.parentNode.appendChild(sec);
+            } else {
+                sec.className = 'panel';                    // a layout without sections: a panel at the end, as before
+                (tab.querySelector('.settings-content') || tab).appendChild(sec);
+            }
+            sec.addEventListener('click', onPanelClick);
         }
         window.renderDeviceSecurityPanel = function () { injectPanel(); return renderPanel(); };
         function boot() {
             injectPanel();
             document.addEventListener('click', function (ev) {
                 var t = ev.target.closest && ev.target.closest('[data-tab="settings-tab"]');
-                if (t) setTimeout(function () { injectPanel(); renderPanel(); }, 80);
+                if (t) setTimeout(function () { injectPanel(); var sec = document.getElementById('settings-section-devices'); if (sec && (sec.classList.contains('active') || sec.className === 'panel')) renderPanel(); }, 80);
             }, true);
         }
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

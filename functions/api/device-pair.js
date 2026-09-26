@@ -13,7 +13,7 @@
 
 import { requireValidLicense } from './_license.js';
 import { corsHeadersFor } from './_cors.js';
-import { readState, shopMode, shopCall } from './_state-store.js';
+import { readState, shopMode, shopCall, shopDbOutdated } from './_state-store.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { readDeviceAuth, writeDeviceAuth, checkDevice, sha256hex, randomToken, proofMatches, isSealedProof } from './_device-auth.js';
 
@@ -61,6 +61,7 @@ export async function onRequestGet(context) {
   const base = { mode: rec.mode, me: { id: me.deviceId, paired: me.paired } };
   if (rec.mode === 'paired' && !me.paired) return reply(base);            // an unpaired device only learns that it must pair
   const reg = await registry(env, clientId);
+  if ((await shopMode(env, clientId)) === 'do' && !Object.keys(reg).length && (await shopDbOutdated(env, clientId))) base.serverWarning = 'db_outdated';
   const ids = new Set([...Object.keys(rec.devices), ...Object.keys(reg)]);
   const devices = [...ids].map((id) => {
     const d = rec.devices[id] || {}, r = reg[id] || {};

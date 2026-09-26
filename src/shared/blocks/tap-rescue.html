@@ -1,0 +1,92 @@
+<!-- TAP RESCUE (zip 122) ----------------------------------------------------
+         Every button works on the FIRST tap, even when the screen redraws under the finger.
+           * A sync arriving (every few seconds, or live), or leaving a price / quantity box, redraws lists and carts. If that
+             happens between the finger going down and coming up, the button that was pressed is replaced by an identical new
+             one, and the browser drops the tap: the user has to tap again. This notices exactly that case and presses the new
+             button once. The original was removed from the page, so it cannot receive the click as well.
+           * Nothing is pressed when the finger moved (a scroll), was held (a long press), or something else now sits under it
+             (e.g. a password box opened). The item-suggestion list acts on press already and is left alone.
+           * `touch-action: manipulation` on controls: no double-tap-to-zoom wait before a tap counts (pinch-zoom still works).
+         Self-contained on purpose (same code in every app and the Owner Console). -->
+    <style>
+        button, a[href], [onclick], [role="button"], .tab-link, summary, label, select, input[type="checkbox"], input[type="radio"] { touch-action: manipulation; }
+        /* Settings on a phone (zip 125): one row that was wider than the screen (e.g. the Delivery Zones inputs) made the browser zoom
+           the WHOLE page out — header covering part of the screen, everything tiny. Rows now wrap, fields never exceed the screen, and
+           anything still too wide scrolls inside its own section instead of widening the page. */
+        .settings-section-content.active { overflow-x: auto; }
+        /* one look for every field in Settings (number and date boxes used to keep the browser's own dark border) */
+        .settings-section-content input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]),
+        .settings-section-content select, .settings-section-content textarea { border: 1px solid #ddd; border-radius: 6px; background-color: var(--bg-surface, #fff); color: inherit; }
+        /* Narrow phones: slimmer tabs, so the Sales Counter tab stays on the bar next to whatever tab is open (it used to be pushed
+           into "More" whenever a second tab was open on a 360 px phone). */
+        @media (max-width: 420px) {
+            nav.tabs > .tab-link { padding-left: 11px !important; padding-right: 11px !important; }
+            .tabs-more-btn { min-width: 76px !important; }
+        }
+        @media (max-width: 700px) {
+            .settings-section-content.active { max-width: 100%; }
+            .settings-section-content input, .settings-section-content select, .settings-section-content textarea { max-width: 100%; min-width: 0; box-sizing: border-box; }
+            .split-amounts-row, .settings-section-content .vat-inline-row { flex-wrap: wrap; }
+            .split-amounts-row > * { flex: 1 1 140px; min-width: 0; }
+            .settings-section-content .form-group { min-width: 0; max-width: 100%; }
+            .settings-section-content .vat-inline-row select { flex: 1 1 160px; }
+            /* 24 section buttons used to fill a whole phone screen: a compact two-column grid instead */
+            .settings-subnav { display: grid !important; grid-template-columns: 1fr 1fr; gap: 6px !important; }
+            .settings-subnav .settings-subtab-btn { font-size: 13px; padding: 9px 8px; text-align: left; margin: 0; white-space: normal; line-height: 1.25; }
+            .tab-content input:not([type="checkbox"]):not([type="radio"]), .tab-content select, .tab-content textarea { max-width: 100%; box-sizing: border-box; }
+            .tab-content .form-group { max-width: 100%; }
+        }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__tapRescueInit) return;
+        window.__tapRescueInit = true;
+        var SEL = 'button, a[href], [onclick], [role="button"], .tab-link, summary';
+        // Settings on a phone: after tapping a section button, scroll to that section (it opens below the list of buttons). (zip 125)
+        document.addEventListener('click', function (e) {
+            var b = e.target && e.target.closest && e.target.closest('.settings-subtab-btn');
+            if (!b || window.innerWidth > 700) return;
+            setTimeout(function () {
+                var sec = document.getElementById(b.getAttribute('data-section'));
+                if (sec && sec.classList.contains('active') && sec.scrollIntoView) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 60);
+        });
+        var down = null, rescued = null;
+        function sig(el) {
+            return el.tagName + '|' + (el.id || '') + '|' + (el.getAttribute('onclick') || '') + '|' + (el.getAttribute('data-tab') || '') + '|' + (el.getAttribute('href') || '') + '|' + String(el.textContent || '').trim().slice(0, 80);
+        }
+        function control(t) {
+            var el = t && t.closest ? t.closest(SEL) : null;
+            if (!el || el.closest('#item-suggest-box')) return null;
+            return el;
+        }
+        document.addEventListener('pointerdown', function (e) {
+            if (e.button || e.isPrimary === false) { down = null; return; }
+            var el = control(e.target);
+            down = el ? { el: el, sig: sig(el), x: e.clientX, y: e.clientY, t: Date.now(), hit: false } : null;
+        }, true);
+        document.addEventListener('click', function (e) {
+            if (rescued && Date.now() - rescued.t < 700 && rescued.el.contains(e.target)) {   // a late click on the button already pressed for it
+                e.preventDefault(); e.stopImmediatePropagation(); rescued = null; return;
+            }
+            if (!down) return;
+            var c = control(e.target);
+            if (down.el.contains(e.target) || (c && sig(c) === down.sig)) down.hit = true;
+        }, true);
+        document.addEventListener('pointerup', function (e) {
+            var d = down;
+            if (!d) return;
+            if (Math.abs(e.clientX - d.x) > 12 || Math.abs(e.clientY - d.y) > 12 || Date.now() - d.t > 900) { down = null; return; }
+            var x = e.clientX, y = e.clientY;
+            setTimeout(function () {
+                if (down === d) down = null;
+                if (d.hit || d.el.isConnected) return;                     // the tap landed, or the button was never replaced
+                var el = control(document.elementFromPoint(x, y));
+                if (!el || el.disabled || sig(el) !== d.sig) return;       // something else is there now: do nothing
+                el.click();
+                rescued = { el: el, t: Date.now() };
+            }, 60);
+        }, true);
+    })();
+    </script>

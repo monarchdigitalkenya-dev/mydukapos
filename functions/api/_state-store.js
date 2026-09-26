@@ -121,6 +121,11 @@ export function shopCall(env, clientId, op, payload) {
   const stub = env.SHOP_STORE.get(env.SHOP_STORE.idFromName(clientId));
   return stub.fetch('https://shop-store/' + op, { method: 'POST', body: JSON.stringify(payload || {}) });
 }
+// Is the per-shop database (the router Worker's ShopStore) running code from before zip 120? It then has no device list, no till
+// numbers and no stock ledger — the Pages project was updated but `npm run deploy:router` was not run. (zip 125)
+export async function shopDbOutdated(env, clientId) {
+  try { const res = await shopCall(env, clientId, 'registry', {}); return res.status === 404; } catch (e) { return false; }
+}
 const idFromStateKey = (key) => (typeof key === 'string' && key.startsWith('pos-data:state:') ? key.slice('pos-data:state:'.length) : null);
 
 // -> parsed object, or `fallback` when missing. In database mode: the shop as devices see it (recent window of the big logs).

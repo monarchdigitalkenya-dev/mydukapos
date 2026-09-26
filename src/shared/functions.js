@@ -3139,7 +3139,7 @@ function jumpToSaleByRef(query) {
             const mm = String(saleDate.getMonth() + 1).padStart(2, '0');
             const dd = String(saleDate.getDate()).padStart(2, '0');
             const picker = document.getElementById('sales-table-date-picker');
-            if (picker) picker.value = `${yyyy}-${mm}-${dd}`;
+            if (picker) { picker.value = `${yyyy}-${mm}-${dd}`; picker.dataset.auto = '0'; }
             setSalesTablePeriod('daily'); // jump always lands on the Daily preset, showing just that sale's day
             showToast(`Found ${sale.refNumber} — jumped to ${saleDate.toLocaleDateString('en-GB')}.`);
         }
@@ -4746,6 +4746,9 @@ function perfInstall() {
 function markSync(status) {
             // What the app KNOWS (window.__syncStatus) is updated at once; what is SHOWN (the dot) changes calmly: a poll that answers in a fraction of a
             // second never turns the dot orange, a blip never turns it black, and the dot does not go orange again every few seconds while offline.
+            // A busy server for a few seconds is not an error: the change is on its way again (see trackPush). Only a failure that lasts a
+            // minute turns the dot to "problem". (zip 123)
+            if (status === 'error' && window.__pushFailKind === 'busy' && Date.now() - (window.__pushFailSince || Date.now()) < 60000) status = 'syncing';
             window.__syncStatus = status;
             window.__syncStatusAt = Date.now();
             const ui = window.__syncUi || (window.__syncUi = { shown: null, timer: null });
@@ -5002,7 +5005,7 @@ async function pushNow() {
                         markSync('synced');
                         return true;
                     } else {
-                        window.__pushFailKind = 'http';                     // the server ANSWERED (refused, busy...): the wait is kept
+                        notePushHttp(res);                                  // the server ANSWERED: busy (sent again in seconds) or refused
                         if (res.status === 403) checkLicenseStatus();
                         if (res.status === 413) { notifySyncTooLarge(res); markSync('offline'); return false; }
                         markSync('error');
@@ -8119,6 +8122,20 @@ function ackLocalFields() {
             } catch (e) { /* housekeeping only */ }
         }
 
+//@fn notePushHttp
+// Called when the server ANSWERED a push with an error. "Busy" answers (another device's save landing at the same moment, the shop
+// being moved to its own database, a brief server hiccup) are temporary: trackPush sends again by itself within seconds. Anything
+// else (refused: licence, too large) keeps the longer wait. (zip 123)
+function notePushHttp(res) {
+            const st = (res && res.status) || 0;
+            const busy = st === 408 || st === 425 || st === 429 || st >= 500;
+            window.__pushFailKind = busy ? 'busy' : 'http';
+            let ra = 0;
+            try { ra = Number(res.headers.get('Retry-After')) || 0; } catch (e) { /* none */ }
+            window.__pushRetryAfterMs = ra > 0 ? Math.min(30000, ra * 1000) : 0;
+            return busy;
+        }
+
 //@fn trackPush
 async function trackPush(fn) {
             // Wraps every push so the app always knows whether it has changes the server has not acknowledged yet:
@@ -8126,13 +8143,31 @@ async function trackPush(fn) {
             window.__pushInFlight = (window.__pushInFlight || 0) + 1;
             window.__pushQueued = false;
             const wasFailing = (window.__pushFails || 0) > 0;
-            window.__pushFailed = true;
+            const jitter = (ms) => ms + Math.floor(Math.random() * ms * 0.6);
             try {
-                const r = await fn();
+                let r;
+                // A "busy" answer is tried again right here, after a short random pause (so two devices that collided do not collide again),
+                // up to 3 times — most collisions are over after the first. (zip 123)
+                for (let attempt = 0; ; attempt++) {
+                    window.__pushFailed = true;
+                    window.__pushFailKind = '';
+                    r = await fn();
+                    if (!window.__pushFailed || window.__pushFailKind !== 'busy' || attempt >= 2) break;
+                    markSync('syncing');
+                    await new Promise((res) => setTimeout(res, window.__pushRetryAfterMs || jitter(window.__pushBusyRetryMs != null ? window.__pushBusyRetryMs : 1200)));
+                }
                 try {
-                    if (window.__pushFailed) syncJournal('failed', window.__pushFailKind === 'network' ? 'no answer from the server (offline?) — kept on this device, will retry' : 'the server refused or was busy — kept on this device, will retry');
-                    else if (wasFailing) syncJournal('retry', 'sent after an earlier failure — the server applies each change once');
-                    else {
+                    if (window.__pushFailed) {
+                        if (!wasFailing) {                                             // one line per failure streak, not one per attempt
+                            window.__pushFailSince = Date.now();
+                            syncJournal('failed', window.__pushFailKind === 'network' ? 'no answer from the server (offline?) — kept on this device, sending again automatically'
+                                : window.__pushFailKind === 'busy' ? 'the server was busy — kept on this device, sending again automatically in a few seconds'
+                                : 'the server refused the change — kept on this device, sending again automatically');
+                        }
+                    } else if (wasFailing) {
+                        syncJournal('retry', 'sent automatically after an earlier failure — nothing lost, the server applies each change once');
+                        window.__pushFailSince = 0;
+                    } else {
                         // ordinary sends are summarised (at most one line per 30 minutes), so the log shows sync activity without drowning the audit
                         const n = (parseInt(localStorage.getItem('pos_sync_sent_count') || '0', 10) || 0) + 1;
                         const last = parseInt(localStorage.getItem('pos_sync_sent_logged_at') || '0', 10) || 0;
@@ -8144,13 +8179,36 @@ async function trackPush(fn) {
             }
             finally {
                 window.__pushInFlight = Math.max(0, (window.__pushInFlight || 1) - 1);
-                // A push that keeps failing (server down, shop refused) is retried by the poll with a growing pause — 4 s, 8 s ... up to 1 minute —
-                // instead of re-sending the whole shop every few seconds.
+                // A push that keeps failing is sent again BY ITSELF with a growing pause — busy: ~2 s, 4 s, 8 s (max 10 s); refused or
+                // offline: 4 s, 8 s, 15 s — instead of waiting for someone to do something. Tapping the sync dot sends at once (syncRetryNow).
+                clearTimeout(window.__pushRetryTimer);
                 if (window.__pushFailed) {
                     window.__pushFails = (window.__pushFails || 0) + 1;
-                    window.__pushBackoffUntil = Date.now() + Math.min(15000, 2000 * Math.pow(2, window.__pushFails));
+                    const wait = window.__pushFailKind === 'busy'
+                        ? Math.max(window.__pushRetryAfterMs || 0, jitter(Math.min(10000, 1000 * Math.pow(2, window.__pushFails))))
+                        : Math.min(15000, 2000 * Math.pow(2, window.__pushFails));
+                    window.__pushBackoffUntil = Date.now() + wait;
+                    if (window.__pushFailKind !== 'http' || window.__pushFails < 6) {
+                        window.__pushRetryTimer = setTimeout(() => {
+                            try { if (!(window.__pushInFlight > 0) && typeof hasUnsyncedWork === 'function' && hasUnsyncedWork()) flushPendingPush(); } catch (e) { /* the poll will */ }
+                        }, wait + 50);
+                    }
                 } else { window.__pushFails = 0; window.__pushBackoffUntil = 0; }
             }
+        }
+
+//@fn syncRetryNow
+// "Send now" — tapping the sync dot (or anything else that wants it): forget any pause after a failure and send + fetch right away.
+async function syncRetryNow() {
+            window.__pushBackoffUntil = 0;
+            window.__pushFails = window.__pushFails ? 1 : 0;        // keep "was failing" so success is logged as a retry
+            clearTimeout(window.__pushRetryTimer);
+            markSync('syncing');
+            try {
+                if (typeof flushThenPull === 'function') return await flushThenPull();
+                await flushPendingPush();
+                if (typeof pullState === 'function') await pullState(); else if (typeof pullFromServer === 'function') await pullFromServer();
+            } catch (e) { /* the automatic retry carries on */ }
         }
 
 //@fn markLocalDirty
@@ -8230,25 +8288,12 @@ function snapshotInventorySync() {
 
 //@fn soldQtyAfter
 function soldQtyAfter(code, dateStr) {
-            let sum = 0;
-            salesLog.forEach(s => {
-                if (s.voided) return;
-                if (dateKey(new Date(s.timestamp)) <= dateStr) return;
-                (s.items || []).forEach(it => { if (it.code === code) sum += it.qty; });
-            });
-            return sum;
+            return stockReportTotals('soldAfter', dateStr).get(code) || 0;
         }
 
 //@fn soldQtyWithinRange
 function soldQtyWithinRange(code, fromStr, toStr) {
-            let sum = 0;
-            salesLog.forEach(s => {
-                if (s.voided) return;
-                const key = dateKey(new Date(s.timestamp));
-                if (key < fromStr || key > toStr) return;
-                (s.items || []).forEach(it => { if (it.code === code) sum += it.qty; });
-            });
-            return sum;
+            return stockReportTotals('soldIn', fromStr, toStr).get(code) || 0;
         }
 
 //@fn staffExpensesAccessLevel
@@ -8792,18 +8837,74 @@ function statusLabelFor(status) {
             return { assigned: 'Assigned', picked_up: 'Picked Up', on_route: 'On Route', delivered: 'Delivered' }[status || 'assigned'] || 'Assigned';
         }
 
+//@fn reportRowLimit
+// Long on-screen report tables (zip 122): a phone lays out every cell of every row, and a 3,000-item Stock Report (33,000 cells)
+// took ~13 s to appear. The first 200 rows are shown, with "Show more" / "Show all" underneath. Totals, search and printing still
+// use every row. `rerender` is the name of the function that redraws the table.
+function reportRowLimit(key, rows, cols, rerender) {
+            const limits = window.__reportRowLimits = window.__reportRowLimits || {};
+            const limit = limits[key] || 200;
+            if (rows.length <= limit) return { shown: rows, moreHtml: '' };
+            const next = Math.min(200, rows.length - limit);
+            return {
+                shown: rows.slice(0, limit),
+                moreHtml: `<tr class="report-more-row"><td colspan="${cols}" style="text-align:center; padding:12px;">Showing ${limit} of ${rows.length} &nbsp;`
+                    + `<button type="button" class="settings-small-btn" onclick="reportShowMore('${key}', false, '${rerender}')">Show ${next} more</button> `
+                    + `<button type="button" class="settings-small-btn" onclick="reportShowMore('${key}', true, '${rerender}')">Show all</button></td></tr>`,
+            };
+        }
+
+//@fn reportShowMore
+function reportShowMore(key, all, rerender) {
+            const limits = window.__reportRowLimits = window.__reportRowLimits || {};
+            limits[key] = all ? Infinity : (limits[key] || 200) + 200;
+            const fn = window[rerender];
+            if (typeof fn === 'function') fn();
+        }
+
+//@fn stockReportTotals
+// Per-item totals of sales and stock movements for a date window, for ALL items in ONE pass (zip 122). The Stock Report used to
+// scan the whole sales history and movement log once per item per column, re-reading every date each time: with 3,000 items and
+// 5,000 sales that took ~50 s on a phone. Same figures as before (same rules, same === code match). The totals are kept only
+// for the current task (cleared right after), so a sale or a stock change made afterwards is always counted.
+function stockReportTotals(kind, a, b) {
+            let cache = window.__stockReportTotals;
+            if (!cache) {
+                cache = window.__stockReportTotals = new Map();
+                setTimeout(() => { window.__stockReportTotals = null; }, 0);
+            }
+            const sl = typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog.length : 0;
+            const ml = typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog) ? stockMovementLog.length : 0;
+            const ck = kind + '|' + a + '|' + (b || '') + '|' + sl + '|' + ml;
+            if (cache.has(ck)) return cache.get(ck);
+            const out = new Map();
+            const add = (code, v) => { out.set(code, (out.get(code) || 0) + v); };
+            const inWin = (key) => (kind === 'mvAfter' || kind === 'soldAfter') ? key > a : (key >= a && key <= b);
+            if (kind === 'soldAfter' || kind === 'soldIn') {
+                (typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []).forEach((s) => {
+                    if (!s || s.voided || !inWin(dateKey(new Date(s.timestamp)))) return;
+                    (s.items || []).forEach((it) => { if (it) add(it.code, it.qty); });
+                });
+            } else {
+                (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog) ? stockMovementLog : []).forEach((m) => {
+                    if (!m || !inWin(dateKey(new Date(m.timestamp)))) return;
+                    const d = stockMoveDelta(m);
+                    if (kind === 'mvAfter') add(m.code, d);
+                    else if (kind === 'mvAdded' ? d > 0 : d < 0) add(m.code, Math.abs(d));
+                });
+            }
+            cache.set(ck, out);
+            return out;
+        }
+
 //@fn stockMovementDeltaAfter
 function stockMovementDeltaAfter(code, dateStr) {
-            return stockMovementLog
-                .filter(m => m.code === code && dateKey(new Date(m.timestamp)) > dateStr)
-                .reduce((sum, m) => sum + stockMoveDelta(m), 0);
+            return stockReportTotals('mvAfter', dateStr).get(code) || 0;
         }
 
 //@fn stockMovementDeltaWithinRange
 function stockMovementDeltaWithinRange(code, fromStr, toStr, wantAdded) {
-            return stockMovementLog
-                .filter(m => m.code === code && dateKey(new Date(m.timestamp)) >= fromStr && dateKey(new Date(m.timestamp)) <= toStr && (wantAdded ? stockMoveDelta(m) > 0 : stockMoveDelta(m) < 0))
-                .reduce((sum, m) => sum + Math.abs(stockMoveDelta(m)), 0);
+            return stockReportTotals(wantAdded ? 'mvAdded' : 'mvRemoved', fromStr, toStr).get(code) || 0;
         }
 
 //@fn stockReportPeriodLabel
@@ -11421,7 +11522,7 @@ function collapseTabsIfNeeded() {
             // nav bar's own padding/font-size again immediately.
             TAB_MASTER_ORDER.forEach(id => {
                 const btn = document.querySelector(`.tab-link[data-tab="${id}"]`);
-                if (btn) nav.insertBefore(btn, moreBtn);
+                if (btn) { btn.style.maxWidth = ''; nav.insertBefore(btn, moreBtn); }
             });
             moreMenu.innerHTML = '';
 
@@ -11435,8 +11536,12 @@ function collapseTabsIfNeeded() {
             // Kept in sync with .tabs-more-btn's CSS min-width (90px) plus a small
             // margin — under-reserving here would mean the "More" button itself
             // could get clipped by .tabs's overflow:hidden right when it's needed.
-            const MORE_BTN_WIDTH = 100;
-            const available = nav.clientWidth;
+            // Measured when it is showing (its label and padding differ per app / screen size): a fixed guess let it stick out a few
+            // pixels past the edge of a phone (zip 125).
+            const MORE_BTN_WIDTH = moreBtn.offsetWidth ? moreBtn.offsetWidth + 8 : 100;
+            // The bar's own side padding is not room for tabs (counting it let "More" stick out past the edge of a phone). (zip 125)
+            const navCs = getComputedStyle(nav);
+            const available = nav.clientWidth - (parseFloat(navCs.paddingLeft) || 0) - (parseFloat(navCs.paddingRight) || 0) - 2;
 
             // Greedy fit in master (declared) order.
             let used = 0;
@@ -11460,12 +11565,21 @@ function collapseTabsIfNeeded() {
             // room, then add it back in its natural master-order position.
             if (!fitting.includes(activeId) && TAB_MASTER_ORDER.includes(activeId)) {
                 const activeWidth = widthOf[activeId] || 0;
-                while (fitting.length > 1 && used + activeWidth + MORE_BTN_WIDTH > available) {
+                // Evict down to NOTHING if need be (was: down to one tab) — keeping one extra tab next to a long-named active one
+                // pushed the "More" button past the right edge of a small phone, where it could not be tapped at all (zip 122).
+                while (fitting.length > 0 && used + activeWidth + MORE_BTN_WIDTH > available) {
                     const evicted = fitting.pop();
                     used -= widthOf[evicted] || 0;
                 }
                 fitting.push(activeId);
                 used += activeWidth;
+                // Still too wide on its own: the active tab's label is shortened (…) so "More" always stays on screen.
+                const activeBtn = document.querySelector(`.tab-link[data-tab="${activeId}"]`);
+                if (activeBtn && activeWidth + MORE_BTN_WIDTH > available && available > MORE_BTN_WIDTH + 40) {
+                    activeBtn.style.maxWidth = (available - MORE_BTN_WIDTH) + 'px';
+                    activeBtn.style.overflow = 'hidden';
+                    activeBtn.style.textOverflow = 'ellipsis';
+                }
             }
 
             const fittingSet = new Set(fitting);
@@ -12299,6 +12413,45 @@ async function renderStoreLogTab() {
                     </tr>`).join('');
         }
 
+//@fn salesDatePickerValue
+// The date Daily Sales shows (zip 124). It used to be filled in ONCE — when the app opened, or the first time the tab was opened —
+// and never moved on: a till left open overnight kept showing yesterday, and after "jump to a receipt" or "record a past sale" it
+// stayed on that old day, so a sale just made (and printed) looked missing. Now a date the APP filled in follows today (also across
+// midnight); a date the person picked stays until they leave the tab (see dailySalesOpenOnToday).
+function salesDatePickerValue(picker) {
+            const today = todayDateString();
+            if (!picker) return today;
+            if (!picker.value || (picker.dataset.auto !== '0' && picker.value !== today)) { picker.value = today; picker.dataset.auto = '1'; }
+            return picker.value;
+        }
+
+//@fn dailySalesOpenOnToday
+// Opening the Daily Sales tab always starts on TODAY with nothing filtered out (no leftover search, "M-Pesa only" or custom range
+// hiding a new sale) — and says how many of today's Pay-Later bills are in the Bills tab (they print a receipt but are not sales
+// until paid). Runs just before the tab's own opening code (see the capture-phase click in the device-security block).
+function dailySalesOpenOnToday() {
+            try {
+                ['sales-table-date-picker', 'sales-date-picker'].forEach((id) => { const p = document.getElementById(id); if (p) { p.value = todayDateString(); p.dataset.auto = '1'; } });
+                const search = document.getElementById('daily-sales-search-input');
+                if (search) search.value = '';
+                const active = document.querySelector('#sales-table-period-filter-bar .item-filter-btn.active, #sales-period-filter-bar .item-filter-btn.active');
+                if (active && active.dataset.period === 'custom') {
+                    if (typeof setSalesTablePeriod === 'function') setSalesTablePeriod('daily');
+                    else if (typeof setSalesPeriod === 'function') setSalesPeriod('daily');
+                }
+                if (typeof dailySalesMethodFilter !== 'undefined' && dailySalesMethodFilter !== 'all' && typeof setDailySalesMethodFilter === 'function') setDailySalesMethodFilter('all');
+                const table = document.getElementById('daily-sales-table');
+                if (table && typeof bills !== 'undefined' && Array.isArray(bills)) {
+                    const today = todayDateString();
+                    const n = bills.filter((b) => b && !b.voided && !b.settledAt && b.paid !== true && b.timestamp && dateKey(new Date(b.timestamp)) === today).length;
+                    let note = document.getElementById('daily-sales-bills-note');
+                    if (!note) { note = document.createElement('p'); note.id = 'daily-sales-bills-note'; note.className = 'settings-hint'; note.style.margin = '0 0 8px'; table.parentNode.insertBefore(note, table); }
+                    note.textContent = n ? `Also today: ${n} Pay-Later bill${n === 1 ? '' : 's'} (not paid yet) — they are in the 🧾 Bills tab until paid.` : '';
+                    note.style.display = n ? '' : 'none';
+                }
+            } catch (e) { /* the tab still opens normally */ }
+        }
+
 //@fn salesTablePeriodRange
 function salesTablePeriodRange() {
             const activeBtn = document.querySelector('#sales-table-period-filter-bar .item-filter-btn.active');
@@ -12329,9 +12482,7 @@ function salesTablePeriodRange() {
                 return fromVal <= toVal ? { preset, from: fromVal, to: toVal } : { preset, from: toVal, to: fromVal };
             }
             // daily (default)
-            const picker = document.getElementById('sales-table-date-picker');
-            if (picker && !picker.value) picker.value = todayDateString();
-            const dateVal = picker ? picker.value : todayDateString();
+            const dateVal = salesDatePickerValue(document.getElementById('sales-table-date-picker'));
             return { preset, from: dateVal, to: dateVal };
         }
 
@@ -13853,7 +14004,9 @@ function itemSuggestInstall() {
             document.addEventListener('touchstart', pick, { capture: true, passive: false });
             document.addEventListener('click', (e) => { if (!isField(e.target) && !(e.target.closest && e.target.closest('#item-suggest-box'))) itemSuggestHide(); }, true);
             window.addEventListener('scroll', (e) => { if (!(e.target && e.target.closest && e.target.closest('#item-suggest-box'))) itemSuggestHide(); }, true);
-            window.addEventListener('resize', itemSuggestHide);
+            // Width changes only: on phones the keyboard opening and the address bar sliding away both fire 'resize' (zip 122).
+            let lastW = window.innerWidth;
+            window.addEventListener('resize', () => { if (window.innerWidth !== lastW) { lastW = window.innerWidth; itemSuggestHide(); } });
         }
 
 //@fn showBusyBanner

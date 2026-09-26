@@ -1,0 +1,56 @@
+<!-- ONE TAB (zip 125) ---------------------------------------------------------
+         Only ONE tab (or window) of this app works at a time on a device.
+           * Why: every tab keeps its own copy of the sales list and saves the WHOLE list. With the app open in two tabs, a tab opened
+             earlier saved its older list over a sale just made in the other one; if that sale had not reached the server yet
+             (offline, or the server busy) it was gone — "I made the sale and printed the receipt, but a few are missing".
+           * Now the tab opened (or brought back with "Use it here") LAST is the working one. Any other tab stops at once: its timers
+             and live connection stop, it can no longer save to this device or send to the server, and it shows "open in another
+             tab — Use it here". Tapping that reloads it from what is saved, so it has everything, and the other tab stops instead.
+           * The customer display (?display=…) is a different screen, not a second till: it is left alone.
+         Self-contained on purpose (same code in every app). -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__oneTabInit) return;
+        window.__oneTabInit = true;
+        if (/[?&]display=/.test(location.search)) return;
+        var me = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        var KEY = 'pos_active_tab:' + location.pathname;
+        var channel = null;
+        try { channel = new BroadcastChannel('mydukapos-tab:' + location.pathname); } catch (e) { /* the storage event below is the fallback */ }
+
+        // While this tab is stopped nothing it still holds in memory may be saved over what the working tab saved.
+        var S = Storage.prototype, set = S.setItem, remove = S.removeItem;
+        S.setItem = function (k, v) { if (window.__tabInactive && this === window.localStorage && String(k) !== KEY) return; return set.apply(this, arguments); };
+        S.removeItem = function (k) { if (window.__tabInactive && this === window.localStorage) return; return remove.apply(this, arguments); };
+
+        function claim() {
+            try { set.call(window.localStorage, KEY, JSON.stringify({ id: me, at: Date.now() })); } catch (e) { /* private mode */ }
+            try { if (channel) channel.postMessage({ type: 'claim', id: me }); } catch (e) { /* ignore */ }
+        }
+        function freeze() {
+            if (window.__tabInactive) return;
+            window.__tabInactive = true;
+            try { var top = setTimeout(function () {}, 0); for (var i = 0; i <= top; i++) { clearTimeout(i); clearInterval(i); } } catch (e) { /* ignore */ }
+            try { if (typeof syncSocket !== 'undefined' && syncSocket) { syncSocket.onclose = null; syncSocket.close(); } } catch (e) { /* ignore */ }
+            var el = document.createElement('div');
+            el.id = 'one-tab-screen';
+            el.setAttribute('role', 'dialog');
+            el.style.cssText = 'position:fixed; inset:0; z-index:2147483646; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; padding:16px;';
+            el.innerHTML = '<div style="background:#fff; color:#2c3e50; border-radius:12px; max-width:400px; width:100%; padding:20px; box-shadow:0 10px 40px rgba(0,0,0,0.3); text-align:center;">'
+                + '<div style="font-size:34px; margin-bottom:6px;">🗂️</div>'
+                + '<h3 style="margin:0 0 8px;">Open in another tab</h3>'
+                + '<p style="margin:0 0 14px; font-size:14px; line-height:1.45;">This app is open in another tab or window on this device. Only one can be used at a time, so no sale is ever lost between them.</p>'
+                + '<button type="button" id="one-tab-use-here" style="width:100%; padding:12px; border:none; border-radius:8px; background:#27ae60; color:#fff; font-weight:700; font-size:16px;">Use it here</button></div>';
+            (document.body || document.documentElement).appendChild(el);
+            el.querySelector('#one-tab-use-here').onclick = function () { (window.__oneTabReload || function () { location.reload(); })(); };
+        }
+        window.__oneTabFreeze = freeze;         // (tests)
+        if (channel) channel.onmessage = function (e) { if (e && e.data && e.data.type === 'claim' && e.data.id !== me) freeze(); };
+        window.addEventListener('storage', function (e) {
+            if (e.key !== KEY || !e.newValue) return;
+            try { if (JSON.parse(e.newValue).id !== me) freeze(); } catch (err) { /* ignore */ }
+        });
+        claim();
+    })();
+    </script>

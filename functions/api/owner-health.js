@@ -11,7 +11,7 @@
 
 import { requireOwnerAuth, getOwnerAccount } from './_owner-auth.js';
 import { listClientSummaries } from './_license.js';
-import { readStateRaw, shopMode, shopCall } from './_state-store.js';
+import { readStateRaw, shopMode, shopCall, shopDbOutdated } from './_state-store.js';
 import { ledgerIntegrity } from './_merge.js';
 import { readDeviceAuth, writeDeviceAuth } from './_device-auth.js';
 import { sendEmail } from './_email.js';
@@ -44,6 +44,10 @@ export async function shopHealth(env, shop) {
     const newest = devices.map((d) => d.v).filter(Boolean).sort().pop() || '';
     out.devices = { n: devices.length, olderRelease: devices.filter((d) => d.v && d.v !== newest).length, silent: devices.filter((d) => d.lastSeen && Date.now() - d.lastSeen > 3 * 86400000).length, newest };
     if (out.devices.olderRelease) out.problems.push(`${out.devices.olderRelease} device(s) on an older app release`);
+    if (mode === 'do' && (await shopDbOutdated(env, shop.id))) {
+      out.dbOutdated = true;
+      out.problems.push('its database server is OUT OF DATE — run `npm run deploy:router` (till numbers, device list and the stock ledger are off for this shop until then)');
+    }
     out.pairing = (await readDeviceAuth(env, shop.id, { fresh: true })).mode;
     out.suggestDatabase = mode !== 'do' && out.bytes > MOVE_AT;
     if (out.suggestDatabase) out.problems.push('large shop — move it to its own database (💾 Storage)');

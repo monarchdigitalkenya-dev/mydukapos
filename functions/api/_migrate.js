@@ -26,6 +26,17 @@ export async function migrateShopToDatabase(env, clientId) {
       const want = Array.isArray(state[col]) ? state[col].length : 0;
       if (want && (have.get(col) || 0) < want) throw new Error(`verification failed for ${col} (${have.get(col) || 0} of ${want})`);
     }
+    // A save that was already on its way when the move began may land in the old record just after it was read. Give it a moment,
+    // then bring anything newer across too (the database merges by record and applies each stock movement once). (zip 123)
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setTimeout(r, env.MIGRATE_SETTLE_MS != null ? Number(env.MIGRATE_SETTLE_MS) : 1500));
+      const again = await readStateRaw(env, 'pos-data:state:' + clientId);
+      const later = again ? JSON.parse(again.text) : null;
+      if (!later || (Number(later.updatedAt) || 0) <= (Number(state.updatedAt) || 0)) break;
+      const imp2 = await shopCall(env, clientId, 'import', { state: later });
+      if (!imp2.ok) throw new Error('import failed');
+      state.updatedAt = later.updatedAt;
+    }
     const records = (stats.collections || []).reduce((n, c) => n + c.n, 0);
     await env.mydukapos_kv.put(modeKey, 'do', { metadata: { at: Date.now(), records, bytes: stats.bytes } });
     return { changed: true, records, bytes: stats.bytes };

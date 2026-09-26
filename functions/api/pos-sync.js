@@ -39,6 +39,38 @@ import { deviceGuard } from './_device-auth.js';
 
 // CORS is decided per request (see _cors.js): the apps call this on their own origin, so only the shop's own
 // domain family is ever answered — no more `Access-Control-Allow-Origin: *`.
+function busyResponse(cors, e) {
+  return new Response(JSON.stringify({ error: 'The server is busy — this device keeps its changes and sends them again in a moment.', code: 'busy', retryAfter: 2, detail: String((e && e.message) || e || '').slice(0, 160) }), {
+    status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '2', ...cors },
+  });
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Devices that synced this shop in the last day (from the device list the server keeps — see noteDevice in _merge.js).
+function activeDevices(reg, now) {
+  if (!reg || typeof reg !== 'object') return 0;
+  return Object.values(reg).filter((d) => d && Number(d.lastSeen) > now - 86400000).length;
+}
+
+// MULTI-DEVICE SHOPS MOVE TO THEIR OWN DATABASE BY THEMSELVES (zip 123). A shop kept as one storage record can only be written
+// about once a second, and two devices saving at the same moment used to get "the server refused or was busy" (and could even
+// overwrite each other). Its own database (wildcard-router/shop-store.js) takes every device's save one after the other, with no
+// such limit. So a shop that has 2+ active devices, or whose save just had to wait for another one, is moved — verified, with the
+// old record kept, exactly like the Owner Console's "Move to database" (see _migrate.js). Tried at most once every 6 hours; if it
+// cannot be done the shop simply stays as it is.
+async function autoMoveToDatabase(env, clientId, why) {
+  const key = 'auto-db:' + clientId;
+  try {
+    if (await env.mydukapos_kv.get(key)) return;
+    await env.mydukapos_kv.put(key, JSON.stringify({ at: Date.now(), why }), { expirationTtl: 6 * 3600 });
+    const { migrateShopToDatabase } = await import('./_migrate.js');
+    const r = await migrateShopToDatabase(env, clientId);
+    await env.mydukapos_kv.put(key, JSON.stringify({ at: Date.now(), why, done: true, records: r.records || 0 }), { expirationTtl: 6 * 3600 });
+  } catch (e) {
+    try { await env.mydukapos_kv.put(key, JSON.stringify({ at: Date.now(), why, error: String(e && e.message || e).slice(0, 200) }), { expirationTtl: 6 * 3600 }); } catch (e2) { /* ignore */ }
+  }
+}
+
 function jsonResponse(body, status = 200, cors = {}) {
   return new Response(JSON.stringify(body), {
     status,
@@ -72,6 +104,14 @@ export async function onRequestOptions(context) {
 }
 
 export async function onRequestGet(context) {
+  try {
+    return await handleGet(context);
+  } catch (e) {
+    return busyResponse(corsHeadersFor(context.request, context.env), e);
+  }
+}
+
+async function handleGet(context) {
   const { request, env } = context;
   const cors = corsHeadersFor(request, env);
 
@@ -121,7 +161,17 @@ export async function onRequestGet(context) {
   return jsonResponse(payload, 200, cors);
 }
 
+// A sync must never fail with a crash. Anything unexpected (storage briefly busy, a timeout reaching the shop's database) is answered
+// "busy, try again in a moment" (503 + Retry-After), which every app retries by itself within seconds (see trackPush). (zip 123)
 export async function onRequestPost(context) {
+  try {
+    return await handlePost(context);
+  } catch (e) {
+    return busyResponse(corsHeadersFor(context.request, context.env), e);
+  }
+}
+
+async function handlePost(context) {
   const { request, env } = context;
   const cors = corsHeadersFor(request, env);
 
@@ -154,9 +204,10 @@ export async function onRequestPost(context) {
     if (Number(request.headers.get('content-length')) > maxPush) {
       return jsonResponse({ error: 'This push is too large to accept in one go.', code: 'push_too_large' }, 413, cors);
     }
-    const res = await shopCall(env, clientId, 'push', { body, serverNow: Date.now() });
-    const out = await res.json();
-    if (!res.ok) return jsonResponse(out, res.status, cors);
+    let res = await shopCall(env, clientId, 'push', { body, serverNow: Date.now() });
+    if (res.status >= 500) { await sleep(400 + Math.floor(Math.random() * 400)); res = await shopCall(env, clientId, 'push', { body, serverNow: Date.now() }); }   // one quick retry (zip 123)
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) return res.status >= 500 ? busyResponse(cors, out && out.error) : jsonResponse(out, res.status, cors);
     // Tell the shop's other devices to pull right now. A bare poke, NOT the data: a device that doesn't understand it (an older
     // cached app) sees no updatedAt and ignores it, and simply keeps using its 7-second poll.
     if (env.SYNC_ROOM) {
@@ -173,68 +224,88 @@ export async function onRequestPost(context) {
   // BEFORE the write below, or there'd be nothing left to snapshot.
   await maybeSnapshotBackup(env, clientId);
 
-  // Read what's currently stored so the MERGE_BY_ID_FIELDS above can be
-  // merged record-by-record instead of just replaced wholesale — see
-  // mergeIncomingState() above. Everything else keeps the previous
-  // behavior (incoming replaces existing) via the plain spread inside it.
-  const stored = await readStateRaw(env, stateKey(clientId));
-  const existing = stored ? JSON.parse(stored.text) : {};
+  // Read -> merge -> write, retried if the write is refused because another device's save landed at the same moment (zip 123).
+  const pristine = structuredClone(body);           // the merge may annotate what it is given: a retry starts from the untouched push
+  let stored, existing, serverNow, record, jsonText, bytes, attempt = 0, contended = false;
+  for (;;) {
+    const incomingBody = attempt === 0 ? body : structuredClone(pristine);
 
-  // Correct for this device's clock drift BEFORE any merge comparison uses
-  // its timestamps — see correctClockDrift() above.
-  const serverNow = Date.now();
-  body = correctClockDrift(body, serverNow);
-  // A device that still holds (and re-sends) history the server already archived must not bring it back — see _state-store.js.
-  body = await dropArchivedIncoming(env, clientId, body, Number(existing._archiveCutoff) || 0);
+    // Read what's currently stored so the MERGE_BY_ID_FIELDS above can be
+    // merged record-by-record instead of just replaced wholesale — see
+    // mergeIncomingState() above. Everything else keeps the previous
+    // behavior (incoming replaces existing) via the plain spread inside it.
+    stored = await readStateRaw(env, stateKey(clientId));
+    existing = stored ? JSON.parse(stored.text) : {};
 
-  // Always stamp with the server's clock so all devices agree on ordering,
-  // regardless of each device's local clock drift.
-  let record = { ...mergeIncomingState(existing, body), updatedAt: serverNow };
+    // Correct for this device's clock drift BEFORE any merge comparison uses
+    // its timestamps — see correctClockDrift() above.
+    serverNow = Date.now();
+    body = correctClockDrift(incomingBody, serverNow);
+    // A device that still holds (and re-sends) history the server already archived must not bring it back — see _state-store.js.
+    body = await dropArchivedIncoming(env, clientId, body, Number(existing._archiveCutoff) || 0);
 
-  // SIZE GUARD. A shop is one KV value (25 MiB hard cap) that this function reads, parses, merges and re-serialises
-  // on every push. Past the cap `put` throws and the shop silently stops syncing while every till looks "offline".
-  // So: measure first, refuse cleanly with a message the app can show, and tell the Owner Console. Nothing is lost —
-  // the till keeps its data locally. Limits are environment-tunable (see _state-store.js). The refused push is
-  // never written, so the last good server copy stays intact.
-  let jsonText = JSON.stringify(record);
-  let bytes = byteLength(jsonText);
-  const policy = sizePolicy(env);
+    // Always stamp with the server's clock so all devices agree on ordering,
+    // regardless of each device's local clock drift.
+    record = { ...mergeIncomingState(existing, body), updatedAt: serverNow };
 
-  // AUTOMATIC ARCHIVE: at 80% of the limit the shop trims itself — nobody has to notice or do anything. The newest 90 days
-  // (or 60/30/14/7, whichever is the most that fits) stay live; the rest goes to a verified archive the owner can restore.
-  // If archiving fails for any reason the push carries on unchanged (the size guard below is still the backstop).
-  if (bytes >= policy.max * AUTO_ARCHIVE_AT) {
+    // SIZE GUARD. A shop is one KV value (25 MiB hard cap) that this function reads, parses, merges and re-serialises
+    // on every push. Past the cap `put` throws and the shop silently stops syncing while every till looks "offline".
+    // So: measure first, refuse cleanly with a message the app can show, and tell the Owner Console. Nothing is lost —
+    // the till keeps its data locally. Limits are environment-tunable (see _state-store.js). The refused push is
+    // never written, so the last good server copy stays intact.
+    jsonText = JSON.stringify(record);
+    bytes = byteLength(jsonText);
+    const policy = sizePolicy(env);
+
+    // AUTOMATIC ARCHIVE: at 80% of the limit the shop trims itself — nobody has to notice or do anything. The newest 90 days
+    // (or 60/30/14/7, whichever is the most that fits) stay live; the rest goes to a verified archive the owner can restore.
+    // If archiving fails for any reason the push carries on unchanged (the size guard below is still the backstop).
+    if (bytes >= policy.max * AUTO_ARCHIVE_AT) {
+      try {
+        const pick = chooseAutoCutoff(record, policy, serverNow);
+        if (pick) {
+          const done = await writeArchive(env, clientId, { old: pick.old, keepDays: pick.keepDays, cutoff: pick.cutoff, auto: true });
+          record = {
+            ...pick.keep, updatedAt: serverNow,
+            _archiveCutoff: Math.max(Number(existing._archiveCutoff) || 0, pick.cutoff),
+            _lastAutoArchive: { at: serverNow, keepDays: pick.keepDays, counts: done.counts, archiveId: done.archiveId },
+          };
+          jsonText = JSON.stringify(record);
+          bytes = byteLength(jsonText);
+        }
+      } catch (e) { /* fall through: unchanged record, guard below */ }
+    }
+    if (bytes > policy.max) {
+      await noteOversize(env, clientId, bytes, policy);
+      return jsonResponse({
+        error: `This shop's data is too large to sync (${(bytes / MIB).toFixed(1)} MB, limit ${(policy.max / MIB).toFixed(0)} MB). Your till still works and nothing is lost — please contact support to archive old history.`,
+        code: 'shop_too_large', bytes, limit: policy.max,
+      }, 413, cors);
+    }
+
+    // FORENSICS: keep the last few distinct sources that wrote this shop's data (IP + country), in KV metadata —
+    // free, since it rides on the write we already make. Shown in the Owner Console's Storage tab.
+    const writer = {
+      ip: request.headers.get('CF-Connecting-IP') || '',
+      cc: (request.cf && request.cf.country) || request.headers.get('CF-IPCountry') || '',
+    };
     try {
-      const pick = chooseAutoCutoff(record, policy, serverNow);
-      if (pick) {
-        const done = await writeArchive(env, clientId, { old: pick.old, keepDays: pick.keepDays, cutoff: pick.cutoff, auto: true });
-        record = {
-          ...pick.keep, updatedAt: serverNow,
-          _archiveCutoff: Math.max(Number(existing._archiveCutoff) || 0, pick.cutoff),
-          _lastAutoArchive: { at: serverNow, keepDays: pick.keepDays, counts: done.counts, archiveId: done.archiveId },
-        };
-        jsonText = JSON.stringify(record);
-        bytes = byteLength(jsonText);
-      }
-    } catch (e) { /* fall through: unchanged record, guard below */ }
-  }
-  if (bytes > policy.max) {
-    await noteOversize(env, clientId, bytes, policy);
-    return jsonResponse({
-      error: `This shop's data is too large to sync (${(bytes / MIB).toFixed(1)} MB, limit ${(policy.max / MIB).toFixed(0)} MB). Your till still works and nothing is lost — please contact support to archive old history.`,
-      code: 'shop_too_large', bytes, limit: policy.max,
-    }, 413, cors);
+      await writeStateText(env, stateKey(clientId), jsonText, {
+        bytes, keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, writer, updatedAt: record.updatedAt,
+      });
+      break;
+    } catch (e) {
+      // Storage accepts about one write a second per shop: another device's save just landed. Wait a moment, then RE-READ and
+      // re-merge (so that save is kept too) and write again.
+      contended = true;
+      if (++attempt >= 4) throw e;
+      await sleep(700 + Math.floor(Math.random() * 900));
+    }
   }
 
-  // FORENSICS: keep the last few distinct sources that wrote this shop's data (IP + country), in KV metadata —
-  // free, since it rides on the write we already make. Shown in the Owner Console's Storage tab.
-  const writer = {
-    ip: request.headers.get('CF-Connecting-IP') || '',
-    cc: (request.cf && request.cf.country) || request.headers.get('CF-IPCountry') || '',
-  };
-  await writeStateText(env, stateKey(clientId), jsonText, {
-    bytes, keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, writer, updatedAt: record.updatedAt,
-  });
+  if (env.SHOP_STORE && (contended || activeDevices(record.deviceRegistry, serverNow) >= 2)) {
+    context.waitUntil(autoMoveToDatabase(env, clientId, contended ? 'two saves at once' : 'several devices'));
+  }
 
   // LIVE PUSH: broadcast the fresh record to every device currently
   // connected via WebSocket for this client (see sync-ws.js and SyncRoom in
