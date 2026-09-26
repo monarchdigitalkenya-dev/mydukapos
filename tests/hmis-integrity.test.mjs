@@ -1160,7 +1160,8 @@ test('Reception tab: shows only identity + routing (no allergies, no diagnosis, 
   const card = d.getElementById('reception-search-card').innerHTML;
   assert.ok(card.includes('Jane Mwangi'));
   assert.ok(card.includes('Has an appointment today'));
-  assert.ok(!/Timeline|openPatientTimeline|Merge|mergePatients|Maternity|openMaternity|Allerg/i.test(card), 'no clinical/admin tools leak into Reception');
+  // (zip 126) Reception now offers destinations such as "ANC / Maternity" and "Emergency": what must never appear are the clinical/admin TOOLS
+  assert.ok(!/Timeline|openPatientTimeline|\bMerge\b|mergePatients|openMaternity|Allerg/i.test(card), 'no clinical/admin tools leak into Reception');
   w.eval("receptionSendToTriage('PT-1')");
   assert.equal(w.eval("queue.length"), 1);
   assert.equal(w.eval("queue[0].patientId"), 'PT-1');
