@@ -12,6 +12,7 @@
 import { requireValidLicense } from './_license.js';
 import { corsHeadersFor } from './_cors.js';
 import { readState, shopMode, shopCall, ARCHIVE_LOG_FIELDS, recordTime } from './_state-store.js';
+import { deviceGuard } from './_device-auth.js';
 
 const ms = (v, d) => { if (v == null || v === '') return d; const n = Number(v); if (Number.isFinite(n) && n > 1e11) return n; const t = Date.parse(v); return Number.isFinite(t) ? t : d; };
 
@@ -26,6 +27,9 @@ export async function onRequestGet(context) {
   const license = await requireValidLicense(request, env);
   if (!license.valid) return reply({ error: 'This link is not active.', reason: license.reason }, 403);
   const clientId = license.clientId;
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
   const u = new URL(request.url);
   const col = u.searchParams.get('col') || '';
   if (!ARCHIVE_LOG_FIELDS.includes(col)) return reply({ error: 'Unknown log.' }, 400);

@@ -37,7 +37,7 @@ const norm = (s) => JSON.parse(JSON.stringify(s, (k, v) => (k === 'updatedAt' &&
 // Each backend replays the scenario at its own wall-clock time, so compare CONTENT, not the timestamps the scenario itself stamped.
 const strip = (s) => {
   const c = JSON.parse(JSON.stringify(s)); delete c.updatedAt; delete c._fieldTimes;
-  for (const v of Object.values(c)) if (Array.isArray(v)) v.forEach((r) => { if (r && typeof r === 'object') { delete r._qtySyncedAt; delete r.updatedAt; delete r.timestamp; } });
+  for (const v of Object.values(c)) if (Array.isArray(v)) v.forEach((r) => { if (r && typeof r === 'object') { delete r._qtySyncedAt; delete r.updatedAt; delete r.timestamp; if (r._srv) delete r._srv.at; if (r._ct) r._ct = Object.keys(r._ct); } });
   return c;
 };
 const wait = (ms = 5) => new Promise((r) => setTimeout(r, ms));
@@ -70,7 +70,7 @@ test('DB == blob: an edit on one device survives a stale device; new items from 
   assert.ok(a.inventory.find((i) => i.code === 'B'));
 });
 
-test('DB == blob: two tills each sell one unit while offline -> newest push wins the whole record (additive reconciliation removed; see _merge.js)', async () => {
+test('DB == blob: two tills each sell one unit while offline -> BOTH sales come off (stock ledger: each movement applied once)', async () => {
   const [a, b] = await both(async (s) => {
     const t0 = Date.now();
     await s.push({ updatedAt: t0, inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 10, updatedAt: t0 - 1000 }], stockMovementLog: [] });
@@ -81,12 +81,11 @@ test('DB == blob: two tills each sell one unit while offline -> newest push wins
     const second = { updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 9, updatedAt: Date.now() }], stockMovementLog: [sale('m2')] };
     await s.push(second); await wait(10); await s.push({ updatedAt: Date.now(), stockMovementLog: second.stockMovementLog });   // a retry of the movement
   });
-  // Each till computed its own decrement from a stale base of 10 (neither knew about the other's sale) and pushed qty:9 — the
-  // later push (till 2's) wins the whole record outright, same as any other field. Both sales are still in stockMovementLog
-  // (unioned by id — nothing is lost there), so a stock take / audit trail still shows both; only the live qty reflects
-  // whichever till pushed last, not a runnning total of both decrements. See _merge.js for why this trade-off was made.
-  assert.equal(a.inventory[0].qty, 9);
-  assert.equal(b.inventory[0].qty, 9);
+  // Each till computed its own decrement from a stale base of 10 and pushed qty:9. Since zip 118 the server ignores those plain
+  // numbers for an existing item and applies each movement exactly once (applyStockLedger in _merge.js): 10 - 1 - 1 = 8, and the
+  // retry of m2 changes nothing. (Before, the later push won outright and one sale was lost: 9.)
+  assert.equal(a.inventory[0].qty, 8);
+  assert.equal(b.inventory[0].qty, 8);
   assert.equal(b.stockMovementLog.length, 2);
 });
 
@@ -95,9 +94,13 @@ test('DB == blob: per-site tanks merge per record; staff tombstones; protected s
     const t = Date.now();
     await s.push({ updatedAt: t, pwHash: 'h1', adminPwHash: 'h2', tanks: [{ id: 'tank-1', siteId: 'shop', currentVolumeLiters: 3000, updatedAt: t - 5000 }, { id: 'tank-p', siteId: 'prod', currentVolumeLiters: 0, updatedAt: t - 5000 }], staff: [{ id: 's1', name: 'Ann', updatedAt: t - 100 }], tables: ['T1', 'T2'] });
     await wait();
-    await s.push({ updatedAt: Date.now(), tanks: [{ id: 'tank-1', siteId: 'shop', currentVolumeLiters: 2990, updatedAt: Date.now() }, { id: 'tank-p', siteId: 'prod', currentVolumeLiters: 0, updatedAt: t - 5000 }] });
+    // tank levels are stock cells since zip 118: they move by movements (applied once), never by the number a device sends
+    const cell = (k) => ({ c: 'tanks', k, f: 'currentVolumeLiters' });
+    await s.push({ updatedAt: Date.now(), tanks: [{ id: 'tank-1', siteId: 'shop', currentVolumeLiters: 2990, updatedAt: Date.now() }, { id: 'tank-p', siteId: 'prod', currentVolumeLiters: 0, updatedAt: t - 5000 }],
+      stockMovementLog: [{ id: 'tv1', cell: cell('id:tank-1'), delta: -10, timestamp: new Date().toISOString() }] });
     await wait();
-    await s.push({ updatedAt: Date.now(), businessName: '', pwHash: '', adminPwHash: '', tanks: [{ id: 'tank-1', siteId: 'shop', currentVolumeLiters: 3000, updatedAt: t - 5000 }, { id: 'tank-p', siteId: 'prod', currentVolumeLiters: 800, updatedAt: Date.now() + 10 }], staff: [{ id: 's1', name: 'Ann', removed: true, updatedAt: Date.now() }], tables: ['T3'], billNotifications: [{ note: 'no id 1' }, { note: 'no id 2' }] });
+    await s.push({ updatedAt: Date.now(), businessName: '', pwHash: '', adminPwHash: '', tanks: [{ id: 'tank-1', siteId: 'shop', currentVolumeLiters: 3000, updatedAt: t - 5000 }, { id: 'tank-p', siteId: 'prod', currentVolumeLiters: 800, updatedAt: Date.now() + 10 }],
+      stockMovementLog: [{ id: 'tv2', cell: cell('id:tank-p'), delta: 800, timestamp: new Date().toISOString() }], staff: [{ id: 's1', name: 'Ann', removed: true, updatedAt: Date.now() }], tables: ['T3'], billNotifications: [{ note: 'no id 1' }, { note: 'no id 2' }] });
   });
   assert.equal(a.tanks.find((x) => x.id === 'tank-1').currentVolumeLiters, 2990);
   assert.equal(a.tanks.find((x) => x.id === 'tank-p').currentVolumeLiters, 800);
@@ -194,24 +197,28 @@ test('DB == blob: a device re-sending its earlier push (a retry after a lost rep
     await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 9, updatedAt: Date.now() }], stockMovementLog: [sale('m1')] });
     await wait(20);
     const second = { updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 9, updatedAt: Date.now() }], stockMovementLog: [sale('m2')] };
-    await s.push(second);                       // till 2's sale (from its own stale base of 10): wins the record outright, qty -> 9
+    await s.push(second);                       // till 2's sale (from its own stale base of 10): its movement comes off, qty -> 8
     await wait(10);
     await s.push(second);                       // the SAME request again (its reply was lost): must be a no-op, not a further change
   });
-  assert.equal(a.inventory[0].qty, 9, 'blob');
-  assert.equal(b.inventory[0].qty, 9, 'database');
+  assert.equal(a.inventory[0].qty, 8, 'blob');
+  assert.equal(b.inventory[0].qty, 8, 'database');
 });
 
-test('DB == blob: a real stock edit (new updatedAt) is still honoured, and a stale copy with an OLDER stamp still loses', async () => {
-  const [a] = await both(async (s) => {
+test('DB == blob: a real stock edit (a recount movement) is honoured; a stale copy — older OR newer stamp — never puts the old number back', async () => {
+  const [a, b] = await both(async (s) => {
     const t0 = Date.now();
     await s.push({ updatedAt: t0, inventory: [{ code: 'A', qty: 10, updatedAt: t0 - 1000 }], stockMovementLog: [] });
     await wait(10);
-    await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', qty: 25, updatedAt: Date.now() }] });             // manual recount
+    await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', qty: 25, updatedAt: Date.now() }],
+      stockMovementLog: [{ id: 'rc1', kind: 'count', code: 'A', counted: 25, before: 10, delta: 15, unit: 'qty', timestamp: new Date().toISOString() }] });   // manual recount
     await wait(10);
-    await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', qty: 10, updatedAt: t0 - 1000 }] });              // stale copy
+    await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', qty: 10, updatedAt: t0 - 1000 }] });              // stale copy, older stamp
+    await wait(10);
+    await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', qty: 10, updatedAt: Date.now() + 60000 }] });     // stale copy, NEWER stamp
   });
   assert.equal(a.inventory[0].qty, 25);
+  assert.equal(b.inventory[0].qty, 25);
 });
 
 // ---- settings changed on one till must not be put back by another till that hasn't refreshed ----

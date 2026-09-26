@@ -21,6 +21,7 @@
 
 import {
   MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
+  allocateTill, noteDevice, NESTED_MERGE, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
 
@@ -84,14 +85,18 @@ export class ShopStore {
     const code = rec && rec.code != null ? String(rec.code) : null;
     const row = this.getRow(col, rk);
     if (!row) {
+      if (this._ledgerOn && col === LEDGER_COLLECTION && rec && rec._deleted !== true) { rec = { ...rec }; if (Array.isArray(rec.variants)) rec.variants = rec.variants.map((v) => (v && typeof v === 'object' ? { ...v } : v)); stampLedgerEcho(rec); json = JSON.stringify(rec); }
       this.sql.exec('INSERT INTO records (col, rk, ts, upd, pos, seq, code, json, del) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         col, rk, this.timeOf(col, rec), upd, ++this.pos, ++this.seq, code, json, rec && rec._deleted === true ? 1 : 0);
       return true;
     }
+    // Same rule as mergeRecordsById: a stock movement is immutable once stored (its `_srv` stamp is the audit truth).
+    if (col === 'stockMovementLog' && row.del !== 1) return false;
     // Same rule as mergeRecordsById: for the lists in FINAL_TOMBSTONE_FIELDS (unique ids, never re-created) a tombstone is final.
     if (row.del === 1 && !(rec && rec._deleted === true) && rk.startsWith('id:') && FINAL_TOMBSTONE_FIELDS.includes(col)) return false;
     // Bills only move forward (see billProgress in _merge.js): the more advanced record wins whatever the times say.
     let forceReplace = false;
+    let forceNested = false;
     // Aqua POS products: each site's stock is merged by its own change time, not by the whole record (see mergeProductRecords).
     if (col === 'products' && row.del !== 1 && !(rec && rec._deleted === true)) {
       let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
@@ -99,6 +104,30 @@ export class ShopStore {
         rec = mergeProductRecords(stored, rec);
         upd = Number(rec && rec.updatedAt) || 0;
         json = JSON.stringify(rec);
+      }
+    }
+    // STOCK LEDGER, cheaply: an inventory record from a device keeps the SERVER's stock figures (see restoreLedgerStock) — decided
+    // here, per row, so a push carrying the whole inventory costs no more than before; items with new movements are then settled
+    // by ledgerAfter. Only parsed when this row would otherwise be written.
+    if (this._ledgerOn && col === LEDGER_COLLECTION && row.del !== 1 && !(rec && rec._deleted === true) && upd >= (row.upd || 0) && row.json !== json) {
+      let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
+      if (stored) {
+        rec = { ...rec };
+        if (Array.isArray(rec.variants)) rec.variants = rec.variants.map((v) => (v && typeof v === 'object' ? { ...v } : v));
+        restoreLedgerStock(stored, rec);
+        stampLedgerEcho(rec);
+        json = JSON.stringify(rec);
+      }
+    }
+    // tabs / cash shifts: orders & adjustments unioned, status only forward (same rule as mergeRecordsById)
+    if (NESTED_MERGE[col] && row.del !== 1 && !(rec && rec._deleted === true)) {
+      let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
+      if (stored) {
+        rec = mergeNestedRecord(col, stored, rec);
+        upd = Math.max(Number(rec && rec.updatedAt) || 0, row.upd || 0);
+        json = JSON.stringify(rec);
+        if (json === row.json) return false;
+        forceNested = true;
       }
     }
     if (col === 'bills' && row.del !== 1 && !(rec && rec._deleted === true)) {
@@ -109,7 +138,7 @@ export class ShopStore {
         if (c < 0) forceReplace = true;
       }
     }
-    if ((forceReplace || upd >= (row.upd || 0)) && row.json !== json) {
+    if ((forceReplace || forceNested || upd >= (row.upd || 0)) && row.json !== json) {
       this.sql.exec('UPDATE records SET ts = ?, upd = ?, seq = ?, code = ?, json = ?, del = ? WHERE col = ? AND rk = ?',
         this.timeOf(col, rec), upd, ++this.seq, code, json, rec && rec._deleted === true ? 1 : 0, col, rk);
       return true;
@@ -119,9 +148,14 @@ export class ShopStore {
 
   /* ---------- push ---------- */
   // body: the device's payload. Returns { updatedAt }.
-  push(body, serverNow = Date.now(), { preserveUpdatedAt = false } = {}) {
+  push(body, serverNow = Date.now(), { preserveUpdatedAt = false, ledger = !preserveUpdatedAt } = {}) {
     if (!preserveUpdatedAt) body = correctClockDrift(body, serverNow);
     return this.tx(() => {
+      // STOCK LEDGER (see applyStockLedger in _merge.js): note, BEFORE anything is written, which of this push's movements are new
+      // and what the touched items look like now — an /import (moving a shop in) is taken as-is and skips this.
+      this._ledgerOn = !!ledger;
+      const led = ledger ? this.ledgerBefore(body) : null;
+      const cells = ledger ? this.cellsBefore(body) : null;
       const prev = this.updatedAt() || 0;              // what the shop's record said BEFORE this push (the device uses it to know if it missed anything)
       const coreText = this.getCoreText();
       const existingCore = {};
@@ -133,7 +167,7 @@ export class ShopStore {
       const sentTimes = body._fieldTimes || {};
       const times = { ...storedTimes };
       for (const [k, v] of Object.entries(body)) {
-        if (k === 'updatedAt' || k === '_fieldTimes') continue;
+        if (k === 'updatedAt' || k === '_fieldTimes' || k === '_cells' || k === '_till' || k === 'tillNumbers' || k === '_dev' || k === 'deviceRegistry') continue;
         if (MERGE_BY_ID_FIELDS.includes(k) && Array.isArray(v)) continue;
         if (NEVER_BLANK_FIELDS.includes(k) && isBlank(v) && !isBlank(existingCore[k])) continue;
         const stored = storedTimes[k], sent = sentTimes[k];
@@ -142,6 +176,11 @@ export class ShopStore {
         this.setCore(k, v, coreText[k]);
       }
       if (Object.keys(times).length) this.setCore('_fieldTimes', times, coreText._fieldTimes);
+      // till numbers: handed out here only (see allocateTill in _merge.js)
+      const tills = allocateTill(existingCore.tillNumbers, body._till);
+      if (Object.keys(tills.map).length) this.setCore('tillNumbers', tills.map, coreText.tillNumbers);
+      const reg = noteDevice(existingCore.deviceRegistry, body._till, body._dev, tills.till);
+      if (reg) this.setCore('deviceRegistry', reg, coreText.deviceRegistry);
 
       // 2. merge every by-id collection, record by record
       for (const col of MERGE_BY_ID_FIELDS) {
@@ -159,9 +198,103 @@ export class ShopStore {
         }
       }
 
+      if (led) this.ledgerAfter(led, serverNow);
+      this._ledgerOn = false;
+      if (cells) this.cellsAfter(cells, serverNow);
+
       const updatedAt = preserveUpdatedAt && Number(body.updatedAt) ? Number(body.updatedAt) : serverNow;
       this.setCore('updatedAt', updatedAt, coreText.updatedAt);
-      return { updatedAt, prev };
+      return { updatedAt, prev, ledger: 1, ...(tills.till ? { till: tills.till } : {}) };
+    });
+  }
+
+  /* ---------- stock ledger (same rules as the KV backend: applyStockLedger) ---------- */
+  inChunks(list, fn, size = 200) { const out = []; for (let i = 0; i < list.length; i += size) out.push(...fn(list.slice(i, i + size))); return out; }
+  ledgerBefore(body) {
+    const col = LEDGER_COLLECTION;
+    if (!Array.isArray(body[col]) && !Array.isArray(body.stockMovementLog)) return null;
+    const ids = [...new Set((Array.isArray(body.stockMovementLog) ? body.stockMovementLog : []).filter((m) => m && m.id != null).map((m) => 'id:' + m.id))];
+    const stored = new Set(this.inChunks(ids, (c) => this.q(`SELECT rk FROM records WHERE col = 'stockMovementLog' AND rk IN (${c.map(() => '?').join(',')})`, ...c)).map((r) => r.rk));
+    const newMoves = newLedgerMoves(body.stockMovementLog, (id) => stored.has('id:' + id));
+    // same rule as the single-record backend: only a shop that keeps an `inventory` list has an inventory ledger (Aqua keeps
+    // `products` — see cellsBefore), so an Aqua movement is never marked "item not found" here
+    if (!Array.isArray(body[col]) && this.q('SELECT 1 AS x FROM records WHERE col = ? LIMIT 1', col).length === 0) return null;
+    // only the items that have NEW movements need the full ledger: every other record's stock was already kept by upsert()
+    const codes = new Set();
+    newMoves.forEach((m) => codes.add(String(m.code)));
+    if (codes.size === 0) return null;
+    const list = [...codes];
+    const rows = this.inChunks(list, (c) => this.q(`SELECT rk, json FROM records WHERE col = ? AND del = 0 AND code IN (${c.map(() => '?').join(',')})`, col, ...c));
+    const found = new Set(rows.map((r) => { try { return String(JSON.parse(r.json).code); } catch (e) { return ''; } }));
+    // a movement can name a VARIANT's code, which lives inside its parent's record: bring in the variant-bearing records too
+    if (newMoves.some((m) => !found.has(String(m.code)))) {
+      const have = new Set(rows.map((r) => r.rk));
+      this.q("SELECT rk, json FROM records WHERE col = ? AND del = 0 AND json LIKE '%\"variants\":[{%'", col).forEach((r) => { if (!have.has(r.rk)) rows.push(r); });
+    }
+    return { existing: rows.map((r) => JSON.parse(r.json)), codes: list, rks: rows.map((r) => r.rk), newMoves, newIds: new Set(newMoves.map((m) => String(m.id))) };
+  }
+  // Aqua stock cells (see applyCellLedger): same before/after pattern, per collection, records addressed by their key (= rk).
+  cellsBefore(body) {
+    if (!cellLedgerPush(body)) return null;           // an older Aqua app: previous merge rules (see cellLedgerPush in _merge.js)
+    if (!Array.isArray(body.stockMovementLog) && !Object.keys(CELL_SPECS).some((c) => Array.isArray(body[c]))) return null;
+    const ids = [...new Set((Array.isArray(body.stockMovementLog) ? body.stockMovementLog : []).filter((m) => m && m.id != null && m.cell).map((m) => 'id:' + m.id))];
+    const stored = new Set(this.inChunks(ids, (c) => this.q(`SELECT rk FROM records WHERE col = 'stockMovementLog' AND rk IN (${c.map(() => '?').join(',')})`, ...c)).map((r) => r.rk));
+    const moves = newCellMoves(body.stockMovementLog, (id) => stored.has('id:' + id));
+    const jobs = [];
+    for (const col of Object.keys(CELL_SPECS)) {
+      const keys = new Set();
+      (Array.isArray(body[col]) ? body[col] : []).forEach((r) => { const k = recordKey(r); if (k != null) keys.add(k); });
+      const mine = moves.filter((m) => m.cell.c === col);
+      mine.forEach((m) => keys.add(String(m.cell.k)));
+      if (keys.size === 0) continue;
+      const rks = [...keys];
+      const rows = this.inChunks(rks, (c) => this.q(`SELECT rk, json FROM records WHERE col = ? AND del = 0 AND rk IN (${c.map(() => '?').join(',')})`, col, ...c));
+      jobs.push({ col, rks, existing: rows.map((r) => JSON.parse(r.json)), moves: mine });
+    }
+    return jobs.length ? { jobs, newIds: new Set(moves.map((m) => String(m.id))) } : null;
+  }
+  cellsAfter(cells, serverNow) {
+    for (const job of cells.jobs) {
+      const rows = this.inChunks(job.rks, (c) => this.q(`SELECT rk, json FROM records WHERE col = ? AND del = 0 AND rk IN (${c.map(() => '?').join(',')})`, job.col, ...c));
+      const res = applyCellLedger({
+        col: job.col, existingArr: job.existing, mergedArr: rows.map((r) => JSON.parse(r.json)), newMoves: job.moves, serverNow,
+        laterMoves: (cell, T) => this.q("SELECT json FROM records WHERE col = 'stockMovementLog' AND del = 0 AND ts > ? AND json LIKE '%\"cell\":%'", Math.floor(T))
+          .map((r) => JSON.parse(r.json)).filter((m) => !cells.newIds.has(String(m.id)) && m.cell && sameCell(m.cell, cell)),
+      });
+      res.arr.forEach((rec, i) => {
+        const json = JSON.stringify(rec);
+        if (json !== rows[i].json) this.sql.exec('UPDATE records SET seq = ?, json = ? WHERE col = ? AND rk = ?', ++this.seq, json, job.col, rows[i].rk);
+      });
+      res.notes.forEach((srv, id) => {
+        const row = this.getRow('stockMovementLog', 'id:' + id);
+        if (!row) return;
+        this.sql.exec('UPDATE records SET seq = ?, json = ? WHERE col = ? AND rk = ?', ++this.seq, JSON.stringify({ ...JSON.parse(row.json), _srv: srv }), 'stockMovementLog', 'id:' + id);
+      });
+    }
+  }
+  ledgerAfter(led, serverNow) {
+    const col = LEDGER_COLLECTION;
+    // every record the push could have touched: the ones it named (new ones included) and the ones read before it
+    const rows = this.inChunks(led.codes, (c) => this.q(`SELECT rk, json FROM records WHERE col = ? AND del = 0 AND code IN (${c.map(() => '?').join(',')})`, col, ...c));
+    const have = new Set(rows.map((r) => r.rk));
+    const extra = led.rks.filter((rk) => !have.has(rk));
+    rows.push(...this.inChunks(extra, (c) => this.q(`SELECT rk, json FROM records WHERE col = ? AND del = 0 AND rk IN (${c.map(() => '?').join(',')})`, col, ...c)));
+    const merged = rows.map((r) => JSON.parse(r.json));
+    const res = applyStockLedger({
+      existingInv: led.existing, mergedInv: merged, newMoves: led.newMoves, serverNow,
+      laterMoves: (code, unit, T) => this.q("SELECT json FROM records WHERE col = 'stockMovementLog' AND del = 0 AND code = ? AND ts > ?", code, Math.floor(T))
+        .map((r) => JSON.parse(r.json))
+        .filter((m) => !led.newIds.has(String(m.id)) && (m.unit === 'pieceQty' ? 'pieceQty' : 'qty') === unit),
+    });
+    res.inventory.forEach((rec, i) => {
+      const json = JSON.stringify(rec);
+      if (json !== rows[i].json) this.sql.exec('UPDATE records SET seq = ?, json = ? WHERE col = ? AND rk = ?', ++this.seq, json, col, rows[i].rk);
+    });
+    res.notes.forEach((srv, id) => {
+      const row = this.getRow('stockMovementLog', 'id:' + id);
+      if (!row) return;
+      const m = JSON.parse(row.json);
+      this.sql.exec('UPDATE records SET seq = ?, json = ? WHERE col = ? AND rk = ?', ++this.seq, JSON.stringify({ ...m, _srv: srv }), 'stockMovementLog', 'id:' + id);
     });
   }
 
@@ -182,6 +315,7 @@ export class ShopStore {
     }
     if (!parts.some((x) => x.startsWith('"updatedAt":'))) parts.unshift('"updatedAt":0');
     if (cutoff != null) parts.push('"_hotFrom":' + Math.floor(cutoff));      // the big logs above only start here; older history: /api/history
+    parts.push('"_ledger":1');                                                // stock movements are applied once here (see applyStockLedger)
     return '{' + parts.join(',') + '}';
   }
 
@@ -244,19 +378,19 @@ export class ShopStore {
       must(st.businessName === 'Self-test' && st.inventory.length === 1 && st.salesLog.length === 2 && st.staff.length === 1, 'state read back does not match what was pushed');
       must(JSON.parse(this.stateText(120)).salesLog.length === 1, 'the recent window did not exclude the 400-day-old sale');
     });
-    await step('two tills selling offline: the later push wins the whole record', async () => {
+    await step('two tills selling offline: both sales come off, a retry changes nothing (stock ledger)', async () => {
       // a real sale is stamped BEFORE the server sees it, so each movement is created a few ms after the previous push
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const mv = (id, delta) => ({ id, code: 'A', delta, timestamp: new Date().toISOString(), type: 'removed' });
       await sleep(8);
       this.push({ inventory: [{ code: 'A', qty: 4, price: 9, updatedAt: now + 10 }], stockMovementLog: [mv('m1', -1)] }, now + 20);
       await sleep(8);
-      this.push({ inventory: [{ code: 'A', qty: 4, price: 9, updatedAt: now + 30 }], stockMovementLog: [mv('m2', -1)] }, now + 40);
+      const second = { inventory: [{ code: 'A', qty: 4, price: 9, updatedAt: now + 30 }], stockMovementLog: [mv('m2', -1)] };
+      this.push(second, now + 40);
+      this.push(second, now + 50);                    // the same request again (its reply was lost)
       const q = JSON.parse(this.stateText(null)).inventory[0].qty;
-      // Both tills independently computed "5 - 1 = 4" (neither saw the other's sale); the second push has the
-      // newer updatedAt, so its whole record wins outright — same rule as every other synced field (see _merge.js).
-      // Both sales are still in stockMovementLog for the audit trail; the live qty reflects the later push only.
-      must(q === 4, `expected the later push's stock of 4 to win, got ${q}`);
+      // Both tills computed "5 - 1 = 4" from a stale base; the server ignores those numbers and applies each movement once.
+      must(q === 3, `expected 5 - 1 - 1 = 3, got ${q}`);
     });
     await step('bulk load 5,000 sales, then one more', () => {
       const t0 = Date.now();
@@ -314,6 +448,9 @@ export class ShopStore {
         case '/changes': return text(this.changesText(body.cursor));
         case '/history': return json(this.history(body.col, body.from, body.to, body.limit, body.after));
         case '/stats': return json(this.stats());
+        // only the two password hashes (device pairing checks the shop password against them — see device-pair.js)
+        case '/registry': return json(this.getCore().deviceRegistry || {});
+        case '/secrets': { const c = this.getCore(); return json({ pwHash: c.pwHash || '', adminPwHash: c.adminPwHash || '' }); }
         case '/selftest': return json(await this.selfTest());
         // Point-in-time recovery (Cloudflare keeps 30 days for SQLite-backed Durable Objects). UNTESTED here — it needs the real
         // runtime; see STAGING_SETUP.md before relying on it. /bookmark reports where "now" is; /restore rewinds to a time.

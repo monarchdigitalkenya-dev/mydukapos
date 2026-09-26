@@ -46,7 +46,7 @@ export async function onRequest(context) {
   const url = new URL(request.url);
   if (url.pathname !== '/') return next();
 
-  const hostname = hostnameFromRequest(request);
+  const hostname = hostnameFromRequest(request, env);
   const rootDomain = getRootDomain(env);
   const label = subdomainLabel(hostname, rootDomain);
 

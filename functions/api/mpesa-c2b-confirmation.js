@@ -75,7 +75,12 @@ export async function onRequestPost(context) {
     receivedAt: Date.now(),
   };
 
-  await env.mydukapos_kv.put(tillPaymentKey(clientId, transId), JSON.stringify(record));
+  // IDEMPOTENT: providers re-send the same notification (a timeout on their side, a retry). The first copy is the payment; a
+  // repeat must not overwrite it — that reset `matched` to false, so a payment already attached to a sale showed as unused again
+  // and could be attached to a second sale — and must not add the id to the index twice.
+  const already = await env.mydukapos_kv.get(tillPaymentKey(clientId, transId));
+  const isRepeat = !!already;
+  if (!isRepeat) await env.mydukapos_kv.put(tillPaymentKey(clientId, transId), JSON.stringify(record));
 
   // Maintain a small index of recent till-payment ids so the Settings panel
   // can list them without needing a KV list-by-prefix scan on every load —
@@ -83,8 +88,10 @@ export async function onRequestPost(context) {
   try {
     const idxRaw = await env.mydukapos_kv.get(tillPaymentIndexKey(clientId));
     const idx = idxRaw ? JSON.parse(idxRaw) : [];
-    idx.unshift(transId);
-    await env.mydukapos_kv.put(tillPaymentIndexKey(clientId), JSON.stringify(idx.slice(0, 100)));
+    if (!isRepeat && !idx.includes(transId)) {
+      idx.unshift(transId);
+      await env.mydukapos_kv.put(tillPaymentIndexKey(clientId), JSON.stringify(idx.slice(0, 100)));
+    }
   } catch (e) {
     // Index update failing shouldn't fail the confirmation itself — the
     // payment record above is already safely saved either way.

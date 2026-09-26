@@ -57,6 +57,8 @@ export async function onRequestPost(context) {
   const kvKey = txKey(clientId, checkoutId);
   const existingRaw = await env.mydukapos_kv.get(kvKey);
   const existing = existingRaw ? JSON.parse(existingRaw) : {};
+  // A completed payment is final: a repeated or late notification never turns it back into "failed" (or re-stamps it).
+  if (existing.status === 'success') return ack();
 
   const statusText = (data.status || data.Status || data.TransactionStatus || '').toString().toLowerCase();
   const succeeded = String(data.ResponseCode) === '0'

@@ -107,7 +107,9 @@ test('water/index.html: X Report and Z Report agree with Daily Sales on the same
 test('water/index.html: finalizing a Z Report requires the management password (or Manager PIN), not a bare click', async () => {
   const b = await bootWithSale({ aqua_admin_pw_hash: '' });
   const { w } = b;
-  w.eval('requestFinalizeZReport()');
+  // (the "sync first" step before finalizing is covered in tests/multi-till.test.mjs; this test is about the password)
+  w.eval('zReportPreflight = async () => true');
+  await w.eval('requestFinalizeZReport()');
   assert.equal(w.document.getElementById('admin-pw-modal').style.display, 'flex', 'the management-password modal must open rather than finalizing immediately');
   assert.equal(w.eval('zReports.length'), 0);
   b.close();

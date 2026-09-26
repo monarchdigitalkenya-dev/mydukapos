@@ -17,6 +17,8 @@
 // never a dependency for correctness.
 
 import { requireValidLicense } from './_license.js';
+import { deviceGuard } from './_device-auth.js';
+import { corsHeadersFor } from './_cors.js';
 
 export async function onRequestGet(context) {
   const { request, env } = context;
@@ -33,6 +35,9 @@ export async function onRequestGet(context) {
       headers: { 'Content-Type': 'application/json' },
     });
   }
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, license.clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   if (!env.SYNC_ROOM) {
     // Binding not configured yet (see wrangler.toml's comment) — fail

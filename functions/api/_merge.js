@@ -101,6 +101,35 @@ export function mergeProductRecords(stored, incoming) {
   return out;
 }
 
+// RECORDS THAT GROW BY APPENDING (zip 119). A hotel tab collects orders from several tills; a cashier shift collects manager
+// adjustments. Newest-whole-record-wins lost one till's order (or one manager's adjustment) whenever two landed in the same sync
+// window, and a stale copy could re-open a closed tab/shift or put an approval back to "pending". Now: the listed arrays are
+// unioned by id (nothing in them is ever removed), the status only moves forward, and a decided approval is never undone.
+export const NESTED_MERGE = {
+  tabs: { arrays: ['orders'], status: { OPEN: 0, CLOSED: 1, VOID: 2 } },
+  cashShifts: { arrays: ['adjustments'], status: { open: 0, closed: 1 } },
+};
+export function mergeNestedRecord(field, stored, incoming) {
+  const spec = NESTED_MERGE[field];
+  const st = Number(stored && stored.updatedAt) || 0, it = Number(incoming && incoming.updatedAt) || 0;
+  let base = it >= st ? incoming : stored;
+  const other = base === incoming ? stored : incoming;
+  const rank = (r) => (r && spec.status[r.status] !== undefined ? spec.status[r.status] : -1);
+  if (rank(other) > rank(base)) base = other;                                   // the further-along record decides the rest
+  const out = { ...base };
+  spec.arrays.forEach((f) => {
+    const a = Array.isArray(base[f]) ? base[f] : [], b = Array.isArray(base === stored ? incoming[f] : stored[f]) ? (base === stored ? incoming[f] : stored[f]) : [];
+    const seen = new Set(a.map((x) => (x && x.id != null ? String(x.id) : null)).filter(Boolean));
+    const extra = b.filter((x) => x && x.id != null && !seen.has(String(x.id)));
+    if (extra.length || Array.isArray(base[f])) out[f] = a.concat(extra);
+  });
+  if (field === 'cashShifts') {
+    const decided = (r) => r && r.approval && (r.approval.status === 'approved' || r.approval.status === 'rejected');
+    if (!decided(out) && decided(other)) out.approval = other.approval;
+  }
+  return out;
+}
+
 export function mergeRecordsById(existingArr, incomingArr, finalTombstones = false, field = '') {
   if (!Array.isArray(incomingArr)) return existingArr;
   if (!Array.isArray(existingArr) || existingArr.length === 0) return incomingArr;
@@ -129,11 +158,15 @@ export function mergeRecordsById(existingArr, incomingArr, finalTombstones = fal
       continue;
     }
     if (finalTombstones && existing._deleted === true && incoming._deleted !== true && key.startsWith('id:')) continue;   // a deleted record stays deleted
+    // A stock movement is an immutable event: once the server has it (and has stamped what it did with it, `_srv`), no later
+    // copy — a retry, a refresh re-sending everything, a device that never pulled the stamp — may replace it.
+    if (field === 'stockMovementLog' && existing._deleted !== true) continue;
     if (field === 'bills' && existing._deleted !== true && incoming._deleted !== true) {
       const c = compareBillProgress(existing, incoming);
       if (c > 0) continue;                                  // the stored bill is further along: keep it
       if (c < 0) { merged.set(key, incoming); continue; }   // the incoming one is: take it, even if its time is older
     }
+    if (NESTED_MERGE[field] && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeNestedRecord(field, existing, incoming)); continue; }
     const existingTs = existing.updatedAt || 0;
     const incomingTs = incoming.updatedAt || 0;
     merged.set(key, field === 'products' ? mergeProductRecords(existing, incoming) : (incomingTs >= existingTs ? incoming : existing));
@@ -211,6 +244,9 @@ export const MERGE_BY_ID_FIELDS = [
   'radiologyOrders',
   // Hospital theatre / procedure cases.
   'theatreCases',
+  // Aqua POS raw materials (caps, labels, preforms ...). Were replaced as ONE whole list, so any device's push put back every
+  // other device's material edits and stock counts. Now per record (its stock is ledger-managed: see CELL_SPECS).
+  'rawMaterials',
 ];
 
 // --- Quantity reconciliation (fixes the lost-update problem) ---------------
@@ -313,6 +349,362 @@ export function reconcileQuantities(existingArr, mergedArr, mergedLog) {
   return mergedArr;
 }
 
+// ============================================================================================================================
+// STOCK LEDGER (zip 118) — the server owns every stock quantity; each stock movement is applied EXACTLY ONCE.
+// ============================================================================================================================
+// THE BUG THIS FIXES. Quantities used to sync as plain numbers, whole record, newest `updatedAt` wins. Every till kept its own
+// copy of the number and pushed it back. So:
+//   * REVERT — till A counts 120 (stock take). Till B, which has not pulled yet, sells one: its record says 99 with a NEWER
+//     time, wins the merge, and the count is gone (100 - 1 = 99 instead of 120 - 1 = 119).
+//   * WRONG TOTALS — two tills each selling from the same starting number: one sale is lost, stock reads too high.
+//   * REPEATED ADDITION — the additive "reconciliation" that tried to paper over that (removed from this file in zip 76, but
+//     still running inside any wildcard-router / per-shop database deployed before zip 76) re-added movement deltas on top of
+//     numbers that already contained them.
+// THE MODEL NOW.
+//   * The number a device sends for an EXISTING item's `qty` / `pieceQty` (and a variant's `qty`) is IGNORED. The server keeps
+//     its own, and changes it only by applying stock movements (stockMovementLog entries) it has NOT seen before — matched by
+//     the movement's immutable `id`. The same movement arriving twice (retry, refresh, offline resend, second device, lost
+//     reply) is already stored, so it is skipped: one logical action = one stock change.
+//   * A movement is a DELTA (sale -1, restock +20 ...) — except a stock-take COUNT (`kind: 'count'`), which is ABSOLUTE:
+//     "at time T there were N". A count sets the stock to N plus whatever the server already applied that happened AFTER T.
+//     Any movement stamped at or before the item's latest count (an offline till's sale arriving late) is recorded for the
+//     audit but does NOT move the stock again — the count already includes it. An older count arriving after a newer one is
+//     recorded as superseded. So two devices counting, a stale device, or a replay can never stack a count twice.
+//   * What the server did is stamped on the movement: `_srv = { applied, before, after, sv, at, reason?, stale? }` — the audit
+//     truth (previous authoritative quantity -> final). `_sv` on the item is its stock version (+1 per applied change); `_sq` /
+//     `_sp` echo the authoritative qty / pieceQty the device last received (devices use them to spot local changes that
+//     were never logged — see reconcileLocalStockChanges in src/shared/functions.js); `_ct` = time of the latest count per unit.
+//   * A brand-new item (not on the server yet) is taken as sent — its movements in the same push are already in that number.
+//   * Batch-tracked items (pharmacy/hospital `batches`) have their batches brought back in line with the authoritative qty:
+//     shortfalls come off the soonest-expiring batch first, surpluses become one "Stock adjustment" batch.
+// Only `inventory` is ledger-managed. Aqua POS `products` (per-site stock) keep their own per-site merge above.
+export const LEDGER_COLLECTION = 'inventory';
+const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+export function moveTime(m) {
+  if (!m) return 0;
+  const t = typeof m.timestamp === 'number' ? m.timestamp : Date.parse(m.timestamp);
+  return Number.isFinite(t) ? t : 0;
+}
+const moveUnit = (m) => (m && m.unit === 'pieceQty' ? 'pieceQty' : 'qty');
+export function isLedgerMove(m) {
+  if (!m || typeof m !== 'object' || m.id == null || m.code == null || m._deleted === true) return false;
+  if (m.kind === 'count') return m.counted !== null && m.counted !== '' && Number.isFinite(Number(m.counted));
+  return typeof m.delta === 'number' && Number.isFinite(m.delta) && m.delta !== 0;
+}
+// How much a STORED movement actually changed the stock (for "what happened after this count").
+export function effectiveMoveDelta(m) {
+  if (!m) return 0;
+  if (m._srv && typeof m._srv === 'object') {
+    if (m._srv.applied === false) return 0;
+    if (typeof m._srv.after === 'number' && typeof m._srv.before === 'number') return m._srv.after - m._srv.before;
+  }
+  if (m.kind === 'count') return 0;
+  return typeof m.delta === 'number' && Number.isFinite(m.delta) ? m.delta : 0;
+}
+const hasVariantList = (r) => !!(r && r.hasVariants && Array.isArray(r.variants) && r.variants.length > 0);
+
+// Authoritative stock comes from the server, never from the device's copy: puts the stored record's stock fields (qty, pieceQty,
+// each variant's qty, and the ledger's own _sv/_ct) onto `rec` IN PLACE (rec.variants must already be rec's own copies). Returns the
+// codes of variants that are new on the server (their figure is taken as sent). Also used by the per-shop database's upsert.
+export function restoreLedgerStock(ex, rec) {
+  const freshVariants = [];
+  for (const u of ['qty', 'pieceQty']) { if (typeof ex[u] === 'number') rec[u] = ex[u]; }
+  for (const f of ['_sv', '_ct']) { if (ex[f] !== undefined) rec[f] = ex[f]; else delete rec[f]; }
+  if (Array.isArray(rec.variants)) {
+    const exV = new Map((Array.isArray(ex.variants) ? ex.variants : []).filter((v) => v && v.code != null).map((v) => [String(v.code), v]));
+    rec.variants.forEach((v) => {
+      if (!v || v.code == null) return;
+      const e = exV.get(String(v.code));
+      if (!e) { freshVariants.push(String(v.code)); return; }
+      if (typeof e.qty === 'number') v.qty = e.qty;
+      for (const f of ['_sv', '_ct']) { if (e[f] !== undefined) v[f] = e[f]; else delete v[f]; }
+    });
+    if (hasVariantList(rec)) rec.qty = r3(rec.variants.reduce((s, v) => s + (Number(v && v.qty) || 0), 0));
+  }
+  return freshVariants;
+}
+// The authoritative figures echoed to devices (see _sq above).
+export function stampLedgerEcho(rec) {
+  if (typeof rec.qty === 'number') rec._sq = rec.qty;
+  if (typeof rec.pieceQty === 'number') rec._sp = rec.pieceQty; else delete rec._sp;
+  (rec.variants || []).forEach((v) => { if (v && typeof v.qty === 'number') v._sq = v.qty; });
+}
+
+// existingInv: the server's inventory BEFORE this push (at least every record the push touches; variant parents included).
+// mergedInv:   the same records AFTER the ordinary per-record merge (so names/prices etc. are already resolved).
+// newMoves:    movements in this push the server has never stored (callers filter by id), any order.
+// laterMoves(code, unit, T): stored movements (from BEFORE this push) of that code/unit stamped after T.
+// Returns { inventory, notes: Map(moveId -> _srv), changed: Set(code of every record whose stock fields were set) }.
+export function applyStockLedger({ existingInv, mergedInv, newMoves, laterMoves, serverNow = Date.now() }) {
+  const exByCode = new Map();
+  (Array.isArray(existingInv) ? existingInv : []).forEach((r) => { if (r && r.code != null && r._deleted !== true) exByCode.set(String(r.code), r); });
+  const notes = new Map();
+  const changed = new Set();
+  const fresh = new Set();                                    // codes (item or variant) that are new on the server in this push
+  const byCode = new Map();                                   // code -> { rec, variant }
+  // codes that new movements name (a variant's code counts for its parent below) — records outside it can take the fast path
+  const moveCodes = new Set((Array.isArray(newMoves) ? newMoves : []).map((m) => String(m && m.code)));
+  const out = (Array.isArray(mergedInv) ? mergedInv : []).map((r) => {
+    if (!r || r.code == null || r._deleted === true) return r;
+    const ex0 = exByCode.get(String(r.code));
+    // FAST PATH (most records of most pushes): not named by any new movement, no variants/batches, and already carrying exactly the
+    // server's stock figures and echo — nothing to restore or stamp, so no copy is made.
+    if (ex0 && !moveCodes.has(String(r.code)) && !Array.isArray(r.variants) && !Array.isArray(r.batches)
+        && r.qty === ex0.qty && r.pieceQty === ex0.pieceQty && r._sv === ex0._sv && r._ct === ex0._ct
+        && r._sq === (typeof r.qty === 'number' ? r.qty : undefined) && r._sp === (typeof r.pieceQty === 'number' ? r.pieceQty : undefined)) {
+      byCode.set(String(r.code), { rec: r, variant: null, shared: true });
+      return r;
+    }
+    const rec = { ...r };
+    if (Array.isArray(rec.variants)) rec.variants = rec.variants.map((v) => (v && typeof v === 'object' ? { ...v } : v));
+    const ex = exByCode.get(String(rec.code));
+    if (!ex) {
+      fresh.add(String(rec.code));
+      (rec.variants || []).forEach((v) => { if (v && v.code != null) fresh.add(String(v.code)); });
+    } else {
+      restoreLedgerStock(ex, rec).forEach((c) => fresh.add(c));
+    }
+    byCode.set(String(rec.code), { rec, variant: null });
+    (rec.variants || []).forEach((v) => { if (v && v.code != null && !byCode.has(String(v.code))) byCode.set(String(v.code), { rec, variant: v }); });
+    return rec;
+  });
+
+  const moves = (Array.isArray(newMoves) ? newMoves : []).filter(isLedgerMove).slice()
+    .sort((a, b) => (moveTime(a) - moveTime(b)) || String(a.id).localeCompare(String(b.id)));
+  const touchedParents = new Set();
+  for (const m of moves) {
+    const code = String(m.code);
+    const tgt = byCode.get(code);
+    if (!tgt) { notes.set(String(m.id), { applied: false, reason: 'no-item', at: serverNow }); continue; }
+    const obj = tgt.variant || tgt.rec;
+    const unit = moveUnit(m);
+    if (fresh.has(code)) { notes.set(String(m.id), { applied: true, reason: 'initial', after: r3(obj[unit]), at: serverNow }); continue; }
+    if (!tgt.variant && hasVariantList(tgt.rec)) {            // a variant parent's own qty is only ever the sum of its variants
+      notes.set(String(m.id), { applied: false, reason: 'variant-parent', at: serverNow }); continue;
+    }
+    const cur = r3(obj[unit]);
+    const svBefore = Number(obj._sv) || 0;
+    const T = moveTime(m);
+    const lastCount = (obj._ct && typeof obj._ct === 'object' && Number(obj._ct[unit])) || 0;
+    const stale = m.baseSv != null && Number(m.baseSv) !== svBefore;
+    if (T && lastCount && T <= lastCount) {
+      notes.set(String(m.id), { applied: false, reason: m.kind === 'count' ? 'older-count' : 'before-count', before: cur, after: cur, sv: svBefore, at: serverNow, ...(stale ? { stale: true } : {}) });
+      continue;
+    }
+    let after;
+    if (m.kind === 'count') {
+      const later = typeof laterMoves === 'function' ? (laterMoves(code, unit, T) || []) : [];
+      after = r3(Number(m.counted) + later.reduce((s, x) => s + effectiveMoveDelta(x), 0));
+      if (T) obj._ct = { ...(obj._ct && typeof obj._ct === 'object' ? obj._ct : {}), [unit]: T };
+    } else {
+      after = r3(cur + m.delta);
+    }
+    obj[unit] = after;
+    obj._sv = svBefore + 1;
+    notes.set(String(m.id), { applied: true, before: cur, after, sv: obj._sv, at: serverNow, ...(m.kind === 'count' ? { kind: 'count' } : {}), ...(stale ? { stale: true } : {}) });
+    changed.add(String(tgt.rec.code));
+    if (tgt.variant) touchedParents.add(tgt.rec);
+  }
+  touchedParents.forEach((p) => { p.qty = r3(p.variants.reduce((s, v) => s + (Number(v && v.qty) || 0), 0)); });
+
+  // Echo the authoritative figures (see _sq above) and keep batch-tracked items consistent with them.
+  const shared = new Set([...byCode.values()].filter((x) => x.shared).map((x) => x.rec));
+  out.forEach((rec) => {
+    if (!rec || rec.code == null || rec._deleted === true || shared.has(rec)) return;
+    stampLedgerEcho(rec);
+    if (Array.isArray(rec.batches) && rec.batches.length > 0 && !fresh.has(String(rec.code))) {
+      const sum = r3(rec.batches.reduce((s, b) => s + (Number(b && b.qty) || 0), 0));
+      let diff = r3((Number(rec.qty) || 0) - sum);
+      if (diff !== 0) {
+        let batches = rec.batches.map((b) => ({ ...b }));
+        if (diff < 0) {
+          batches.sort((a, b) => String(a.expiryDate || '9999').localeCompare(String(b.expiryDate || '9999')));
+          for (const b of batches) { if (diff >= 0) break; const take = Math.min(Number(b.qty) || 0, -diff); b.qty = r3((Number(b.qty) || 0) - take); diff = r3(diff + take); }
+          batches = batches.filter((b) => (Number(b.qty) || 0) > 0);
+        } else {
+          batches.push({ id: `adj-${rec.code}-${Number(rec._sv) || 0}`, batchNumber: 'Stock adjustment', expiryDate: '9999-12-31', qty: diff });
+        }
+        rec.batches = batches;
+        if (batches.length) rec.expiryDate = batches.reduce((mn, b) => (String(b.expiryDate) < String(mn) ? b.expiryDate : mn), batches[0].expiryDate);
+        changed.add(String(rec.code));
+      }
+    }
+  });
+  return { inventory: out, notes, changed };
+}
+
+// ============================================================================================================================
+// AQUA POS STOCK CELLS (zip 118b) — the same ledger for Aqua's stock, which is not one `qty` per item but:
+//   products[].stock[siteId]              finished goods at each site (Production, every Shop branch)
+//   products[].bottleStockBySite[siteId]  loose-bottle count of a bottle-tracked bale at each site
+//   tanks[].currentVolumeLiters           water in each tank (tanks belong to a site)
+//   rawMaterials[].stockQty               caps, labels, preforms ... (each record belongs to a site)
+// Each of those numbers is a CELL. A cell movement names it — { cell: { c: collection, k: record key, f: field, s?: site } } —
+// and is either a delta or an absolute count (`kind: 'count'`), with its own immutable id, applied once, exactly like
+// applyStockLedger: the numbers a device sends for cells the server already has are ignored; a count sets the cell and makes
+// movements stamped before it no-ops; `_srv` records before -> after. Aqua never shows stock below zero, so cells stop at 0
+// (the audit keeps the real before/after). The server echoes its figures per record in `_ss` ({ field: n | { site: n } }).
+export const CELL_SPECS = {
+  products: { maps: ['stock', 'bottleStockBySite'] },
+  tanks: { scalars: ['currentVolumeLiters'] },
+  rawMaterials: { scalars: ['stockQty'] },
+};
+const cellIdOf = (cell) => (cell.s != null ? `${cell.f}|${cell.s}` : String(cell.f));
+export function isCellMove(m) {
+  if (!m || typeof m !== 'object' || m.id == null || m._deleted === true || !m.cell || typeof m.cell !== 'object') return false;
+  const spec = CELL_SPECS[m.cell.c];
+  if (!spec || m.cell.k == null) return false;
+  const isMap = (spec.maps || []).includes(m.cell.f), isScalar = (spec.scalars || []).includes(m.cell.f);
+  if (!(isMap && m.cell.s != null) && !(isScalar && m.cell.s == null)) return false;
+  if (m.kind === 'count') return m.counted !== null && m.counted !== '' && Number.isFinite(Number(m.counted));
+  return typeof m.delta === 'number' && Number.isFinite(m.delta) && m.delta !== 0;
+}
+export function sameCell(a, b) {
+  return !!(a && b && a.c === b.c && String(a.k) === String(b.k) && a.f === b.f && String(a.s ?? '') === String(b.s ?? ''));
+}
+export function cellLedgerPush(body) {
+  return !!(body && (body._cells === 1 || (Array.isArray(body.stockMovementLog) && body.stockMovementLog.some((m) => m && m.cell))));
+}
+export function newCellMoves(incomingLog, isStored) {
+  const seen = new Set();
+  return (Array.isArray(incomingLog) ? incomingLog : []).filter((m) => {
+    if (!isCellMove(m)) return false;
+    const id = String(m.id);
+    if (seen.has(id) || isStored(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+// col: 'products' | 'tanks' | 'rawMaterials'. existingArr / mergedArr / newMoves / laterMoves(cell, T) as in applyStockLedger.
+export function applyCellLedger({ col, existingArr, mergedArr, newMoves, laterMoves, serverNow = Date.now() }) {
+  const spec = CELL_SPECS[col];
+  const notes = new Map();
+  if (!spec || !Array.isArray(mergedArr)) return { arr: mergedArr, notes };
+  const exByKey = new Map();
+  (Array.isArray(existingArr) ? existingArr : []).forEach((r) => { const k = recordKey(r); if (k != null && r._deleted !== true) exByKey.set(k, r); });
+  const fresh = new Set();                                             // "<record key>#<cell id>" of cells new on the server
+  const byKey = new Map();
+  const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  const arr = mergedArr.map((r) => {
+    const key = recordKey(r);
+    if (!r || key == null || r._deleted === true) return r;
+    const rec = { ...r };
+    const ex = exByKey.get(key);
+    (spec.maps || []).forEach((f) => {
+      const inc = isObj(rec[f]) ? rec[f] : {};
+      const out = { ...inc };
+      const exMap = ex && isObj(ex[f]) ? ex[f] : null;
+      Object.keys(inc).forEach((site) => { if (!exMap || typeof exMap[site] !== 'number') fresh.add(`${key}#${f}|${site}`); });
+      if (exMap) Object.keys(exMap).forEach((site) => { if (typeof exMap[site] === 'number') out[site] = exMap[site]; });
+      if (isObj(rec[f]) || exMap) rec[f] = out;
+    });
+    (spec.scalars || []).forEach((f) => {
+      if (ex && typeof ex[f] === 'number') rec[f] = ex[f];
+      else fresh.add(`${key}#${f}`);
+    });
+    if (ex) { for (const f of ['_sv', '_ct']) { if (ex[f] !== undefined) rec[f] = ex[f]; else delete rec[f]; } }
+    byKey.set(key, rec);
+    return rec;
+  });
+  const moves = (Array.isArray(newMoves) ? newMoves : []).filter((m) => isCellMove(m) && m.cell.c === col).slice()
+    .sort((a, b) => (moveTime(a) - moveTime(b)) || String(a.id).localeCompare(String(b.id)));
+  for (const m of moves) {
+    const rec = byKey.get(String(m.cell.k));
+    if (!rec) { notes.set(String(m.id), { applied: false, reason: 'no-item', at: serverNow }); continue; }
+    const cid = cellIdOf(m.cell);
+    const isMap = m.cell.s != null;
+    const read = () => (isMap ? (isObj(rec[m.cell.f]) ? Number(rec[m.cell.f][m.cell.s]) || 0 : 0) : Number(rec[m.cell.f]) || 0);
+    if (fresh.has(`${m.cell.k}#${cid}`)) { notes.set(String(m.id), { applied: true, reason: 'initial', after: r3(read()), at: serverNow }); continue; }
+    const cur = r3(read());
+    const svBefore = (isObj(rec._sv) && Number(rec._sv[cid])) || 0;
+    const T = moveTime(m);
+    const lastCount = (isObj(rec._ct) && Number(rec._ct[cid])) || 0;
+    const stale = m.baseSv != null && Number(m.baseSv) !== svBefore;
+    if (T && lastCount && T <= lastCount) {
+      notes.set(String(m.id), { applied: false, reason: m.kind === 'count' ? 'older-count' : 'before-count', before: cur, after: cur, sv: svBefore, at: serverNow, ...(stale ? { stale: true } : {}) });
+      continue;
+    }
+    let after;
+    if (m.kind === 'count') {
+      const later = typeof laterMoves === 'function' ? (laterMoves(m.cell, T) || []) : [];
+      after = r3(Number(m.counted) + later.reduce((sum, x) => sum + effectiveMoveDelta(x), 0));
+      if (T) rec._ct = { ...(isObj(rec._ct) ? rec._ct : {}), [cid]: T };
+    } else {
+      after = r3(cur + m.delta);
+    }
+    after = Math.max(0, after);                                         // Aqua never goes below zero (same rule as setStockAt)
+    if (isMap) rec[m.cell.f] = { ...(isObj(rec[m.cell.f]) ? rec[m.cell.f] : {}), [m.cell.s]: after };
+    else rec[m.cell.f] = after;
+    rec._sv = { ...(isObj(rec._sv) ? rec._sv : {}), [cid]: svBefore + 1 };
+    notes.set(String(m.id), { applied: true, before: cur, after, sv: svBefore + 1, at: serverNow, ...(m.kind === 'count' ? { kind: 'count' } : {}), ...(stale ? { stale: true } : {}) });
+  }
+  arr.forEach((rec) => {
+    if (!rec || recordKey(rec) == null || rec._deleted === true) return;
+    const ss = {};
+    (spec.maps || []).forEach((f) => { if (isObj(rec[f])) ss[f] = { ...rec[f] }; });
+    (spec.scalars || []).forEach((f) => { if (typeof rec[f] === 'number') ss[f] = rec[f]; });
+    if (Object.keys(ss).length) rec._ss = ss; else delete rec._ss;
+  });
+  return { arr, notes };
+}
+
+// ---- INTEGRITY CHECK (Phase 19) ------------------------------------------------------------------------------------------
+// Does the stock agree with its own history? For every item (and every Aqua cell) the movements the server APPLIED, in stock-
+// version order, must chain — each one starting exactly where the previous one ended — and the last one must end at today's
+// figure. No movement id may appear twice. Items with no ledger history yet (before zip 118) are skipped, and a history that only
+// starts part-way (older movements archived / outside a device's recent window) is checked from where it starts.
+// Returns { ok, checked, problems: [{ what, detail }] }. Pure — used by the tests and mirrored by the app's "Check" button.
+export function ledgerIntegrity(state) {
+  const problems = [];
+  const log = Array.isArray(state && state.stockMovementLog) ? state.stockMovementLog : [];
+  const seen = new Set();
+  log.forEach((m) => { if (m && m.id != null) { const id = String(m.id); if (seen.has(id)) problems.push({ what: 'duplicate movement', detail: id }); seen.add(id); } });
+  const chains = new Map();                                   // cell id -> applied movements
+  const add = (key, m) => { if (!chains.has(key)) chains.set(key, []); chains.get(key).push(m); };
+  log.forEach((m) => {
+    if (!m || !m._srv || m._srv.applied !== true || typeof m._srv.before !== 'number' || typeof m._srv.sv !== 'number') return;
+    if (m.cell) add(`cell:${m.cell.c}|${m.cell.k}|${m.cell.f}|${m.cell.s ?? ''}`, m);
+    else if (m.code != null) add(`inv:${m.code}|${moveUnit(m)}`, m);
+  });
+  const current = new Map();
+  (Array.isArray(state && state.inventory) ? state.inventory : []).forEach((r) => {
+    if (!r || r.code == null || r._deleted) return;
+    const v = hasVariantList(r) ? r.variants : [r];
+    v.forEach((x) => { if (x && x.code != null) { current.set(`inv:${x.code}|qty`, Number(x.qty) || 0); if (typeof x.pieceQty === 'number') current.set(`inv:${x.code}|pieceQty`, x.pieceQty); } });
+  });
+  for (const [col, spec] of Object.entries(CELL_SPECS)) {
+    (Array.isArray(state && state[col]) ? state[col] : []).forEach((r) => {
+      const k = recordKey(r);
+      if (k == null || r._deleted) return;
+      (spec.maps || []).forEach((f) => { if (r[f] && typeof r[f] === 'object') Object.keys(r[f]).forEach((site) => current.set(`cell:${col}|${k}|${f}|${site}`, Number(r[f][site]) || 0)); });
+      (spec.scalars || []).forEach((f) => { if (typeof r[f] === 'number') current.set(`cell:${col}|${k}|${f}|`, r[f]); });
+    });
+  }
+  for (const [key, moves] of chains) {
+    moves.sort((a, b) => a._srv.sv - b._srv.sv);
+    for (let i = 1; i < moves.length; i++) {
+      const prev = moves[i - 1]._srv, cur = moves[i]._srv;
+      if (cur.sv === prev.sv) problems.push({ what: 'two changes with one version', detail: `${key} v${cur.sv}` });
+      else if (cur.sv === prev.sv + 1 && r3(cur.before) !== r3(prev.after)) problems.push({ what: 'history does not chain', detail: `${key}: v${prev.sv} ended at ${prev.after}, v${cur.sv} started at ${cur.before}` });
+    }
+    const last = moves[moves.length - 1]._srv;
+    if (current.has(key) && r3(current.get(key)) !== r3(last.after)) problems.push({ what: 'figure differs from its history', detail: `${key}: history ends at ${last.after}, figure is ${current.get(key)}` });
+  }
+  return { ok: problems.length === 0, checked: chains.size, problems };
+}
+
+// Picks this push's movements the server has not stored yet (deduplicated by id), for applyStockLedger.
+export function newLedgerMoves(incomingLog, isStored) {
+  const seen = new Set();
+  return (Array.isArray(incomingLog) ? incomingLog : []).filter((m) => {
+    if (!isLedgerMove(m)) return false;
+    const id = String(m.id);
+    if (seen.has(id) || isStored(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 // Scalar settings that a push must never BLANK. A brand-new device (or one
 // with cleared browser storage) pushes before its first pull — see
 // flushThenPull() in the apps — carrying its empty local defaults, and
@@ -327,8 +719,43 @@ export function isBlank(v) {
   return v === '' || v === null || v === undefined;
 }
 
+// TILL NUMBERS (zip 119). Every device that syncs is given a small till number (1-99), once, by the server — the only place
+// that can hand them out without two devices getting the same one. Receipt references are built from it (see generateReceiptRef
+// in src/shared/functions.js), so two tills can never print the same reference. Devices send `_till` (their device id) and read
+// their number back from `tillNumbers`; they can never write that map.
+export function allocateTill(map, deviceId) {
+  const out = { ...(map && typeof map === 'object' && !Array.isArray(map) ? map : {}) };
+  const dev = typeof deviceId === 'string' ? deviceId.slice(0, 80) : '';
+  if (!dev || out[dev]) return { map: out, till: dev ? out[dev] || 0 : 0 };
+  const used = new Set(Object.values(out).map(Number));
+  let n = 1;
+  while (used.has(n) && n <= 99) n++;
+  if (n <= 99) out[dev] = n;
+  return { map: out, till: out[dev] || 0 };
+}
+
+// DEVICE REGISTRY (zip 120): which devices sync this shop, their till number, the app release they run and when they were last
+// seen — server-managed like tillNumbers (a device can never write it), shown in Settings and the Owner Console. Rides on the push
+// that is written anyway, so it costs no extra storage write.
+export function noteDevice(reg, deviceId, dev, till) {
+  const out = { ...(reg && typeof reg === 'object' && !Array.isArray(reg) ? reg : {}) };
+  const id = typeof deviceId === 'string' ? deviceId.slice(0, 80) : '';
+  if (!id) return Object.keys(out).length ? out : undefined;
+  const d = dev && typeof dev === 'object' ? dev : {};
+  out[id] = { ...(out[id] || {}), lastSeen: Date.now(), ...(till ? { till } : {}), ...(d.v ? { v: String(d.v).slice(0, 40) } : {}), ...(d.app ? { app: String(d.app).slice(0, 20) } : {}) };
+  const ids = Object.keys(out);
+  if (ids.length > 200) ids.sort((a, b) => (out[a].lastSeen || 0) - (out[b].lastSeen || 0)).slice(0, ids.length - 200).forEach((x) => { delete out[x]; });
+  return out;
+}
+
 export function mergeIncomingState(existing, incoming) {
   const merged = { ...existing, ...incoming };
+  const tills = allocateTill(existing.tillNumbers, incoming._till);
+  merged.tillNumbers = tills.map;
+  if (!Object.keys(tills.map).length) delete merged.tillNumbers;
+  merged.deviceRegistry = noteDevice(existing.deviceRegistry, incoming._till, incoming._dev, tills.till);
+  if (!merged.deviceRegistry) delete merged.deviceRegistry;
+  delete merged._till; delete merged._dev;
   for (const field of NEVER_BLANK_FIELDS) {
     if (isBlank(incoming[field]) && !isBlank(existing[field])) {
       merged[field] = existing[field];
@@ -344,7 +771,7 @@ export function mergeIncomingState(existing, incoming) {
   const sentTimes = (incoming && incoming._fieldTimes) || {};
   const times = { ...storedTimes };
   for (const k of Object.keys(incoming)) {
-    if (k === 'updatedAt' || k === '_fieldTimes' || MERGE_BY_ID_FIELDS.includes(k)) continue;
+    if (k === 'updatedAt' || k === '_fieldTimes' || k === '_cells' || k === '_till' || k === 'tillNumbers' || k === '_dev' || k === 'deviceRegistry' || MERGE_BY_ID_FIELDS.includes(k)) continue;
     const stored = storedTimes[k], sent = sentTimes[k];
     if (typeof stored === 'number' && !(typeof sent === 'number' && sent >= stored)) {
       if (k in existing) merged[k] = existing[k];
@@ -366,6 +793,52 @@ export function mergeIncomingState(existing, incoming) {
     if (Array.isArray(merged[field])) {
       merged[field] = reconcileQuantities(existing[field], merged[field], merged.stockMovementLog);
     }
+  }
+  // STOCK LEDGER: the server's quantities + every NEW movement, applied once (see applyStockLedger / applyCellLedger).
+  const storedLog = Array.isArray(existing.stockMovementLog) ? existing.stockMovementLog : [];
+  let storedIds = null;
+  const incomingIds = (Array.isArray(incoming.stockMovementLog) ? incoming.stockMovementLog : []).filter((m) => m && m.id != null).map((m) => String(m.id));
+  const stored = () => {
+    if (storedIds) return storedIds;
+    storedIds = new Set();
+    if (incomingIds.length <= 32) {                              // a typical push carries a movement or two: look just those up
+      const want = new Set(incomingIds);
+      for (const m of storedLog) { if (m && m.id != null && want.has(String(m.id))) storedIds.add(String(m.id)); }
+    } else storedLog.forEach((m) => { if (m && m.id != null) storedIds.add(String(m.id)); });
+    return storedIds;
+  };
+  const allNotes = new Map();
+  // Aqua cells are ledgered only for pushes from an app that sends cell movements (it says so with `_cells`). A till still on an
+  // older cached app sends plain numbers and no movements — ignoring them would lose its sales until it updates, so its push keeps
+  // the previous merge rules (see cellLedgerPush).
+  const cellPush = cellLedgerPush(incoming);
+  delete merged._cells;
+  for (const col of Object.keys(CELL_SPECS)) {
+    if (!cellPush) break;
+    if (!Array.isArray(merged[col]) || !(Array.isArray(incoming[col]) || Array.isArray(incoming.stockMovementLog))) continue;
+    const res = applyCellLedger({
+      col, existingArr: existing[col], mergedArr: merged[col],
+      newMoves: newCellMoves(incoming.stockMovementLog, (id) => stored().has(id)).filter((m) => m.cell.c === col),
+      laterMoves: (cell, T) => storedLog.filter((m) => m && m.cell && sameCell(m.cell, cell) && moveTime(m) > T && m._deleted !== true),
+    });
+    merged[col] = res.arr;
+    res.notes.forEach((v, k) => allNotes.set(k, v));
+  }
+  if (Array.isArray(merged[LEDGER_COLLECTION]) && (Array.isArray(incoming[LEDGER_COLLECTION]) || Array.isArray(incoming.stockMovementLog))) {
+    const storedIds = stored();
+    const newMoves = newLedgerMoves(incoming.stockMovementLog, (id) => storedIds.has(id));
+    const res = applyStockLedger({
+      existingInv: existing[LEDGER_COLLECTION],
+      mergedInv: merged[LEDGER_COLLECTION],
+      newMoves,
+      laterMoves: (code, unit, T) => storedLog.filter((m) => m && String(m.code) === code && moveUnit(m) === unit && moveTime(m) > T && m._deleted !== true),
+    });
+    merged[LEDGER_COLLECTION] = res.inventory;
+    res.notes.forEach((v, k) => allNotes.set(k, v));
+  }
+  if (allNotes.size && Array.isArray(merged.stockMovementLog)) {
+    const ids = stored();
+    merged.stockMovementLog = merged.stockMovementLog.map((m) => (m && m.id != null && allNotes.has(String(m.id)) && !ids.has(String(m.id)) ? { ...m, _srv: allNotes.get(String(m.id)) } : m));
   }
   return merged;
 }

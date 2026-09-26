@@ -35,6 +35,7 @@ import {
   readStateRaw, readStateStored, decodeStateText, writeStateText, byteLength, sizePolicy, noteOversize, MIB,
   chooseAutoCutoff, writeArchive, dropArchivedIncoming, AUTO_ARCHIVE_AT, shopMode, shopCall, migratingResponse,
 } from './_state-store.js';
+import { deviceGuard } from './_device-auth.js';
 
 // CORS is decided per request (see _cors.js): the apps call this on their own origin, so only the shop's own
 // domain family is ever answered — no more `Access-Control-Allow-Origin: *`.
@@ -79,6 +80,9 @@ export async function onRequestGet(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403, cors);
   }
   const clientId = license.clientId;
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   // DATABASE MODE (per shop, opt-in): the shop lives in its own SQLite Durable Object. The reply is the shop as devices expect it,
   // except that the big logs carry only their recent window (?hot=<days>, default 120, or ?hot=all) — older history stays in the
@@ -110,6 +114,7 @@ export async function onRequestGet(context) {
     return jsonResponse({ unchanged: true, updatedAt: stored.meta.ua }, 200, cors);
   }
   const payload = stored ? stripTombstones(JSON.parse(await decodeStateText(stored.raw))) : { updatedAt: 0 };
+  payload._ledger = 1;   // this server applies stock movements exactly once (see applyStockLedger in _merge.js) — the apps switch their side on
   if (since > 0 && payload.updatedAt && payload.updatedAt <= since) {
     return jsonResponse({ unchanged: true, updatedAt: payload.updatedAt }, 200, cors);
   }
@@ -125,6 +130,9 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403, cors);
   }
   const clientId = license.clientId;
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   let body;
   try {
@@ -157,7 +165,7 @@ export async function onRequestPost(context) {
         context.waitUntil(room.fetch('https://sync-room/broadcast', { method: 'POST', body: JSON.stringify({ poke: true }) }).catch(() => {}));
       } catch (e) { /* the poll is the fallback */ }
     }
-    return jsonResponse({ ok: true, updatedAt: out.updatedAt, prev: out.prev }, 200, cors);
+    return jsonResponse({ ok: true, updatedAt: out.updatedAt, prev: out.prev, ...(out.ledger ? { ledger: out.ledger } : {}), ...(out.till ? { till: out.till } : {}) }, 200, cors);
   }
 
   // Snapshot whatever's currently live (about to be overwritten) into today's
@@ -244,7 +252,7 @@ export async function onRequestPost(context) {
       context.waitUntil(
         room.fetch('https://sync-room/broadcast', {
           method: 'POST',
-          body: JSON.stringify(stripTombstones(record)),
+          body: JSON.stringify({ ...stripTombstones(record), _ledger: 1 }),
         }).catch(() => {})
       );
     } catch (e) {
@@ -270,5 +278,6 @@ export async function onRequestPost(context) {
 
   // The apps only ever read `updatedAt` from this reply, so don't send the whole shop back on every save.
   // (The full record still goes to other devices via the WebSocket broadcast and their next pull.)
-  return jsonResponse({ ok: true, updatedAt: record.updatedAt, bytes, prev: existing.updatedAt || 0 }, 200, cors);
+  const till = typeof body._till === 'string' && record.tillNumbers ? record.tillNumbers[body._till] || 0 : 0;
+  return jsonResponse({ ok: true, updatedAt: record.updatedAt, bytes, prev: existing.updatedAt || 0, ledger: 1, ...(till ? { till } : {}) }, 200, cors);
 }

@@ -75,6 +75,7 @@ export async function onRequestPost(context) {
     const kvKey = txKey(clientId, data.reference);
     const existingRaw = await env.mydukapos_kv.get(kvKey);
     const existing = existingRaw ? JSON.parse(existingRaw) : {};
+    if (existing.status === 'success') return ack();          // the same charge.success re-delivered: already recorded
 
     await env.mydukapos_kv.put(kvKey, JSON.stringify({
       ...existing,

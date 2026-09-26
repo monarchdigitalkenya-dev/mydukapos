@@ -16,11 +16,15 @@
 // relying on Cloudflare Pages environment variables instead — which is why
 // "adding the keys through Settings" didn't actually turn payments on.
 //
-// Environment variables still work as a FALLBACK: if a field was never saved
-// through Settings, we fall back to the matching Cloudflare Pages env var (if
-// someone set one directly in the dashboard). Whatever was saved through
-// Settings always wins over the env var of the same name.
-//
+// TENANT CREDENTIALS ONLY (zip 119). Payment credentials come from what THIS shop saved through Settings, and nothing else. Before,
+// every field fell back to a Cloudflare environment variable of the same name — so a shop that had not saved its own keys took
+// payments through whoever's keys were in the environment, and a shop that saved only SOME fields got them mixed with those. Now:
+//   * credentials (keys, secrets, shortcodes, pass keys, API keys, the Paywave email) are the shop's own, one provider at a time,
+//     as a complete set — never mixed with anything else;
+//   * the environment set of a provider is used ONLY for a shop the owner lists by id in GATEWAY_ENV_FALLBACK_CLIENTS (comma-
+//     separated; for a shop that genuinely runs on the platform's own account) and only when that shop saved nothing for it;
+//   * non-secret defaults (sandbox/production, transaction type, the provider choice) may still come from the environment.
+
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 const KV_KEY_PREFIX = 'gateway-config:v1:';
@@ -34,18 +38,32 @@ async function readStored(env, clientId) {
   }
 }
 
-// Merges what's saved in KV for this client with env-var fallbacks into one
-// config object every other function can just read fields off of.
+const PROVIDER_FIELDS = {
+  paystack: { paystackSecretKey: 'PAYSTACK_SECRET_KEY' },
+  daraja: { mpesaConsumerKey: 'MPESA_CONSUMER_KEY', mpesaConsumerSecret: 'MPESA_CONSUMER_SECRET', mpesaShortcode: 'MPESA_SHORTCODE', mpesaPasskey: 'MPESA_PASSKEY' },
+  kcb: { kcbConsumerKey: 'KCB_CONSUMER_KEY', kcbConsumerSecret: 'KCB_CONSUMER_SECRET', kcbOrgShortCode: 'KCB_ORG_SHORT_CODE', kcbOrgPassKey: 'KCB_ORG_PASS_KEY' },
+  paywave: { paywaveApiKey: 'PAYWAVE_API_KEY', paywaveEmail: 'PAYWAVE_EMAIL' },
+};
+
+export function envFallbackAllowed(env, clientId) {
+  const list = String((env && env.GATEWAY_ENV_FALLBACK_CLIENTS) || '').split(',').map((x) => x.trim()).filter(Boolean);
+  return !!clientId && list.includes(String(clientId));
+}
+
+// One config object every other function reads fields off of — this shop's own credentials only (see above).
 export async function loadGatewayConfig(env, clientId) {
   const stored = await readStored(env, clientId);
-
+  const allowEnv = envFallbackAllowed(env, clientId);
+  const creds = {};
+  for (const fields of Object.values(PROVIDER_FIELDS)) {
+    const own = Object.keys(fields).some((k) => stored[k]);
+    Object.entries(fields).forEach(([k, envName]) => {
+      creds[k] = own ? (stored[k] || '') : (allowEnv ? (env[envName] || '') : '');
+    });
+  }
   return {
-    paystackSecretKey: stored.paystackSecretKey || env.PAYSTACK_SECRET_KEY || '',
+    ...creds,
     mpesaEnv: stored.mpesaEnv || env.MPESA_ENV || 'sandbox',
-    mpesaConsumerKey: stored.mpesaConsumerKey || env.MPESA_CONSUMER_KEY || '',
-    mpesaConsumerSecret: stored.mpesaConsumerSecret || env.MPESA_CONSUMER_SECRET || '',
-    mpesaShortcode: stored.mpesaShortcode || env.MPESA_SHORTCODE || '',
-    mpesaPasskey: stored.mpesaPasskey || env.MPESA_PASSKEY || '',
     mpesaTransactionType: stored.mpesaTransactionType || env.MPESA_TRANSACTION_TYPE || 'CustomerPayBillOnline',
     // KCB Buni — a second way to send the exact same kind of M-Pesa STK
     // Push prompt, through KCB's bank-direct API instead of Safaricom's own
@@ -54,16 +72,9 @@ export async function loadGatewayConfig(env, clientId) {
     // (522522) with their own invoiceNumber/account ref telling them apart,
     // rather than having their own dedicated Till.
     kcbEnv: stored.kcbEnv || env.KCB_ENV || 'sandbox',
-    kcbConsumerKey: stored.kcbConsumerKey || env.KCB_CONSUMER_KEY || '',
-    kcbConsumerSecret: stored.kcbConsumerSecret || env.KCB_CONSUMER_SECRET || '',
-    kcbOrgShortCode: stored.kcbOrgShortCode || env.KCB_ORG_SHORT_CODE || '',
-    kcbOrgPassKey: stored.kcbOrgPassKey || env.KCB_ORG_PASS_KEY || '',
     kcbSharedShortCode: stored.kcbSharedShortCode !== undefined ? stored.kcbSharedShortCode : true,
     // Paywave Express — a hosted aggregator that wraps Daraja for you (see
-    // paywavexpress.co.ke/documentation). Just an API key + the email on the
-    // Paywave Express account; no Daraja app/certs needed.
-    paywaveApiKey: stored.paywaveApiKey || env.PAYWAVE_API_KEY || '',
-    paywaveEmail: stored.paywaveEmail || env.PAYWAVE_EMAIL || '',
+    // paywavexpress.co.ke/documentation): an API key + the email on the account.
     forcedProvider: (stored.forcedProvider !== undefined ? stored.forcedProvider : (env.PAYMENT_PROVIDER || '')).toLowerCase(),
   };
 }

@@ -17,6 +17,8 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { requireValidLicense } from './_license.js';
+import { deviceGuard } from './_device-auth.js';
+import { corsHeadersFor } from './_cors.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -44,6 +46,9 @@ export async function onRequestGet(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   const idxRaw = await env.mydukapos_kv.get(tillPaymentIndexKey(clientId));
   const idx = idxRaw ? JSON.parse(idxRaw) : [];
@@ -65,6 +70,9 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   let body;
   try {

@@ -51,6 +51,8 @@
 import { requireValidLicense } from './_license.js';
 import { getGeminiCaptureKeys } from './gemini-capture-config.js';
 import { shapeCaptureResult } from './_capture-shape.js';
+import { deviceGuard } from './_device-auth.js';
+import { corsHeadersFor } from './_cors.js';
 
 const GEMINI_MODEL = 'gemini-3.6-flash';
 const SHOP_CONFIG_PREFIX = 'ai-capture-shop-config:';
@@ -118,6 +120,9 @@ export async function onRequestGet(context) {
   if (!license.valid) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, license.clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   const url = new URL(request.url);
   if (url.searchParams.get('status') === '1') {
@@ -149,6 +154,9 @@ export async function onRequestPost(context) {
   if (!license.valid) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, license.clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   let body;
   try {
@@ -459,6 +467,9 @@ export async function onRequestPut(context) {
   if (!license.valid) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, license.clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   const keys = await resolveGeminiKeys(env, license.clientId);
   if (keys.length === 0) {

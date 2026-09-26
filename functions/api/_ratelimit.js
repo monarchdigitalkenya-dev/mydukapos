@@ -15,6 +15,8 @@ const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 
 export const LIMITS = {
   sms: (env) => num(env && env.SMS_HOURLY_LIMIT, 1500),
   stk: (env) => num(env && env.STK_HOURLY_LIMIT, 60),
+  // device pairing attempts per shop per hour (zip 120) — stops a password/code being guessed by brute force
+  pair: (env) => num(env && env.PAIR_HOURLY_LIMIT, 20),
 };
 
 // -> { ok, used, limit, retryAfter }   `cost` = how many units this request would consume (e.g. recipients).

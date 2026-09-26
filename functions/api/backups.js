@@ -22,6 +22,8 @@
 
 import { requireValidLicense } from './_license.js';
 import { listBackupDates, restoreBackup } from './_backups.js';
+import { deviceGuard } from './_device-auth.js';
+import { corsHeadersFor } from './_cors.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -47,6 +49,9 @@ export async function onRequestGet(context) {
   if (!license.valid) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, license.clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   const dates = await listBackupDates(env, license.clientId);
   return jsonResponse({ dates });
@@ -59,6 +64,9 @@ export async function onRequestPost(context) {
   if (!license.valid) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, license.clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   let body;
   try {

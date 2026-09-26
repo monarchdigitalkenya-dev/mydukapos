@@ -55,6 +55,8 @@
 import { loadGatewayConfig, resolveProvider } from './_gateway-config.js';
 import { requireValidLicense, resolveClientId } from './_license.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
+import { deviceGuard } from './_device-auth.js';
+import { corsHeadersFor } from './_cors.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -360,6 +362,9 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   const cfg = await loadGatewayConfig(env, clientId);
   const provider = resolveProvider(cfg);

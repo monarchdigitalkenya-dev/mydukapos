@@ -101,9 +101,28 @@ test('the per-row "💾 Update" button applies just that one item immediately, w
   close();
 });
 
-test('Aqua POS has no Stock Take tab (it has no item stock list) and is unaffected', async () => {
+test('Aqua POS now has its own per-site Stock Take tab (zip 118b; see tests/water-stock-ledger.test.mjs for the sync side)', async () => {
   const { d, errors, close } = await boot('water/index.html', { wait: 1200 });
-  assert.equal(d.getElementById('stock-take-tab-btn'), null);
+  assert.ok(d.getElementById('stock-take-tab-btn'));
+  assert.ok(d.getElementById('aqua-st-table'));
   assert.deepEqual(errors, []);
+  close();
+});
+
+test('#9: a stock take writing off more than the limit needs the management password; below it, it does not; below-zero items are flagged', async () => {
+  const { w, d, close } = await boot('index.html', { storage: { pos_inventory: INV, pos_admin_pw_hash: 'x'.repeat(64) }, wait: 1500 });
+  w.eval("showToast = function () {}; window.confirm = () => true");
+  w.eval("localStorage.setItem('pos_st_approval_kes', '100')");
+  w.eval('renderStockTake()');
+  type(d, w, 'C3', 'qty', '40');                                                    // 10 missing x 40 = KES 400 > 100
+  assert.equal(w.eval('stockTakeApply()'), false);
+  assert.equal(d.getElementById('admin-pw-modal').style.display, 'flex', 'asks for the password');
+  assert.equal(w.eval("inventory.find(p => p.code === 'C3').qty"), 50, 'nothing changed yet');
+  await w.eval('dispatchAdminPwPurpose()');                                         // the password was accepted
+  assert.equal(w.eval("inventory.find(p => p.code === 'C3').qty"), 40, 'applied once approved');
+  type(d, w, 'A1', 'qty', '9');                                                     // KES 20: under the limit
+  assert.equal(w.eval("stockTakeApplyOne('A1')"), true);
+  w.eval("inventory.find(p => p.code === 'B2').qty = -2; renderStockTake()");
+  assert.match(d.getElementById('stock-take-summary').textContent, /1 item is below zero/);
   close();
 });

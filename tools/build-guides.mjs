@@ -167,6 +167,7 @@ function people(M) {
       '**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.',
       '**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.',
       '**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.',
+      '**Settings ▸ 🔐 Devices & security** lists every device that syncs your shop (its till number, app release and last sync). Tap **🔒 Only paired devices may sync** so that knowing your shop link is no longer enough to see or change your data. Your devices pair themselves; a new one needs the shop password once, or a **6-digit pairing code** made here (so staff never need the password). Revoke a lost phone from the same list. Signing in and selling always work offline either way.',
       '**👤 My Customers** keeps your customers and their purchases; **🎟️ Loyalty Tokens** (Settings) rewards repeat customers where enabled.',
     ],
     tips: ['To remove a staff member, remove them under Staff Accounts — their old sales stay in the records.', 'If someone forgets the Admin password, use **Forgot it? Email me a reset link** on the login screen (needs the recovery email set up).'],
@@ -549,11 +550,12 @@ MODS.services = {
 MODS.water = {
   name: 'Aqua POS', title: 'Aqua POS — User Guide', tagline: 'Water refill stations, bottled-water producers and distributors — refills, sealed bottles, bales, bulk tanks, production and deliveries.',
   itemsPlural: 'products and materials', itemWord: 'product', addTab: '📋 Inventory', restockTab: '📥 Restocking',
-  tabs: ['🧾 Sales Counter', '📊 Dashboard', '📋 Inventory', '📥 Restocking', '🚰 Bulk Tank', '🏭 Production', '📅 Bulk Orders', '↩️ Returned Goods', '🚚 Deliveries', '📊 Daily Sales', '🔍 Audit', '📦 Stock Report', '💰 Profits & Expenses', '📈 Demand Trends', '🧾 Bills', '📒 Debts', '👤 My Customers', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['🧾 Sales Counter', '📊 Dashboard', '📋 Inventory', '📥 Restocking', '📋 Stock Take', '🚰 Bulk Tank', '🏭 Production', '📅 Bulk Orders', '↩️ Returned Goods', '🚚 Deliveries', '📊 Daily Sales', '🔍 Audit', '📦 Stock Report', '💰 Profits & Expenses', '📈 Demand Trends', '🧾 Bills', '📒 Debts', '👤 My Customers', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
   tabText: {
     'Sales Counter': 'New sale: refills by size or custom litres, sealed bottles, dispensers, bales; walk-in or delivery.',
     'Inventory': 'Products (bottled water, bales, accessories), materials and refill sizes with prices and recipes.',
     'Restocking': 'Top up a material or product (decimals allowed) and see restock history.',
+    'Stock Take': 'Count what is really at this site — products, bottles, tank litres, materials — and correct the system to it.',
     'Bulk Tank': 'Your bulk water tanks: add water, and see each site\u2019s level drop as refills are sold.',
     'Production': 'Record what you produced; materials are deducted from its recipe; factory floor stock and dispatches.',
     'Bulk Orders': 'Book large future orders with a deposit and delivery date.',
@@ -589,6 +591,13 @@ MODS.water = {
     ch('bulk', '📅', 'Bulk orders', {
       steps: ['Open **📅 Bulk Orders**. Type the client, business, phone, **delivery date**, address, **deposit paid** and notes, add the products and quantities and **💾 Save Booking**.', 'On the delivery day fulfil the order; the deposit is counted against the total.'],
     }),
+    ch('stocktakew', '📋', 'Stock Take (per site)', {
+      steps: [
+        'Pick the site you are counting at the top (a stock take counts **one site at a time**), then open **📋 Stock Take**. It lists that site\u2019s products (a bottle-tracked bale is counted in **bottles**), its **tank litres** and its **materials**.',
+        'Type what you actually counted next to each line — lines left blank are not touched. Tap **💾 Update** on one line, or **✔ Update stock to my counts** for all of them.',
+        'Each change is recorded once as a **count** ("there are 12"), not as a +/−, so refreshing, going offline or opening another device can never apply it again. **Recent stock takes** shows Was / Counted / Now for every device, with ✓ applied or ⏳ waiting to sync.',
+      ],
+    }),
     ch('stockw', '📥', 'Inventory and restocking', {
       steps: ['**📋 Inventory** holds bottled products, bales, accessories, materials and refill prices. Edit stock and prices by tapping an item.', '**📥 Restocking** tops up a material or product (decimals are fine, e.g. 0.5 bale, 10.5 litres) — record the supplier and cost; **⬆️ Import Excel/CSV** loads a whole list; history shows below.'],
     }),
@@ -603,8 +612,9 @@ MODS.owner = {
   name: 'Owner Console', title: 'Owner Console — User Guide', tagline: 'For the owner of the software business — create and manage client links, watch their health, and run your own shop.',
   itemsPlural: 'items', itemWord: 'item', addTab: 'the Inventory', restockTab: 'Restock', noPastSale: true,
   overrides: { offline: 'ownerOffline', trouble: 'ownerTrouble', hardware: false },
-  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '📋 Leads', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '⚙️ Settings', '☰ More'],
+  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '📋 Leads', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '🩺 Health', '⚙️ Settings', '☰ More'],
   tabText: {
+    'Health': 'Every paying shop at once: does its stock agree with its history, items below zero, its devices and their app release, whether it only syncs with paired devices, and whether it should move to its own database. Also runs by itself each morning and emails you only when something needs attention.',
     'Dashboard': 'Your business at a glance: clients, demos, income.',
     'Generate Link': 'Create a demo or permanent POS link for a client on their own address.',
     'Demo': 'Every demo link across all products, grouped by client.',

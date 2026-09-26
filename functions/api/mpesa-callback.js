@@ -54,6 +54,8 @@ export async function onRequestPost(context) {
   const kvKey = txKey(clientId, callback.CheckoutRequestID);
   const existingRaw = await env.mydukapos_kv.get(kvKey);
   const existing = existingRaw ? JSON.parse(existingRaw) : {};
+  // A completed payment is final: a repeated or late callback for the same CheckoutRequestID never turns it back into "failed".
+  if (existing.status === 'success') return ack();
 
   if (callback.ResultCode === 0) {
     const items = callback.CallbackMetadata && callback.CallbackMetadata.Item;

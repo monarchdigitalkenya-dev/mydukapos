@@ -27,6 +27,8 @@
 
 import { loadShaConfig, shaAccessToken, hasShaConfig } from './_sha-config.js';
 import { requireValidLicense } from './_license.js';
+import { deviceGuard } from './_device-auth.js';
+import { corsHeadersFor } from './_cors.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -71,6 +73,9 @@ export async function onRequestPost(context) {
   const { request, env } = context;
   const license = await requireValidLicense(request, env);
   if (!license.valid) return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, license.clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   let body;
   try { body = await request.json(); } catch (e) { return jsonResponse({ error: 'Invalid JSON body' }, 400); }

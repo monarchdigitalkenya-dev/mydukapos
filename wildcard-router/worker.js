@@ -28,7 +28,7 @@ const PAGES_ORIGIN = 'mydukapos.pages.dev'; // <-- your Pages project's own *.pa
 const EXCLUDED_SUBDOMAINS = [];
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const label = url.hostname.split('.')[0];
 
@@ -41,6 +41,10 @@ export default {
 
     const proxied = new Request(url.toString(), request);
     proxied.headers.set('X-Forwarded-Host', originalHost);
+    // Proves to the Pages project that this header came from here (see hostnameFromRequest in functions/api/_license.js). Only sent
+    // when ROUTER_SHARED_SECRET is set on this Worker; a client's own copy of the header is always replaced above.
+    proxied.headers.delete('X-Router-Secret');
+    if (env && env.ROUTER_SHARED_SECRET) proxied.headers.set('X-Router-Secret', env.ROUTER_SHARED_SECRET);
 
     // fetch() here tunnels a WebSocket upgrade (e.g. a device connecting to
     // /api/sync-ws) through to the Pages deployment exactly the same way it
@@ -49,6 +53,14 @@ export default {
     // carrying the live socket, which just flows straight back out through
     // this `return` to the original client. No special-casing needed here.
     return fetch(proxied);
+  },
+
+  // DAILY SHOP HEALTH CHECK (zip 120, #10). Runs on the cron in wrangler.toml. Does nothing unless BOTH are set on this Worker:
+  //   HEALTH_URL = "https://mydukapos.store/api/owner-health"      ROUTER_SHARED_SECRET = (the same secret as on the Pages project)
+  // The Pages endpoint then checks every shop and emails the owner only when something needs attention.
+  async scheduled(event, env, ctx) {
+    if (!env || !env.HEALTH_URL || !env.ROUTER_SHARED_SECRET) return;
+    ctx.waitUntil(fetch(env.HEALTH_URL + (env.HEALTH_URL.includes('?') ? '&' : '?') + 'cron=1', { headers: { 'X-Router-Secret': env.ROUTER_SHARED_SECRET } }).catch(() => {}));
   },
 };
 

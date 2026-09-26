@@ -32,7 +32,7 @@ test('an edit on one device is not reverted by a stale device that never saw it'
   assert.ok(got.inventory.find((i) => i.code === 'B'), 'the new item from the stale device is kept too');
 });
 
-test('two tills each sell one unit while offline — the later push wins the whole record (additive reconciliation removed; see _merge.js)', async () => {
+test('two tills each sell one unit while offline — both sales come off (stock ledger, zip 118)', async () => {
   const s = await server();
   const t0 = Date.now();
   await s.push({ updatedAt: t0, inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 10, updatedAt: t0 - 1000 }], stockMovementLog: [] });
@@ -44,7 +44,7 @@ test('two tills each sell one unit while offline — the later push wins the who
   await s.push({ updatedAt: Date.now(), inventory: [{ code: 'A', name: 'Bolt', price: 10, qty: 9, updatedAt: Date.now() }], stockMovementLog: [sale('m2')] });
   const got = await s.pull();
   assert.equal(got.stockMovementLog.length, 2, 'both sales are still in the movement log for the audit trail');
-  assert.equal(got.inventory.find((i) => i.code === 'A').qty, 9, 'till 2 pushed last and its whole record wins, same as any other field');
+  assert.equal(got.inventory.find((i) => i.code === 'A').qty, 8, 'each movement is applied once: 10 - 1 - 1');
 });
 
 test('the same push arriving twice (a retry) does not double-count', async () => {

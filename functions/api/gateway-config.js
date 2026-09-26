@@ -26,6 +26,8 @@
 
 import { loadGatewayConfig, saveGatewayConfig, clearGatewayProvider, hasPaystackConfig, hasDarajaConfig, hasKcbConfig, hasPaywaveConfig } from './_gateway-config.js';
 import { requireValidLicense } from './_license.js';
+import { deviceGuard } from './_device-auth.js';
+import { corsHeadersFor } from './_cors.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -42,6 +44,9 @@ export async function onRequestGet(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   const cfg = await loadGatewayConfig(env, clientId);
   const origin = new URL(request.url).origin;
@@ -71,6 +76,9 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   let body;
   try {
@@ -91,6 +99,9 @@ export async function onRequestDelete(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
 
   let body;
   try {

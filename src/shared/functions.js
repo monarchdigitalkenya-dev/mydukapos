@@ -2326,6 +2326,170 @@ function getOrCreateDeviceId() {
             return id;
         }
 
+//@fn returnQtyGuard
+// A receipt can only be refunded / exchanged up to what it actually sold (zip 119). Before, nothing stopped the same receipt line
+// being returned twice — on two tills, or twice by mistake — paying out or restocking more than was ever sold. Counts every return
+// and exchange already recorded against that receipt for that item (synced from every till). Returns true when `qty` may go ahead;
+// otherwise shows why in `errEl` and returns false. Items not picked from a receipt (free search) are not limited.
+function returnQtyGuard(item, qty, errEl) {
+            if (!item || !item.sourceRefNumber || !item.code) return true;
+            const ref = String(item.sourceRefNumber);
+            const sale = (typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []).find((x) => x && x.refNumber === ref);
+            if (!sale) return true;
+            const say = (t) => { if (errEl) errEl.textContent = t; else if (typeof showToast === 'function') showToast(t, true); return false; };
+            if (sale.voided) return say(`${ref} was voided — there is nothing left to return on it.`);
+            const sold = (sale.items || []).filter((l) => l && l.code === item.code).reduce((t, l) => t + (Number(l.qty) || 0), 0);
+            const returned = (typeof returns !== 'undefined' && Array.isArray(returns) ? returns : [])
+                .filter((r) => r && !r._deleted && r.refNumber === ref && r.itemCode === item.code)
+                .reduce((t, r) => t + (Number(r.qty) || 0), 0);
+            const left = Math.round((sold - returned) * 1000) / 1000;
+            if (qty > left + 1e-9) return say(left > 0 ? `Only ${left} of "${item.name}" can still be returned on ${ref} (${returned} already returned).` : `"${item.name}" on ${ref} has already been fully returned.`);
+            return true;
+        }
+
+//@fn saleCtxNow
+// Who / where a sale is being made (zip 119, Phase 5): till number, device, station, cashier, shift, business. Captured when the
+// receipt reference is issued (see generateReceiptRef) and attached to that sale when it is sent (stampLocalContext).
+function saleCtxNow() {
+            let station = '';
+            try { station = localStorage.getItem('pos_device_station') || localStorage.getItem('pos_print_station') || ''; } catch (e) { /* optional */ }
+            const cashierId = (typeof currentServer !== 'undefined' && currentServer && currentServer.id) ? currentServer.id : 'admin';
+            let shiftId = '';
+            try {
+                const list = typeof staffShifts !== 'undefined' && Array.isArray(staffShifts) ? staffShifts : [];
+                const sid = cashierId === 'admin' ? (typeof ADMIN_SHIFT_ID !== 'undefined' ? ADMIN_SHIFT_ID : 'admin') : cashierId;
+                const open = list.filter((x) => x && x.staffId === sid && !x.clockOut).sort((a, b) => (b.clockIn || 0) - (a.clockIn || 0))[0];
+                if (open) shiftId = open.id;
+                if (!shiftId && typeof cashShifts !== 'undefined' && Array.isArray(cashShifts)) {
+                    const me = typeof activeServerName === 'function' ? activeServerName() : '';
+                    const cs = cashShifts.find((x) => x && x.status === 'open' && x.cashier === me);
+                    if (cs) shiftId = cs.id;
+                }
+            } catch (e) { /* no shift */ }
+            return {
+                till: tillNumber() || null, device: getOrCreateDeviceId(), station: station || null,
+                cashier: typeof activeServerName === 'function' ? activeServerName() : '', cashierId, shiftId: shiftId || null,
+                branch: (typeof businessName !== 'undefined' && businessName) || null, host: (typeof location !== 'undefined' && location.host) || null,
+            };
+        }
+
+//@fn stampLocalContext
+// Called on every push (from slimPayloadForPush): sales whose reference THIS device issued get the context captured then (never
+// a guess — records from other devices are left alone), and this device's stock movements still waiting for the server get the
+// device / till / station they came from and a count of how many times they have been sent (the server applies each once anyway).
+function stampLocalContext(payload) {
+            try {
+                let issued = {};
+                try { issued = JSON.parse(localStorage.getItem('pos_ref_ctx_v1') || '{}') || {}; } catch (e) { issued = {}; }
+                if (Array.isArray(payload.salesLog) && Object.keys(issued).length) {
+                    payload.salesLog.forEach((x) => { if (x && !x.ctx && x.refNumber && issued[x.refNumber]) x.ctx = issued[x.refNumber]; });
+                }
+                if (Array.isArray(payload.stockMovementLog)) {
+                    const dev = getOrCreateDeviceId(), till = tillNumber() || null;
+                    let station = null;
+                    try { station = localStorage.getItem('pos_device_station') || null; } catch (e) { /* optional */ }
+                    payload.stockMovementLog.forEach((m) => {
+                        if (!m || !m.lg || m._srv) return;
+                        if (!m.dev) { m.dev = dev; m.till = till; if (station) m.stn = station; }
+                        m.tries = (Number(m.tries) || 0) + 1;
+                    });
+                }
+            } catch (e) { /* never block a push */ }
+        }
+
+//@fn syncJournal
+// A short on-device record of the sync itself (Phase 12): each send, each failed send (and why), each retry after a failure, and
+// every stock conflict the server resolved for this device (a count superseded by a later one, a count made against an old
+// figure). Kept apart from business events so a retry is never mistaken for a second sale or stock change. Last 300 entries.
+function syncJournal(kind, detail) {
+            try {
+                const key = 'pos_sync_journal_v1';
+                const list = JSON.parse(localStorage.getItem(key) || '[]');
+                list.unshift({ at: Date.now(), kind, detail: String(detail || '').slice(0, 300), by: typeof activeServerName === 'function' ? activeServerName() : '' });
+                localStorage.setItem(key, JSON.stringify(list.slice(0, 300)));
+            } catch (e) { /* diagnostics only */ }
+        }
+
+//@fn syncJournalAuditEvents
+// The journal as Audit-tab events (module "Sync").
+function syncJournalAuditEvents() {
+            let list = [];
+            try { list = JSON.parse(localStorage.getItem('pos_sync_journal_v1') || '[]'); } catch (e) { list = []; }
+            const label = { sent: 'Sync: sent', failed: 'Sync: send failed', retry: 'Sync: retry', conflict: 'Sync: conflict resolved by server' };
+            return list.map((e) => ({ at: e.at, user: e.by || 'Device', module: 'Sync', action: label[e.kind] || ('Sync: ' + e.kind), detail: e.detail || '', ref: '' }));
+        }
+
+//@fn syncJournalConflicts
+// Stock conflicts in a pulled payload that concern THIS device's own movements, journaled once each.
+function syncJournalConflicts(pulledLog) {
+            try {
+                if (!Array.isArray(pulledLog)) return;
+                const dev = getOrCreateDeviceId();
+                let seen = [];
+                try { seen = JSON.parse(localStorage.getItem('pos_sync_conflicts_seen_v1') || '[]'); } catch (e) { seen = []; }
+                const seenSet = new Set(seen);
+                pulledLog.forEach((m) => {
+                    if (!m || m.dev !== dev || !m._srv || seenSet.has(String(m.id))) return;
+                    if (m._srv.applied === false && m._srv.reason !== 'initial') {
+                        syncJournal('conflict', `${m.name || m.code || 'item'}: ${m.kind === 'count' ? 'count' : 'change'} not applied (${m._srv.reason === 'older-count' ? 'a later stock take was already recorded' : m._srv.reason === 'before-count' ? 'already covered by a later stock take' : m._srv.reason})`);
+                    } else if (m._srv.stale) {
+                        syncJournal('conflict', `${m.name || m.code || 'item'}: counted against an out-of-date figure (${m._srv.before} on the server) — the physical count was applied`);
+                    } else return;
+                    seenSet.add(String(m.id));
+                });
+                localStorage.setItem('pos_sync_conflicts_seen_v1', JSON.stringify(Array.from(seenSet).slice(-2000)));
+            } catch (e) { /* diagnostics only */ }
+        }
+
+//@fn saleCtxText
+function saleCtxText(sale) {
+            const c = sale && sale.ctx;
+            if (!c) return '';
+            return [c.till ? 'till ' + c.till : '', c.station ? 'station ' + c.station : '', c.shiftId ? 'shift ' + String(c.shiftId).slice(-6) : ''].filter(Boolean).join(' · ');
+        }
+
+//@fn tillNumber
+// This device's till number (1-99), handed out once by the server (see allocateTill in functions/api/_merge.js). 0 = not yet known.
+function tillNumber() {
+            const n = parseInt((function () { try { return localStorage.getItem('pos_till_no') || '0'; } catch (e) { return '0'; } })(), 10);
+            return n >= 1 && n <= 99 ? n : 0;
+        }
+
+//@fn rememberTillNumber
+function rememberTillNumber(n) {
+            n = Number(n);
+            if (n >= 1 && n <= 99) { try { localStorage.setItem('pos_till_no', String(n)); } catch (e) { /* asked again on the next sync */ } }
+        }
+
+//@fn generateReceiptRef
+// The reference printed (and barcoded) on every receipt — unique across ALL tills (zip 119). Before, every till counted up its own
+// copy of one shared number and synced it later, so two tills selling at the same time printed the SAME reference. Now each till
+// counts its own sales and the reference is (its count x 100) + its till number: till 3's 7th sale is ref-00000703, till 4's is
+// ref-00000704 — no two tills can ever produce the same one, online or offline, and it stays all digits (quick to type / scan).
+// New references always start above every reference issued before this change (the old shared counter is the floor). A brand-new
+// device that has never reached the server has no till number yet: it uses its own device code instead (ref-D<code>-<n>).
+function generateReceiptRef() {
+            let seq = 0;
+            try { seq = parseInt(localStorage.getItem('pos_till_ref_seq') || '0', 10) || 0; } catch (e) { /* start from the floor */ }
+            const floor = (typeof nextReceiptRefSeq === 'number' && isFinite(nextReceiptRefSeq)) ? nextReceiptRefSeq : 0;
+            if (seq < floor) seq = floor;
+            seq += 1;
+            safeSetItem('pos_till_ref_seq', String(seq));
+            const till = tillNumber();
+            const dev = String(getOrCreateDeviceId()).replace(/[^a-z0-9]/gi, '').slice(-5).toUpperCase();
+            const ref = till ? `ref-${String(seq * 100 + till).padStart(8, '0')}` : `ref-D${dev}-${seq}`;
+            // remember who/where for the sale this reference is about to go on (attached when it is sent: stampLocalContext)
+            try {
+                const k = 'pos_ref_ctx_v1';
+                const map = JSON.parse(localStorage.getItem(k) || '{}') || {};
+                map[ref] = { ...saleCtxNow(), at: Date.now() };
+                const keys = Object.keys(map);
+                if (keys.length > 300) keys.sort((a, b) => (map[a].at || 0) - (map[b].at || 0)).slice(0, keys.length - 300).forEach((x) => { delete map[x]; });
+                localStorage.setItem(k, JSON.stringify(map));
+            } catch (e) { /* the sale still gets its reference */ }
+            return ref;
+        }
+
 //@fn getPaperCols
 function getPaperCols() {
             const mm = receiptWidth === 'custom' ? (parseFloat(receiptCustomWidth) || 80) : (parseFloat(receiptWidth) || 80);
@@ -3204,7 +3368,7 @@ async function loadUpgradePromptContent() {
 //@fn logStockMovementDated
 function logStockMovementDated(code, name, delta, reason, isoTimestamp) {
             if (!delta) return;
-            stockMovementLog.push({ id: genSaleId(), timestamp: isoTimestamp, code, name, delta, type: delta > 0 ? 'added' : 'removed', reason });
+            stockMovementLog.push({ id: genSaleId(), lg: 1, timestamp: isoTimestamp, code, name, delta, type: delta > 0 ? 'added' : 'removed', reason });
         }
 
 //@fn looksLikeRowNumberColumn
@@ -4499,12 +4663,14 @@ async function probeServer(ms) {
 
 //@fn pullState
 async function pullState() {
-            // One pull at a time: a slow one is not stacked with the next poll.
+            // One pull at a time: a slow one is not stacked with the next poll. The one pull that must not be dropped — "fetch the
+            // result of the push I just made" (see pushNow) — sets __pullAgain instead, and runs once more right after this one.
             if (window.__pullInFlight && Date.now() - (window.__pullStartedAt || 0) < 120000) return;
             window.__pullInFlight = true;
             window.__pullStartedAt = Date.now();
             try { await pullStateOnce(); }
             finally { window.__pullInFlight = false; }
+            if (window.__pullAgain) { window.__pullAgain = false; setTimeout(() => { try { pullState().catch(() => {}); } catch (e) { /* the poll will */ } }, 0); }
         }
 
 //@fn pullStateOnce
@@ -4633,7 +4799,14 @@ function preparePulledPayload(data) {
                 };
                 const keyOf = (r) => (r && typeof r === 'object') ? (r.id != null ? 'i:' + r.id : r.code != null ? 'c:' + r.code : r.token != null ? 't:' + r.token : null) : null;
                 const timeOf = (r) => { for (const f of ['timestamp', 'date', 'createdAt', 'clockIn', 'at']) { if (r && r[f] != null) { const t = typeof r[f] === 'number' ? r[f] : Date.parse(r[f]); if (isFinite(t)) return t; } } return NaN; };
-                const out = { ...data };
+                let out = { ...data };
+                syncJournalConflicts(data.stockMovementLog);
+                try { if (data.tillNumbers && typeof data.tillNumbers === 'object') rememberTillNumber(data.tillNumbers[getOrCreateDeviceId()]); } catch (e) { /* next sync */ }
+                if (data._ledger) {
+                    stockLedgerMark(true);
+                    out = stockApplyPulledLedger(out);
+                    if (typeof aquaApplyPulledCells === 'function' && (Array.isArray(out.products) || Array.isArray(out.tanks) || Array.isArray(out.rawMaterials))) out = aquaApplyPulledCells(out);
+                }
                 setTimeout(ackLocalFields, 0);              // once the app has applied this payload, the settings are in agreement with the server
                 if (data._hotFrom) setTimeout(() => { hydrateOlderHistory(data._hotFrom); }, 4000);     // fetch the older history in the background
                 Object.keys(local).forEach((f) => {
@@ -4677,15 +4850,22 @@ async function pushNow() {
                     if (res.ok) {
                         slim.commit();
                         const data = await res.json();
+                        if (data && data.till) rememberTillNumber(data.till);
+                        const ledgerJustOn = !!(data && data.ledger) && stockLedgerMark(true);
                         // "Synced up to <the server's time>" is only true if the server had NOTHING newer than what this device already held when
                         // the push arrived. If another device changed something in between (data.prev is the server's time before our push), our
                         // push merged into that change, and this device has not SEEN it yet — so don't move the marker: the next pull fetches it.
                         // (Before, a device that pushed right after another one's change marked itself up to date and missed that change until the
                         // NEXT push from anyone.)
                         const heldUpTo = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
-                        const missedSomething = typeof data.prev === 'number' && data.prev > heldUpTo && heldUpTo > 0;
+                        // With the stock ledger the server decides the quantities (it may not agree with this device's own arithmetic — a
+                        // stale till, a count that was superseded), so a push that carried stock movements is followed by a pull of the result.
+                        const movedStock = ledgerJustOn || !!(data && data.ledger && (
+                            (Array.isArray(slim.body.stockMovementLog) && slim.body.stockMovementLog.length)
+                            || (Array.isArray(slim.body.inventory) && slim.body.inventory.some((r) => r && r.code != null && typeof r.qty === 'number' && typeof r._sq !== 'number'))));
+                        const missedSomething = movedStock || (typeof data.prev === 'number' && data.prev > heldUpTo && heldUpTo > 0);
                         if (!missedSomething) safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
-                        else setTimeout(() => { try { pullState(); } catch (e) { /* the poll will */ } }, 50);
+                        else setTimeout(() => { try { if (window.__pullInFlight) window.__pullAgain = true; else pullState(); } catch (e) { /* the poll will */ } }, 50);
                         ackLocalDirty(seqAtStart);
                         snapshotInventorySync();
                         snapshotExtraSyncedFields();
@@ -7627,6 +7807,7 @@ function slimPayloadForPush(payload) {
             //  * If any record in a log has no id, that whole log is sent as before (the server can't match it).
             //  * Nothing is marked as acknowledged until the server says OK (call commit() then); a failed push resends.
             const LOG_FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'];
+            stampLocalContext(payload);
             window.__pushAck = window.__pushAck || {};
             const body = { ...payload };
             const pending = {};
@@ -7655,11 +7836,11 @@ function slimPayloadForPush(payload) {
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
                 'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs', 'cashShifts', 'approvalRequests', 'radiologyOrders', 'theatreCases', 'institutions', 'institutionCharges',
-                'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes']);
+                'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes', 'rawMaterials']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
-            const TRACKED = ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions'];
+            const TRACKED = ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions', 'rawMaterials'];
             if (!window.__keyAck) window.__keyAck = loadKeyAck();
             const keysNow = {}, gone = {};
             TRACKED.forEach((col) => {
@@ -7693,6 +7874,10 @@ function slimPayloadForPush(payload) {
                 if (window.__fieldAck.has(f) && window.__fieldAck.get(f) !== sg) times[f] = Date.now();
             });
             if (Object.keys(times).length) body._fieldTimes = times;
+            // which device this is, so the server can give it a till number (see generateReceiptRef)
+            try { body._till = getOrCreateDeviceId(); } catch (e) { /* no id: the device keeps its own reference form */ }
+            // and which app release it runs (device list in Settings and the Owner Console)
+            try { body._dev = { v: window.__APP_RELEASE || '', app: (location.pathname.split('/')[1] || 'shop').slice(0, 20) }; } catch (e) { /* optional */ }
             return {
                 body,
                 commit() {
@@ -7795,7 +7980,7 @@ function ackLocalFields() {
                 Object.keys(p).forEach((f) => { if (f !== 'updatedAt' && p[f] !== undefined) window.__fieldAck.set(f, pushSigOf(p[f])); });
                 // ...and which records of the deletable lists exist now (a record missing later = the person deleted it; see slimPayloadForPush)
                 if (!window.__keyAck) window.__keyAck = loadKeyAck();
-                ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions'].forEach((col) => {
+                ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions', 'rawMaterials'].forEach((col) => {
                     if (!Array.isArray(p[col])) return;
                     const set = new Set();
                     p[col].forEach((r) => { const k = pushKeyOf(r); if (k != null) set.add(k); });
@@ -7811,8 +7996,23 @@ async function trackPush(fn) {
             // queued (see queuePush), in flight, or failed. commit() (called only when the server says OK) clears "failed".
             window.__pushInFlight = (window.__pushInFlight || 0) + 1;
             window.__pushQueued = false;
+            const wasFailing = (window.__pushFails || 0) > 0;
             window.__pushFailed = true;
-            try { return await fn(); }
+            try {
+                const r = await fn();
+                try {
+                    if (window.__pushFailed) syncJournal('failed', window.__pushFailKind === 'network' ? 'no answer from the server (offline?) — kept on this device, will retry' : 'the server refused or was busy — kept on this device, will retry');
+                    else if (wasFailing) syncJournal('retry', 'sent after an earlier failure — the server applies each change once');
+                    else {
+                        // ordinary sends are summarised (at most one line per 30 minutes), so the log shows sync activity without drowning the audit
+                        const n = (parseInt(localStorage.getItem('pos_sync_sent_count') || '0', 10) || 0) + 1;
+                        const last = parseInt(localStorage.getItem('pos_sync_sent_logged_at') || '0', 10) || 0;
+                        if (Date.now() - last > 30 * 60000) { syncJournal('sent', `${n} send${n === 1 ? '' : 's'} to the server since the last entry`); localStorage.setItem('pos_sync_sent_count', '0'); localStorage.setItem('pos_sync_sent_logged_at', String(Date.now())); }
+                        else localStorage.setItem('pos_sync_sent_count', String(n));
+                    }
+                } catch (e) { /* diagnostics only */ }
+                return r;
+            }
             finally {
                 window.__pushInFlight = Math.max(0, (window.__pushInFlight || 1) - 1);
                 // A push that keeps failing (server down, shop refused) is retried by the poll with a growing pause — 4 s, 8 s ... up to 1 minute —
@@ -7885,8 +8085,7 @@ function snapshotExtraSyncedFields() {
                 if (!Array.isArray(arr)) return;
                 arr.forEach((r) => {
                     if (!r || r[keyField] == null) return;
-                    const { updatedAt, ...rest } = r;
-                    extraSyncSnapshot[`${name}:${r[keyField]}`] = JSON.stringify(rest);
+                    extraSyncSnapshot[`${name}:${r[keyField]}`] = extraRecSig(name, r);
                 });
             });
         }
@@ -7896,8 +8095,7 @@ function snapshotInventorySync() {
             invSyncSnapshot = {};
             (Array.isArray(inventory) ? inventory : []).forEach((it) => {
                 if (!it || it.code == null) return;
-                const { updatedAt, ...rest } = it;
-                invSyncSnapshot[it.code] = JSON.stringify(rest);
+                invSyncSnapshot[it.code] = stockRecSig(it);
             });
         }
 
@@ -7946,8 +8144,7 @@ function stampDirtyExtraSyncedFields() {
                 if (!Array.isArray(arr)) return;
                 arr.forEach((r) => {
                     if (!r || r[keyField] == null) return;
-                    const { updatedAt, ...rest } = r;
-                    const sig = JSON.stringify(rest);
+                    const sig = extraRecSig(name, r);
                     if (extraSyncSnapshot[`${name}:${r[keyField]}`] !== sig) {
                         r.updatedAt = Date.now();
                     }
@@ -7957,14 +8154,343 @@ function stampDirtyExtraSyncedFields() {
 
 //@fn stampDirtyInventory
 function stampDirtyInventory() {
+            // Any stock change this device made without itemising it becomes a movement first (see reconcileLocalStockChanges).
+            try { reconcileLocalStockChanges(); } catch (e) { /* never block a push */ }
             (Array.isArray(inventory) ? inventory : []).forEach((it) => {
                 if (!it || it.code == null) return;
-                const { updatedAt, ...rest } = it;
-                const sig = JSON.stringify(rest);
+                const sig = stockRecSig(it);
                 if (invSyncSnapshot[it.code] !== sig) {
                     it.updatedAt = Date.now();
                 }
             });
+        }
+
+//@fn stockLedgerOn
+// STOCK LEDGER (zip 118). True once this shop's server has said it applies stock movements exactly once (the `_ledger` flag on a
+// pull, `ledger` on a push reply — see applyStockLedger in functions/api/_merge.js). Until then the app behaves exactly as before,
+// so a shop whose server was not updated yet is never switched to rules its server doesn't follow.
+function stockLedgerOn() {
+            try { return localStorage.getItem('pos_stock_ledger_v1') === '1'; } catch (e) { return false; }
+        }
+
+//@fn stockLedgerMark
+function stockLedgerMark(on) {
+            // returns true only when this call switched the ledger on
+            if (!on || stockLedgerOn()) return false;
+            try { localStorage.setItem('pos_stock_ledger_v1', '1'); } catch (e) { /* retried on the next sync */ }
+            // fetch the whole shop once more, so every item arrives with the server's own figures (_sq) to compare against
+            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* the next change brings them anyway */ }
+            try { if (typeof snapshotInventorySync === 'function') snapshotInventorySync(); } catch (e) { /* housekeeping only */ }
+            try { if (typeof snapshotProductsSync === 'function') snapshotProductsSync(); } catch (e) { /* Aqua POS only */ }
+            try { if (typeof snapshotExtraSyncedFields === 'function') snapshotExtraSyncedFields(); } catch (e) { /* housekeeping only */ }
+            return true;
+        }
+
+//@fn stockRecSig
+// What counts as "this device edited this item" for the per-record merge. With the ledger on, stock figures are NOT part of it:
+// the server owns them and only moves them by movements, so selling an item no longer makes this device's whole (maybe stale)
+// copy of it look like the newest edit — which is what used to put back another till's price/name change after a sale.
+function stockRecSig(it) {
+            const { updatedAt, ...rest } = it || {};
+            if (!stockLedgerOn()) return JSON.stringify(rest);
+            const c = { ...rest };
+            ['qty', 'pieceQty', '_sq', '_sp', '_sv', '_ct'].forEach((k) => { delete c[k]; });
+            if (Array.isArray(c.variants)) c.variants = c.variants.map((v) => { if (!v || typeof v !== 'object') return v; const { qty, _sq, _sv, _ct, ...vr } = v; return vr; });
+            return JSON.stringify(c);
+        }
+
+//@fn stockMoveDelta
+// How much a movement ACTUALLY changed the stock: the server's own figures when it has processed it (a duplicate, a sale already
+// covered by a later stock take = 0), otherwise the movement's own delta. Reports use this so they agree with the real stock.
+function stockMoveDelta(m) {
+            if (m && m._srv && typeof m._srv === 'object') {
+                if (m._srv.applied === false) return 0;
+                if (typeof m._srv.after === 'number' && typeof m._srv.before === 'number') return Math.round((m._srv.after - m._srv.before) * 1000) / 1000;
+            }
+            return Number(m && m.delta) || 0;
+        }
+
+//@fn stockPendingMoves
+// This device's movements the server has not processed yet (made by this build: `lg`; processed ones carry the server's `_srv`).
+function stockPendingMoves(exceptIds) {
+            const log = (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : [];
+            const t = (m) => { const x = Date.parse(m.timestamp); return isFinite(x) ? x : 0; };
+            return log.filter((m) => m && m.lg && !m._srv && m.id != null && m.code != null && !(exceptIds && exceptIds.has(String(m.id))))
+                .sort((a, b) => t(a) - t(b));
+        }
+
+//@fn stockSimulate
+// base (the server's figure) + this device's pending movements, applied the way the server will apply them (a count is absolute).
+function stockSimulate(base, moves) {
+            let v = Number(base) || 0;
+            (moves || []).forEach((m) => { v = m.kind === 'count' ? Number(m.counted) || 0 : v + (Number(m.delta) || 0); });
+            return Math.round(v * 1000) / 1000;
+        }
+
+//@fn stockMovesByKey
+function stockMovesByKey(moves) {
+            const by = new Map();
+            (moves || []).forEach((m) => { const k = m.code + '|' + (m.unit === 'pieceQty' ? 'pieceQty' : 'qty'); if (!by.has(k)) by.set(k, []); by.get(k).push(m); });
+            return by;
+        }
+
+//@fn reconcileLocalStockChanges
+// Safety net for the ledger: every stock change must reach the server as a movement, because the server ignores the plain number.
+// Almost every screen already logs one; for anything that changed a quantity WITHOUT logging it, the difference between what this
+// device shows and (the server's last figure `_sq` + this device's pending movements) is logged once as a correction movement, with
+// its own id — so it is applied once, like any other movement. Items the server has never stamped (`_sq` missing) are skipped.
+function reconcileLocalStockChanges() {
+            if (!stockLedgerOn() || typeof inventory === 'undefined' || !Array.isArray(inventory)) return 0;
+            if (typeof stockMovementLog === 'undefined' || !Array.isArray(stockMovementLog)) return 0;
+            const by = stockMovesByKey(stockPendingMoves());
+            let made = 0;
+            const check = (obj, name) => {
+                [['qty', obj._sq], ['pieceQty', obj._sp]].forEach(([unit, base]) => {
+                    if (typeof base !== 'number') return;
+                    const diff = Math.round(((Number(obj[unit]) || 0) - stockSimulate(base, by.get(obj.code + '|' + unit))) * 1000) / 1000;
+                    if (Math.abs(diff) < 1e-6) return;
+                    stockMovementLog.push({
+                        id: genSaleId(), lg: 1, timestamp: new Date().toISOString(), code: obj.code, name, delta: diff,
+                        type: diff > 0 ? 'added' : 'removed', reason: 'Stock correction (change not itemised)', unit, auto: true,
+                        by: typeof activeServerName === 'function' ? activeServerName() : '',
+                    });
+                    made++;
+                });
+            };
+            inventory.forEach((it) => {
+                if (!it || it.code == null || it._deleted) return;
+                if (it.hasVariants && Array.isArray(it.variants) && it.variants.length > 0) {
+                    it.variants.forEach((v) => { if (v && v.code != null) check(v, `${it.name} — ${v.name}`); });
+                    return;
+                }
+                check(it, it.name);
+            });
+            if (made) safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+            return made;
+        }
+
+//@fn stockApplyPulledLedger
+// A pull from a ledger server: its quantities are the truth. Items it never stamped get `_sq` = its figure; then this device's
+// movements the server hasn't processed yet (still on their way) are laid on top, so the screen doesn't jump back and the
+// safety net above doesn't mistake them for untracked changes.
+function stockApplyPulledLedger(data) {
+            if (!data || !Array.isArray(data.inventory)) return data;
+            const serverIds = new Set();
+            (Array.isArray(data.stockMovementLog) ? data.stockMovementLog : []).forEach((m) => { if (m && m.id != null) serverIds.add(String(m.id)); });
+            const by = stockMovesByKey(stockPendingMoves(serverIds));
+            const lay = (obj) => {
+                if (typeof obj.qty === 'number' && typeof obj._sq !== 'number') obj._sq = obj.qty;
+                if (typeof obj.pieceQty === 'number' && typeof obj._sp !== 'number') obj._sp = obj.pieceQty;
+                ['qty', 'pieceQty'].forEach((unit) => {
+                    const mv = by.get(obj.code + '|' + unit);
+                    if (mv && mv.length) obj[unit] = stockSimulate(unit === 'qty' ? obj._sq : obj._sp, mv);
+                });
+            };
+            data.inventory = data.inventory.map((r) => {
+                if (!r || typeof r !== 'object' || r.code == null) return r;
+                const rec = { ...r };
+                if (rec.hasVariants && Array.isArray(rec.variants) && rec.variants.length > 0) {
+                    rec.variants = rec.variants.map((v) => { if (!v || typeof v !== 'object' || v.code == null) return v; const c = { ...v }; lay(c); return c; });
+                    rec.qty = Math.round(rec.variants.reduce((s, v) => s + (Number(v && v.qty) || 0), 0) * 1000) / 1000;
+                } else lay(rec);
+                return rec;
+            });
+            return data;
+        }
+
+//@fn stockKeyMoves
+// Gives the stock movements logged since `fromLen` a DETERMINISTIC id built from the business event they belong to (e.g. the sale
+// being voided). The same event done again — a double tap, or a second till that had not seen the first one yet — then produces the
+// SAME movement ids, which the server already holds, so the stock changes once (see applyStockLedger). Returns how many were keyed.
+function stockKeyMoves(fromLen, key) {
+            if (typeof stockMovementLog === 'undefined' || !Array.isArray(stockMovementLog) || !key) return 0;
+            let n = 0;
+            for (let i = Math.max(0, fromLen || 0); i < stockMovementLog.length; i++) {
+                const m = stockMovementLog[i];
+                if (!m || typeof m !== 'object') continue;
+                m.id = `${key}:${m.code}:${m.unit === 'pieceQty' ? 'p' : 'q'}:${n}`;
+                n++;
+            }
+            if (n) safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+            return n;
+        }
+
+//@fn stockMoveAuditText
+// One line for the Audit tab that says what REALLY happened to the stock: the server's confirmed before -> after, a count shown
+// as a count (not a +/- guess), a movement that did not change stock marked as such, and one still on its way marked as pending.
+// A retry/duplicate is never a second line: the server keeps one movement per id.
+function stockMoveAuditText(e) {
+            const q = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            const pcs = e.unit === 'pieceQty' ? ' pcs' : '';
+            const srv = e._srv && typeof e._srv === 'object' ? e._srv : null;
+            const change = srv && typeof srv.before === 'number' && typeof srv.after === 'number' ? ` (${q(srv.before)} → ${q(srv.after)}${pcs})` : '';
+            const head = e.kind === 'count'
+                ? `${e.name || e.code}: counted ${q(e.counted)}${pcs}${srv ? change : ` (showed ${q(e.before)})`}`
+                : `${e.name || e.code}: ${e.delta > 0 ? '+' : ''}${q(e.delta)}${pcs}${change}`;
+            let tail = '';
+            if (srv && srv.applied === false) {
+                tail = srv.reason === 'older-count' ? ' · NOT applied: a later stock take of this item was already recorded'
+                    : srv.reason === 'before-count' ? ' · NOT applied again: already covered by a later stock take'
+                    : srv.reason === 'no-item' ? ' · NOT applied: item not found' : ' · NOT applied';
+            } else if (srv && srv.stale) tail = ' · counted against an out-of-date figure (physical count applied)';
+            else if (!srv && e.lg && stockLedgerOn()) tail = ' · waiting to sync';
+            return `${head} — ${e.reason || ''}${tail}`;
+        }
+
+//@fn aquaCellList
+// Aqua POS stock CELLS on this device (see CELL_SPECS in functions/api/_merge.js): every product's stock at every site, every
+// bottle-tracked bale's bottle count at every site, every tank's litres, every raw material's quantity. Each entry says where
+// the number lives, what it is now, and the server's last confirmed figure for it (`base`, from `_ss`; undefined = never stamped).
+function aquaCellList() {
+            const out = [];
+            const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+            const siteName = (id) => { try { const x = (typeof sites !== 'undefined' ? sites : []).find((st) => st.id === id); return x ? x.name : id; } catch (e) { return id; } };
+            (typeof products !== 'undefined' && Array.isArray(products) ? products : []).forEach((p) => {
+                if (!p || p.code == null || p._deleted) return;
+                const k = p.id != null ? 'id:' + p.id : 'code:' + p.code;
+                ['stock', 'bottleStockBySite'].forEach((f) => {
+                    const cur = isObj(p[f]) ? p[f] : {};
+                    const ss = isObj(p._ss) && isObj(p._ss[f]) ? p._ss[f] : null;
+                    new Set([...Object.keys(cur), ...Object.keys(ss || {})]).forEach((site) => {
+                        out.push({ cell: { c: 'products', k, f, s: site }, rec: p, value: Number(cur[site]) || 0, base: ss && typeof ss[site] === 'number' ? ss[site] : undefined,
+                            label: `${p.name}${f === 'bottleStockBySite' ? ' (bottles)' : ''} @ ${siteName(site)}`, site });
+                    });
+                });
+            });
+            (typeof tanks !== 'undefined' && Array.isArray(tanks) ? tanks : []).forEach((t) => {
+                if (!t || t.id == null || t._deleted || t.infinite) return;
+                const ss = isObj(t._ss) ? t._ss.currentVolumeLiters : undefined;
+                out.push({ cell: { c: 'tanks', k: 'id:' + t.id, f: 'currentVolumeLiters' }, rec: t, value: Number(t.currentVolumeLiters) || 0, base: typeof ss === 'number' ? ss : undefined,
+                    label: `${t.name || 'Tank'} (litres) @ ${siteName(t.siteId)}`, site: t.siteId });
+            });
+            (typeof rawMaterials !== 'undefined' && Array.isArray(rawMaterials) ? rawMaterials : []).forEach((m) => {
+                if (!m || m.id == null || m._deleted || m.removed) return;
+                const ss = isObj(m._ss) ? m._ss.stockQty : undefined;
+                out.push({ cell: { c: 'rawMaterials', k: 'id:' + m.id, f: 'stockQty' }, rec: m, value: Number(m.stockQty) || 0, base: typeof ss === 'number' ? ss : undefined,
+                    label: `${m.name} @ ${siteName(m.siteId)}`, site: m.siteId });
+            });
+            return out;
+        }
+
+//@fn aquaCellKey
+function aquaCellKey(cell) { return `${cell.c}|${cell.k}|${cell.f}|${cell.s == null ? '' : cell.s}`; }
+
+//@fn aquaPendingByCell
+// This device's cell movements the server has not processed yet, grouped by cell, oldest first.
+function aquaPendingByCell(exceptIds) {
+            const log = (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : [];
+            const t = (m) => { const x = Date.parse(m.timestamp); return isFinite(x) ? x : 0; };
+            const by = new Map();
+            log.filter((m) => m && m.cell && m.lg && !m._srv && m.id != null && !(exceptIds && exceptIds.has(String(m.id))))
+                .sort((a, b) => t(a) - t(b))
+                .forEach((m) => { const k = aquaCellKey(m.cell); if (!by.has(k)) by.set(k, []); by.get(k).push(m); });
+            return by;
+        }
+
+//@fn aquaSimulateCell
+// The server's figure plus pending movements, applied as the server applies them (a count is absolute; never below zero).
+function aquaSimulateCell(base, moves) {
+            let v = Number(base) || 0;
+            (moves || []).forEach((m) => { v = Math.max(0, m.kind === 'count' ? Number(m.counted) || 0 : v + (Number(m.delta) || 0)); });
+            return Math.round(v * 1000) / 1000;
+        }
+
+//@fn aquaReconcileCells
+// Aqua's screens change stock in many places (sales, production, dispatch, bottles, tanks, materials) by editing the numbers
+// directly. With the ledger on, what reaches the server is, per cell, ONE movement for the net change since the server's last
+// confirmed figure (+ this device's movements still on their way) — with its own id, so it is applied once whatever is retried
+// or re-sent, and a stale device's old numbers can no longer overwrite another site's newer ones.
+function aquaReconcileCells() {
+            if (!stockLedgerOn() || typeof stockMovementLog === 'undefined' || !Array.isArray(stockMovementLog)) return 0;
+            try { if (typeof commitQtyView === 'function' && typeof activeSiteId !== 'undefined') commitQtyView(activeSiteId); } catch (e) { /* the mirror is committed on save anyway */ }
+            const pending = aquaPendingByCell();
+            let made = 0;
+            aquaCellList().forEach((x) => {
+                if (typeof x.base !== 'number') return;                         // never confirmed by the server yet: sent as-is (initial)
+                const diff = Math.round((x.value - aquaSimulateCell(x.base, pending.get(aquaCellKey(x.cell)))) * 1000) / 1000;
+                if (Math.abs(diff) < 1e-6) return;
+                stockMovementLog.push({
+                    id: genSaleId(), lg: 1, timestamp: new Date().toISOString(), cell: x.cell, delta: diff, name: x.label, site: x.site,
+                    type: diff > 0 ? 'added' : 'removed', reason: 'Stock change', by: typeof activeServerName === 'function' ? activeServerName() : '',
+                });
+                made++;
+            });
+            if (made) safeSetItem('aqua_stock_movement_log', JSON.stringify(stockMovementLog));
+            return made;
+        }
+
+//@fn aquaApplyPulledCells
+// A pull from a ledger server: its cell figures are the truth. Records it never stamped get `_ss` = its figures; then this
+// device's cell movements still on their way are laid on top (same as stockApplyPulledLedger for the other apps).
+function aquaApplyPulledCells(data) {
+            if (!data) return data;
+            const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+            const serverIds = new Set();
+            (Array.isArray(data.stockMovementLog) ? data.stockMovementLog : []).forEach((m) => { if (m && m.id != null) serverIds.add(String(m.id)); });
+            const pending = aquaPendingByCell(serverIds);
+            const lay = (rec, c, k, maps, scalars) => {
+                const r = { ...rec };
+                const ss = isObj(r._ss) ? { ...r._ss } : {};
+                maps.forEach((f) => {
+                    if (!isObj(r[f])) return;
+                    r[f] = { ...r[f] };
+                    if (!isObj(ss[f])) ss[f] = { ...r[f] };
+                    Object.keys(r[f]).forEach((site) => {
+                        const mv = pending.get(aquaCellKey({ c, k, f, s: site }));
+                        if (mv && mv.length) r[f][site] = aquaSimulateCell(typeof ss[f][site] === 'number' ? ss[f][site] : r[f][site], mv);
+                    });
+                });
+                scalars.forEach((f) => {
+                    if (typeof r[f] !== 'number') return;
+                    if (typeof ss[f] !== 'number') ss[f] = r[f];
+                    const mv = pending.get(aquaCellKey({ c, k, f }));
+                    if (mv && mv.length) r[f] = aquaSimulateCell(ss[f], mv);
+                });
+                r._ss = ss;
+                return r;
+            };
+            if (Array.isArray(data.products)) data.products = data.products.map((p) => (p && p.code != null ? lay(p, 'products', p.id != null ? 'id:' + p.id : 'code:' + p.code, ['stock', 'bottleStockBySite'], []) : p));
+            if (Array.isArray(data.tanks)) data.tanks = data.tanks.map((t) => (t && t.id != null ? lay(t, 'tanks', 'id:' + t.id, [], ['currentVolumeLiters']) : t));
+            if (Array.isArray(data.rawMaterials)) data.rawMaterials = data.rawMaterials.map((m) => (m && m.id != null ? lay(m, 'rawMaterials', 'id:' + m.id, [], ['stockQty']) : m));
+            return data;
+        }
+
+//@fn stockCellFieldsOf
+// Stock figures the server owns (ledger on): left out of "did this device edit this record?", so moving stock never makes a
+// device's whole (maybe stale) copy of a record look like the newest edit of its name, price, capacity ...
+function stockCellFieldsOf(name) {
+            if (!stockLedgerOn()) return null;
+            if (name === 'tanks') return ['currentVolumeLiters', '_ss', '_sv', '_ct'];
+            if (name === 'rawMaterials') return ['stockQty', '_ss', '_sv', '_ct'];
+            if (name === 'products') return ['stock', 'bottleStockBySite', 'siteTimes', '_ss', '_sv', '_ct'];
+            return null;
+        }
+
+//@fn extraRecSig
+function extraRecSig(name, r) {
+            const { updatedAt, ...rest } = r || {};
+            const drop = stockCellFieldsOf(name);
+            if (drop) drop.forEach((f) => { delete rest[f]; });
+            return JSON.stringify(rest);
+        }
+
+//@fn logStockCount
+// A stock-take COUNT: an absolute "there are N" (not a +/- change), with its own immutable id, the figure this device showed
+// (`before`), the stock version it saw (`baseSv`), and the stock take it belongs to. The server applies it once (see applyStockLedger).
+function logStockCount(item, displayName, unit, counted, before, stocktakeId) {
+            const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            let device = '';
+            try { device = localStorage.getItem('pos_device_id') || ''; } catch (e) { /* optional */ }
+            const m = {
+                id: genSaleId(), lg: 1, kind: 'count', timestamp: new Date().toISOString(), code: item.code, name: displayName || item.name,
+                counted: r3(counted), before: r3(before), delta: r3(counted - before), type: counted >= before ? 'added' : 'removed',
+                reason: 'Stock take', unit: unit === 'pieceQty' ? 'pieceQty' : 'qty', stocktakeId,
+                by: typeof activeServerName === 'function' ? activeServerName() : '',
+            };
+            if (device) m.device = device;
+            if (typeof item._sv === 'number') m.baseSv = item._sv;
+            stockMovementLog.push(m);
+            return m;
         }
 
 //@fn startAdminShiftIfNeeded
@@ -8133,14 +8659,14 @@ function statusLabelFor(status) {
 function stockMovementDeltaAfter(code, dateStr) {
             return stockMovementLog
                 .filter(m => m.code === code && dateKey(new Date(m.timestamp)) > dateStr)
-                .reduce((sum, m) => sum + m.delta, 0);
+                .reduce((sum, m) => sum + stockMoveDelta(m), 0);
         }
 
 //@fn stockMovementDeltaWithinRange
 function stockMovementDeltaWithinRange(code, fromStr, toStr, wantAdded) {
             return stockMovementLog
-                .filter(m => m.code === code && dateKey(new Date(m.timestamp)) >= fromStr && dateKey(new Date(m.timestamp)) <= toStr && (wantAdded ? m.delta > 0 : m.delta < 0))
-                .reduce((sum, m) => sum + Math.abs(m.delta), 0);
+                .filter(m => m.code === code && dateKey(new Date(m.timestamp)) >= fromStr && dateKey(new Date(m.timestamp)) <= toStr && (wantAdded ? stockMoveDelta(m) > 0 : stockMoveDelta(m) < 0))
+                .reduce((sum, m) => sum + Math.abs(stockMoveDelta(m)), 0);
         }
 
 //@fn stockReportPeriodLabel
@@ -12564,6 +13090,7 @@ function stockTakeItems() {
             if (q) list = list.filter((p) => String(p.name || '').toLowerCase().includes(q) || String(p.code || '').toLowerCase().includes(q));
             list.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
             if (st.diffOnly) list = list.filter((p) => { const d = stockTakeDiff(p); return d.qty !== 0 || d.pieces !== 0; });
+            if (st.belowOnly) list = list.filter((p) => (Number(p.qty) || 0) < 0 || (Number(p.pieceQty) || 0) < 0);
             return list;
         }
 
@@ -12655,10 +13182,13 @@ function stockTakeRenderSummary() {
                 if (d.invalid) { invalid++; return; }
                 if (d.qty !== 0 || d.pieces !== 0) { changed++; const v = stockTakeValueOf(p, d); if (v < 0) short += -v; else over += v; }
             });
+            const below = (typeof inventory !== 'undefined' ? inventory : []).filter((x) => x && !x.removed && x.type !== 'service' && ((Number(x.qty) || 0) < 0 || (Number(x.pieceQty) || 0) < 0)).length;
+            const limitNote = `<p class="st-muted" style="margin:4px 0 0;">Missing stock worth more than <strong>KES ${stockTakeApprovalLimit().toLocaleString('en-US')}</strong> needs the management password. <a href="#" onclick="stockTakeSetApprovalLimit(prompt('Ask for the management password above what missing value (KES)? 0 = always', stockTakeApprovalLimit())); return false;">Change</a></p>`;
+            const belowNote = below ? `<p class="st-bad" style="margin:4px 0 0;">⚠ ${below} item${below === 1 ? ' is' : 's are'} below zero (sold on tills that were offline at the same time) — count ${below === 1 ? 'it' : 'them'}. <a href="#" onclick="stockTakeState().belowOnly = !stockTakeState().belowOnly; renderStockTake(); return false;">${st.belowOnly ? 'Show all' : 'Show only these'}</a></p>` : '';
             const apply = document.getElementById('stock-take-apply-btn');
             if (apply) { apply.disabled = counted === 0 || invalid > 0; apply.style.opacity = apply.disabled ? '0.5' : '1'; }
-            el.innerHTML = counted === 0 ? '<p class="settings-hint" style="margin:0;">Type what you actually counted next to each item. Leave items you did not count blank — they are not touched.</p>'
-                : `<p style="margin:0; font-size:14px;"><strong>${counted}</strong> counted · <strong>${changed}</strong> differ${invalid ? ` · <span class="st-bad">${invalid} not a number</span>` : ''}${short ? ` · missing stock worth <span class="st-bad">KES ${Math.round(short).toLocaleString('en-US')}</span> (at cost)` : ''}${over ? ` · extra stock worth <span class="st-over">KES ${Math.round(over).toLocaleString('en-US')}</span>` : ''}</p>`;
+            el.innerHTML = (counted === 0 ? '<p class="settings-hint" style="margin:0;">Type what you actually counted next to each item. Leave items you did not count blank — they are not touched.</p>'
+                : `<p style="margin:0; font-size:14px;"><strong>${counted}</strong> counted · <strong>${changed}</strong> differ${invalid ? ` · <span class="st-bad">${invalid} not a number</span>` : ''}${short ? ` · missing stock worth <span class="st-bad">KES ${Math.round(short).toLocaleString('en-US')}</span> (at cost)` : ''}${over ? ` · extra stock worth <span class="st-over">KES ${Math.round(over).toLocaleString('en-US')}</span>` : ''}</p>`) + belowNote + limitNote;
         }
 
 //@fn renderStockTake
@@ -12701,7 +13231,7 @@ function stockTakeClear() {
         }
 
 //@fn stockTakeApply
-function stockTakeApply() {
+function stockTakeApply(opts) {
             const st = stockTakeState();
             const changes = [];
             let counted = 0;
@@ -12716,16 +13246,23 @@ function stockTakeApply() {
             }
             if (counted === 0) { showToast('Type at least one count first.', true); return false; }
             if (changes.length === 0) { showToast(`All ${counted} counts match the system — nothing to change.`); stockTakeClear(); return true; }
-            if (!confirm(`Update the stock of ${changes.length} item${changes.length === 1 ? '' : 's'} to what you counted? ${counted - changes.length} counted item${counted - changes.length === 1 ? '' : 's'} already match. Each change is recorded as a "Stock take" adjustment.`)) return false;
+            const missingKes = changes.reduce((sum, { p, d }) => { const v = stockTakeValueOf(p, d); return v < 0 ? sum - v : sum; }, 0);
+            if (missingKes > stockTakeApprovalLimit() && !(opts && opts.approved)) {
+                requireManagementApproval(`This stock take writes off KES ${Math.round(missingKes).toLocaleString('en-US')} of missing stock (at cost). Enter the management password (or a Manager's PIN) to approve it.`, () => stockTakeApply({ approved: true }));
+                return false;
+            }
+            if (!(opts && opts.approved) && !confirm(`Update the stock of ${changes.length} item${changes.length === 1 ? '' : 's'} to what you counted? ${counted - changes.length} counted item${counted - changes.length === 1 ? '' : 's'} already match. Each change is recorded as a "Stock take" adjustment.`)) return false;
             const lines = [];
-            const actor = typeof activeServerName === 'function' ? activeServerName() : '';
             const touchedParents = new Set();
+            // One id for this whole stock take, one immutable COUNT movement per changed figure (see stockTakeRecordCount).
+            const stocktakeId = genSaleId();
+            const missingValue = changes.reduce((sum, { p, d }) => { const v = stockTakeValueOf(p, d); return v < 0 ? sum - v : sum; }, 0);
+            const extraValue = changes.reduce((sum, { p, d }) => { const v = stockTakeValueOf(p, d); return v > 0 ? sum + v : sum; }, 0);
+            const meta = { counted, changed: changes.length, missing: Math.round(missingValue), extra: Math.round(extraValue) };
             changes.forEach(({ p, d }) => {
                 const before = { qty: Number(p.qty) || 0, pieceQty: Number(p.pieceQty) || 0 };
-                if (d.qtyNew !== null && d.qty !== 0) { p.qty = d.qtyNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.qty, 'Stock take'); }
-                if (d.pieceNew !== null && d.pieces !== 0) { p.pieceQty = d.pieceNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.pieces, 'Stock take', 'pieceQty'); }
-                p.updatedAt = Date.now();
                 const { parent } = stockTakeFindByCode(p.code);
+                stockTakeRecordCount(p, parent, d, stocktakeId, meta);
                 if (parent) touchedParents.add(parent);
                 lines.push({ code: p.code, name: p.name, unit: p.unit || 'pcs', before, after: { qty: Number(p.qty) || 0, pieceQty: Number(p.pieceQty) || 0 }, diff: d.qty, pieceDiff: d.pieces, value: Math.round(stockTakeValueOf(p, d)) });
             });
@@ -12737,9 +13274,8 @@ function stockTakeApply() {
             safeSetItem('pos_inventory', JSON.stringify(inventory));
             if (typeof stockMovementLog !== 'undefined') safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
             queuePush();
-            const hist = stockTakeHistoryGet();
-            hist.unshift({ id: genSaleId(), at: new Date().toISOString(), by: actor, counted, changed: lines.length, missingValue: lines.filter((l) => l.value < 0).reduce((s, l) => s - l.value, 0), extraValue: lines.filter((l) => l.value > 0).reduce((s, l) => s + l.value, 0), lines: lines.slice(0, 300) });
-            try { localStorage.setItem('stock_take_history_v1:' + location.pathname, JSON.stringify(hist.slice(0, 15))); } catch (e) { /* the stock itself is saved; only the history is skipped */ }
+            // The history is now read from the synced stock movements themselves (every device, with the server's confirmed
+            // figures) — see renderStockTakeHistory. The old per-device list is still shown for stock takes made before this.
             st.counts = {};
             if (typeof renderInventoryTable === 'function') { try { renderInventoryTable(); } catch (e) { /* not on screen */ } }
             renderStockTake();
@@ -12755,22 +13291,28 @@ function stockTakeApply() {
 // intentional row edit doesn't need the same "are you sure" friction a
 // many-item bulk change does — the same reasoning an inline Inventory-
 // table edit already uses.
-function stockTakeApplyOne(code) {
+function stockTakeApplyOne(code, opts) {
             const { item: p, parent } = stockTakeFindByCode(code);
             if (!p) return false;
             const d = stockTakeDiff(p);
             if (!d.counted) { showToast('Type a count for this item first.', true); return false; }
             if (d.invalid) { showToast(`"${p.name}": the count is not a number.`, true); return false; }
             const st = stockTakeState();
+            const rowMissing = Math.max(0, -stockTakeValueOf(p, d));
+            if (d.qty !== 0 || d.pieces !== 0) {
+                if (rowMissing > stockTakeApprovalLimit() && !(opts && opts.approved)) {
+                    requireManagementApproval(`Writing off KES ${Math.round(rowMissing).toLocaleString('en-US')} of "${p.name}" (at cost) needs the management password (or a Manager's PIN).`, () => stockTakeApplyOne(code, { approved: true }));
+                    return false;
+                }
+            }
             if (d.qty === 0 && d.pieces === 0) {
                 delete st.counts[code]; // already matches — nothing to change, just clear this row
                 renderStockTake();
                 showToast(`"${p.name}" already matches the system.`);
                 return true;
             }
-            if (d.qtyNew !== null && d.qty !== 0) { p.qty = d.qtyNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.qty, 'Stock take'); }
-            if (d.pieceNew !== null && d.pieces !== 0) { p.pieceQty = d.pieceNew; if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, d.pieces, 'Stock take', 'pieceQty'); }
-            p.updatedAt = Date.now();
+            const v = stockTakeValueOf(p, d);
+            stockTakeRecordCount(p, parent, d, genSaleId(), { counted: 1, changed: 1, missing: v < 0 ? Math.round(-v) : 0, extra: v > 0 ? Math.round(v) : 0 });
             // Same parent-aggregate recompute as the bulk apply above, for
             // the case where this row is one variant of a parent item.
             if (parent) stockTakeResyncParent(parent);
@@ -12784,6 +13326,71 @@ function stockTakeApplyOne(code) {
             return true;
         }
 
+//@fn requireManagementApproval
+// Asks for the management password (or a Manager's PIN, where the app accepts one) and runs `then` once it is given. Uses each
+// app's own password popup, so it works offline exactly like every other protected action.
+function requireManagementApproval(message, then) {
+            window.__adminPwCallback = then;
+            if (typeof resolveAdminPwModalSuccess === 'function') { showAdminPwModal('generic-callback', message); return; }   // Aqua POS
+            adminPwModalPurpose = 'generic-callback';
+            showAdminPwModal('Management Access', message, 'No management password is set yet. Create one now to protect this.');
+        }
+
+//@fn stockTakeApprovalLimit
+// Missing stock (at cost) above which a stock take needs the management password (#9). Default KES 5,000; 0 = always ask.
+function stockTakeApprovalLimit() {
+            try { const v = localStorage.getItem('pos_st_approval_kes'); if (v !== null && v !== '' && isFinite(Number(v))) return Math.max(0, Number(v)); } catch (e) { /* default */ }
+            return 5000;
+        }
+
+//@fn stockTakeSetApprovalLimit
+function stockTakeSetApprovalLimit(raw) {
+            const n = Math.round(Number(String(raw).replace(/,/g, '')));
+            if (!isFinite(n) || n < 0) { showToast('Enter an amount in KES (0 = always ask).', true); return; }
+            requireManagementApproval(`Enter the management password to change the stock-take approval limit to KES ${n.toLocaleString('en-US')}.`, () => {
+                try { localStorage.setItem('pos_st_approval_kes', String(n)); } catch (e) { /* not saved */ }
+                if (typeof renderStockTake === 'function') { try { renderStockTake(); } catch (e) { /* not on screen */ } }
+                if (typeof renderAquaStockTake === 'function') { try { renderAquaStockTake(); } catch (e) { /* not on screen */ } }
+                showToast('Approval limit saved on this device.');
+            });
+        }
+
+//@fn stockTakeRecordCount
+// Applies one counted row on this device and records it as an ABSOLUTE count movement (logStockCount) — "there are N", not
+// "+20" — so the server can never apply it as a repeated addition, and a stale device can never put the old figure back.
+function stockTakeRecordCount(p, parent, d, stocktakeId, meta) {
+            const name = parent ? `${parent.name} — ${p.name}` : p.name;
+            const log = (unit, counted, before) => {
+                const m = typeof logStockCount === 'function'
+                    ? logStockCount(p, name, unit, counted, before, stocktakeId)
+                    : (typeof logStockMovement === 'function' ? logStockMovement(p.code, name, counted - before, 'Stock take', unit) : null);
+                if (m && meta) m.st = meta;
+            };
+            if (d.qtyNew !== null && d.qty !== 0) { const before = Number(p.qty) || 0; p.qty = d.qtyNew; log('qty', d.qtyNew, before); }
+            if (d.pieceNew !== null && d.pieces !== 0) { const before = Number(p.pieceQty) || 0; p.pieceQty = d.pieceNew; log('pieceQty', d.pieceNew, before); }
+            stockAlignBatches(p);
+            p.updatedAt = Date.now();
+        }
+
+//@fn stockAlignBatches
+// Batch-tracked items (pharmacy/hospital) keep qty = the sum of their batches, and a sale recomputes qty from the batches. So when a
+// count changes qty, the batches follow: a shortfall comes off the soonest-expiring batch first, a surplus becomes one
+// "Stock adjustment" batch. The server applies the same rule (applyStockLedger), so both sides agree.
+function stockAlignBatches(p) {
+            if (!p || !Array.isArray(p.batches) || p.batches.length === 0) return;
+            const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            let diff = r3((Number(p.qty) || 0) - p.batches.reduce((s, b) => s + (Number(b && b.qty) || 0), 0));
+            if (diff === 0) return;
+            if (diff < 0) {
+                const sorted = [...p.batches].sort((a, b) => String(a.expiryDate || '9999').localeCompare(String(b.expiryDate || '9999')));
+                for (const b of sorted) { if (diff >= 0) break; const take = Math.min(Number(b.qty) || 0, -diff); b.qty = r3((Number(b.qty) || 0) - take); diff = r3(diff + take); }
+                p.batches = p.batches.filter((b) => (Number(b.qty) || 0) > 0);
+            } else {
+                p.batches.push({ id: genSaleId(), batchNumber: 'Stock adjustment', expiryDate: '9999-12-31', qty: diff });
+            }
+            if (p.batches.length) p.expiryDate = p.batches.reduce((mn, b) => (String(b.expiryDate) < String(mn) ? b.expiryDate : mn), p.batches[0].expiryDate);
+        }
+
 //@fn stockTakeHistoryGet
 function stockTakeHistoryGet() {
             try { const h = JSON.parse(localStorage.getItem('stock_take_history_v1:' + location.pathname) || '[]'); return Array.isArray(h) ? h : []; } catch (e) { return []; }
@@ -12793,10 +13400,108 @@ function stockTakeHistoryGet() {
 function renderStockTakeHistory() {
             const el = document.getElementById('stock-take-history');
             if (!el) return;
+            const synced = stockTakeHistoryFromLog();
             const hist = stockTakeHistoryGet();
-            if (hist.length === 0) { el.innerHTML = '<p class="settings-hint" style="margin:0;">No stock takes yet on this device.</p>'; return; }
-            el.innerHTML = hist.slice(0, 8).map((h) => `<details class="st-hist"><summary>${escapeHtml(new Date(h.at).toLocaleString('en-GB'))}${h.by ? ' · ' + escapeHtml(h.by) : ''} — ${h.changed} updated of ${h.counted} counted${h.missingValue ? ` · missing KES ${Math.round(h.missingValue).toLocaleString('en-US')}` : ''}${h.extraValue ? ` · extra KES ${Math.round(h.extraValue).toLocaleString('en-US')}` : ''}</summary>
+            if (hist.length === 0 && synced.length === 0) { el.innerHTML = '<p class="settings-hint" style="margin:0;">No stock takes yet.</p>'; return; }
+            const q = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            const sgn = (n) => (n > 0 ? '+' : '') + q(n);
+            const status = (m) => {
+                if (!m._srv) return '<span class="st-muted" title="Saved on this device; the server has not confirmed it yet">⏳ waiting to sync</span>';
+                if (m._srv.applied === false) return '<span class="st-bad" title="A later count of this item had already been recorded, so this one did not change the stock">⚠ superseded by a later count</span>';
+                return m._srv.stale ? '<span class="st-over" title="This count was typed against an out-of-date figure; the physical count was still applied">✓ applied (figure had changed)</span>' : '<span class="st-ok">✓ applied</span>';
+            };
+            const syncedHtml = synced.slice(0, 8).map((g) => {
+                const h = g.meta || {};
+                return `<details class="st-hist"><summary>${escapeHtml(new Date(g.at).toLocaleString('en-GB'))}${g.by ? ' · ' + escapeHtml(g.by) : ''} — ${h.changed || g.lines.length} updated of ${h.counted || g.lines.length} counted${h.missing ? ` · missing KES ${Math.round(h.missing).toLocaleString('en-US')}` : ''}${h.extra ? ` · extra KES ${Math.round(h.extra).toLocaleString('en-US')}` : ''}${g.lines.some((m) => !m._srv) ? ' · ⏳' : ''}</summary>
+                <div class="table-scroll"><table><thead><tr><th>Item</th><th>Was</th><th>Counted</th><th>Adjustment</th><th>Now</th><th></th></tr></thead><tbody>${g.lines.map((m) => {
+                    const was = m._srv && typeof m._srv.before === 'number' ? m._srv.before : m.before;
+                    const adj = m._srv ? stockMoveDelta(m) : m.delta;
+                    const now = m._srv && typeof m._srv.after === 'number' ? m._srv.after : m.counted;
+                    const lo = m.unit === 'pieceQty' ? ' loose' : '';
+                    return `<tr><td>${escapeHtml(m.name || m.code)}</td><td>${q(was)}${lo}</td><td>${q(m.counted)}${lo}</td><td>${sgn(adj)}${lo}</td><td>${q(now)}${lo}</td><td>${status(m)}</td></tr>`;
+                }).join('')}</tbody></table><div class="st-muted" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">Stock take ${escapeHtml(String(g.id))}${g.device ? ' · device ' + escapeHtml(String(g.device)) : ''}<button type="button" class="settings-small-btn st-mini" data-stid="${escapeHtml(String(g.id))}" onclick="printStockTakeReport(this.dataset.stid)">🖨️ Print</button></div></div></details>`;
+            }).join('');
+            if (hist.length === 0) { el.innerHTML = syncedHtml; return; }
+            el.innerHTML = syncedHtml + (synced.length ? '<p class="st-muted" style="margin:8px 0 2px;">Earlier stock takes (recorded on this device only):</p>' : '') + hist.slice(0, 8).map((h) => `<details class="st-hist"><summary>${escapeHtml(new Date(h.at).toLocaleString('en-GB'))}${h.by ? ' · ' + escapeHtml(h.by) : ''} — ${h.changed} updated of ${h.counted} counted${h.missingValue ? ` · missing KES ${Math.round(h.missingValue).toLocaleString('en-US')}` : ''}${h.extraValue ? ` · extra KES ${Math.round(h.extraValue).toLocaleString('en-US')}` : ''}</summary>
                 <div class="table-scroll"><table><thead><tr><th>Item</th><th>Was</th><th>Counted</th><th>Difference</th></tr></thead><tbody>${(h.lines || []).map((l) => `<tr><td>${escapeHtml(l.name)}</td><td>${Math.round(l.before.qty * 1000) / 1000}${l.pieceDiff ? ' + ' + l.before.pieceQty + ' loose' : ''}</td><td>${Math.round(l.after.qty * 1000) / 1000}${l.pieceDiff ? ' + ' + l.after.pieceQty + ' loose' : ''}</td><td>${l.diff ? (l.diff > 0 ? '+' : '') + l.diff : ''}${l.pieceDiff ? ` ${l.pieceDiff > 0 ? '+' : ''}${l.pieceDiff} loose` : ''}</td></tr>`).join('')}</tbody></table></div></details>`).join('');
+        }
+
+//@fn stockTakeHistoryFromLog
+// Stock takes as recorded in the SYNCED stock movements (every device sees the same list), grouped by stock-take id, newest first.
+function stockTakeHistoryFromLog() {
+            const log = (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : [];
+            const groups = new Map();
+            for (let i = log.length - 1; i >= 0; i--) {
+                const m = log[i];
+                if (!m || m.kind !== 'count') continue;
+                const id = m.stocktakeId || m.id;
+                if (!groups.has(id)) groups.set(id, { id, at: m.timestamp, by: m.by || '', device: m.device || '', meta: m.st || null, lines: [] });
+                const g = groups.get(id);
+                g.lines.unshift(m);
+                if (String(m.timestamp) > String(g.at)) g.at = m.timestamp;
+            }
+            return Array.from(groups.values()).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+        }
+
+//@fn printStockTakeReport
+// A printable (A4) stock-take report — Phase 11/13: product, previous stock, counted, adjustment, final stock, user, device,
+// date/time, stock-take id, and what the server did with each line. Works for every app (Aqua lines carry their site in the name).
+function printStockTakeReport(stocktakeId) {
+            const g = stockTakeHistoryFromLog().find((x) => String(x.id) === String(stocktakeId));
+            if (!g) { showToast('That stock take is not on this device.', true); return; }
+            const q = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            const status = (m) => !m._srv ? 'waiting to sync' : m._srv.applied === false ? 'superseded by a later count' : (m._srv.stale ? 'applied (figure had changed)' : 'applied');
+            const rows = g.lines.map((m) => {
+                const was = m._srv && typeof m._srv.before === 'number' ? m._srv.before : m.before;
+                const now = m._srv && typeof m._srv.after === 'number' ? m._srv.after : m.counted;
+                const adj = m._srv ? stockMoveDelta(m) : m.delta;
+                const lo = m.unit === 'pieceQty' ? ' loose' : '';
+                return `<tr><td>${escapeHtml(m.name || m.code || '')}</td><td class="n">${q(was)}${lo}</td><td class="n">${q(m.counted)}${lo}</td><td class="n">${adj > 0 ? '+' : ''}${q(adj)}${lo}</td><td class="n">${q(now)}${lo}</td><td>${status(m)}</td></tr>`;
+            }).join('');
+            const h = g.meta || {};
+            const biz = (typeof businessName !== 'undefined' && businessName) ? businessName : '';
+            printHTMLDirect(`<div class="st-report">
+                <h2>${escapeHtml(biz)}${biz ? ' — ' : ''}Stock Take Report</h2>
+                <div>${escapeHtml(new Date(g.at).toLocaleString('en-GB'))}${g.by ? ' · counted by ' + escapeHtml(g.by) : ''}${g.device ? ' · device ' + escapeHtml(String(g.device)) : ''}</div>
+                <div>Stock take ${escapeHtml(String(g.id))} · ${h.changed || g.lines.length} updated of ${h.counted || g.lines.length} counted${h.missing ? ` · missing KES ${Math.round(h.missing).toLocaleString('en-US')}` : ''}${h.extra ? ` · extra KES ${Math.round(h.extra).toLocaleString('en-US')}` : ''}</div>
+                <table><thead><tr><th>Item</th><th class="n">Was</th><th class="n">Counted</th><th class="n">Adjustment</th><th class="n">Now</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+                <p class="foot">"Was" and "Now" are the figures the server confirmed. A count recorded offline keeps its original time and id.</p>
+            </div>`, '.st-report{font-family:Arial,sans-serif;padding:16px;color:#000} .st-report h2{margin:0 0 4px} .st-report table{width:100%;border-collapse:collapse;margin-top:10px} .st-report th,.st-report td{border-bottom:1px solid #ccc;padding:5px 6px;font-size:12px;text-align:left} .st-report .n{text-align:right} .st-report .foot{font-size:11px;color:#555;margin-top:10px}');
+        }
+
+//@fn stockIntegrityCheck
+// "Does everything agree?" (Phase 19) on demand: sends anything unsent, fetches the latest, then asks the server to check its own
+// history (/api/stock-integrity) and compares every figure on THIS screen with the server's. Shows the result in `targetId`.
+async function stockIntegrityCheck(targetId) {
+            const el = document.getElementById(targetId || 'stock-integrity-result');
+            const say = (html) => { if (el) el.innerHTML = html; };
+            say('<p class="settings-hint" style="margin:0;">Checking…</p>');
+            try {
+                if (typeof flushThenPull === 'function') await flushThenPull();
+                const res = await fetch(apiUrl('/api/stock-integrity'));
+                if (!res.ok) { say('<p class="st-bad" style="margin:0;">Could not reach the server — try again when online.</p>'); return null; }
+                const out = await res.json();
+                const mine = {};
+                if (typeof inventory !== 'undefined' && Array.isArray(inventory)) inventory.forEach((r) => {
+                    if (!r || r.code == null || r._deleted) return;
+                    const list = r.hasVariants && Array.isArray(r.variants) && r.variants.length ? r.variants : [r];
+                    list.forEach((x) => { if (x && x.code != null) { mine[String(x.code)] = Number(x.qty) || 0; if (typeof x.pieceQty === 'number') mine[`${x.code}|pieceQty`] = x.pieceQty; } });
+                });
+                if (typeof aquaCellList === 'function') aquaCellList().forEach((x) => { mine[aquaCellKey(x.cell)] = x.value; });
+                const pending = new Set();
+                ((typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : []).forEach((m) => { if (m && m.lg && !m._srv) pending.add(m.cell ? aquaCellKey(m.cell) : String(m.code)); });
+                const differ = Object.keys(mine).filter((k) => typeof out.figures[k] === 'number' && Math.abs(out.figures[k] - mine[k]) > 1e-6 && !pending.has(k.split('|pieceQty')[0]));
+                const lines = [];
+                if (out.ok && differ.length === 0) lines.push(`<p class="st-ok" style="margin:0;">✓ All ${Object.keys(mine).length} figures on this device match the server, and the server's history agrees with its figures (${out.checked} items with stock history checked).</p>`);
+                if (!out.ok) lines.push(`<p class="st-bad" style="margin:0;">⚠ The server found ${out.problems.length} problem${out.problems.length === 1 ? '' : 's'} in its stock history:</p><ul>${out.problems.slice(0, 20).map((p) => `<li>${escapeHtml(p.what)}: ${escapeHtml(p.detail)}</li>`).join('')}</ul>`);
+                if (differ.length) lines.push(`<p class="st-bad" style="margin:0;">⚠ ${differ.length} figure${differ.length === 1 ? '' : 's'} on this device differ from the server (refresh this device):</p><ul>${differ.slice(0, 20).map((k) => `<li>${escapeHtml(k)}: here ${mine[k]}, server ${out.figures[k]}</li>`).join('')}</ul>`);
+                if (pending.size) lines.push(`<p class="st-muted" style="margin:4px 0 0;">${pending.size} change${pending.size === 1 ? ' is' : 's are'} still waiting to sync and ${pending.size === 1 ? 'was' : 'were'} not compared.</p>`);
+                say(lines.join(''));
+                return { ...out, differ };
+            } catch (e) {
+                say('<p class="st-bad" style="margin:0;">Could not run the check — try again when online.</p>');
+                return null;
+            }
         }
 
 //@fn stockTakeInstall
@@ -13344,15 +14049,116 @@ function reportsGenerate(kind) {
             const fn = builders[kind];
             if (!fn) return;
             window.__reportKind = kind;
+            const fresh = reportFreshnessHtml();          // before building: an X/Z report logs its own event, which is not "unsent data"
             let rep;
             try { rep = fn(range); }
             catch (e) { out.innerHTML = '<p style="color:#c0392b;">This report could not be built: ' + escapeHtml(e.message || String(e)) + '</p>'; return; }
             window.__reportCsv = rep.csv || [];
             window.__reportTitle = rep.title;
             const noRange = kind === 'bills' || kind === 'xreport' || kind === 'zreport';
-            out.innerHTML = `<div class="report-head" style="margin-bottom:8px;"><h3 style="margin:0;">${escapeHtml(rep.title)}</h3><div style="color:#7f8c8d; font-size:13px;">${escapeHtml(typeof businessName !== 'undefined' ? businessName : '')}${noRange ? ' — as at today' : ' — ' + escapeHtml(range.text)} · generated ${escapeHtml(new Date().toLocaleString('en-GB'))}</div></div>${rep.html}`;
+            out.innerHTML = `<div class="report-head" style="margin-bottom:8px;"><h3 style="margin:0;">${escapeHtml(rep.title)}</h3><div style="color:#7f8c8d; font-size:13px;">${escapeHtml(typeof businessName !== 'undefined' ? businessName : '')}${noRange ? ' — as at today' : ' — ' + escapeHtml(range.text)} · generated ${escapeHtml(new Date().toLocaleString('en-GB'))}</div>${fresh}</div>${rep.html}`;
+            reportRefreshAfterSync(() => { if (window.__reportKind === kind) reportsGenerate(kind); });
+            if (kind === 'xreport' || kind === 'zreport') { const b = todayBounds(); serverDayCheckInto(out, b.from, b.to, ''); }
             document.querySelectorAll('#reports-tab .report-kind-btn').forEach((b) => b.classList.toggle('active', b.dataset.kind === kind));
             const act = document.getElementById('reports-actions'); if (act) act.style.display = 'flex';
+        }
+
+//@fn reportFreshnessHtml
+// Phase 10: say on every report how current its data is. Reports are built from this device's copy of the shop, which is the
+// server's data as of the last sync plus anything this device has not sent yet.
+function reportFreshnessHtml() {
+            let last = 0;
+            try { last = parseInt(localStorage.getItem('pos_last_synced_at') || localStorage.getItem('aqua_last_synced_at') || '0', 10) || 0; } catch (e) { /* unknown */ }
+            const unsent = typeof hasUnsyncedWork === 'function' && hasUnsyncedWork();
+            const when = last ? new Date(last).toLocaleString('en-GB') : 'never';
+            return unsent
+                ? `<div class="report-fresh" style="margin:6px 0; padding:6px 10px; border-radius:6px; background:#fff3cd; color:#5c4400; font-size:13px;">⚠ This device has changes the server has not received yet — figures from other tills are as of ${escapeHtml(when)}. They update by themselves once it syncs.</div>`
+                : `<div class="report-fresh" style="margin:6px 0; font-size:12px; color:#27ae60;">✓ Up to date with the server as of ${escapeHtml(when)} — includes every till that had synced by then.</div>`;
+        }
+
+//@fn reportRefreshAfterSync
+// Builds the report at once from what the device holds, then syncs in the background and rebuilds it if newer data arrived.
+function reportRefreshAfterSync(rebuild) {
+            if (window.__reportRefreshing || typeof flushThenPull !== 'function') return;
+            window.__reportRefreshing = true;
+            let before = '';
+            try { before = localStorage.getItem('pos_last_synced_at') || localStorage.getItem('aqua_last_synced_at') || ''; } catch (e) { /* unknown */ }
+            Promise.resolve().then(() => flushThenPull()).catch(() => {}).then(() => {
+                let after = '';
+                try { after = localStorage.getItem('pos_last_synced_at') || localStorage.getItem('aqua_last_synced_at') || ''; } catch (e) { /* unknown */ }
+                try { if (after !== before) rebuild(); } catch (e) { /* the shown report stays */ }
+            }).finally(() => { window.__reportRefreshing = false; });
+        }
+
+//@fn serverDayCheck
+// #8: compares this device's sales for a day with the SERVER's, by sale id (see functions/api/day-summary.js). null = no answer.
+async function serverDayCheck(from, to, site) {
+            try {
+                const res = await fetch(apiUrl(`/api/day-summary?from=${+from}&to=${+to}${site ? '&site=' + encodeURIComponent(site) : ''}`));
+                if (!res.ok) return null;
+                const srv = await res.json();
+                const mine = (typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []).filter((x) => {
+                    if (!x || x.voided || x._deleted) return false;
+                    const t = Date.parse(x.timestamp);
+                    return isFinite(t) && t >= +from && t <= +to && (!site || !x.siteId || x.siteId === site);
+                }).map((x) => String(x.id));
+                const srvSet = new Set(srv.ids || []), mySet = new Set(mine);
+                const missingHere = (srv.ids || []).filter((id) => !mySet.has(id));
+                const notOnServer = mine.filter((id) => !srvSet.has(id));
+                return { srv, missingHere, notOnServer, ok: missingHere.length === 0 && notOnServer.length === 0 };
+            } catch (e) { return null; }
+        }
+
+//@fn serverDayCheckHtml
+function serverDayCheckHtml(r) {
+            if (!r) return '<p class="st-muted" style="margin:6px 0 0; font-size:12px;">Server check: not available (offline) — figures are from this device.</p>';
+            const money = (v) => (typeof reportMoney === 'function' ? reportMoney(v) : 'KES ' + Math.round(v).toLocaleString('en-US'));
+            const head = r.ok
+                ? `<p style="margin:6px 0 0; font-size:13px; color:#27ae60;">✓ Server check: the server holds the same ${r.srv.count} sale${r.srv.count === 1 ? '' : 's'} (${money(r.srv.gross)}) for this day.</p>`
+                : `<p style="margin:6px 0 0; font-size:13px; color:#c0392b;">⚠ Server check: ${r.missingHere.length ? `${r.missingHere.length} sale${r.missingHere.length === 1 ? ' is' : 's are'} on the server but not on this device yet` : ''}${r.missingHere.length && r.notOnServer.length ? '; ' : ''}${r.notOnServer.length ? `${r.notOnServer.length} sale${r.notOnServer.length === 1 ? '' : 's'} on this device ${r.notOnServer.length === 1 ? 'has' : 'have'} not reached the server` : ''}. Server total: ${r.srv.count} sale${r.srv.count === 1 ? '' : 's'}, ${money(r.srv.gross)}.</p>`;
+            const tills = Object.entries(r.srv.byTill || {}).sort((a, b) => (a[0] === '?' ? 1 : b[0] === '?' ? -1 : Number(a[0]) - Number(b[0])));
+            const byTill = tills.length > 1 || (tills[0] && tills[0][0] !== '?')
+                ? `<div class="table-scroll"><table style="margin-top:6px;"><thead><tr><th>Till</th><th>Sales</th><th>Amount</th></tr></thead><tbody>${tills.map(([t, x]) => `<tr><td>${t === '?' ? 'earlier sales (no till)' : 'Till ' + escapeHtml(t)}</td><td>${x.n}</td><td>${money(x.v)}</td></tr>`).join('')}</tbody></table></div>` : '';
+            return head + byTill;
+        }
+
+//@fn serverDayCheckInto
+async function serverDayCheckInto(el, from, to, site) {
+            if (!el) return;
+            const holder = document.createElement('div');
+            holder.className = 'server-day-check';
+            holder.innerHTML = '<p class="st-muted" style="margin:6px 0 0; font-size:12px;">Checking with the server…</p>';
+            el.appendChild(holder);
+            holder.innerHTML = serverDayCheckHtml(await serverDayCheck(from, to, site));
+        }
+
+//@fn todayBounds
+function todayBounds() {
+            const a = new Date(); a.setHours(0, 0, 0, 0);
+            const b = new Date(a); b.setHours(23, 59, 59, 999);
+            return { from: a, to: b };
+        }
+
+//@fn zReportPreflight
+// A Z Report is final, so it is only finalized from data the server has confirmed: first send everything and fetch the latest.
+// Changes still stuck on this device block it; with no connection at all the manager is told plainly what it will be based on.
+async function zReportPreflight() {
+            try { if (typeof flushThenPull === 'function') await flushThenPull(); } catch (e) { /* handled below */ }
+            if (typeof hasUnsyncedWork === 'function' && hasUnsyncedWork()) {
+                showToast('Not finalized: this device has sales or changes the server has not received yet. Connect to the internet and try again.', true);
+                return false;
+            }
+            const online = typeof probeServer === 'function' ? (await probeServer(4000)) > 0 : true;
+            if (!online) return confirm('You are offline. This Z Report will only include what this device has received from the other tills. Finalize anyway?');
+            // #8: online, the device's day must match the server's, sale by sale
+            const b = todayBounds();
+            const site = (typeof activeSiteId !== 'undefined' && activeSiteId && activeSiteId !== 'both') ? activeSiteId : '';
+            const chk = await serverDayCheck(b.from, b.to, site);
+            if (chk && !chk.ok) {
+                showToast(`Not finalized: ${chk.missingHere.length ? chk.missingHere.length + ' sale(s) from other tills have not reached this device yet — wait a moment and try again' : chk.notOnServer.length + ' sale(s) on this device have not reached the server'}.`, true);
+                return false;
+            }
+            return true;
         }
 
 //@fn reportsRangeChanged

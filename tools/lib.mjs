@@ -95,6 +95,7 @@ export const SHARED_BLOCKS = {
   'guide-ui': { startMarker: '<!-- GUIDE UI', owner: true },
   'guide-data': { startMarker: '<!-- GUIDE DATA', owner: true, perModule: true },      // the per-module user guide text (src/shared/blocks/guide-data/<module>.html, built by tools/build-guides.mjs)
   'storage-and-photos': { startMarker: '<!-- STORAGE & PHOTOS' },
+  'device-security': { startMarker: '<!-- DEVICE SECURITY' },          // device pairing + the shop's device list (zip 120)
   'storage-compress': { startMarker: '<!-- STORAGE COMPRESSION', owner: true },   // must come first in <head>: everything below reads localStorage through it
   'error-reporting': { startMarker: '<!-- ERROR REPORTING', owner: true },   // also goes into the owner console
   // Orders tab (purchase orders) sits next to Restock. Water's Restocking tab is a different design

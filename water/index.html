@@ -2295,6 +2295,7 @@
         <!-- Operations -->
         <button id="inventory-tab-btn" class="tab-link tab-group-start" data-tab="inventory-tab" onclick="guardedSwitchTab(event, 'inventory-tab')">📋 Inventory</button>
         <button id="restocking-tab-btn" class="tab-link" data-tab="restocking-tab" onclick="guardedSwitchTab(event, 'restocking-tab')">📥 Restocking</button>
+        <button id="stock-take-tab-btn" class="tab-link" data-tab="stock-take-tab" onclick="guardedSwitchTab(event, 'stock-take-tab')">📋 Stock Take</button>
         <button id="tank-tab-btn" class="tab-link" data-tab="tank-tab" onclick="guardedSwitchTab(event, 'tank-tab')">🚰 Bulk Tank</button>
         <button id="production-tab-btn" class="tab-link" data-tab="production-tab" onclick="guardedSwitchTab(event, 'production-tab')">🏭 Production</button>
         <button id="bookings-tab-btn" class="tab-link" data-tab="bookings-tab" onclick="guardedSwitchTab(event, 'bookings-tab')">📅 Bulk Orders</button>
@@ -3678,6 +3679,34 @@
             </div>
         </div>
 
+        <!-- TAB: STOCK TAKE (zip 118b) — count what is really at THIS site and set the system to it. Each changed figure is recorded as an
+             absolute COUNT movement (not a +/-), applied once by the server whatever is refreshed or re-synced (see aquaStockTake* below and
+             applyCellLedger in functions/api/_merge.js). History comes from the synced movements, so every device sees the same list. -->
+        <div id="stock-take-tab" class="tab-content">
+            <div class="panel">
+                <h3>📋 Stock Take</h3>
+                <p class="settings-hint" style="margin-top:-6px;">Counting at: <strong id="aqua-st-site">—</strong>. Only the lines you type a count for are changed.</p>
+                <div id="aqua-st-summary"></div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:10px 0;">
+                    <input type="text" id="aqua-st-search" placeholder="Search…" oninput="aquaStockTakeState().q = this.value; renderAquaStockTake()" style="flex:1; min-width:180px;">
+                    <button type="button" class="settings-small-btn" onclick="aquaStockTakeState().counts = {}; renderAquaStockTake()">Clear counts</button>
+                    <button type="button" class="btn-main" id="aqua-st-apply-btn" style="width:auto; margin:0; padding:10px 20px;" onclick="aquaStockTakeApply()">✔ Update stock to my counts</button>
+                </div>
+                <div class="table-scroll">
+                    <table id="aqua-st-table">
+                        <thead><tr><th>Item</th><th>System says</th><th>You counted</th><th>Difference</th><th></th></tr></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="panel">
+                <h4 style="margin:0 0 8px;">Recent stock takes</h4>
+                <div id="stock-take-history"></div>
+                <div style="margin-top:10px;"><button type="button" class="settings-small-btn" onclick="stockIntegrityCheck('stock-integrity-result')">🔍 Check stock against the server</button></div>
+                <div id="stock-integrity-result" style="margin-top:6px;"></div>
+            </div>
+        </div>
+
         <!-- TAB: AUDIT -->
         <div id="audit-tab" class="tab-content">
             <div class="panel">
@@ -3695,6 +3724,7 @@
                         <option value="Reports">Reports (X/Z)</option>
                         <option value="Tax / eTIMS">Tax / eTIMS</option>
                         <option value="Settings">Settings</option>
+                        <option value="Sync">Sync (sends, retries, conflicts)</option>
                     </select>
                     <input type="text" id="audit-search-input" placeholder="Search user, action, detail, reference…" oninput="renderAuditTab()" style="flex:1; min-width:180px;">
                 </div>
@@ -5930,7 +5960,7 @@
     </div>
 
     <script>
-    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addDeliveryAgent,addDeliveryZone,addLoyaltyTier,addSameItemAsReplacement,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyExpensesOnlyRestriction,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,buildDrawerKickAsciiString,buildDrawerKickBytes,buildPoleDisplayBytes,buildReceiptCanvas,cancelCartTotalQuote,cellLooksNumeric,checkAiCaptureStatus,checkEtimsStatus,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,claimLicensePayment,clearAuthUrlParams,closeAddCustomerModal,closeAttendanceClockModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeSalesReport,closeTabsOverflowMenu,closeUpgradeScreen,computeFlatOfferResults,computeLineOfferDiscount,computeStaffStats,computeTokensEarned,connectPoleDisplay,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,currentActiveTabId,currentAdminSettingsRestriction,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,debtBalance,debtPaidSoFar,deleteBranch,deleteWebAuthnCredential,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchBranchDetail,fetchBranchesSummary,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findSaleForVoid,formatFileSize,formatHours,formatPickedPhone,formatRemaining,formatShiftTime,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getExchangeNetPayable,getExchangeReplacementTotal,getFaultyReturns,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleSplitAmountChange,initLoyaltySettingsUI,initPhonebookPickers,isAdminServing,isPhoneField,isRunningStandalone,isStaffLockedToday,itemOffers,jpegBytesToPdfBlob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadRecoveryStatus,loadSheetJsOnce,loadUpgradePromptContent,logStockMovementDated,markDeliveryNotificationsRead,markTillPaymentMatched,maybeSendThankYouSms,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,offerSummaryLine,onBillUpfrontAmountChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAttendanceClockModal,openCartTotalQuoteEditor,openCashDrawer,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openLicenseWhatsapp,openPoleDisplayPort,openSettingsSection,openWebAuthnDb,padPoleLine,parseHexBytes,performCartPriceChange,performCartTotalQuote,pickPhoneForField,printAttendanceSheet,printDebtsStatement,printHTMLDirect,printRelayHasRealPrinter,printSystemDrawerKickTest,profitPeriodLabel,promptAppInstall,pushSharedReceiptSettingsIfNeeded,queuePrintJob,receiptImageWidthPx,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,renderAdminActivityLog,renderAttendanceHistory,renderAttendanceRosterTable,renderBillsTabScoped,renderBizImportReviewTables,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderProfitsTabScoped,renderTillPayments,renderTrendsPieCharts,reportFilenameBase,reprintExchangeReceipt,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,round2,runQueuedSystemPrint,safeJSONParse,safeSetItem,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,selectLoginAdmin,selectLoginStaff,selectServerToLogin,selectUnavailableItem,sendToPoleDisplay,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setEtimsLogPeriod,setExchangeTopupMethod,setOrderType,setPoleDisplayMode,setProfitPeriod,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSmsProvider,setStockReportPeriod,setTabReadOnly,showAuthStep,showLoginPickerStep,showRecoverySignInStep,showUpgradeScreen,snapCaptureListPhoto,snapshotExtraSyncedFields,soldQtyAfter,soldQtyWithinRange,staffExpensesAccessLevel,staffShiftsFor,stampDirtyExtraSyncedFields,startAdminShiftIfNeeded,startLicensePolling,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,supplierOptionsHtml,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAutoOpenDrawer,toggleChangePinPanel,toggleKitchenTicket,toggleNewStaffRole,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleUnavailableExchangeForm,unlinkRecoveryEmail,updateAttendanceRosterExpectedTime,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateLicenseLockHintText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updateServerBtnLabel,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,getPaperCols,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,triggerAutoPrintReceipt,closeReceipt,closeReceiptAfterPrint,buildSystemPrintCopies,clearSystemPrintCopies,printReceiptInNewWindow,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,attendanceRosterList,cellLooksLikeCurrency,collapseTabsIfNeeded,confirmBillSettle,currentOfferTargets,etimsLogPeriodRange,genSaleId,importInventoryCsv,levenshteinDistance,onOfferTypeChange,performRestoreBackup,printReceipt,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,sendPendingExchangeSms,setOfferScope,stopCaptureListCamera,toggleTabsOverflowMenu,updateCaptureReviewField,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice,markSync,probeServer,hwKey,hwStatus,hwIsReady,hwSingleFlight,hwUsbReconnect,hwBtFindCharacteristic,hwBtAttach,hwBtWatch,hwBtReconnect,hwEnsureReady,hwLinkLost,hwWrapPrinting,hwKeeperStart,hwKick,hwSchedule,hwTick,claimUsbPrinterEndpointOnce,hwWithTimeout,heldSaleKey,heldSaleGet,heldSalePanel,heldSaleFields,holdCurrentSale,resumeHeldSale,renderHeldSaleBar,heldSaleInstall,setKitchenPrintPage,authWatchInstall,dayKeyOf,assignCustomerNo,markReceiptPrinted,soldTotalsMap,showBusyBanner,hideBusyBanner,nextPaint,perfInstall,dedupeStaff,markLocalDirty,ackLocalDirty,cartLineMinimumPrice,cartTotalBelowMinimumMessage,KRA_VAT_CATEGORY_LABELS,recordKraClassificationChange,defaultKraClassification,KRA_REFERENCE_RULES_BUILTIN,kraReferenceRules,addKraReferenceRule,matchKraReferenceRules */
+    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addDeliveryAgent,addDeliveryZone,addLoyaltyTier,addSameItemAsReplacement,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyExpensesOnlyRestriction,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,buildDrawerKickAsciiString,buildDrawerKickBytes,buildPoleDisplayBytes,buildReceiptCanvas,cancelCartTotalQuote,cellLooksNumeric,checkAiCaptureStatus,checkEtimsStatus,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,claimLicensePayment,clearAuthUrlParams,closeAddCustomerModal,closeAttendanceClockModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeSalesReport,closeTabsOverflowMenu,closeUpgradeScreen,computeFlatOfferResults,computeLineOfferDiscount,computeStaffStats,computeTokensEarned,connectPoleDisplay,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,currentActiveTabId,currentAdminSettingsRestriction,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,debtBalance,debtPaidSoFar,deleteBranch,deleteWebAuthnCredential,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchBranchDetail,fetchBranchesSummary,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findSaleForVoid,formatFileSize,formatHours,formatPickedPhone,formatRemaining,formatShiftTime,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getExchangeNetPayable,getExchangeReplacementTotal,getFaultyReturns,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleSplitAmountChange,initLoyaltySettingsUI,initPhonebookPickers,isAdminServing,isPhoneField,isRunningStandalone,isStaffLockedToday,itemOffers,jpegBytesToPdfBlob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadRecoveryStatus,loadSheetJsOnce,loadUpgradePromptContent,logStockMovementDated,markDeliveryNotificationsRead,markTillPaymentMatched,maybeSendThankYouSms,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,offerSummaryLine,onBillUpfrontAmountChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAttendanceClockModal,openCartTotalQuoteEditor,openCashDrawer,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openLicenseWhatsapp,openPoleDisplayPort,openSettingsSection,openWebAuthnDb,padPoleLine,parseHexBytes,performCartPriceChange,performCartTotalQuote,pickPhoneForField,printAttendanceSheet,printDebtsStatement,printHTMLDirect,printRelayHasRealPrinter,printSystemDrawerKickTest,profitPeriodLabel,promptAppInstall,pushSharedReceiptSettingsIfNeeded,queuePrintJob,receiptImageWidthPx,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,renderAdminActivityLog,renderAttendanceHistory,renderAttendanceRosterTable,renderBillsTabScoped,renderBizImportReviewTables,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderProfitsTabScoped,renderTillPayments,renderTrendsPieCharts,reportFilenameBase,reprintExchangeReceipt,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,round2,runQueuedSystemPrint,safeJSONParse,safeSetItem,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,selectLoginAdmin,selectLoginStaff,selectServerToLogin,selectUnavailableItem,sendToPoleDisplay,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setEtimsLogPeriod,setExchangeTopupMethod,setOrderType,setPoleDisplayMode,setProfitPeriod,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSmsProvider,setStockReportPeriod,setTabReadOnly,showAuthStep,showLoginPickerStep,showRecoverySignInStep,showUpgradeScreen,snapCaptureListPhoto,snapshotExtraSyncedFields,soldQtyAfter,soldQtyWithinRange,staffExpensesAccessLevel,staffShiftsFor,stampDirtyExtraSyncedFields,startAdminShiftIfNeeded,startLicensePolling,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,supplierOptionsHtml,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAutoOpenDrawer,toggleChangePinPanel,toggleKitchenTicket,toggleNewStaffRole,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleUnavailableExchangeForm,unlinkRecoveryEmail,updateAttendanceRosterExpectedTime,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateLicenseLockHintText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updateServerBtnLabel,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,getPaperCols,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,triggerAutoPrintReceipt,closeReceipt,closeReceiptAfterPrint,buildSystemPrintCopies,clearSystemPrintCopies,printReceiptInNewWindow,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,attendanceRosterList,cellLooksLikeCurrency,collapseTabsIfNeeded,confirmBillSettle,currentOfferTargets,etimsLogPeriodRange,genSaleId,importInventoryCsv,levenshteinDistance,onOfferTypeChange,performRestoreBackup,printReceipt,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,sendPendingExchangeSms,setOfferScope,stopCaptureListCamera,toggleTabsOverflowMenu,updateCaptureReviewField,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice,markSync,probeServer,hwKey,hwStatus,hwIsReady,hwSingleFlight,hwUsbReconnect,hwBtFindCharacteristic,hwBtAttach,hwBtWatch,hwBtReconnect,hwEnsureReady,hwLinkLost,hwWrapPrinting,hwKeeperStart,hwKick,hwSchedule,hwTick,claimUsbPrinterEndpointOnce,hwWithTimeout,heldSaleKey,heldSaleGet,heldSalePanel,heldSaleFields,holdCurrentSale,resumeHeldSale,renderHeldSaleBar,heldSaleInstall,setKitchenPrintPage,authWatchInstall,dayKeyOf,assignCustomerNo,markReceiptPrinted,soldTotalsMap,showBusyBanner,hideBusyBanner,nextPaint,perfInstall,dedupeStaff,markLocalDirty,ackLocalDirty,cartLineMinimumPrice,cartTotalBelowMinimumMessage,KRA_VAT_CATEGORY_LABELS,recordKraClassificationChange,defaultKraClassification,KRA_REFERENCE_RULES_BUILTIN,kraReferenceRules,addKraReferenceRule,matchKraReferenceRules,stockLedgerOn,stockLedgerMark,stockRecSig,stockMoveDelta,stockPendingMoves,stockSimulate,stockMovesByKey,reconcileLocalStockChanges,stockApplyPulledLedger,logStockCount,stockTakeRecordCount,stockTakeHistoryFromLog,stockAlignBatches,stockKeyMoves,stockMoveAuditText,aquaCellList,aquaCellKey,aquaPendingByCell,aquaSimulateCell,aquaReconcileCells,aquaApplyPulledCells,stockCellFieldsOf,extraRecSig,renderStockTakeHistory,stockTakeHistoryGet,printStockTakeReport,stockIntegrityCheck,generateReceiptRef,tillNumber,rememberTillNumber,getOrCreateDeviceId,returnQtyGuard,saleCtxNow,stampLocalContext,syncJournal,syncJournalAuditEvents,syncJournalConflicts,saleCtxText,reportFreshnessHtml,reportRefreshAfterSync,zReportPreflight,requireManagementApproval,stockTakeApprovalLimit,stockTakeSetApprovalLimit,serverDayCheck,serverDayCheckHtml,serverDayCheckInto,todayBounds */
         /* GENERATED from src/shared/functions.js by tools/sync-shared.mjs - do not edit here; edit the library and run `npm run sync`. */
         function _codeMatches(code, q){
         if(!q) return false;
@@ -7322,7 +7352,7 @@
 
         function logStockMovementDated(code, name, delta, reason, isoTimestamp) {
             if (!delta) return;
-            stockMovementLog.push({ id: genSaleId(), timestamp: isoTimestamp, code, name, delta, type: delta > 0 ? 'added' : 'removed', reason });
+            stockMovementLog.push({ id: genSaleId(), lg: 1, timestamp: isoTimestamp, code, name, delta, type: delta > 0 ? 'added' : 'removed', reason });
         }
 
         function markDeliveryNotificationsRead() {
@@ -9002,8 +9032,7 @@
                 if (!Array.isArray(arr)) return;
                 arr.forEach((r) => {
                     if (!r || r[keyField] == null) return;
-                    const { updatedAt, ...rest } = r;
-                    extraSyncSnapshot[`${name}:${r[keyField]}`] = JSON.stringify(rest);
+                    extraSyncSnapshot[`${name}:${r[keyField]}`] = extraRecSig(name, r);
                 });
             });
         }
@@ -9048,8 +9077,7 @@
                 if (!Array.isArray(arr)) return;
                 arr.forEach((r) => {
                     if (!r || r[keyField] == null) return;
-                    const { updatedAt, ...rest } = r;
-                    const sig = JSON.stringify(rest);
+                    const sig = extraRecSig(name, r);
                     if (extraSyncSnapshot[`${name}:${r[keyField]}`] !== sig) {
                         r.updatedAt = Date.now();
                     }
@@ -9089,13 +9117,13 @@
         function stockMovementDeltaAfter(code, dateStr) {
             return stockMovementLog
                 .filter(m => m.code === code && dateKey(new Date(m.timestamp)) > dateStr)
-                .reduce((sum, m) => sum + m.delta, 0);
+                .reduce((sum, m) => sum + stockMoveDelta(m), 0);
         }
 
         function stockMovementDeltaWithinRange(code, fromStr, toStr, wantAdded) {
             return stockMovementLog
-                .filter(m => m.code === code && dateKey(new Date(m.timestamp)) >= fromStr && dateKey(new Date(m.timestamp)) <= toStr && (wantAdded ? m.delta > 0 : m.delta < 0))
-                .reduce((sum, m) => sum + Math.abs(m.delta), 0);
+                .filter(m => m.code === code && dateKey(new Date(m.timestamp)) >= fromStr && dateKey(new Date(m.timestamp)) <= toStr && (wantAdded ? stockMoveDelta(m) > 0 : stockMoveDelta(m) < 0))
+                .reduce((sum, m) => sum + Math.abs(stockMoveDelta(m)), 0);
         }
 
         function stockReportPeriodLabel(range) {
@@ -10306,6 +10334,7 @@
             //  * If any record in a log has no id, that whole log is sent as before (the server can't match it).
             //  * Nothing is marked as acknowledged until the server says OK (call commit() then); a failed push resends.
             const LOG_FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'];
+            stampLocalContext(payload);
             window.__pushAck = window.__pushAck || {};
             const body = { ...payload };
             const pending = {};
@@ -10334,11 +10363,11 @@
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
                 'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs', 'cashShifts', 'approvalRequests', 'radiologyOrders', 'theatreCases', 'institutions', 'institutionCharges',
-                'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes']);
+                'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes', 'rawMaterials']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
-            const TRACKED = ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions'];
+            const TRACKED = ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions', 'rawMaterials'];
             if (!window.__keyAck) window.__keyAck = loadKeyAck();
             const keysNow = {}, gone = {};
             TRACKED.forEach((col) => {
@@ -10372,6 +10401,10 @@
                 if (window.__fieldAck.has(f) && window.__fieldAck.get(f) !== sg) times[f] = Date.now();
             });
             if (Object.keys(times).length) body._fieldTimes = times;
+            // which device this is, so the server can give it a till number (see generateReceiptRef)
+            try { body._till = getOrCreateDeviceId(); } catch (e) { /* no id: the device keeps its own reference form */ }
+            // and which app release it runs (device list in Settings and the Owner Console)
+            try { body._dev = { v: window.__APP_RELEASE || '', app: (location.pathname.split('/')[1] || 'shop').slice(0, 20) }; } catch (e) { /* optional */ }
             return {
                 body,
                 commit() {
@@ -10939,7 +10972,14 @@
                 };
                 const keyOf = (r) => (r && typeof r === 'object') ? (r.id != null ? 'i:' + r.id : r.code != null ? 'c:' + r.code : r.token != null ? 't:' + r.token : null) : null;
                 const timeOf = (r) => { for (const f of ['timestamp', 'date', 'createdAt', 'clockIn', 'at']) { if (r && r[f] != null) { const t = typeof r[f] === 'number' ? r[f] : Date.parse(r[f]); if (isFinite(t)) return t; } } return NaN; };
-                const out = { ...data };
+                let out = { ...data };
+                syncJournalConflicts(data.stockMovementLog);
+                try { if (data.tillNumbers && typeof data.tillNumbers === 'object') rememberTillNumber(data.tillNumbers[getOrCreateDeviceId()]); } catch (e) { /* next sync */ }
+                if (data._ledger) {
+                    stockLedgerMark(true);
+                    out = stockApplyPulledLedger(out);
+                    if (typeof aquaApplyPulledCells === 'function' && (Array.isArray(out.products) || Array.isArray(out.tanks) || Array.isArray(out.rawMaterials))) out = aquaApplyPulledCells(out);
+                }
                 setTimeout(ackLocalFields, 0);              // once the app has applied this payload, the settings are in agreement with the server
                 if (data._hotFrom) setTimeout(() => { hydrateOlderHistory(data._hotFrom); }, 4000);     // fetch the older history in the background
                 Object.keys(local).forEach((f) => {
@@ -11065,7 +11105,7 @@
                 Object.keys(p).forEach((f) => { if (f !== 'updatedAt' && p[f] !== undefined) window.__fieldAck.set(f, pushSigOf(p[f])); });
                 // ...and which records of the deletable lists exist now (a record missing later = the person deleted it; see slimPayloadForPush)
                 if (!window.__keyAck) window.__keyAck = loadKeyAck();
-                ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions'].forEach((col) => {
+                ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions', 'rawMaterials'].forEach((col) => {
                     if (!Array.isArray(p[col])) return;
                     const set = new Set();
                     p[col].forEach((r) => { const k = pushKeyOf(r); if (k != null) set.add(k); });
@@ -11080,8 +11120,23 @@
             // queued (see queuePush), in flight, or failed. commit() (called only when the server says OK) clears "failed".
             window.__pushInFlight = (window.__pushInFlight || 0) + 1;
             window.__pushQueued = false;
+            const wasFailing = (window.__pushFails || 0) > 0;
             window.__pushFailed = true;
-            try { return await fn(); }
+            try {
+                const r = await fn();
+                try {
+                    if (window.__pushFailed) syncJournal('failed', window.__pushFailKind === 'network' ? 'no answer from the server (offline?) — kept on this device, will retry' : 'the server refused or was busy — kept on this device, will retry');
+                    else if (wasFailing) syncJournal('retry', 'sent after an earlier failure — the server applies each change once');
+                    else {
+                        // ordinary sends are summarised (at most one line per 30 minutes), so the log shows sync activity without drowning the audit
+                        const n = (parseInt(localStorage.getItem('pos_sync_sent_count') || '0', 10) || 0) + 1;
+                        const last = parseInt(localStorage.getItem('pos_sync_sent_logged_at') || '0', 10) || 0;
+                        if (Date.now() - last > 30 * 60000) { syncJournal('sent', `${n} send${n === 1 ? '' : 's'} to the server since the last entry`); localStorage.setItem('pos_sync_sent_count', '0'); localStorage.setItem('pos_sync_sent_logged_at', String(Date.now())); }
+                        else localStorage.setItem('pos_sync_sent_count', String(n));
+                    }
+                } catch (e) { /* diagnostics only */ }
+                return r;
+            }
             finally {
                 window.__pushInFlight = Math.max(0, (window.__pushInFlight || 1) - 1);
                 // A push that keeps failing (server down, shop refused) is retried by the poll with a growing pause — 4 s, 8 s ... up to 1 minute —
@@ -12041,6 +12096,736 @@ function cartTotalBelowMinimumMessage(newTotal) {
             scored.sort((a, b) => b.score - a.score);
             return scored;
         }
+
+        // STOCK LEDGER (zip 118). True once this shop's server has said it applies stock movements exactly once (the `_ledger` flag on a
+// pull, `ledger` on a push reply — see applyStockLedger in functions/api/_merge.js). Until then the app behaves exactly as before,
+// so a shop whose server was not updated yet is never switched to rules its server doesn't follow.
+function stockLedgerOn() {
+            try { return localStorage.getItem('pos_stock_ledger_v1') === '1'; } catch (e) { return false; }
+        }
+
+        function stockLedgerMark(on) {
+            // returns true only when this call switched the ledger on
+            if (!on || stockLedgerOn()) return false;
+            try { localStorage.setItem('pos_stock_ledger_v1', '1'); } catch (e) { /* retried on the next sync */ }
+            // fetch the whole shop once more, so every item arrives with the server's own figures (_sq) to compare against
+            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* the next change brings them anyway */ }
+            try { if (typeof snapshotInventorySync === 'function') snapshotInventorySync(); } catch (e) { /* housekeeping only */ }
+            try { if (typeof snapshotProductsSync === 'function') snapshotProductsSync(); } catch (e) { /* Aqua POS only */ }
+            try { if (typeof snapshotExtraSyncedFields === 'function') snapshotExtraSyncedFields(); } catch (e) { /* housekeeping only */ }
+            return true;
+        }
+
+        // What counts as "this device edited this item" for the per-record merge. With the ledger on, stock figures are NOT part of it:
+// the server owns them and only moves them by movements, so selling an item no longer makes this device's whole (maybe stale)
+// copy of it look like the newest edit — which is what used to put back another till's price/name change after a sale.
+function stockRecSig(it) {
+            const { updatedAt, ...rest } = it || {};
+            if (!stockLedgerOn()) return JSON.stringify(rest);
+            const c = { ...rest };
+            ['qty', 'pieceQty', '_sq', '_sp', '_sv', '_ct'].forEach((k) => { delete c[k]; });
+            if (Array.isArray(c.variants)) c.variants = c.variants.map((v) => { if (!v || typeof v !== 'object') return v; const { qty, _sq, _sv, _ct, ...vr } = v; return vr; });
+            return JSON.stringify(c);
+        }
+
+        // How much a movement ACTUALLY changed the stock: the server's own figures when it has processed it (a duplicate, a sale already
+// covered by a later stock take = 0), otherwise the movement's own delta. Reports use this so they agree with the real stock.
+function stockMoveDelta(m) {
+            if (m && m._srv && typeof m._srv === 'object') {
+                if (m._srv.applied === false) return 0;
+                if (typeof m._srv.after === 'number' && typeof m._srv.before === 'number') return Math.round((m._srv.after - m._srv.before) * 1000) / 1000;
+            }
+            return Number(m && m.delta) || 0;
+        }
+
+        // This device's movements the server has not processed yet (made by this build: `lg`; processed ones carry the server's `_srv`).
+function stockPendingMoves(exceptIds) {
+            const log = (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : [];
+            const t = (m) => { const x = Date.parse(m.timestamp); return isFinite(x) ? x : 0; };
+            return log.filter((m) => m && m.lg && !m._srv && m.id != null && m.code != null && !(exceptIds && exceptIds.has(String(m.id))))
+                .sort((a, b) => t(a) - t(b));
+        }
+
+        // base (the server's figure) + this device's pending movements, applied the way the server will apply them (a count is absolute).
+function stockSimulate(base, moves) {
+            let v = Number(base) || 0;
+            (moves || []).forEach((m) => { v = m.kind === 'count' ? Number(m.counted) || 0 : v + (Number(m.delta) || 0); });
+            return Math.round(v * 1000) / 1000;
+        }
+
+        function stockMovesByKey(moves) {
+            const by = new Map();
+            (moves || []).forEach((m) => { const k = m.code + '|' + (m.unit === 'pieceQty' ? 'pieceQty' : 'qty'); if (!by.has(k)) by.set(k, []); by.get(k).push(m); });
+            return by;
+        }
+
+        // Safety net for the ledger: every stock change must reach the server as a movement, because the server ignores the plain number.
+// Almost every screen already logs one; for anything that changed a quantity WITHOUT logging it, the difference between what this
+// device shows and (the server's last figure `_sq` + this device's pending movements) is logged once as a correction movement, with
+// its own id — so it is applied once, like any other movement. Items the server has never stamped (`_sq` missing) are skipped.
+function reconcileLocalStockChanges() {
+            if (!stockLedgerOn() || typeof inventory === 'undefined' || !Array.isArray(inventory)) return 0;
+            if (typeof stockMovementLog === 'undefined' || !Array.isArray(stockMovementLog)) return 0;
+            const by = stockMovesByKey(stockPendingMoves());
+            let made = 0;
+            const check = (obj, name) => {
+                [['qty', obj._sq], ['pieceQty', obj._sp]].forEach(([unit, base]) => {
+                    if (typeof base !== 'number') return;
+                    const diff = Math.round(((Number(obj[unit]) || 0) - stockSimulate(base, by.get(obj.code + '|' + unit))) * 1000) / 1000;
+                    if (Math.abs(diff) < 1e-6) return;
+                    stockMovementLog.push({
+                        id: genSaleId(), lg: 1, timestamp: new Date().toISOString(), code: obj.code, name, delta: diff,
+                        type: diff > 0 ? 'added' : 'removed', reason: 'Stock correction (change not itemised)', unit, auto: true,
+                        by: typeof activeServerName === 'function' ? activeServerName() : '',
+                    });
+                    made++;
+                });
+            };
+            inventory.forEach((it) => {
+                if (!it || it.code == null || it._deleted) return;
+                if (it.hasVariants && Array.isArray(it.variants) && it.variants.length > 0) {
+                    it.variants.forEach((v) => { if (v && v.code != null) check(v, `${it.name} — ${v.name}`); });
+                    return;
+                }
+                check(it, it.name);
+            });
+            if (made) safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+            return made;
+        }
+
+        // A pull from a ledger server: its quantities are the truth. Items it never stamped get `_sq` = its figure; then this device's
+// movements the server hasn't processed yet (still on their way) are laid on top, so the screen doesn't jump back and the
+// safety net above doesn't mistake them for untracked changes.
+function stockApplyPulledLedger(data) {
+            if (!data || !Array.isArray(data.inventory)) return data;
+            const serverIds = new Set();
+            (Array.isArray(data.stockMovementLog) ? data.stockMovementLog : []).forEach((m) => { if (m && m.id != null) serverIds.add(String(m.id)); });
+            const by = stockMovesByKey(stockPendingMoves(serverIds));
+            const lay = (obj) => {
+                if (typeof obj.qty === 'number' && typeof obj._sq !== 'number') obj._sq = obj.qty;
+                if (typeof obj.pieceQty === 'number' && typeof obj._sp !== 'number') obj._sp = obj.pieceQty;
+                ['qty', 'pieceQty'].forEach((unit) => {
+                    const mv = by.get(obj.code + '|' + unit);
+                    if (mv && mv.length) obj[unit] = stockSimulate(unit === 'qty' ? obj._sq : obj._sp, mv);
+                });
+            };
+            data.inventory = data.inventory.map((r) => {
+                if (!r || typeof r !== 'object' || r.code == null) return r;
+                const rec = { ...r };
+                if (rec.hasVariants && Array.isArray(rec.variants) && rec.variants.length > 0) {
+                    rec.variants = rec.variants.map((v) => { if (!v || typeof v !== 'object' || v.code == null) return v; const c = { ...v }; lay(c); return c; });
+                    rec.qty = Math.round(rec.variants.reduce((s, v) => s + (Number(v && v.qty) || 0), 0) * 1000) / 1000;
+                } else lay(rec);
+                return rec;
+            });
+            return data;
+        }
+
+        // A stock-take COUNT: an absolute "there are N" (not a +/- change), with its own immutable id, the figure this device showed
+// (`before`), the stock version it saw (`baseSv`), and the stock take it belongs to. The server applies it once (see applyStockLedger).
+function logStockCount(item, displayName, unit, counted, before, stocktakeId) {
+            const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            let device = '';
+            try { device = localStorage.getItem('pos_device_id') || ''; } catch (e) { /* optional */ }
+            const m = {
+                id: genSaleId(), lg: 1, kind: 'count', timestamp: new Date().toISOString(), code: item.code, name: displayName || item.name,
+                counted: r3(counted), before: r3(before), delta: r3(counted - before), type: counted >= before ? 'added' : 'removed',
+                reason: 'Stock take', unit: unit === 'pieceQty' ? 'pieceQty' : 'qty', stocktakeId,
+                by: typeof activeServerName === 'function' ? activeServerName() : '',
+            };
+            if (device) m.device = device;
+            if (typeof item._sv === 'number') m.baseSv = item._sv;
+            stockMovementLog.push(m);
+            return m;
+        }
+
+        // Applies one counted row on this device and records it as an ABSOLUTE count movement (logStockCount) — "there are N", not
+// "+20" — so the server can never apply it as a repeated addition, and a stale device can never put the old figure back.
+function stockTakeRecordCount(p, parent, d, stocktakeId, meta) {
+            const name = parent ? `${parent.name} — ${p.name}` : p.name;
+            const log = (unit, counted, before) => {
+                const m = typeof logStockCount === 'function'
+                    ? logStockCount(p, name, unit, counted, before, stocktakeId)
+                    : (typeof logStockMovement === 'function' ? logStockMovement(p.code, name, counted - before, 'Stock take', unit) : null);
+                if (m && meta) m.st = meta;
+            };
+            if (d.qtyNew !== null && d.qty !== 0) { const before = Number(p.qty) || 0; p.qty = d.qtyNew; log('qty', d.qtyNew, before); }
+            if (d.pieceNew !== null && d.pieces !== 0) { const before = Number(p.pieceQty) || 0; p.pieceQty = d.pieceNew; log('pieceQty', d.pieceNew, before); }
+            stockAlignBatches(p);
+            p.updatedAt = Date.now();
+        }
+
+        // Stock takes as recorded in the SYNCED stock movements (every device sees the same list), grouped by stock-take id, newest first.
+function stockTakeHistoryFromLog() {
+            const log = (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : [];
+            const groups = new Map();
+            for (let i = log.length - 1; i >= 0; i--) {
+                const m = log[i];
+                if (!m || m.kind !== 'count') continue;
+                const id = m.stocktakeId || m.id;
+                if (!groups.has(id)) groups.set(id, { id, at: m.timestamp, by: m.by || '', device: m.device || '', meta: m.st || null, lines: [] });
+                const g = groups.get(id);
+                g.lines.unshift(m);
+                if (String(m.timestamp) > String(g.at)) g.at = m.timestamp;
+            }
+            return Array.from(groups.values()).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+        }
+
+        // Batch-tracked items (pharmacy/hospital) keep qty = the sum of their batches, and a sale recomputes qty from the batches. So when a
+// count changes qty, the batches follow: a shortfall comes off the soonest-expiring batch first, a surplus becomes one
+// "Stock adjustment" batch. The server applies the same rule (applyStockLedger), so both sides agree.
+function stockAlignBatches(p) {
+            if (!p || !Array.isArray(p.batches) || p.batches.length === 0) return;
+            const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            let diff = r3((Number(p.qty) || 0) - p.batches.reduce((s, b) => s + (Number(b && b.qty) || 0), 0));
+            if (diff === 0) return;
+            if (diff < 0) {
+                const sorted = [...p.batches].sort((a, b) => String(a.expiryDate || '9999').localeCompare(String(b.expiryDate || '9999')));
+                for (const b of sorted) { if (diff >= 0) break; const take = Math.min(Number(b.qty) || 0, -diff); b.qty = r3((Number(b.qty) || 0) - take); diff = r3(diff + take); }
+                p.batches = p.batches.filter((b) => (Number(b.qty) || 0) > 0);
+            } else {
+                p.batches.push({ id: genSaleId(), batchNumber: 'Stock adjustment', expiryDate: '9999-12-31', qty: diff });
+            }
+            if (p.batches.length) p.expiryDate = p.batches.reduce((mn, b) => (String(b.expiryDate) < String(mn) ? b.expiryDate : mn), p.batches[0].expiryDate);
+        }
+
+        // Gives the stock movements logged since `fromLen` a DETERMINISTIC id built from the business event they belong to (e.g. the sale
+// being voided). The same event done again — a double tap, or a second till that had not seen the first one yet — then produces the
+// SAME movement ids, which the server already holds, so the stock changes once (see applyStockLedger). Returns how many were keyed.
+function stockKeyMoves(fromLen, key) {
+            if (typeof stockMovementLog === 'undefined' || !Array.isArray(stockMovementLog) || !key) return 0;
+            let n = 0;
+            for (let i = Math.max(0, fromLen || 0); i < stockMovementLog.length; i++) {
+                const m = stockMovementLog[i];
+                if (!m || typeof m !== 'object') continue;
+                m.id = `${key}:${m.code}:${m.unit === 'pieceQty' ? 'p' : 'q'}:${n}`;
+                n++;
+            }
+            if (n) safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+            return n;
+        }
+
+        // One line for the Audit tab that says what REALLY happened to the stock: the server's confirmed before -> after, a count shown
+// as a count (not a +/- guess), a movement that did not change stock marked as such, and one still on its way marked as pending.
+// A retry/duplicate is never a second line: the server keeps one movement per id.
+function stockMoveAuditText(e) {
+            const q = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            const pcs = e.unit === 'pieceQty' ? ' pcs' : '';
+            const srv = e._srv && typeof e._srv === 'object' ? e._srv : null;
+            const change = srv && typeof srv.before === 'number' && typeof srv.after === 'number' ? ` (${q(srv.before)} → ${q(srv.after)}${pcs})` : '';
+            const head = e.kind === 'count'
+                ? `${e.name || e.code}: counted ${q(e.counted)}${pcs}${srv ? change : ` (showed ${q(e.before)})`}`
+                : `${e.name || e.code}: ${e.delta > 0 ? '+' : ''}${q(e.delta)}${pcs}${change}`;
+            let tail = '';
+            if (srv && srv.applied === false) {
+                tail = srv.reason === 'older-count' ? ' · NOT applied: a later stock take of this item was already recorded'
+                    : srv.reason === 'before-count' ? ' · NOT applied again: already covered by a later stock take'
+                    : srv.reason === 'no-item' ? ' · NOT applied: item not found' : ' · NOT applied';
+            } else if (srv && srv.stale) tail = ' · counted against an out-of-date figure (physical count applied)';
+            else if (!srv && e.lg && stockLedgerOn()) tail = ' · waiting to sync';
+            return `${head} — ${e.reason || ''}${tail}`;
+        }
+
+        // Aqua POS stock CELLS on this device (see CELL_SPECS in functions/api/_merge.js): every product's stock at every site, every
+// bottle-tracked bale's bottle count at every site, every tank's litres, every raw material's quantity. Each entry says where
+// the number lives, what it is now, and the server's last confirmed figure for it (`base`, from `_ss`; undefined = never stamped).
+function aquaCellList() {
+            const out = [];
+            const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+            const siteName = (id) => { try { const x = (typeof sites !== 'undefined' ? sites : []).find((st) => st.id === id); return x ? x.name : id; } catch (e) { return id; } };
+            (typeof products !== 'undefined' && Array.isArray(products) ? products : []).forEach((p) => {
+                if (!p || p.code == null || p._deleted) return;
+                const k = p.id != null ? 'id:' + p.id : 'code:' + p.code;
+                ['stock', 'bottleStockBySite'].forEach((f) => {
+                    const cur = isObj(p[f]) ? p[f] : {};
+                    const ss = isObj(p._ss) && isObj(p._ss[f]) ? p._ss[f] : null;
+                    new Set([...Object.keys(cur), ...Object.keys(ss || {})]).forEach((site) => {
+                        out.push({ cell: { c: 'products', k, f, s: site }, rec: p, value: Number(cur[site]) || 0, base: ss && typeof ss[site] === 'number' ? ss[site] : undefined,
+                            label: `${p.name}${f === 'bottleStockBySite' ? ' (bottles)' : ''} @ ${siteName(site)}`, site });
+                    });
+                });
+            });
+            (typeof tanks !== 'undefined' && Array.isArray(tanks) ? tanks : []).forEach((t) => {
+                if (!t || t.id == null || t._deleted || t.infinite) return;
+                const ss = isObj(t._ss) ? t._ss.currentVolumeLiters : undefined;
+                out.push({ cell: { c: 'tanks', k: 'id:' + t.id, f: 'currentVolumeLiters' }, rec: t, value: Number(t.currentVolumeLiters) || 0, base: typeof ss === 'number' ? ss : undefined,
+                    label: `${t.name || 'Tank'} (litres) @ ${siteName(t.siteId)}`, site: t.siteId });
+            });
+            (typeof rawMaterials !== 'undefined' && Array.isArray(rawMaterials) ? rawMaterials : []).forEach((m) => {
+                if (!m || m.id == null || m._deleted || m.removed) return;
+                const ss = isObj(m._ss) ? m._ss.stockQty : undefined;
+                out.push({ cell: { c: 'rawMaterials', k: 'id:' + m.id, f: 'stockQty' }, rec: m, value: Number(m.stockQty) || 0, base: typeof ss === 'number' ? ss : undefined,
+                    label: `${m.name} @ ${siteName(m.siteId)}`, site: m.siteId });
+            });
+            return out;
+        }
+
+        function aquaCellKey(cell) { return `${cell.c}|${cell.k}|${cell.f}|${cell.s == null ? '' : cell.s}`; }
+
+        // This device's cell movements the server has not processed yet, grouped by cell, oldest first.
+function aquaPendingByCell(exceptIds) {
+            const log = (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : [];
+            const t = (m) => { const x = Date.parse(m.timestamp); return isFinite(x) ? x : 0; };
+            const by = new Map();
+            log.filter((m) => m && m.cell && m.lg && !m._srv && m.id != null && !(exceptIds && exceptIds.has(String(m.id))))
+                .sort((a, b) => t(a) - t(b))
+                .forEach((m) => { const k = aquaCellKey(m.cell); if (!by.has(k)) by.set(k, []); by.get(k).push(m); });
+            return by;
+        }
+
+        // The server's figure plus pending movements, applied as the server applies them (a count is absolute; never below zero).
+function aquaSimulateCell(base, moves) {
+            let v = Number(base) || 0;
+            (moves || []).forEach((m) => { v = Math.max(0, m.kind === 'count' ? Number(m.counted) || 0 : v + (Number(m.delta) || 0)); });
+            return Math.round(v * 1000) / 1000;
+        }
+
+        // Aqua's screens change stock in many places (sales, production, dispatch, bottles, tanks, materials) by editing the numbers
+// directly. With the ledger on, what reaches the server is, per cell, ONE movement for the net change since the server's last
+// confirmed figure (+ this device's movements still on their way) — with its own id, so it is applied once whatever is retried
+// or re-sent, and a stale device's old numbers can no longer overwrite another site's newer ones.
+function aquaReconcileCells() {
+            if (!stockLedgerOn() || typeof stockMovementLog === 'undefined' || !Array.isArray(stockMovementLog)) return 0;
+            try { if (typeof commitQtyView === 'function' && typeof activeSiteId !== 'undefined') commitQtyView(activeSiteId); } catch (e) { /* the mirror is committed on save anyway */ }
+            const pending = aquaPendingByCell();
+            let made = 0;
+            aquaCellList().forEach((x) => {
+                if (typeof x.base !== 'number') return;                         // never confirmed by the server yet: sent as-is (initial)
+                const diff = Math.round((x.value - aquaSimulateCell(x.base, pending.get(aquaCellKey(x.cell)))) * 1000) / 1000;
+                if (Math.abs(diff) < 1e-6) return;
+                stockMovementLog.push({
+                    id: genSaleId(), lg: 1, timestamp: new Date().toISOString(), cell: x.cell, delta: diff, name: x.label, site: x.site,
+                    type: diff > 0 ? 'added' : 'removed', reason: 'Stock change', by: typeof activeServerName === 'function' ? activeServerName() : '',
+                });
+                made++;
+            });
+            if (made) safeSetItem('aqua_stock_movement_log', JSON.stringify(stockMovementLog));
+            return made;
+        }
+
+        // A pull from a ledger server: its cell figures are the truth. Records it never stamped get `_ss` = its figures; then this
+// device's cell movements still on their way are laid on top (same as stockApplyPulledLedger for the other apps).
+function aquaApplyPulledCells(data) {
+            if (!data) return data;
+            const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+            const serverIds = new Set();
+            (Array.isArray(data.stockMovementLog) ? data.stockMovementLog : []).forEach((m) => { if (m && m.id != null) serverIds.add(String(m.id)); });
+            const pending = aquaPendingByCell(serverIds);
+            const lay = (rec, c, k, maps, scalars) => {
+                const r = { ...rec };
+                const ss = isObj(r._ss) ? { ...r._ss } : {};
+                maps.forEach((f) => {
+                    if (!isObj(r[f])) return;
+                    r[f] = { ...r[f] };
+                    if (!isObj(ss[f])) ss[f] = { ...r[f] };
+                    Object.keys(r[f]).forEach((site) => {
+                        const mv = pending.get(aquaCellKey({ c, k, f, s: site }));
+                        if (mv && mv.length) r[f][site] = aquaSimulateCell(typeof ss[f][site] === 'number' ? ss[f][site] : r[f][site], mv);
+                    });
+                });
+                scalars.forEach((f) => {
+                    if (typeof r[f] !== 'number') return;
+                    if (typeof ss[f] !== 'number') ss[f] = r[f];
+                    const mv = pending.get(aquaCellKey({ c, k, f }));
+                    if (mv && mv.length) r[f] = aquaSimulateCell(ss[f], mv);
+                });
+                r._ss = ss;
+                return r;
+            };
+            if (Array.isArray(data.products)) data.products = data.products.map((p) => (p && p.code != null ? lay(p, 'products', p.id != null ? 'id:' + p.id : 'code:' + p.code, ['stock', 'bottleStockBySite'], []) : p));
+            if (Array.isArray(data.tanks)) data.tanks = data.tanks.map((t) => (t && t.id != null ? lay(t, 'tanks', 'id:' + t.id, [], ['currentVolumeLiters']) : t));
+            if (Array.isArray(data.rawMaterials)) data.rawMaterials = data.rawMaterials.map((m) => (m && m.id != null ? lay(m, 'rawMaterials', 'id:' + m.id, [], ['stockQty']) : m));
+            return data;
+        }
+
+        // Stock figures the server owns (ledger on): left out of "did this device edit this record?", so moving stock never makes a
+// device's whole (maybe stale) copy of a record look like the newest edit of its name, price, capacity ...
+function stockCellFieldsOf(name) {
+            if (!stockLedgerOn()) return null;
+            if (name === 'tanks') return ['currentVolumeLiters', '_ss', '_sv', '_ct'];
+            if (name === 'rawMaterials') return ['stockQty', '_ss', '_sv', '_ct'];
+            if (name === 'products') return ['stock', 'bottleStockBySite', 'siteTimes', '_ss', '_sv', '_ct'];
+            return null;
+        }
+
+        function extraRecSig(name, r) {
+            const { updatedAt, ...rest } = r || {};
+            const drop = stockCellFieldsOf(name);
+            if (drop) drop.forEach((f) => { delete rest[f]; });
+            return JSON.stringify(rest);
+        }
+
+        function renderStockTakeHistory() {
+            const el = document.getElementById('stock-take-history');
+            if (!el) return;
+            const synced = stockTakeHistoryFromLog();
+            const hist = stockTakeHistoryGet();
+            if (hist.length === 0 && synced.length === 0) { el.innerHTML = '<p class="settings-hint" style="margin:0;">No stock takes yet.</p>'; return; }
+            const q = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            const sgn = (n) => (n > 0 ? '+' : '') + q(n);
+            const status = (m) => {
+                if (!m._srv) return '<span class="st-muted" title="Saved on this device; the server has not confirmed it yet">⏳ waiting to sync</span>';
+                if (m._srv.applied === false) return '<span class="st-bad" title="A later count of this item had already been recorded, so this one did not change the stock">⚠ superseded by a later count</span>';
+                return m._srv.stale ? '<span class="st-over" title="This count was typed against an out-of-date figure; the physical count was still applied">✓ applied (figure had changed)</span>' : '<span class="st-ok">✓ applied</span>';
+            };
+            const syncedHtml = synced.slice(0, 8).map((g) => {
+                const h = g.meta || {};
+                return `<details class="st-hist"><summary>${escapeHtml(new Date(g.at).toLocaleString('en-GB'))}${g.by ? ' · ' + escapeHtml(g.by) : ''} — ${h.changed || g.lines.length} updated of ${h.counted || g.lines.length} counted${h.missing ? ` · missing KES ${Math.round(h.missing).toLocaleString('en-US')}` : ''}${h.extra ? ` · extra KES ${Math.round(h.extra).toLocaleString('en-US')}` : ''}${g.lines.some((m) => !m._srv) ? ' · ⏳' : ''}</summary>
+                <div class="table-scroll"><table><thead><tr><th>Item</th><th>Was</th><th>Counted</th><th>Adjustment</th><th>Now</th><th></th></tr></thead><tbody>${g.lines.map((m) => {
+                    const was = m._srv && typeof m._srv.before === 'number' ? m._srv.before : m.before;
+                    const adj = m._srv ? stockMoveDelta(m) : m.delta;
+                    const now = m._srv && typeof m._srv.after === 'number' ? m._srv.after : m.counted;
+                    const lo = m.unit === 'pieceQty' ? ' loose' : '';
+                    return `<tr><td>${escapeHtml(m.name || m.code)}</td><td>${q(was)}${lo}</td><td>${q(m.counted)}${lo}</td><td>${sgn(adj)}${lo}</td><td>${q(now)}${lo}</td><td>${status(m)}</td></tr>`;
+                }).join('')}</tbody></table><div class="st-muted" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">Stock take ${escapeHtml(String(g.id))}${g.device ? ' · device ' + escapeHtml(String(g.device)) : ''}<button type="button" class="settings-small-btn st-mini" data-stid="${escapeHtml(String(g.id))}" onclick="printStockTakeReport(this.dataset.stid)">🖨️ Print</button></div></div></details>`;
+            }).join('');
+            if (hist.length === 0) { el.innerHTML = syncedHtml; return; }
+            el.innerHTML = syncedHtml + (synced.length ? '<p class="st-muted" style="margin:8px 0 2px;">Earlier stock takes (recorded on this device only):</p>' : '') + hist.slice(0, 8).map((h) => `<details class="st-hist"><summary>${escapeHtml(new Date(h.at).toLocaleString('en-GB'))}${h.by ? ' · ' + escapeHtml(h.by) : ''} — ${h.changed} updated of ${h.counted} counted${h.missingValue ? ` · missing KES ${Math.round(h.missingValue).toLocaleString('en-US')}` : ''}${h.extraValue ? ` · extra KES ${Math.round(h.extraValue).toLocaleString('en-US')}` : ''}</summary>
+                <div class="table-scroll"><table><thead><tr><th>Item</th><th>Was</th><th>Counted</th><th>Difference</th></tr></thead><tbody>${(h.lines || []).map((l) => `<tr><td>${escapeHtml(l.name)}</td><td>${Math.round(l.before.qty * 1000) / 1000}${l.pieceDiff ? ' + ' + l.before.pieceQty + ' loose' : ''}</td><td>${Math.round(l.after.qty * 1000) / 1000}${l.pieceDiff ? ' + ' + l.after.pieceQty + ' loose' : ''}</td><td>${l.diff ? (l.diff > 0 ? '+' : '') + l.diff : ''}${l.pieceDiff ? ` ${l.pieceDiff > 0 ? '+' : ''}${l.pieceDiff} loose` : ''}</td></tr>`).join('')}</tbody></table></div></details>`).join('');
+        }
+
+        function stockTakeHistoryGet() {
+            try { const h = JSON.parse(localStorage.getItem('stock_take_history_v1:' + location.pathname) || '[]'); return Array.isArray(h) ? h : []; } catch (e) { return []; }
+        }
+
+        // A printable (A4) stock-take report — Phase 11/13: product, previous stock, counted, adjustment, final stock, user, device,
+// date/time, stock-take id, and what the server did with each line. Works for every app (Aqua lines carry their site in the name).
+function printStockTakeReport(stocktakeId) {
+            const g = stockTakeHistoryFromLog().find((x) => String(x.id) === String(stocktakeId));
+            if (!g) { showToast('That stock take is not on this device.', true); return; }
+            const q = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            const status = (m) => !m._srv ? 'waiting to sync' : m._srv.applied === false ? 'superseded by a later count' : (m._srv.stale ? 'applied (figure had changed)' : 'applied');
+            const rows = g.lines.map((m) => {
+                const was = m._srv && typeof m._srv.before === 'number' ? m._srv.before : m.before;
+                const now = m._srv && typeof m._srv.after === 'number' ? m._srv.after : m.counted;
+                const adj = m._srv ? stockMoveDelta(m) : m.delta;
+                const lo = m.unit === 'pieceQty' ? ' loose' : '';
+                return `<tr><td>${escapeHtml(m.name || m.code || '')}</td><td class="n">${q(was)}${lo}</td><td class="n">${q(m.counted)}${lo}</td><td class="n">${adj > 0 ? '+' : ''}${q(adj)}${lo}</td><td class="n">${q(now)}${lo}</td><td>${status(m)}</td></tr>`;
+            }).join('');
+            const h = g.meta || {};
+            const biz = (typeof businessName !== 'undefined' && businessName) ? businessName : '';
+            printHTMLDirect(`<div class="st-report">
+                <h2>${escapeHtml(biz)}${biz ? ' — ' : ''}Stock Take Report</h2>
+                <div>${escapeHtml(new Date(g.at).toLocaleString('en-GB'))}${g.by ? ' · counted by ' + escapeHtml(g.by) : ''}${g.device ? ' · device ' + escapeHtml(String(g.device)) : ''}</div>
+                <div>Stock take ${escapeHtml(String(g.id))} · ${h.changed || g.lines.length} updated of ${h.counted || g.lines.length} counted${h.missing ? ` · missing KES ${Math.round(h.missing).toLocaleString('en-US')}` : ''}${h.extra ? ` · extra KES ${Math.round(h.extra).toLocaleString('en-US')}` : ''}</div>
+                <table><thead><tr><th>Item</th><th class="n">Was</th><th class="n">Counted</th><th class="n">Adjustment</th><th class="n">Now</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+                <p class="foot">"Was" and "Now" are the figures the server confirmed. A count recorded offline keeps its original time and id.</p>
+            </div>`, '.st-report{font-family:Arial,sans-serif;padding:16px;color:#000} .st-report h2{margin:0 0 4px} .st-report table{width:100%;border-collapse:collapse;margin-top:10px} .st-report th,.st-report td{border-bottom:1px solid #ccc;padding:5px 6px;font-size:12px;text-align:left} .st-report .n{text-align:right} .st-report .foot{font-size:11px;color:#555;margin-top:10px}');
+        }
+
+        // "Does everything agree?" (Phase 19) on demand: sends anything unsent, fetches the latest, then asks the server to check its own
+// history (/api/stock-integrity) and compares every figure on THIS screen with the server's. Shows the result in `targetId`.
+async function stockIntegrityCheck(targetId) {
+            const el = document.getElementById(targetId || 'stock-integrity-result');
+            const say = (html) => { if (el) el.innerHTML = html; };
+            say('<p class="settings-hint" style="margin:0;">Checking…</p>');
+            try {
+                if (typeof flushThenPull === 'function') await flushThenPull();
+                const res = await fetch(apiUrl('/api/stock-integrity'));
+                if (!res.ok) { say('<p class="st-bad" style="margin:0;">Could not reach the server — try again when online.</p>'); return null; }
+                const out = await res.json();
+                const mine = {};
+                if (typeof inventory !== 'undefined' && Array.isArray(inventory)) inventory.forEach((r) => {
+                    if (!r || r.code == null || r._deleted) return;
+                    const list = r.hasVariants && Array.isArray(r.variants) && r.variants.length ? r.variants : [r];
+                    list.forEach((x) => { if (x && x.code != null) { mine[String(x.code)] = Number(x.qty) || 0; if (typeof x.pieceQty === 'number') mine[`${x.code}|pieceQty`] = x.pieceQty; } });
+                });
+                if (typeof aquaCellList === 'function') aquaCellList().forEach((x) => { mine[aquaCellKey(x.cell)] = x.value; });
+                const pending = new Set();
+                ((typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) ? stockMovementLog : []).forEach((m) => { if (m && m.lg && !m._srv) pending.add(m.cell ? aquaCellKey(m.cell) : String(m.code)); });
+                const differ = Object.keys(mine).filter((k) => typeof out.figures[k] === 'number' && Math.abs(out.figures[k] - mine[k]) > 1e-6 && !pending.has(k.split('|pieceQty')[0]));
+                const lines = [];
+                if (out.ok && differ.length === 0) lines.push(`<p class="st-ok" style="margin:0;">✓ All ${Object.keys(mine).length} figures on this device match the server, and the server's history agrees with its figures (${out.checked} items with stock history checked).</p>`);
+                if (!out.ok) lines.push(`<p class="st-bad" style="margin:0;">⚠ The server found ${out.problems.length} problem${out.problems.length === 1 ? '' : 's'} in its stock history:</p><ul>${out.problems.slice(0, 20).map((p) => `<li>${escapeHtml(p.what)}: ${escapeHtml(p.detail)}</li>`).join('')}</ul>`);
+                if (differ.length) lines.push(`<p class="st-bad" style="margin:0;">⚠ ${differ.length} figure${differ.length === 1 ? '' : 's'} on this device differ from the server (refresh this device):</p><ul>${differ.slice(0, 20).map((k) => `<li>${escapeHtml(k)}: here ${mine[k]}, server ${out.figures[k]}</li>`).join('')}</ul>`);
+                if (pending.size) lines.push(`<p class="st-muted" style="margin:4px 0 0;">${pending.size} change${pending.size === 1 ? ' is' : 's are'} still waiting to sync and ${pending.size === 1 ? 'was' : 'were'} not compared.</p>`);
+                say(lines.join(''));
+                return { ...out, differ };
+            } catch (e) {
+                say('<p class="st-bad" style="margin:0;">Could not run the check — try again when online.</p>');
+                return null;
+            }
+        }
+
+        // The reference printed (and barcoded) on every receipt — unique across ALL tills (zip 119). Before, every till counted up its own
+// copy of one shared number and synced it later, so two tills selling at the same time printed the SAME reference. Now each till
+// counts its own sales and the reference is (its count x 100) + its till number: till 3's 7th sale is ref-00000703, till 4's is
+// ref-00000704 — no two tills can ever produce the same one, online or offline, and it stays all digits (quick to type / scan).
+// New references always start above every reference issued before this change (the old shared counter is the floor). A brand-new
+// device that has never reached the server has no till number yet: it uses its own device code instead (ref-D<code>-<n>).
+function generateReceiptRef() {
+            let seq = 0;
+            try { seq = parseInt(localStorage.getItem('pos_till_ref_seq') || '0', 10) || 0; } catch (e) { /* start from the floor */ }
+            const floor = (typeof nextReceiptRefSeq === 'number' && isFinite(nextReceiptRefSeq)) ? nextReceiptRefSeq : 0;
+            if (seq < floor) seq = floor;
+            seq += 1;
+            safeSetItem('pos_till_ref_seq', String(seq));
+            const till = tillNumber();
+            const dev = String(getOrCreateDeviceId()).replace(/[^a-z0-9]/gi, '').slice(-5).toUpperCase();
+            const ref = till ? `ref-${String(seq * 100 + till).padStart(8, '0')}` : `ref-D${dev}-${seq}`;
+            // remember who/where for the sale this reference is about to go on (attached when it is sent: stampLocalContext)
+            try {
+                const k = 'pos_ref_ctx_v1';
+                const map = JSON.parse(localStorage.getItem(k) || '{}') || {};
+                map[ref] = { ...saleCtxNow(), at: Date.now() };
+                const keys = Object.keys(map);
+                if (keys.length > 300) keys.sort((a, b) => (map[a].at || 0) - (map[b].at || 0)).slice(0, keys.length - 300).forEach((x) => { delete map[x]; });
+                localStorage.setItem(k, JSON.stringify(map));
+            } catch (e) { /* the sale still gets its reference */ }
+            return ref;
+        }
+
+        // This device's till number (1-99), handed out once by the server (see allocateTill in functions/api/_merge.js). 0 = not yet known.
+function tillNumber() {
+            const n = parseInt((function () { try { return localStorage.getItem('pos_till_no') || '0'; } catch (e) { return '0'; } })(), 10);
+            return n >= 1 && n <= 99 ? n : 0;
+        }
+
+        function rememberTillNumber(n) {
+            n = Number(n);
+            if (n >= 1 && n <= 99) { try { localStorage.setItem('pos_till_no', String(n)); } catch (e) { /* asked again on the next sync */ } }
+        }
+
+        function getOrCreateDeviceId() {
+            let id = localStorage.getItem('pos_device_id');
+            if (!id) {
+                id = 'dev_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+                safeSetItem('pos_device_id', id);
+            }
+            return id;
+        }
+
+        // A receipt can only be refunded / exchanged up to what it actually sold (zip 119). Before, nothing stopped the same receipt line
+// being returned twice — on two tills, or twice by mistake — paying out or restocking more than was ever sold. Counts every return
+// and exchange already recorded against that receipt for that item (synced from every till). Returns true when `qty` may go ahead;
+// otherwise shows why in `errEl` and returns false. Items not picked from a receipt (free search) are not limited.
+function returnQtyGuard(item, qty, errEl) {
+            if (!item || !item.sourceRefNumber || !item.code) return true;
+            const ref = String(item.sourceRefNumber);
+            const sale = (typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []).find((x) => x && x.refNumber === ref);
+            if (!sale) return true;
+            const say = (t) => { if (errEl) errEl.textContent = t; else if (typeof showToast === 'function') showToast(t, true); return false; };
+            if (sale.voided) return say(`${ref} was voided — there is nothing left to return on it.`);
+            const sold = (sale.items || []).filter((l) => l && l.code === item.code).reduce((t, l) => t + (Number(l.qty) || 0), 0);
+            const returned = (typeof returns !== 'undefined' && Array.isArray(returns) ? returns : [])
+                .filter((r) => r && !r._deleted && r.refNumber === ref && r.itemCode === item.code)
+                .reduce((t, r) => t + (Number(r.qty) || 0), 0);
+            const left = Math.round((sold - returned) * 1000) / 1000;
+            if (qty > left + 1e-9) return say(left > 0 ? `Only ${left} of "${item.name}" can still be returned on ${ref} (${returned} already returned).` : `"${item.name}" on ${ref} has already been fully returned.`);
+            return true;
+        }
+
+        // Who / where a sale is being made (zip 119, Phase 5): till number, device, station, cashier, shift, business. Captured when the
+// receipt reference is issued (see generateReceiptRef) and attached to that sale when it is sent (stampLocalContext).
+function saleCtxNow() {
+            let station = '';
+            try { station = localStorage.getItem('pos_device_station') || localStorage.getItem('pos_print_station') || ''; } catch (e) { /* optional */ }
+            const cashierId = (typeof currentServer !== 'undefined' && currentServer && currentServer.id) ? currentServer.id : 'admin';
+            let shiftId = '';
+            try {
+                const list = typeof staffShifts !== 'undefined' && Array.isArray(staffShifts) ? staffShifts : [];
+                const sid = cashierId === 'admin' ? (typeof ADMIN_SHIFT_ID !== 'undefined' ? ADMIN_SHIFT_ID : 'admin') : cashierId;
+                const open = list.filter((x) => x && x.staffId === sid && !x.clockOut).sort((a, b) => (b.clockIn || 0) - (a.clockIn || 0))[0];
+                if (open) shiftId = open.id;
+                if (!shiftId && typeof cashShifts !== 'undefined' && Array.isArray(cashShifts)) {
+                    const me = typeof activeServerName === 'function' ? activeServerName() : '';
+                    const cs = cashShifts.find((x) => x && x.status === 'open' && x.cashier === me);
+                    if (cs) shiftId = cs.id;
+                }
+            } catch (e) { /* no shift */ }
+            return {
+                till: tillNumber() || null, device: getOrCreateDeviceId(), station: station || null,
+                cashier: typeof activeServerName === 'function' ? activeServerName() : '', cashierId, shiftId: shiftId || null,
+                branch: (typeof businessName !== 'undefined' && businessName) || null, host: (typeof location !== 'undefined' && location.host) || null,
+            };
+        }
+
+        // Called on every push (from slimPayloadForPush): sales whose reference THIS device issued get the context captured then (never
+// a guess — records from other devices are left alone), and this device's stock movements still waiting for the server get the
+// device / till / station they came from and a count of how many times they have been sent (the server applies each once anyway).
+function stampLocalContext(payload) {
+            try {
+                let issued = {};
+                try { issued = JSON.parse(localStorage.getItem('pos_ref_ctx_v1') || '{}') || {}; } catch (e) { issued = {}; }
+                if (Array.isArray(payload.salesLog) && Object.keys(issued).length) {
+                    payload.salesLog.forEach((x) => { if (x && !x.ctx && x.refNumber && issued[x.refNumber]) x.ctx = issued[x.refNumber]; });
+                }
+                if (Array.isArray(payload.stockMovementLog)) {
+                    const dev = getOrCreateDeviceId(), till = tillNumber() || null;
+                    let station = null;
+                    try { station = localStorage.getItem('pos_device_station') || null; } catch (e) { /* optional */ }
+                    payload.stockMovementLog.forEach((m) => {
+                        if (!m || !m.lg || m._srv) return;
+                        if (!m.dev) { m.dev = dev; m.till = till; if (station) m.stn = station; }
+                        m.tries = (Number(m.tries) || 0) + 1;
+                    });
+                }
+            } catch (e) { /* never block a push */ }
+        }
+
+        // A short on-device record of the sync itself (Phase 12): each send, each failed send (and why), each retry after a failure, and
+// every stock conflict the server resolved for this device (a count superseded by a later one, a count made against an old
+// figure). Kept apart from business events so a retry is never mistaken for a second sale or stock change. Last 300 entries.
+function syncJournal(kind, detail) {
+            try {
+                const key = 'pos_sync_journal_v1';
+                const list = JSON.parse(localStorage.getItem(key) || '[]');
+                list.unshift({ at: Date.now(), kind, detail: String(detail || '').slice(0, 300), by: typeof activeServerName === 'function' ? activeServerName() : '' });
+                localStorage.setItem(key, JSON.stringify(list.slice(0, 300)));
+            } catch (e) { /* diagnostics only */ }
+        }
+
+        // The journal as Audit-tab events (module "Sync").
+function syncJournalAuditEvents() {
+            let list = [];
+            try { list = JSON.parse(localStorage.getItem('pos_sync_journal_v1') || '[]'); } catch (e) { list = []; }
+            const label = { sent: 'Sync: sent', failed: 'Sync: send failed', retry: 'Sync: retry', conflict: 'Sync: conflict resolved by server' };
+            return list.map((e) => ({ at: e.at, user: e.by || 'Device', module: 'Sync', action: label[e.kind] || ('Sync: ' + e.kind), detail: e.detail || '', ref: '' }));
+        }
+
+        // Stock conflicts in a pulled payload that concern THIS device's own movements, journaled once each.
+function syncJournalConflicts(pulledLog) {
+            try {
+                if (!Array.isArray(pulledLog)) return;
+                const dev = getOrCreateDeviceId();
+                let seen = [];
+                try { seen = JSON.parse(localStorage.getItem('pos_sync_conflicts_seen_v1') || '[]'); } catch (e) { seen = []; }
+                const seenSet = new Set(seen);
+                pulledLog.forEach((m) => {
+                    if (!m || m.dev !== dev || !m._srv || seenSet.has(String(m.id))) return;
+                    if (m._srv.applied === false && m._srv.reason !== 'initial') {
+                        syncJournal('conflict', `${m.name || m.code || 'item'}: ${m.kind === 'count' ? 'count' : 'change'} not applied (${m._srv.reason === 'older-count' ? 'a later stock take was already recorded' : m._srv.reason === 'before-count' ? 'already covered by a later stock take' : m._srv.reason})`);
+                    } else if (m._srv.stale) {
+                        syncJournal('conflict', `${m.name || m.code || 'item'}: counted against an out-of-date figure (${m._srv.before} on the server) — the physical count was applied`);
+                    } else return;
+                    seenSet.add(String(m.id));
+                });
+                localStorage.setItem('pos_sync_conflicts_seen_v1', JSON.stringify(Array.from(seenSet).slice(-2000)));
+            } catch (e) { /* diagnostics only */ }
+        }
+
+        function saleCtxText(sale) {
+            const c = sale && sale.ctx;
+            if (!c) return '';
+            return [c.till ? 'till ' + c.till : '', c.station ? 'station ' + c.station : '', c.shiftId ? 'shift ' + String(c.shiftId).slice(-6) : ''].filter(Boolean).join(' · ');
+        }
+
+        // Phase 10: say on every report how current its data is. Reports are built from this device's copy of the shop, which is the
+// server's data as of the last sync plus anything this device has not sent yet.
+function reportFreshnessHtml() {
+            let last = 0;
+            try { last = parseInt(localStorage.getItem('pos_last_synced_at') || localStorage.getItem('aqua_last_synced_at') || '0', 10) || 0; } catch (e) { /* unknown */ }
+            const unsent = typeof hasUnsyncedWork === 'function' && hasUnsyncedWork();
+            const when = last ? new Date(last).toLocaleString('en-GB') : 'never';
+            return unsent
+                ? `<div class="report-fresh" style="margin:6px 0; padding:6px 10px; border-radius:6px; background:#fff3cd; color:#5c4400; font-size:13px;">⚠ This device has changes the server has not received yet — figures from other tills are as of ${escapeHtml(when)}. They update by themselves once it syncs.</div>`
+                : `<div class="report-fresh" style="margin:6px 0; font-size:12px; color:#27ae60;">✓ Up to date with the server as of ${escapeHtml(when)} — includes every till that had synced by then.</div>`;
+        }
+
+        // Builds the report at once from what the device holds, then syncs in the background and rebuilds it if newer data arrived.
+function reportRefreshAfterSync(rebuild) {
+            if (window.__reportRefreshing || typeof flushThenPull !== 'function') return;
+            window.__reportRefreshing = true;
+            let before = '';
+            try { before = localStorage.getItem('pos_last_synced_at') || localStorage.getItem('aqua_last_synced_at') || ''; } catch (e) { /* unknown */ }
+            Promise.resolve().then(() => flushThenPull()).catch(() => {}).then(() => {
+                let after = '';
+                try { after = localStorage.getItem('pos_last_synced_at') || localStorage.getItem('aqua_last_synced_at') || ''; } catch (e) { /* unknown */ }
+                try { if (after !== before) rebuild(); } catch (e) { /* the shown report stays */ }
+            }).finally(() => { window.__reportRefreshing = false; });
+        }
+
+        // A Z Report is final, so it is only finalized from data the server has confirmed: first send everything and fetch the latest.
+// Changes still stuck on this device block it; with no connection at all the manager is told plainly what it will be based on.
+async function zReportPreflight() {
+            try { if (typeof flushThenPull === 'function') await flushThenPull(); } catch (e) { /* handled below */ }
+            if (typeof hasUnsyncedWork === 'function' && hasUnsyncedWork()) {
+                showToast('Not finalized: this device has sales or changes the server has not received yet. Connect to the internet and try again.', true);
+                return false;
+            }
+            const online = typeof probeServer === 'function' ? (await probeServer(4000)) > 0 : true;
+            if (!online) return confirm('You are offline. This Z Report will only include what this device has received from the other tills. Finalize anyway?');
+            // #8: online, the device's day must match the server's, sale by sale
+            const b = todayBounds();
+            const site = (typeof activeSiteId !== 'undefined' && activeSiteId && activeSiteId !== 'both') ? activeSiteId : '';
+            const chk = await serverDayCheck(b.from, b.to, site);
+            if (chk && !chk.ok) {
+                showToast(`Not finalized: ${chk.missingHere.length ? chk.missingHere.length + ' sale(s) from other tills have not reached this device yet — wait a moment and try again' : chk.notOnServer.length + ' sale(s) on this device have not reached the server'}.`, true);
+                return false;
+            }
+            return true;
+        }
+
+        // Asks for the management password (or a Manager's PIN, where the app accepts one) and runs `then` once it is given. Uses each
+// app's own password popup, so it works offline exactly like every other protected action.
+function requireManagementApproval(message, then) {
+            window.__adminPwCallback = then;
+            if (typeof resolveAdminPwModalSuccess === 'function') { showAdminPwModal('generic-callback', message); return; }   // Aqua POS
+            adminPwModalPurpose = 'generic-callback';
+            showAdminPwModal('Management Access', message, 'No management password is set yet. Create one now to protect this.');
+        }
+
+        // Missing stock (at cost) above which a stock take needs the management password (#9). Default KES 5,000; 0 = always ask.
+function stockTakeApprovalLimit() {
+            try { const v = localStorage.getItem('pos_st_approval_kes'); if (v !== null && v !== '' && isFinite(Number(v))) return Math.max(0, Number(v)); } catch (e) { /* default */ }
+            return 5000;
+        }
+
+        function stockTakeSetApprovalLimit(raw) {
+            const n = Math.round(Number(String(raw).replace(/,/g, '')));
+            if (!isFinite(n) || n < 0) { showToast('Enter an amount in KES (0 = always ask).', true); return; }
+            requireManagementApproval(`Enter the management password to change the stock-take approval limit to KES ${n.toLocaleString('en-US')}.`, () => {
+                try { localStorage.setItem('pos_st_approval_kes', String(n)); } catch (e) { /* not saved */ }
+                if (typeof renderStockTake === 'function') { try { renderStockTake(); } catch (e) { /* not on screen */ } }
+                if (typeof renderAquaStockTake === 'function') { try { renderAquaStockTake(); } catch (e) { /* not on screen */ } }
+                showToast('Approval limit saved on this device.');
+            });
+        }
+
+        // #8: compares this device's sales for a day with the SERVER's, by sale id (see functions/api/day-summary.js). null = no answer.
+async function serverDayCheck(from, to, site) {
+            try {
+                const res = await fetch(apiUrl(`/api/day-summary?from=${+from}&to=${+to}${site ? '&site=' + encodeURIComponent(site) : ''}`));
+                if (!res.ok) return null;
+                const srv = await res.json();
+                const mine = (typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []).filter((x) => {
+                    if (!x || x.voided || x._deleted) return false;
+                    const t = Date.parse(x.timestamp);
+                    return isFinite(t) && t >= +from && t <= +to && (!site || !x.siteId || x.siteId === site);
+                }).map((x) => String(x.id));
+                const srvSet = new Set(srv.ids || []), mySet = new Set(mine);
+                const missingHere = (srv.ids || []).filter((id) => !mySet.has(id));
+                const notOnServer = mine.filter((id) => !srvSet.has(id));
+                return { srv, missingHere, notOnServer, ok: missingHere.length === 0 && notOnServer.length === 0 };
+            } catch (e) { return null; }
+        }
+
+        function serverDayCheckHtml(r) {
+            if (!r) return '<p class="st-muted" style="margin:6px 0 0; font-size:12px;">Server check: not available (offline) — figures are from this device.</p>';
+            const money = (v) => (typeof reportMoney === 'function' ? reportMoney(v) : 'KES ' + Math.round(v).toLocaleString('en-US'));
+            const head = r.ok
+                ? `<p style="margin:6px 0 0; font-size:13px; color:#27ae60;">✓ Server check: the server holds the same ${r.srv.count} sale${r.srv.count === 1 ? '' : 's'} (${money(r.srv.gross)}) for this day.</p>`
+                : `<p style="margin:6px 0 0; font-size:13px; color:#c0392b;">⚠ Server check: ${r.missingHere.length ? `${r.missingHere.length} sale${r.missingHere.length === 1 ? ' is' : 's are'} on the server but not on this device yet` : ''}${r.missingHere.length && r.notOnServer.length ? '; ' : ''}${r.notOnServer.length ? `${r.notOnServer.length} sale${r.notOnServer.length === 1 ? '' : 's'} on this device ${r.notOnServer.length === 1 ? 'has' : 'have'} not reached the server` : ''}. Server total: ${r.srv.count} sale${r.srv.count === 1 ? '' : 's'}, ${money(r.srv.gross)}.</p>`;
+            const tills = Object.entries(r.srv.byTill || {}).sort((a, b) => (a[0] === '?' ? 1 : b[0] === '?' ? -1 : Number(a[0]) - Number(b[0])));
+            const byTill = tills.length > 1 || (tills[0] && tills[0][0] !== '?')
+                ? `<div class="table-scroll"><table style="margin-top:6px;"><thead><tr><th>Till</th><th>Sales</th><th>Amount</th></tr></thead><tbody>${tills.map(([t, x]) => `<tr><td>${t === '?' ? 'earlier sales (no till)' : 'Till ' + escapeHtml(t)}</td><td>${x.n}</td><td>${money(x.v)}</td></tr>`).join('')}</tbody></table></div>` : '';
+            return head + byTill;
+        }
+
+        async function serverDayCheckInto(el, from, to, site) {
+            if (!el) return;
+            const holder = document.createElement('div');
+            holder.className = 'server-day-check';
+            holder.innerHTML = '<p class="st-muted" style="margin:6px 0 0; font-size:12px;">Checking with the server…</p>';
+            el.appendChild(holder);
+            holder.innerHTML = serverDayCheckHtml(await serverDayCheck(from, to, site));
+        }
+
+        function todayBounds() {
+            const a = new Date(); a.setHours(0, 0, 0, 0);
+            const b = new Date(a); b.setHours(23, 59, 59, 999);
+            return { from: a, to: b };
+        }
         /* @shared:end */
 
         // Full Training Guide PDF, embedded as base64 so it downloads with no
@@ -12164,12 +12949,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
         // could ever reach the app-container reveal.
         /* -> shared: todayLocalDateStr */
         let nextReceiptRefSeq = parseInt(localStorage.getItem('aqua_ref_seq') || '1', 10);
-        function generateReceiptRef() {
-            const ref = `ref-${String(nextReceiptRefSeq).padStart(8, '0')}`;
-            nextReceiptRefSeq += 1;
-            safeSetItem('aqua_ref_seq', String(nextReceiptRefSeq));
-            return ref;
-        }
+        /* -> shared: generateReceiptRef */
         /* -> shared: money */
         /* -> shared: round2 */
 
@@ -12369,6 +13149,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             { id: 'tank-tab', label: '🚰 Bulk Tank' },
             { id: 'inventory-tab', label: '📋 Inventory' },
             { id: 'restocking-tab', label: '📥 Restocking' },
+            { id: 'stock-take-tab', label: '📋 Stock Take' },
             { id: 'production-tab', label: '🏭 Production' },
             { id: 'bookings-tab', label: '📅 Bulk Orders' },
             { id: 'bills-tab', label: '🧾 Bills' },
@@ -12641,15 +13422,20 @@ function cartTotalBelowMinimumMessage(newTotal) {
                 // must never by themselves mark a record dirty or drive a
                 // sync conflict — only a real change to `stock`/
                 // `bottleStockBySite` (or anything else) should.
-                const { updatedAt, qty, bottleStock, fullBales, halfBales, looseBottles, ...rest } = p;
-                productSyncSnapshot[p.code] = JSON.stringify(rest);
+                productSyncSnapshot[p.code] = aquaProductSig(p);
             });
+        }
+        // What counts as "this device edited this product": not the qty mirror (see above) and — once the server runs the stock
+        // ledger — not the per-site stock either (the server owns it and moves it only by movements; see aquaReconcileCells).
+        function aquaProductSig(p) {
+            const { updatedAt, qty, bottleStock, fullBales, halfBales, looseBottles, ...rest } = p;
+            (stockCellFieldsOf('products') || []).forEach((f) => { delete rest[f]; });
+            return JSON.stringify(rest);
         }
         function stampDirtyProducts() {
             (Array.isArray(products) ? products : []).forEach((p) => {
                 if (!p || p.code == null) return;
-                const { updatedAt, qty, bottleStock, fullBales, halfBales, looseBottles, ...rest } = p;
-                const sig = JSON.stringify(rest);
+                const sig = aquaProductSig(p);
                 if (productSyncSnapshot[p.code] !== sig) {
                     p.updatedAt = Date.now();
                 }
@@ -12687,6 +13473,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             registerSyncedField('sites', () => sites, 'id');
             registerSyncedField('tanks', () => tanks, 'id');
             registerSyncedField('stockRequests', () => stockRequests, 'id');
+            registerSyncedField('rawMaterials', () => rawMaterials, 'id');
         }
         let extraSyncSnapshot = {};
         /* -> shared: snapshotExtraSyncedFields */
@@ -13456,7 +14243,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
         }
         // Everything this device syncs, as one object (used by every push, and to re-baseline the settings after a pull).
         function collectSyncPayload() {
-            return { businessName, ownerName, sites, products, refillSizes, tanks, salesLog, stockMovementLog, bulkOrders, staff, bills, lowStockThreshold, rawMaterials, waterCostPerLiter, suppliers, deliveryZones, deliveryAgents, deliveryNotifications, vatRateA, vatRateB, kraEtimsReceiptsEnabled, expiryWarningDays, paymentAccounts, billPaymentDetails, receiptFooterNotes, receiptLogoData, receiptShowLogo, receiptEmail, receiptContact, receiptExtraInfo, receiptQrData, receiptShowQr, receiptQrCaption, customers, loyaltyEnabled, tokenValueKES, loyaltyTiers, lockedTabs, requireCartRemovePw, requireCartPricePw, returns, debts, expenses, recurringExpenses, pendingInvites, staffShifts, pendingExchanges, attendanceRoster, attendanceLog, adminActivityLog, offers, restockLog, productionLog, dispatchLog, stockRequests, defaultBottlesPerBale, productionStepsTemplate, pwHash: localStorage.getItem('aqua_pw_hash') || '', adminPwHash: localStorage.getItem('aqua_admin_pw_hash') || '' };
+            return { ...(stockLedgerOn() ? { _cells: 1 } : {}), businessName, ownerName, sites, products, refillSizes, tanks, salesLog, stockMovementLog, bulkOrders, staff, bills, lowStockThreshold, rawMaterials, waterCostPerLiter, suppliers, deliveryZones, deliveryAgents, deliveryNotifications, vatRateA, vatRateB, kraEtimsReceiptsEnabled, expiryWarningDays, paymentAccounts, billPaymentDetails, receiptFooterNotes, receiptLogoData, receiptShowLogo, receiptEmail, receiptContact, receiptExtraInfo, receiptQrData, receiptShowQr, receiptQrCaption, customers, loyaltyEnabled, tokenValueKES, loyaltyTiers, lockedTabs, requireCartRemovePw, requireCartPricePw, returns, debts, expenses, recurringExpenses, pendingInvites, staffShifts, pendingExchanges, attendanceRoster, attendanceLog, adminActivityLog, offers, restockLog, productionLog, dispatchLog, stockRequests, defaultBottlesPerBale, productionStepsTemplate, pwHash: localStorage.getItem('aqua_pw_hash') || '', adminPwHash: localStorage.getItem('aqua_admin_pw_hash') || '' };
         }
         // After a push the device may only say "I'm up to date with the server"
         // if the server had NOTHING newer than what this device already held
@@ -13466,11 +14253,11 @@ function cartTotalBelowMinimumMessage(newTotal) {
         // SEEN it yet — so the marker stays put and we pull straight away.
         // Without this, a device that pushed right after another one's change
         // kept showing stale stock until somebody else pushed again.
-        function markPushedThroughServerTime(data) {
+        function markPushedThroughServerTime(data, mustPull) {
             const held = parseInt(localStorage.getItem('aqua_last_synced_at') || '0', 10);
-            const missedSomething = !!data && typeof data.prev === 'number' && data.prev > held && held > 0;
+            const missedSomething = !!mustPull || (!!data && typeof data.prev === 'number' && data.prev > held && held > 0);
             if (!missedSomething) safeSetItem('aqua_last_synced_at', String((data && data.updatedAt) || Date.now()));
-            else setTimeout(() => { try { pullFromServer(); } catch (e) { /* the 7s poll will */ } }, 50);
+            else setTimeout(() => { try { if (window.__pullInFlight) window.__pullAgain = true; else pullFromServer(); } catch (e) { /* the 7s poll will */ } }, 50);
         }
         async function doPush() {
             return trackPush(doPushImpl);
@@ -13478,6 +14265,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
         async function doPushImpl() {
             markSync('syncing');
             stampDirtyProducts();
+            try { aquaReconcileCells(); } catch (e) { /* never block a push */ }
             stampDirtyExtraSyncedFields();
             let seqAtStart = '0';
             try { seqAtStart = localStorage.getItem('pos_dirty_seq') || '0'; } catch (e) { /* best effort */ }
@@ -13497,7 +14285,10 @@ function cartTotalBelowMinimumMessage(newTotal) {
                     // Bookmark what we just pushed as "already seen" so the
                     // 7-second poll below doesn't turn around and re-apply this
                     // device's own change back onto itself a moment later.
-                    markPushedThroughServerTime(data);
+                    // a push that moved stock is followed by a pull of the server's result (it decides the figures — see aquaReconcileCells)
+                    const ledgerJustOn = !!(data && data.ledger) && stockLedgerMark(true);
+                    const movedStock = ledgerJustOn || !!(data && data.ledger && Array.isArray(slim.body.stockMovementLog) && slim.body.stockMovementLog.some((m) => m && m.cell));
+                    markPushedThroughServerTime(data, movedStock);
                     ackLocalDirty(seqAtStart);
                     snapshotProductsSync();
                     snapshotExtraSyncedFields();
@@ -13531,6 +14322,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             clearTimeout(pushTimer);
             markSync('syncing');
             stampDirtyProducts();
+            try { aquaReconcileCells(); } catch (e) { /* never block a push */ }
             stampDirtyExtraSyncedFields();
             let seqAtStart = '0';
             try { seqAtStart = localStorage.getItem('pos_dirty_seq') || '0'; } catch (e) { /* best effort */ }
@@ -13547,7 +14339,10 @@ function cartTotalBelowMinimumMessage(newTotal) {
                 if (res.ok) {
                     slim.commit();
                     const data = await res.json();
-                    markPushedThroughServerTime(data);
+                    // a push that moved stock is followed by a pull of the server's result (it decides the figures — see aquaReconcileCells)
+                    const ledgerJustOn = !!(data && data.ledger) && stockLedgerMark(true);
+                    const movedStock = ledgerJustOn || !!(data && data.ledger && Array.isArray(slim.body.stockMovementLog) && slim.body.stockMovementLog.some((m) => m && m.cell));
+                    markPushedThroughServerTime(data, movedStock);
                     ackLocalDirty(seqAtStart);
                     snapshotProductsSync();
                     snapshotExtraSyncedFields();
@@ -13700,6 +14495,8 @@ function cartTotalBelowMinimumMessage(newTotal) {
             if (window.__pullInFlight && Date.now() - (window.__pullStartedAt || 0) < 120000) return;
             window.__pullInFlight = true; window.__pullStartedAt = Date.now();
             try { await pullFromServerOnce(); } finally { window.__pullInFlight = false; }
+            // "fetch the result of the push I just made" asked for while this pull was running: run it now (see markPushedThroughServerTime)
+            if (window.__pullAgain) { window.__pullAgain = false; setTimeout(() => { try { pullFromServer().catch(() => {}); } catch (e) { /* the poll will */ } }, 0); }
         }
         async function pullFromServerOnce() {
             // navigator.onLine is only a hint (often wrong): ask the server before believing "offline".
@@ -14156,6 +14953,114 @@ function cartTotalBelowMinimumMessage(newTotal) {
         let pendingLockTabId = null;
         let pendingCartRemoveKey = null;
 
+        /* ---------- STOCK TAKE (per site) ---------- */
+        function aquaStockTakeState() {
+            if (!window.__aquaSt) window.__aquaSt = { counts: {}, q: '' };
+            return window.__aquaSt;
+        }
+        // What can be counted at the site on screen: finished goods (a bottle-tracked bale is counted in bottles, the figure its
+        // stock is derived from), tanks and raw materials. The same cells the server ledgers (aquaCellList).
+        function aquaStockTakeRows() {
+            if (activeSiteId === 'both') return [];
+            try { commitQtyView(activeSiteId); } catch (e) { /* mirror already committed */ }
+            const bottleTracked = new Set(products.filter((p) => p && p.trackBottles).map((p) => p.code));
+            const q = (aquaStockTakeState().q || '').trim().toLowerCase();
+            return aquaCellList().filter((x) => {
+                if (String(x.site) !== String(activeSiteId)) return false;
+                if (x.cell.c === 'products' && x.cell.f === 'stock' && bottleTracked.has(x.rec.code)) return false;
+                if (x.cell.c === 'products' && x.cell.f === 'bottleStockBySite' && !bottleTracked.has(x.rec.code)) return false;
+                return !q || x.label.toLowerCase().includes(q);
+            }).sort((a, b) => a.label.localeCompare(b.label));
+        }
+        function aquaStockTakeParse(raw) {
+            if (raw === '' || raw == null) return null;
+            const n = parseFloat(String(raw).replace(/,/g, ''));
+            return Number.isFinite(n) && n >= 0 ? Math.round(n * 1000) / 1000 : NaN;
+        }
+        function renderAquaStockTake() {
+            const tbody = document.querySelector('#aqua-st-table tbody');
+            if (!tbody) return;
+            const site = currentSite();
+            const siteEl = document.getElementById('aqua-st-site');
+            if (siteEl) siteEl.textContent = site.name;
+            const st = aquaStockTakeState();
+            if (activeSiteId === 'both') {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Pick one site first (the site switcher at the top) — a stock take counts one site at a time.</td></tr>';
+            } else {
+                const rows = aquaStockTakeRows();
+                const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+                tbody.innerHTML = rows.length === 0 ? '<tr><td colspan="5" class="empty-state">Nothing to count at this site.</td></tr>' : rows.map((x) => {
+                    const key = aquaCellKey(x.cell);
+                    const c = aquaStockTakeParse(st.counts[key]);
+                    const diff = c === null ? '<span style="color:#95a5a6;">—</span>' : Number.isNaN(c) ? '<span style="color:#c0392b;">Not a number</span>'
+                        : (c - x.value === 0 ? '<span style="color:#27ae60;">✓ matches</span>' : `<strong style="color:${c < x.value ? '#c0392b' : '#2980b9'};">${c > x.value ? '+' : ''}${r3(c - x.value)}</strong>`);
+                    // the cell key is read back from data-cell (never pasted into the handler's JavaScript)
+                    return `<tr data-cell="${escapeHtml(key)}"><td><strong>${escapeHtml(x.label)}</strong></td><td>${r3(x.value)}</td>`
+                        + `<td><input type="text" inputmode="decimal" style="width:92px;" value="${escapeHtml(st.counts[key] || '')}" onchange="aquaStockTakeState().counts[this.closest('tr').dataset.cell] = this.value; renderAquaStockTake()"></td>`
+                        + `<td>${diff}</td><td><button type="button" class="settings-small-btn" style="padding:4px 10px; font-size:12px;" onclick="aquaStockTakeApply(this.closest('tr').dataset.cell)">💾 Update</button></td></tr>`;
+                }).join('');
+            }
+            const counted = Object.keys(st.counts).filter((k) => aquaStockTakeParse(st.counts[k]) !== null);
+            const sum = document.getElementById('aqua-st-summary');
+            if (sum) sum.innerHTML = (counted.length ? `<p style="margin:0;"><strong>${counted.length}</strong> counted</p>` : '<p class="settings-hint" style="margin:0;">Type what you actually counted next to each line. Lines left blank are not touched.</p>')
+                + `<p class="settings-hint" style="margin:4px 0 0;">Missing stock worth more than <strong>KES ${stockTakeApprovalLimit().toLocaleString('en-US')}</strong> (at cost) needs the management password. <a href="#" onclick="stockTakeSetApprovalLimit(prompt('Ask for the management password above what missing value (KES)? 0 = always', stockTakeApprovalLimit())); return false;">Change</a></p>`;
+            try { renderStockTakeHistory(); } catch (e) { /* history is an extra */ }
+        }
+        // Applies the typed counts (all of them, or just `onlyKey`): the figure on this device is set at once, and each change is
+        // recorded as ONE absolute count movement with its own id (stock take id, device, the figure it replaced and the version
+        // seen) — the server applies it once and settles it against anything that happened elsewhere (see applyCellLedger).
+        function aquaStockTakeApply(onlyKey, approved) {
+            if (activeSiteId === 'both') { showToast('Pick one site first — a stock take counts one site at a time.', true); return false; }
+            const st = aquaStockTakeState();
+            const rows = aquaStockTakeRows();
+            const todo = [];
+            for (const x of rows) {
+                const key = aquaCellKey(x.cell);
+                if (onlyKey && key !== onlyKey) continue;
+                const c = aquaStockTakeParse(st.counts[key]);
+                if (c === null) continue;
+                if (Number.isNaN(c)) { showToast(`"${x.label}": the count is not a number.`, true); return false; }
+                todo.push({ x, key, counted: c });
+            }
+            if (todo.length === 0) { showToast('Type at least one count first.', true); return false; }
+            const changes = todo.filter((t) => t.counted !== t.x.value);
+            // #9: writing off stock worth more than the approval limit (at cost) needs the management password
+            const unitCost = (x) => x.cell.c === 'tanks' ? (Number(typeof waterCostPerLiter !== 'undefined' ? waterCostPerLiter : 0) || 0)
+                : x.cell.c === 'rawMaterials' ? (Number(x.rec.unitCost) || 0)
+                : x.cell.f === 'bottleStockBySite' ? ((Number(x.rec.wholesalePrice) || 0) / (Number(x.rec.bottlesPerBale) || 1)) : (Number(x.rec.wholesalePrice) || 0);
+            const missingKes = changes.reduce((sum, c) => sum + Math.max(0, c.x.value - c.counted) * unitCost(c.x), 0);
+            if (missingKes > stockTakeApprovalLimit() && !approved) {
+                requireManagementApproval(`This stock take writes off KES ${Math.round(missingKes).toLocaleString('en-US')} of missing stock (at cost). Enter the management password to approve it.`, () => aquaStockTakeApply(onlyKey, true));
+                return false;
+            }
+            if (!onlyKey && !approved && changes.length && !confirm(`Update ${changes.length} figure${changes.length === 1 ? '' : 's'} at ${currentSite().name} to what you counted?`)) return false;
+            const stocktakeId = genSaleId();
+            let device = '';
+            try { device = localStorage.getItem('pos_device_id') || ''; } catch (e) { /* optional */ }
+            const meta = { counted: todo.length, changed: changes.length };
+            changes.forEach(({ x, counted }) => {
+                const before = x.value;
+                if (x.cell.c === 'products' && x.cell.f === 'stock') setStockAt(x.rec, x.cell.s, counted);
+                else if (x.cell.c === 'products') setBottleStockAt(x.rec, x.cell.s, counted);
+                else if (x.cell.c === 'tanks') x.rec.currentVolumeLiters = counted;
+                else x.rec.stockQty = counted;
+                const cid = x.cell.s != null ? `${x.cell.f}|${x.cell.s}` : x.cell.f;
+                const m = { id: genSaleId(), lg: 1, kind: 'count', timestamp: new Date().toISOString(), cell: x.cell, name: x.label, site: x.site,
+                    counted, before, delta: Math.round((counted - before) * 1000) / 1000, type: counted >= before ? 'added' : 'removed',
+                    reason: 'Stock take', stocktakeId, st: meta, by: activeServerName() };
+                if (device) m.device = device;
+                if (x.rec._sv && typeof x.rec._sv[cid] === 'number') m.baseSv = x.rec._sv[cid];
+                stockMovementLog.push(m);
+            });
+            todo.forEach(({ key }) => { delete st.counts[key]; });
+            syncQtyView(activeSiteId);               // a bale's stock follows its recounted bottles
+            queuePush();
+            renderAquaStockTake();
+            if (typeof renderInventoryTabScoped === 'function') { try { renderInventoryTabScoped(); } catch (e) { /* not on screen */ } }
+            showToast(changes.length ? `Stock take applied: ${changes.length} figure${changes.length === 1 ? '' : 's'} updated.` : 'All counts match the system — nothing to change.');
+            return true;
+        }
+
         function guardedSwitchTab(evt, tabId) {
             if (isTabLocked(tabId)) {
                 pendingTabSwitch = { evt: evt.currentTarget, tabId };
@@ -14172,6 +15077,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             if (tabId === 'settings-tab') renderSettingsTab();
             if (tabId === 'inventory-tab') renderInventoryTabScoped();
             if (tabId === 'restocking-tab') renderRestockingTab();
+            if (tabId === 'stock-take-tab') renderAquaStockTake();
             if (tabId === 'production-tab') renderProductionTab();
             if (tabId === 'bookings-tab') renderBookingsTable();
             if (tabId === 'daily-sales-tab') renderDailySalesScoped();
@@ -21690,6 +22596,8 @@ function cartTotalBelowMinimumMessage(newTotal) {
         // exact same purpose-dispatch logic instead of duplicating it.
         function resolveAdminPwModalSuccess() {
             const purpose = adminPwModalPurpose;
+            // requireManagementApproval (shared): run the action that asked for approval
+            if (purpose === 'generic-callback') { const cb = window.__adminPwCallback; window.__adminPwCallback = null; if (typeof cb === 'function') cb(); return; }
             closeAdminPwModal();
             if (purpose === 'restore-backup' && pendingRestoreDate) {
                 performRestoreBackup(pendingRestoreDate);
@@ -21885,6 +22793,8 @@ function cartTotalBelowMinimumMessage(newTotal) {
             const source = pendingVoidSaleSource;
             const sale = findSaleForVoid(saleId, source);
             if (!sale) { showToast('Could not find that sale.', true); return; }
+            // Voiding twice (a double tap, or a till that has not seen the first void yet) must not give the stock back twice.
+            if (sale.voided) { showToast('This sale is already voided.', true); return; }
 
             sale.voided = true;
             sale.voidReason = pendingVoidReason;
@@ -24323,10 +25233,13 @@ function cartTotalBelowMinimumMessage(newTotal) {
         function renderPosControlReport(kind) {
             const out = document.getElementById('daily-sales-xz-output');
             if (!out) return;
+            const fresh = reportFreshnessHtml();          // before building: the report logs its own event
             const rep = kind === 'zreport' ? reportBuildZReport() : reportBuildXReport();
             window.__posControlReportKind = kind;
-            out.innerHTML = `<h4 style="margin-top:0;">${escapeHtml(rep.title)}</h4>${rep.html}`;
+            out.innerHTML = `<h4 style="margin-top:0;">${escapeHtml(rep.title)}</h4>${fresh}${rep.html}`;
             document.querySelectorAll('#daily-sales-xz-buttons .item-filter-btn').forEach(b => b.classList.toggle('active', b.dataset.reportKind === kind));
+            reportRefreshAfterSync(() => { if (window.__posControlReportKind === kind) renderPosControlReport(kind); });
+            { const b = todayBounds(); serverDayCheckInto(out, b.from, b.to, activeSiteId !== 'both' ? activeSiteId : ''); }
         }
 
         function printPosControlReport() {
@@ -24339,7 +25252,13 @@ function cartTotalBelowMinimumMessage(newTotal) {
         // Gated the same way voiding a sale is — the management password or
         // a Manager PIN — since finalizing closes the trading day and should
         // never be a single accidental tap.
-        function requestFinalizeZReport() {
+        // Finalizing waits for a fresh sync first (zReportPreflight): a Z Report is final and must include every till's sales.
+        async function requestFinalizeZReport() {
+            if (typeof zReportPreflight === 'function' && !(await zReportPreflight())) return;
+            return requestFinalizeZReportNow();
+        }
+
+        function requestFinalizeZReportNow() {
             const today = todayLocalDateStr();
             if (zReports.some(z => z.businessDate === today)) {
                 showToast('Today’s Z Report is already finalized.', true);
@@ -24397,7 +25316,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
                 events.push({
                     at: new Date(e.timestamp).getTime(), user: e.by || 'Unknown', module: 'Inventory',
                     action: e.type === 'added' ? 'Stock added' : 'Stock removed',
-                    detail: `${e.name || e.code}: ${e.delta > 0 ? '+' : ''}${e.delta} — ${e.reason || ''}`,
+                    detail: stockMoveAuditText(e),
                     ref: e.code || '',
                 });
             });
@@ -24423,6 +25342,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
                     });
                 });
             });
+            if (typeof syncJournalAuditEvents === 'function') syncJournalAuditEvents().forEach((e) => events.push(e));   // retries, failed sends, conflicts — never business events
             events.sort((a, b) => b.at - a.at);
             return events;
         }
@@ -26079,6 +26999,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
 
             const qty = parseInt(document.getElementById('return-qty-input').value, 10);
             if (!qty || qty <= 0) { errEl.textContent = 'Enter a valid quantity.'; return; }
+            if (typeof returnQtyGuard === 'function' && !returnQtyGuard(selectedReturnItem, qty, errEl)) return;   // never more than the receipt sold
 
             const condition = document.getElementById('return-condition-select').value;
             const reasonSelect = document.getElementById('return-reason-select').value;
@@ -26318,6 +27239,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
 
             const qty = parseInt(document.getElementById('return-qty-input').value, 10);
             if (!qty || qty <= 0) { errEl.textContent = 'Enter a valid quantity for the returned item.'; return; }
+            if (typeof returnQtyGuard === 'function' && !returnQtyGuard(selectedReturnItem, qty, errEl)) return;   // never more than the receipt sold
 
             if (exchangeReplacementItems.length === 0) { errEl.textContent = 'Add at least one replacement item.'; return; }
 
@@ -26504,6 +27426,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
             if (!phone) { errEl.textContent = 'Add the customer’s phone number above so they can be texted.'; return; }
 
             const qty = parseInt(document.getElementById('return-qty-input').value, 10) || 1;
+            if (typeof returnQtyGuard === 'function' && !returnQtyGuard(selectedReturnItem, qty, errEl)) return;   // never more than the receipt sold
             const condition = document.getElementById('return-condition-select').value;
             const reasonSelect = document.getElementById('return-reason-select').value;
             const reason = reasonSelect === 'Other'
@@ -28398,7 +29321,7 @@ function cartTotalBelowMinimumMessage(newTotal) {
 
 <!-- @shared-block:guide-data:begin -->
 <!-- GUIDE DATA (water) — generated by tools/build-guides.mjs; edit that file, not this one. -->
-<script>window.__GUIDE_DATA = {"key":"water","title":"Aqua POS — User Guide","tagline":"Water refill stations, bottled-water producers and distributors — refills, sealed bottles, bales, bulk tanks, production and deliveries.","module":"Aqua POS","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Aqua POS works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"setup","icon":"🧭","title":"Set up your business (first 20 minutes)","intro":"Do these once, in this order, as the Admin:","steps":["**⚙️ Settings ▸ General** — business name, logo, phone and address. They print on every receipt.","**Settings ▸ 🧾 Receipt Settings** — header and footer lines, paper width (58 mm or 80 mm), how many copies, whether to print the reference number and its barcode.","**Settings ▸ 🧾 Tax & Alerts** — VAT rates, and the **low-stock level** (items at or below it are flagged and offered as buttons when you restock).","**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Paystack, or Safaricom Daraja with your Till/Paybill) so you can send payment prompts to customers.","**Settings ▸ 🖨️ Hardware** — connect your receipt printer (see the **Printers & hardware** chapter).","Add your products and materials (see **📋 Inventory**), then **Settings ▸ 👥 Staff Accounts** to invite your staff.","**Settings ▸ 🗄️ Backups** — check that backups are on. **Settings ▸ 📥 Data Import** brings in data from another system."],"tips":["Settings ▸ 🔒 Security & Access lets the Admin lock tabs behind the management password.","Settings ▸ 🧾 eTIMS (KRA) is only for businesses registered for KRA eTIMS — leave it off otherwise."]},{"id":"sale","icon":"🧾","title":"Making a sale","steps":["Open **🧾 Sales Counter**. Use the filters **🧺 All / 🔄 Refill / 🍼 Sealed Bottles / 🚰 Dispensers & Accessories / 📦 Bales (Cases)** or search.","Tap a **refill size** to add it, or use **Custom Refill — Litres Needed** for any volume. Tap sealed bottles, dispensers or bales to add them.","Choose **🚶 Walk-In** or **🚚 Delivery** (address, zone, fee, driver). For delivery pick **💰 Paid Now** or **🧾 Pay on Delivery**.","Choose the payment method (see **Taking payment**) and **Complete**. Water is drawn from the site’s **bulk tank**; the app warns you if the tank is short."]},{"id":"sites","icon":"🏭","title":"Sites: Shop and Production","steps":["Aqua POS can run more than one **site** — for example the **Shop** and the **Production** plant. Pick the site you are working at from the switcher at the top.","Each site has **its own bulk tanks, refill sizes/prices and stock** — water at one site is never drawn down by a sale at another. **Both sites** is a way of *looking* at the reports; sales made while it is selected belong to the Shop."]},{"id":"sizes","icon":"💧","title":"Refill sizes and prices","steps":["Open **⚙️ Settings ▸ General**. Set the **Price per Litre (KES)**; every size on **Auto (× 1L rate)** follows it (a 20 L refill is 20 × the litre price).","Untick **Auto** on a size to type its own price. Tap **+ Add a Size Not Listed** to add a new size (a label, its volume in **millilitres** — 2.5 L is 2500 — and a price). It appears in the list and on the counter at once; a duplicate size is refused.","Set the VAT category per size, and the 🧩 **Recipe** (materials used per refill) so materials are tracked."]},{"id":"tank","icon":"🚰","title":"Bulk tanks","steps":["Open **🚰 Bulk Tank**. **+ Add Tank** for each tank at the site. When a water delivery arrives choose the tank, type the **litres added** (and cost and supplier if you like) ▸ **💾 Record Tank Refill**.","Every refill sale reduces the tank; **📜 Tank Refill History** lists all additions and corrections. A tank must be empty before you remove it, and each site keeps at least one."]},{"id":"prod","icon":"🏭","title":"Production","steps":["Open **🏭 Production**. Pick the item and how many you produced ▸ **💾 Record Production**; its saved **recipe** (set in Inventory ▸ 🏭 Recipe) deducts the materials and adds the finished stock.","For multi-stage products use **🧙 Multi-Step Production Wizard**. **Factory Floor Stock**, **Production History** and **Dispatch History** follow what was made and sent out."]},{"id":"bulk","icon":"📅","title":"Bulk orders","steps":["Open **📅 Bulk Orders**. Type the client, business, phone, **delivery date**, address, **deposit paid** and notes, add the products and quantities and **💾 Save Booking**.","On the delivery day fulfil the order; the deposit is counted against the total."]},{"id":"stockw","icon":"📥","title":"Inventory and restocking","steps":["**📋 Inventory** holds bottled products, bales, accessories, materials and refill prices. Edit stock and prices by tapping an item.","**📥 Restocking** tops up a material or product (decimals are fine, e.g. 0.5 bale, 10.5 litres) — record the supplier and cost; **⬆️ Import Excel/CSV** loads a whole list; history shows below."]},{"id":"payments","icon":"💳","title":"Taking payment","steps":["**Cash** — type the amount the customer gave; the change shows.","**M-Pesa** — enter the customer’s number and tap **Send M-Pesa Prompt**, or type the M-Pesa code if they paid to your till.","**Split** — part cash, part M-Pesa; the two amounts must add up to the total.","**Bill (Pay Later)** — the customer’s name and phone; the sale waits in **🧾 Bills** until you **Settle** it.","**Delivery orders:** choose **💰 Paid Now** or **🧾 Pay on Delivery**; the driver collects and you settle from Bills or Deliveries."],"sections":[{"title":"Hold a sale","steps":["Tap **⏸️ Hold sale** to park the customer’s cart while you serve someone else (one held sale at a time); bring it back when they are ready."]}]},{"id":"receipts","icon":"🧾","title":"Receipts: print, share, reprint","steps":["When a sale completes a **receipt preview** opens. Tap **🖨️ Print** — it prints **once**, and the preview closes so it cannot be printed twice by accident.","Every receipt of the day carries a **Customer number** (Customer 1, 2, 3…) just above the reference number. It starts again at 1 each day, so the last receipt of the day tells you how many customers you served.","To print the same receipt again later, open it from **Daily Sales** and tap Print — the app asks \"already printed at 14:32 — print another copy?\" so copies are always deliberate.","**📤 Share** sends the receipt as a **PDF** (WhatsApp shows it as a document). On a phone it opens your apps. On computers and some browsers that cannot hand a file to another app, the PDF is **saved to Downloads** instead — attach it in WhatsApp or email yourself.","**⬇️ Download** always saves the PDF."],"tips":["If the print fails (printer off, paper out) the preview stays open so you can try again — the sale is already saved.","Settings ▸ 🧾 Receipt Settings controls what appears on the receipt."]},{"id":"bills","icon":"📒","title":"Bills, Pay on Delivery and Debts","steps":["**Pay Later / Pay on Delivery** sales wait in **🧾 Bills**. Tap **Settle** when the money is collected (full or part).","**📒 Debts** records other money customers owe.","A settled bill stays visible under **Show closed bills**."],"tips":["Pay-Later sales are not counted as sales until money is paid on them."]},{"id":"stock","icon":"📥","title":"Restocking and stock control","steps":["**📥 Restocking:** choose the material or product (or type a new name), type the quantity (decimals allowed) and the cost ▸ **💾 Record Restock**. Use **⬆️ Import Excel/CSV** for a list.","**📋 Inventory:** tap any item to correct its quantity or price. Materials used by refills and production are deducted automatically from their recipes.","**📦 Stock Report** shows movement for the period; **↩️ Returned Goods** puts returned bottles/bales back or records faulty ones."],"tips":["Check the **🚰 Bulk Tank** level regularly — refill sales draw from it."]},{"id":"reports","icon":"📊","title":"Reports and Daily Sales","steps":["**📊 Daily Sales** lists every sale for Today, a Week, a Month or a Custom range, by payment method, for the **site you are in**. Print the report from there; a wrong sale can be voided (stock and tank litres come back).","On the same tab, **📋 X Report** gives an interim reading of today’s trading (transactions, sales, tax breakdown) that can be generated any number of times without closing anything; **🔒 Z Report** shows the same totals and lets the Admin **finalize** the trading day once, behind the management password.","**🔍 Audit** is a searchable, read-only timeline of sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes — who did what, and when.","**📦 Stock Report** — movement of products and materials.","**💰 Profits & Expenses** — add expenses (fuel, wages, electricity…) and see profit.","**📈 Demand Trends** — which refill sizes and products sell most, and when.","**📊 Dashboard** — today’s figures the moment you open the app."]},{"id":"people","icon":"👥","title":"Staff, access and security","steps":["Open **⚙️ Settings ▸ 👥 Staff Accounts** (or the **👥 Staff** tab) and add a staff member’s name. Tick the tabs they may use (the Sales Counter is always allowed). Tap **Generate invite link**.","Send the link to them. They open it, choose a **PIN** (4+ characters) and they are in — no shop password needed. The link then turns into their personal login link: they should bookmark it.","A staff member is listed once: a double tap on \"Create my account\" cannot make two copies.","**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.","**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.","**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.","**👤 My Customers** keeps your customers and their purchases; **🎟️ Loyalty Tokens** (Settings) rewards repeat customers where enabled."],"tips":["To remove a staff member, remove them under Staff Accounts — their old sales stay in the records.","If someone forgets the Admin password, use **Forgot it? Email me a reset link** on the login screen (needs the recovery email set up)."]},{"id":"hardware","icon":"🖨️","title":"Printers & hardware","intro":"Open **⚙️ Settings ▸ 🖨️ Hardware** (or tap the small printer icon at the top). There are three ways to print:","sections":[{"title":"1. System print dialog (works with any installed printer)","steps":["Set **Printer mode** to **System print dialog**.","Print a receipt: the device’s print window opens — choose your receipt printer once. The receipt prints on a slip only as long as its lines (paper is not wasted).","Browsers never allow silent printing, so this mode always shows that window. Use Bluetooth or USB to avoid it."]},{"title":"2. USB thermal printer (computer or Android)","steps":["Plug the printer in and switch it on.","Set **Printer mode** to **USB**, tap **Connect USB Printer**, choose your printer and allow access.","From then on the app **reconnects by itself** whenever the printer is switched off and on, unplugged and replugged, or the app is reopened — it keeps checking every few seconds and prints the moment the printer is back. You do not go back to Settings."]},{"title":"3. Bluetooth thermal printer (phones and tablets)","steps":["Switch the printer on and pair it in the phone’s Bluetooth settings if it asks.","Set **Printer mode** to **Bluetooth**, tap **Connect Bluetooth Printer** and pick it from the list (once).","After a power cut or the printer going out of range, the app reopens the same printer by itself (no chooser). Some browsers cannot reopen a remembered Bluetooth printer after the page reloads — the screen then says **Tap Connect once**."]},{"title":"Paper, copies and the cash drawer","steps":["**Receipt Settings** sets the paper width (58 or 80 mm) and the number of copies.","The **cash drawer** plugs into the **printer** (RJ11/RJ12 port), not the computer; turn on \"open drawer on print\" in Hardware settings.","To check paper width and the drawer, print a small sale receipt, or reprint one from Daily Sales."]},{"title":"Barcode scanners","steps":["A USB or Bluetooth **scanner** works like a keyboard: click the search box on the Sales Counter and scan.","The 📷 button next to search scans with the phone camera."]}],"tips":["Printing waits up to 4 seconds for a printer that has just been switched on before saying it is not connected.","If a print fails half-way the receipt is **not** sent again automatically (so you never get a doubled half-receipt) — reprint from Daily Sales."]},{"id":"offline","icon":"📶","title":"Offline, sync and backups","steps":["**Offline:** the app keeps working with no internet; sales, tank levels and receipts are saved on the device.","**Sync:** when the internet returns the dot turns green and every device catches up.","**Backups:** ⚙️ Settings ▸ 🗄️ Backups. Your data is also stored on the server, so a lost phone does not lose your business.","**Sites:** switching between the Shop and Production only changes what you look at and record; both are always saved."],"tips":["Use **Settings ▸ Install App ▸ 🔄 Re-download for Offline Use** after an update if the app ever fails to open offline."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**Printer does not print:** check paper and power, then Settings ▸ Hardware ▸ status. Switch it off and on — the app finds it again by itself. As a fallback use the system print dialog.","**\"Only 0 available\" when selling:** the product has no stock. Record it in Restocking, or correct it on the Inventory tab.","**A sale is missing from Daily Sales:** Pay-Later bills only count when paid; check Bills. In Aqua POS check the site selected at the top.","**The login window appears again:** just log in; it will not reappear over a running session.","**Forgot the password:** tap **Forgot the password?** on the login screen and use **Email me a reset link**.","**Something looks out of date on a device:** wait for the green dot, then reload the page once.","**Still stuck:** the Owner sees errors from every shop in the Owner Console ▸ Errors tab — tell your provider what you were doing and roughly when."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Aqua POS, in the order they appear:","tabs":[["Sales Counter","New sale: refills by size or custom litres, sealed bottles, dispensers, bales; walk-in or delivery."],["Dashboard","Today at a glance: sales, money in by payment method, low stock and what needs attention."],["Inventory","Products (bottled water, bales, accessories), materials and refill sizes with prices and recipes."],["Restocking","Top up a material or product (decimals allowed) and see restock history."],["Bulk Tank","Your bulk water tanks: add water, and see each site’s level drop as refills are sold."],["Production","Record what you produced; materials are deducted from its recipe; factory floor stock and dispatches."],["Bulk Orders","Book large future orders with a deposit and delivery date."],["Returned Goods","Customer returns and exchanges: refund, swap, faulty items."],["Deliveries","Delivery orders assigned to drivers: picked up, on route, delivered."],["Daily Sales","Every sale for a day / week / month, filtered by payment method, for the site you are in."],["Audit","A searchable, read-only timeline of who did what and when — sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes."],["Stock Report","Stock movement of products and materials."],["Profits & Expenses","Record expenses and see gross and net profit for any period."],["Demand Trends","Which sizes and products sell most, and when."],["Bills","Pay-Later sales still owing: settle in full or in part, see closed bills."],["Debts","Money customers owe you outside of bills; record and settle."],["My Customers","Your customer list with purchase history and loyalty."],["Staff","Add staff, choose which tabs each can use, send invite links, see who is serving."],["Attendance","Staff clock in / out and hours worked."],["Settings","Business details, receipts, tax, hardware, security, backups and more."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
+<script>window.__GUIDE_DATA = {"key":"water","title":"Aqua POS — User Guide","tagline":"Water refill stations, bottled-water producers and distributors — refills, sealed bottles, bales, bulk tanks, production and deliveries.","module":"Aqua POS","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Aqua POS works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"setup","icon":"🧭","title":"Set up your business (first 20 minutes)","intro":"Do these once, in this order, as the Admin:","steps":["**⚙️ Settings ▸ General** — business name, logo, phone and address. They print on every receipt.","**Settings ▸ 🧾 Receipt Settings** — header and footer lines, paper width (58 mm or 80 mm), how many copies, whether to print the reference number and its barcode.","**Settings ▸ 🧾 Tax & Alerts** — VAT rates, and the **low-stock level** (items at or below it are flagged and offered as buttons when you restock).","**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Paystack, or Safaricom Daraja with your Till/Paybill) so you can send payment prompts to customers.","**Settings ▸ 🖨️ Hardware** — connect your receipt printer (see the **Printers & hardware** chapter).","Add your products and materials (see **📋 Inventory**), then **Settings ▸ 👥 Staff Accounts** to invite your staff.","**Settings ▸ 🗄️ Backups** — check that backups are on. **Settings ▸ 📥 Data Import** brings in data from another system."],"tips":["Settings ▸ 🔒 Security & Access lets the Admin lock tabs behind the management password.","Settings ▸ 🧾 eTIMS (KRA) is only for businesses registered for KRA eTIMS — leave it off otherwise."]},{"id":"sale","icon":"🧾","title":"Making a sale","steps":["Open **🧾 Sales Counter**. Use the filters **🧺 All / 🔄 Refill / 🍼 Sealed Bottles / 🚰 Dispensers & Accessories / 📦 Bales (Cases)** or search.","Tap a **refill size** to add it, or use **Custom Refill — Litres Needed** for any volume. Tap sealed bottles, dispensers or bales to add them.","Choose **🚶 Walk-In** or **🚚 Delivery** (address, zone, fee, driver). For delivery pick **💰 Paid Now** or **🧾 Pay on Delivery**.","Choose the payment method (see **Taking payment**) and **Complete**. Water is drawn from the site’s **bulk tank**; the app warns you if the tank is short."]},{"id":"sites","icon":"🏭","title":"Sites: Shop and Production","steps":["Aqua POS can run more than one **site** — for example the **Shop** and the **Production** plant. Pick the site you are working at from the switcher at the top.","Each site has **its own bulk tanks, refill sizes/prices and stock** — water at one site is never drawn down by a sale at another. **Both sites** is a way of *looking* at the reports; sales made while it is selected belong to the Shop."]},{"id":"sizes","icon":"💧","title":"Refill sizes and prices","steps":["Open **⚙️ Settings ▸ General**. Set the **Price per Litre (KES)**; every size on **Auto (× 1L rate)** follows it (a 20 L refill is 20 × the litre price).","Untick **Auto** on a size to type its own price. Tap **+ Add a Size Not Listed** to add a new size (a label, its volume in **millilitres** — 2.5 L is 2500 — and a price). It appears in the list and on the counter at once; a duplicate size is refused.","Set the VAT category per size, and the 🧩 **Recipe** (materials used per refill) so materials are tracked."]},{"id":"tank","icon":"🚰","title":"Bulk tanks","steps":["Open **🚰 Bulk Tank**. **+ Add Tank** for each tank at the site. When a water delivery arrives choose the tank, type the **litres added** (and cost and supplier if you like) ▸ **💾 Record Tank Refill**.","Every refill sale reduces the tank; **📜 Tank Refill History** lists all additions and corrections. A tank must be empty before you remove it, and each site keeps at least one."]},{"id":"prod","icon":"🏭","title":"Production","steps":["Open **🏭 Production**. Pick the item and how many you produced ▸ **💾 Record Production**; its saved **recipe** (set in Inventory ▸ 🏭 Recipe) deducts the materials and adds the finished stock.","For multi-stage products use **🧙 Multi-Step Production Wizard**. **Factory Floor Stock**, **Production History** and **Dispatch History** follow what was made and sent out."]},{"id":"bulk","icon":"📅","title":"Bulk orders","steps":["Open **📅 Bulk Orders**. Type the client, business, phone, **delivery date**, address, **deposit paid** and notes, add the products and quantities and **💾 Save Booking**.","On the delivery day fulfil the order; the deposit is counted against the total."]},{"id":"stocktakew","icon":"📋","title":"Stock Take (per site)","steps":["Pick the site you are counting at the top (a stock take counts **one site at a time**), then open **📋 Stock Take**. It lists that site’s products (a bottle-tracked bale is counted in **bottles**), its **tank litres** and its **materials**.","Type what you actually counted next to each line — lines left blank are not touched. Tap **💾 Update** on one line, or **✔ Update stock to my counts** for all of them.","Each change is recorded once as a **count** (\"there are 12\"), not as a +/−, so refreshing, going offline or opening another device can never apply it again. **Recent stock takes** shows Was / Counted / Now for every device, with ✓ applied or ⏳ waiting to sync."]},{"id":"stockw","icon":"📥","title":"Inventory and restocking","steps":["**📋 Inventory** holds bottled products, bales, accessories, materials and refill prices. Edit stock and prices by tapping an item.","**📥 Restocking** tops up a material or product (decimals are fine, e.g. 0.5 bale, 10.5 litres) — record the supplier and cost; **⬆️ Import Excel/CSV** loads a whole list; history shows below."]},{"id":"payments","icon":"💳","title":"Taking payment","steps":["**Cash** — type the amount the customer gave; the change shows.","**M-Pesa** — enter the customer’s number and tap **Send M-Pesa Prompt**, or type the M-Pesa code if they paid to your till.","**Split** — part cash, part M-Pesa; the two amounts must add up to the total.","**Bill (Pay Later)** — the customer’s name and phone; the sale waits in **🧾 Bills** until you **Settle** it.","**Delivery orders:** choose **💰 Paid Now** or **🧾 Pay on Delivery**; the driver collects and you settle from Bills or Deliveries."],"sections":[{"title":"Hold a sale","steps":["Tap **⏸️ Hold sale** to park the customer’s cart while you serve someone else (one held sale at a time); bring it back when they are ready."]}]},{"id":"receipts","icon":"🧾","title":"Receipts: print, share, reprint","steps":["When a sale completes a **receipt preview** opens. Tap **🖨️ Print** — it prints **once**, and the preview closes so it cannot be printed twice by accident.","Every receipt of the day carries a **Customer number** (Customer 1, 2, 3…) just above the reference number. It starts again at 1 each day, so the last receipt of the day tells you how many customers you served.","To print the same receipt again later, open it from **Daily Sales** and tap Print — the app asks \"already printed at 14:32 — print another copy?\" so copies are always deliberate.","**📤 Share** sends the receipt as a **PDF** (WhatsApp shows it as a document). On a phone it opens your apps. On computers and some browsers that cannot hand a file to another app, the PDF is **saved to Downloads** instead — attach it in WhatsApp or email yourself.","**⬇️ Download** always saves the PDF."],"tips":["If the print fails (printer off, paper out) the preview stays open so you can try again — the sale is already saved.","Settings ▸ 🧾 Receipt Settings controls what appears on the receipt."]},{"id":"bills","icon":"📒","title":"Bills, Pay on Delivery and Debts","steps":["**Pay Later / Pay on Delivery** sales wait in **🧾 Bills**. Tap **Settle** when the money is collected (full or part).","**📒 Debts** records other money customers owe.","A settled bill stays visible under **Show closed bills**."],"tips":["Pay-Later sales are not counted as sales until money is paid on them."]},{"id":"stock","icon":"📥","title":"Restocking and stock control","steps":["**📥 Restocking:** choose the material or product (or type a new name), type the quantity (decimals allowed) and the cost ▸ **💾 Record Restock**. Use **⬆️ Import Excel/CSV** for a list.","**📋 Inventory:** tap any item to correct its quantity or price. Materials used by refills and production are deducted automatically from their recipes.","**📦 Stock Report** shows movement for the period; **↩️ Returned Goods** puts returned bottles/bales back or records faulty ones."],"tips":["Check the **🚰 Bulk Tank** level regularly — refill sales draw from it."]},{"id":"reports","icon":"📊","title":"Reports and Daily Sales","steps":["**📊 Daily Sales** lists every sale for Today, a Week, a Month or a Custom range, by payment method, for the **site you are in**. Print the report from there; a wrong sale can be voided (stock and tank litres come back).","On the same tab, **📋 X Report** gives an interim reading of today’s trading (transactions, sales, tax breakdown) that can be generated any number of times without closing anything; **🔒 Z Report** shows the same totals and lets the Admin **finalize** the trading day once, behind the management password.","**🔍 Audit** is a searchable, read-only timeline of sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes — who did what, and when.","**📦 Stock Report** — movement of products and materials.","**💰 Profits & Expenses** — add expenses (fuel, wages, electricity…) and see profit.","**📈 Demand Trends** — which refill sizes and products sell most, and when.","**📊 Dashboard** — today’s figures the moment you open the app."]},{"id":"people","icon":"👥","title":"Staff, access and security","steps":["Open **⚙️ Settings ▸ 👥 Staff Accounts** (or the **👥 Staff** tab) and add a staff member’s name. Tick the tabs they may use (the Sales Counter is always allowed). Tap **Generate invite link**.","Send the link to them. They open it, choose a **PIN** (4+ characters) and they are in — no shop password needed. The link then turns into their personal login link: they should bookmark it.","A staff member is listed once: a double tap on \"Create my account\" cannot make two copies.","**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.","**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.","**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.","**Settings ▸ 🔐 Devices & security** lists every device that syncs your shop (its till number, app release and last sync). Tap **🔒 Only paired devices may sync** so that knowing your shop link is no longer enough to see or change your data. Your devices pair themselves; a new one needs the shop password once, or a **6-digit pairing code** made here (so staff never need the password). Revoke a lost phone from the same list. Signing in and selling always work offline either way.","**👤 My Customers** keeps your customers and their purchases; **🎟️ Loyalty Tokens** (Settings) rewards repeat customers where enabled."],"tips":["To remove a staff member, remove them under Staff Accounts — their old sales stay in the records.","If someone forgets the Admin password, use **Forgot it? Email me a reset link** on the login screen (needs the recovery email set up)."]},{"id":"hardware","icon":"🖨️","title":"Printers & hardware","intro":"Open **⚙️ Settings ▸ 🖨️ Hardware** (or tap the small printer icon at the top). There are three ways to print:","sections":[{"title":"1. System print dialog (works with any installed printer)","steps":["Set **Printer mode** to **System print dialog**.","Print a receipt: the device’s print window opens — choose your receipt printer once. The receipt prints on a slip only as long as its lines (paper is not wasted).","Browsers never allow silent printing, so this mode always shows that window. Use Bluetooth or USB to avoid it."]},{"title":"2. USB thermal printer (computer or Android)","steps":["Plug the printer in and switch it on.","Set **Printer mode** to **USB**, tap **Connect USB Printer**, choose your printer and allow access.","From then on the app **reconnects by itself** whenever the printer is switched off and on, unplugged and replugged, or the app is reopened — it keeps checking every few seconds and prints the moment the printer is back. You do not go back to Settings."]},{"title":"3. Bluetooth thermal printer (phones and tablets)","steps":["Switch the printer on and pair it in the phone’s Bluetooth settings if it asks.","Set **Printer mode** to **Bluetooth**, tap **Connect Bluetooth Printer** and pick it from the list (once).","After a power cut or the printer going out of range, the app reopens the same printer by itself (no chooser). Some browsers cannot reopen a remembered Bluetooth printer after the page reloads — the screen then says **Tap Connect once**."]},{"title":"Paper, copies and the cash drawer","steps":["**Receipt Settings** sets the paper width (58 or 80 mm) and the number of copies.","The **cash drawer** plugs into the **printer** (RJ11/RJ12 port), not the computer; turn on \"open drawer on print\" in Hardware settings.","To check paper width and the drawer, print a small sale receipt, or reprint one from Daily Sales."]},{"title":"Barcode scanners","steps":["A USB or Bluetooth **scanner** works like a keyboard: click the search box on the Sales Counter and scan.","The 📷 button next to search scans with the phone camera."]}],"tips":["Printing waits up to 4 seconds for a printer that has just been switched on before saying it is not connected.","If a print fails half-way the receipt is **not** sent again automatically (so you never get a doubled half-receipt) — reprint from Daily Sales."]},{"id":"offline","icon":"📶","title":"Offline, sync and backups","steps":["**Offline:** the app keeps working with no internet; sales, tank levels and receipts are saved on the device.","**Sync:** when the internet returns the dot turns green and every device catches up.","**Backups:** ⚙️ Settings ▸ 🗄️ Backups. Your data is also stored on the server, so a lost phone does not lose your business.","**Sites:** switching between the Shop and Production only changes what you look at and record; both are always saved."],"tips":["Use **Settings ▸ Install App ▸ 🔄 Re-download for Offline Use** after an update if the app ever fails to open offline."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**Printer does not print:** check paper and power, then Settings ▸ Hardware ▸ status. Switch it off and on — the app finds it again by itself. As a fallback use the system print dialog.","**\"Only 0 available\" when selling:** the product has no stock. Record it in Restocking, or correct it on the Inventory tab.","**A sale is missing from Daily Sales:** Pay-Later bills only count when paid; check Bills. In Aqua POS check the site selected at the top.","**The login window appears again:** just log in; it will not reappear over a running session.","**Forgot the password:** tap **Forgot the password?** on the login screen and use **Email me a reset link**.","**Something looks out of date on a device:** wait for the green dot, then reload the page once.","**Still stuck:** the Owner sees errors from every shop in the Owner Console ▸ Errors tab — tell your provider what you were doing and roughly when."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Aqua POS, in the order they appear:","tabs":[["Sales Counter","New sale: refills by size or custom litres, sealed bottles, dispensers, bales; walk-in or delivery."],["Dashboard","Today at a glance: sales, money in by payment method, low stock and what needs attention."],["Inventory","Products (bottled water, bales, accessories), materials and refill sizes with prices and recipes."],["Restocking","Top up a material or product (decimals allowed) and see restock history."],["Stock Take","Count what is really at this site — products, bottles, tank litres, materials — and correct the system to it."],["Bulk Tank","Your bulk water tanks: add water, and see each site’s level drop as refills are sold."],["Production","Record what you produced; materials are deducted from its recipe; factory floor stock and dispatches."],["Bulk Orders","Book large future orders with a deposit and delivery date."],["Returned Goods","Customer returns and exchanges: refund, swap, faulty items."],["Deliveries","Delivery orders assigned to drivers: picked up, on route, delivered."],["Daily Sales","Every sale for a day / week / month, filtered by payment method, for the site you are in."],["Audit","A searchable, read-only timeline of who did what and when — sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes."],["Stock Report","Stock movement of products and materials."],["Profits & Expenses","Record expenses and see gross and net profit for any period."],["Demand Trends","Which sizes and products sell most, and when."],["Bills","Pay-Later sales still owing: settle in full or in part, see closed bills."],["Debts","Money customers owe you outside of bills; record and settle."],["My Customers","Your customer list with purchase history and loyalty."],["Staff","Add staff, choose which tabs each can use, send invite links, see who is serving."],["Attendance","Staff clock in / out and hours worked."],["Settings","Business details, receipts, tax, hardware, security, backups and more."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
 <!-- @shared-block:guide-data:end -->
 
 <!-- @shared-block:hardware-quick-access:begin -->
@@ -29069,6 +29992,227 @@ function cartTotalBelowMinimumMessage(newTotal) {
     })();
     </script>
 <!-- @shared-block:storage-and-photos:end -->
+<!-- @shared-block:device-security:begin -->
+<!-- DEVICE SECURITY (zip 120) -------------------------------------------------
+         Pairs this device with its shop and keeps a list of the shop's devices (see functions/api/_device-auth.js and device-pair.js).
+           - Every call to the shop's server (and the live WebSocket) carries this device's id and its secret token.
+           - While the shop is "open" (the default) the device pairs itself quietly in the background with the password it
+             already knows, so it is ready if the owner switches the shop to "paired devices only".
+           - If the server ever answers "this device is not paired", a screen asks for the shop password or a 6-digit pairing
+             code — with a "keep working offline" button: selling, stock and sign-in never depend on pairing; only syncing does.
+           - Settings gets a "🔐 Devices & security" panel: this device's status and name, a pairing code for a new device, every
+             device of the shop with its till number, app release and last sync, revoke, and the "paired devices only" switch.
+         Self-contained on purpose (same code in every app). -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__deviceSecurityInit) return;
+        window.__deviceSecurityInit = true;
+        window.__APP_RELEASE = 'zip-120';           // bump each release: shown per device in Settings and the Owner Console
+
+        var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
+        function deviceId() {
+            var id = LS('pos_device_id');
+            if (!id) { id = 'dev_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); LS('pos_device_id', id); }
+            return id;
+        }
+        function token() { return LS('pos_device_token') || ''; }
+        function isApi(url) {
+            try { var u = new URL(url, location.href); return u.origin === location.origin && u.pathname.indexOf('/api/') !== -1; } catch (e) { return false; }
+        }
+        function apiPath(p) { return typeof apiUrl === 'function' ? apiUrl(p) : p; }
+        async function sha256(text) {
+            if (typeof hashPassword === 'function') return hashPassword(text);
+            var d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+            return Array.from(new Uint8Array(d)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+        }
+        function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+        /* ---- every API call carries the device's credentials ---- */
+        var realFetch = window.fetch;
+        if (typeof realFetch === 'function' && !realFetch.__deviceWrapped) {
+            var wrapped = function (input, init) {
+                var url = typeof input === 'string' ? input : (input && input.url) || '';
+                if (!isApi(url)) return realFetch.apply(this, arguments);
+                init = init || {};
+                var headers = new Headers(init.headers || (typeof input !== 'string' && input.headers) || {});
+                headers.set('X-Device-Id', deviceId());
+                if (token()) headers.set('X-Device-Token', token());
+                var args = typeof input === 'string' ? [input, Object.assign({}, init, { headers: headers })] : [new Request(input, Object.assign({}, init, { headers: headers }))];
+                return realFetch.apply(this, args).then(function (res) {
+                    if (res && res.status === 401) {
+                        res.clone().json().then(function (b) { if (b && b.code === 'device_not_paired') showPairScreen(); }).catch(function () {});
+                    }
+                    return res;
+                });
+            };
+            wrapped.__deviceWrapped = true;
+            window.fetch = wrapped;
+        }
+        var RealWS = window.WebSocket;
+        if (typeof RealWS === 'function' && !RealWS.__deviceWrapped) {
+            var WS = function (url, protocols) {
+                try {
+                    if (String(url).indexOf('/api/sync-ws') !== -1) {
+                        var u = new URL(url, location.href);
+                        u.searchParams.set('di', deviceId());
+                        if (token()) u.searchParams.set('dt', token());
+                        url = u.toString();
+                    }
+                } catch (e) { /* leave the url alone */ }
+                return protocols === undefined ? new RealWS(url) : new RealWS(url, protocols);
+            };
+            WS.prototype = RealWS.prototype;
+            ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) { WS[k] = RealWS[k]; });
+            WS.__deviceWrapped = true;
+            window.WebSocket = WS;
+        }
+
+        /* ---- pairing ---- */
+        async function pair(body) {
+            var res = await fetch(apiPath('/api/device-pair'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ action: 'pair', deviceId: deviceId(), name: LS('pos_device_name') || '' }, body)) });
+            var out = {};
+            try { out = await res.json(); } catch (e) { /* no body */ }
+            if (res.ok && out.token) { LS('pos_device_token', out.token); LS('pos_device_mode', out.mode || ''); return { ok: true }; }
+            return { ok: false, error: out.error || ('The server answered ' + res.status + '.') };
+        }
+        // Quietly pair a device that already holds the shop password (every set-up device does — it signs in offline with it).
+        async function autoPair() {
+            if (token() || navigator.onLine === false) return;
+            var h = LS('pos_pw_hash') || LS('aqua_pw_hash');
+            if (!h) return;
+            try { await pair({ proof: h }); } catch (e) { /* offline or refused: tried again later */ }
+        }
+        window.devicePairNow = autoPair;
+        setTimeout(autoPair, 4000);
+        setInterval(autoPair, 10 * 60000);
+        window.addEventListener('online', function () { setTimeout(autoPair, 1500); });
+
+        var screenShown = false;
+        function showPairScreen() {
+            if (screenShown || document.getElementById('device-pair-screen')) return;
+            screenShown = true;
+            LS('pos_device_token', null);              // whatever we had is no longer accepted
+            var el = document.createElement('div');
+            el.id = 'device-pair-screen';
+            el.setAttribute('role', 'dialog');
+            el.style.cssText = 'position:fixed; inset:0; z-index:2147483600; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; padding:16px;';
+            el.innerHTML = '<div style="background:#fff; color:#2c3e50; border-radius:12px; max-width:420px; width:100%; padding:20px; box-shadow:0 10px 40px rgba(0,0,0,0.3);">'
+                + '<h3 style="margin:0 0 6px;">🔐 Pair this device</h3>'
+                + '<p style="margin:0 0 12px; font-size:14px; line-height:1.4;">This shop only syncs with paired devices. Pair this one once — with the <strong>shop password</strong>, or a <strong>6-digit pairing code</strong> from a paired device (Settings ▸ 🔐 Devices &amp; security).</p>'
+                + '<input type="password" id="dps-pw" placeholder="Shop password" autocomplete="current-password" style="width:100%; box-sizing:border-box; padding:10px; margin-bottom:8px; font-size:16px;">'
+                + '<input type="text" id="dps-code" inputmode="numeric" maxlength="6" placeholder="…or pairing code (6 digits)" style="width:100%; box-sizing:border-box; padding:10px; margin-bottom:8px; font-size:16px;">'
+                + '<div id="dps-msg" style="min-height:18px; font-size:13px; color:#c0392b; margin-bottom:8px;"></div>'
+                + '<div style="display:flex; gap:8px; flex-wrap:wrap;"><button type="button" id="dps-go" style="flex:1; padding:10px; border:none; border-radius:8px; background:#27ae60; color:#fff; font-weight:700; font-size:15px;">Pair</button>'
+                + '<button type="button" id="dps-later" style="flex:1; padding:10px; border:1px solid #bbb; border-radius:8px; background:#fff; font-size:15px;">Keep working offline</button></div>'
+                + '<p style="margin:10px 0 0; font-size:12px; color:#7f8c8d;">Keep working offline: sales and stock are saved on this device and sent once it is paired.</p></div>';
+            document.body.appendChild(el);
+            var msg = el.querySelector('#dps-msg');
+            el.querySelector('#dps-later').onclick = function () { el.remove(); setTimeout(function () { screenShown = false; }, 10 * 60000); };
+            el.querySelector('#dps-go').onclick = async function () {
+                msg.textContent = '';
+                var pw = el.querySelector('#dps-pw').value, code = el.querySelector('#dps-code').value.replace(/\D/g, '');
+                if (!pw && code.length !== 6) { msg.textContent = 'Type the shop password or a 6-digit code.'; return; }
+                msg.style.color = '#7f8c8d'; msg.textContent = 'Pairing…';
+                var r;
+                try { r = await pair(code.length === 6 ? { code: code } : { proof: await sha256(pw) }); } catch (e) { r = { ok: false, error: 'No connection — try again when online, or keep working offline.' }; }
+                if (!r.ok) { msg.style.color = '#c0392b'; msg.textContent = r.error; return; }
+                el.remove(); screenShown = false;
+                var hasLocal = LS('pos_pw_hash') || LS('aqua_pw_hash');
+                if (!hasLocal) { (window.__devicePairReload || function () { location.reload(); })(); return; }      // a brand-new device: start again, now able to fetch the shop
+                try { if (typeof flushThenPull === 'function') flushThenPull(); } catch (e) { /* the poll will */ }
+                try { if (typeof showToast === 'function') showToast('Device paired — syncing.'); } catch (e) { /* cosmetic */ }
+            };
+        }
+        window.showDevicePairScreen = function () { screenShown = false; showPairScreen(); };   // on purpose (Settings button): always opens
+
+        /* ---- Settings ▸ 🔐 Devices & security ---- */
+        function ago(t) {
+            if (!t) return '—';
+            var m = Math.round((Date.now() - t) / 60000);
+            return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago';
+        }
+        async function withPassword(label) {
+            var pw = window.prompt(label + '\n\nType the shop password to confirm:');
+            if (!pw) return null;
+            return sha256(pw);
+        }
+        async function post(body) {
+            var res = await fetch(apiPath('/api/device-pair'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            var out = {}; try { out = await res.json(); } catch (e) { /* none */ }
+            if (!res.ok) throw new Error(out.error || ('The server answered ' + res.status));
+            return out;
+        }
+        async function renderPanel() {
+            var box = document.getElementById('device-security-body');
+            if (!box) return;
+            if (navigator.onLine === false) { box.innerHTML = '<p class="settings-hint">Offline — the device list needs a connection. This device keeps working normally.</p>'; return; }
+            var data;
+            try { var res = await fetch(apiPath('/api/device-pair')); data = await res.json(); } catch (e) { box.innerHTML = '<p class="settings-hint">Could not reach the server — try again when online.</p>'; return; }
+            var paired = data.me && data.me.paired;
+            var html = '<p style="margin:0 0 8px;">This device: <strong>' + esc(LS('pos_device_name') || deviceId()) + '</strong> — '
+                + (paired ? '<span style="color:#27ae60; font-weight:700;">✓ paired</span>' : '<span style="color:#c0392b; font-weight:700;">not paired</span>')
+                + (typeof tillNumber === 'function' && tillNumber() ? ' · till ' + tillNumber() : '') + ' · release ' + esc(window.__APP_RELEASE) + '</p>'
+                + '<p style="margin:0 0 8px;">Shop setting: <strong>' + (data.mode === 'paired' ? 'Only paired devices can sync' : 'Open (any device with the link can sync)') + '</strong></p>'
+                + '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">'
+                + (paired ? '' : '<button type="button" class="settings-small-btn" data-ds="pair">🔐 Pair this device</button>')
+                + (paired ? '<button type="button" class="settings-small-btn" data-ds="code">➕ Pairing code for a new device</button>' : '')
+                + (paired ? '<button type="button" class="settings-small-btn" data-ds="rename">✏️ Name this device</button>' : '')
+                + (paired ? '<button type="button" class="settings-small-btn" data-ds="mode">' + (data.mode === 'paired' ? '🔓 Let any device sync again' : '🔒 Only paired devices may sync') + '</button>' : '')
+                + '<button type="button" class="settings-small-btn" data-ds="refresh">↻ Refresh</button></div><div id="device-security-msg" class="settings-hint" style="margin:0 0 8px;"></div>';
+            if (data.devices && data.devices.length) {
+                html += '<div class="table-scroll"><table><thead><tr><th>Device</th><th>Till</th><th>App release</th><th>Last sync</th><th>Paired</th><th></th></tr></thead><tbody>'
+                    + data.devices.map(function (d) {
+                        return '<tr><td>' + esc(d.name || d.id) + (d.me ? ' <em>(this one)</em>' : '') + '</td><td>' + (d.till || '—') + '</td><td>' + esc(d.version || '—')
+                            + (d.version && d.version !== window.__APP_RELEASE ? ' <span title="Older than this device — it updates when reopened" style="color:#e67e22;">⚠</span>' : '') + '</td><td>' + ago(d.lastSeen) + '</td><td>'
+                            + (d.revoked ? 'revoked' : d.paired ? '✓' : 'no') + '</td><td>' + (paired && d.paired && !d.me ? '<button type="button" class="settings-small-btn" data-ds="revoke" data-id="' + esc(d.id) + '">Revoke</button>' : '') + '</td></tr>';
+                    }).join('') + '</tbody></table></div>';
+            }
+            box.innerHTML = html;
+        }
+        async function onPanelClick(ev) {
+            var b = ev.target.closest('[data-ds]');
+            if (!b) return;
+            var msg = document.getElementById('device-security-msg');
+            var say = function (t, bad) { if (msg) { msg.textContent = t; msg.style.color = bad ? '#c0392b' : ''; } };
+            try {
+                var what = b.getAttribute('data-ds');
+                if (what === 'refresh') return renderPanel();
+                if (what === 'pair') { screenShown = false; showPairScreen(); return; }
+                if (what === 'code') { var c = await post({ action: 'code' }); say('Pairing code: ' + c.code + ' — type it on the new device within 10 minutes. It works once.'); return; }
+                if (what === 'rename') { var n = window.prompt('Name for this device (e.g. "Till 1 — front counter"):', LS('pos_device_name') || ''); if (n === null) return; LS('pos_device_name', n.trim()); await post({ action: 'rename', name: n.trim() }); return renderPanel(); }
+                if (what === 'revoke') { var h = await withPassword('Revoke this device? It will stop syncing until it is paired again.'); if (!h) return; await post({ action: 'revoke', deviceId: b.getAttribute('data-id'), proof: h }); return renderPanel(); }
+                if (what === 'mode') {
+                    var toPaired = /Only paired/.test(b.textContent);
+                    var hh = await withPassword(toPaired ? 'Only paired devices will be able to sync this shop. Devices set up here pair themselves; check the list for devices you do not recognise and revoke them.' : 'Any device with the shop link will be able to sync again.');
+                    if (!hh) return;
+                    await post({ action: 'mode', mode: toPaired ? 'paired' : 'open', proof: hh });
+                    return renderPanel();
+                }
+            } catch (e) { say(e.message || String(e), true); }
+        }
+        function injectPanel() {
+            var tab = document.getElementById('settings-tab');
+            if (!tab || document.getElementById('device-security-panel')) return;
+            var p = document.createElement('div');
+            p.className = 'panel';
+            p.id = 'device-security-panel';
+            p.innerHTML = '<h3 style="margin-top:0;">🔐 Devices &amp; security</h3><p class="settings-hint" style="margin-top:-6px;">Which devices sync this shop. Signing in and selling always work offline; pairing only decides who may sync.</p><div id="device-security-body"><p class="settings-hint">Open this section to load the list.</p></div>';
+            (tab.querySelector('.settings-content') || tab).appendChild(p);
+            p.addEventListener('click', onPanelClick);
+        }
+        window.renderDeviceSecurityPanel = function () { injectPanel(); return renderPanel(); };
+        function boot() {
+            injectPanel();
+            document.addEventListener('click', function (ev) {
+                var t = ev.target.closest && ev.target.closest('[data-tab="settings-tab"]');
+                if (t) setTimeout(function () { injectPanel(); renderPanel(); }, 80);
+            }, true);
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+    })();
+    </script>
+<!-- @shared-block:device-security:end -->
 
 <!-- @shared-block:error-reporting:begin -->
 <!-- ERROR REPORTING ----------------------------------------------------------

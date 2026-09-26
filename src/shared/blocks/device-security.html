@@ -1,0 +1,219 @@
+<!-- DEVICE SECURITY (zip 120) -------------------------------------------------
+         Pairs this device with its shop and keeps a list of the shop's devices (see functions/api/_device-auth.js and device-pair.js).
+           - Every call to the shop's server (and the live WebSocket) carries this device's id and its secret token.
+           - While the shop is "open" (the default) the device pairs itself quietly in the background with the password it
+             already knows, so it is ready if the owner switches the shop to "paired devices only".
+           - If the server ever answers "this device is not paired", a screen asks for the shop password or a 6-digit pairing
+             code — with a "keep working offline" button: selling, stock and sign-in never depend on pairing; only syncing does.
+           - Settings gets a "🔐 Devices & security" panel: this device's status and name, a pairing code for a new device, every
+             device of the shop with its till number, app release and last sync, revoke, and the "paired devices only" switch.
+         Self-contained on purpose (same code in every app). -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__deviceSecurityInit) return;
+        window.__deviceSecurityInit = true;
+        window.__APP_RELEASE = 'zip-120';           // bump each release: shown per device in Settings and the Owner Console
+
+        var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
+        function deviceId() {
+            var id = LS('pos_device_id');
+            if (!id) { id = 'dev_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); LS('pos_device_id', id); }
+            return id;
+        }
+        function token() { return LS('pos_device_token') || ''; }
+        function isApi(url) {
+            try { var u = new URL(url, location.href); return u.origin === location.origin && u.pathname.indexOf('/api/') !== -1; } catch (e) { return false; }
+        }
+        function apiPath(p) { return typeof apiUrl === 'function' ? apiUrl(p) : p; }
+        async function sha256(text) {
+            if (typeof hashPassword === 'function') return hashPassword(text);
+            var d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+            return Array.from(new Uint8Array(d)).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+        }
+        function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+        /* ---- every API call carries the device's credentials ---- */
+        var realFetch = window.fetch;
+        if (typeof realFetch === 'function' && !realFetch.__deviceWrapped) {
+            var wrapped = function (input, init) {
+                var url = typeof input === 'string' ? input : (input && input.url) || '';
+                if (!isApi(url)) return realFetch.apply(this, arguments);
+                init = init || {};
+                var headers = new Headers(init.headers || (typeof input !== 'string' && input.headers) || {});
+                headers.set('X-Device-Id', deviceId());
+                if (token()) headers.set('X-Device-Token', token());
+                var args = typeof input === 'string' ? [input, Object.assign({}, init, { headers: headers })] : [new Request(input, Object.assign({}, init, { headers: headers }))];
+                return realFetch.apply(this, args).then(function (res) {
+                    if (res && res.status === 401) {
+                        res.clone().json().then(function (b) { if (b && b.code === 'device_not_paired') showPairScreen(); }).catch(function () {});
+                    }
+                    return res;
+                });
+            };
+            wrapped.__deviceWrapped = true;
+            window.fetch = wrapped;
+        }
+        var RealWS = window.WebSocket;
+        if (typeof RealWS === 'function' && !RealWS.__deviceWrapped) {
+            var WS = function (url, protocols) {
+                try {
+                    if (String(url).indexOf('/api/sync-ws') !== -1) {
+                        var u = new URL(url, location.href);
+                        u.searchParams.set('di', deviceId());
+                        if (token()) u.searchParams.set('dt', token());
+                        url = u.toString();
+                    }
+                } catch (e) { /* leave the url alone */ }
+                return protocols === undefined ? new RealWS(url) : new RealWS(url, protocols);
+            };
+            WS.prototype = RealWS.prototype;
+            ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) { WS[k] = RealWS[k]; });
+            WS.__deviceWrapped = true;
+            window.WebSocket = WS;
+        }
+
+        /* ---- pairing ---- */
+        async function pair(body) {
+            var res = await fetch(apiPath('/api/device-pair'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ action: 'pair', deviceId: deviceId(), name: LS('pos_device_name') || '' }, body)) });
+            var out = {};
+            try { out = await res.json(); } catch (e) { /* no body */ }
+            if (res.ok && out.token) { LS('pos_device_token', out.token); LS('pos_device_mode', out.mode || ''); return { ok: true }; }
+            return { ok: false, error: out.error || ('The server answered ' + res.status + '.') };
+        }
+        // Quietly pair a device that already holds the shop password (every set-up device does — it signs in offline with it).
+        async function autoPair() {
+            if (token() || navigator.onLine === false) return;
+            var h = LS('pos_pw_hash') || LS('aqua_pw_hash');
+            if (!h) return;
+            try { await pair({ proof: h }); } catch (e) { /* offline or refused: tried again later */ }
+        }
+        window.devicePairNow = autoPair;
+        setTimeout(autoPair, 4000);
+        setInterval(autoPair, 10 * 60000);
+        window.addEventListener('online', function () { setTimeout(autoPair, 1500); });
+
+        var screenShown = false;
+        function showPairScreen() {
+            if (screenShown || document.getElementById('device-pair-screen')) return;
+            screenShown = true;
+            LS('pos_device_token', null);              // whatever we had is no longer accepted
+            var el = document.createElement('div');
+            el.id = 'device-pair-screen';
+            el.setAttribute('role', 'dialog');
+            el.style.cssText = 'position:fixed; inset:0; z-index:2147483600; background:rgba(0,0,0,0.55); display:flex; align-items:center; justify-content:center; padding:16px;';
+            el.innerHTML = '<div style="background:#fff; color:#2c3e50; border-radius:12px; max-width:420px; width:100%; padding:20px; box-shadow:0 10px 40px rgba(0,0,0,0.3);">'
+                + '<h3 style="margin:0 0 6px;">🔐 Pair this device</h3>'
+                + '<p style="margin:0 0 12px; font-size:14px; line-height:1.4;">This shop only syncs with paired devices. Pair this one once — with the <strong>shop password</strong>, or a <strong>6-digit pairing code</strong> from a paired device (Settings ▸ 🔐 Devices &amp; security).</p>'
+                + '<input type="password" id="dps-pw" placeholder="Shop password" autocomplete="current-password" style="width:100%; box-sizing:border-box; padding:10px; margin-bottom:8px; font-size:16px;">'
+                + '<input type="text" id="dps-code" inputmode="numeric" maxlength="6" placeholder="…or pairing code (6 digits)" style="width:100%; box-sizing:border-box; padding:10px; margin-bottom:8px; font-size:16px;">'
+                + '<div id="dps-msg" style="min-height:18px; font-size:13px; color:#c0392b; margin-bottom:8px;"></div>'
+                + '<div style="display:flex; gap:8px; flex-wrap:wrap;"><button type="button" id="dps-go" style="flex:1; padding:10px; border:none; border-radius:8px; background:#27ae60; color:#fff; font-weight:700; font-size:15px;">Pair</button>'
+                + '<button type="button" id="dps-later" style="flex:1; padding:10px; border:1px solid #bbb; border-radius:8px; background:#fff; font-size:15px;">Keep working offline</button></div>'
+                + '<p style="margin:10px 0 0; font-size:12px; color:#7f8c8d;">Keep working offline: sales and stock are saved on this device and sent once it is paired.</p></div>';
+            document.body.appendChild(el);
+            var msg = el.querySelector('#dps-msg');
+            el.querySelector('#dps-later').onclick = function () { el.remove(); setTimeout(function () { screenShown = false; }, 10 * 60000); };
+            el.querySelector('#dps-go').onclick = async function () {
+                msg.textContent = '';
+                var pw = el.querySelector('#dps-pw').value, code = el.querySelector('#dps-code').value.replace(/\D/g, '');
+                if (!pw && code.length !== 6) { msg.textContent = 'Type the shop password or a 6-digit code.'; return; }
+                msg.style.color = '#7f8c8d'; msg.textContent = 'Pairing…';
+                var r;
+                try { r = await pair(code.length === 6 ? { code: code } : { proof: await sha256(pw) }); } catch (e) { r = { ok: false, error: 'No connection — try again when online, or keep working offline.' }; }
+                if (!r.ok) { msg.style.color = '#c0392b'; msg.textContent = r.error; return; }
+                el.remove(); screenShown = false;
+                var hasLocal = LS('pos_pw_hash') || LS('aqua_pw_hash');
+                if (!hasLocal) { (window.__devicePairReload || function () { location.reload(); })(); return; }      // a brand-new device: start again, now able to fetch the shop
+                try { if (typeof flushThenPull === 'function') flushThenPull(); } catch (e) { /* the poll will */ }
+                try { if (typeof showToast === 'function') showToast('Device paired — syncing.'); } catch (e) { /* cosmetic */ }
+            };
+        }
+        window.showDevicePairScreen = function () { screenShown = false; showPairScreen(); };   // on purpose (Settings button): always opens
+
+        /* ---- Settings ▸ 🔐 Devices & security ---- */
+        function ago(t) {
+            if (!t) return '—';
+            var m = Math.round((Date.now() - t) / 60000);
+            return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' d ago';
+        }
+        async function withPassword(label) {
+            var pw = window.prompt(label + '\n\nType the shop password to confirm:');
+            if (!pw) return null;
+            return sha256(pw);
+        }
+        async function post(body) {
+            var res = await fetch(apiPath('/api/device-pair'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            var out = {}; try { out = await res.json(); } catch (e) { /* none */ }
+            if (!res.ok) throw new Error(out.error || ('The server answered ' + res.status));
+            return out;
+        }
+        async function renderPanel() {
+            var box = document.getElementById('device-security-body');
+            if (!box) return;
+            if (navigator.onLine === false) { box.innerHTML = '<p class="settings-hint">Offline — the device list needs a connection. This device keeps working normally.</p>'; return; }
+            var data;
+            try { var res = await fetch(apiPath('/api/device-pair')); data = await res.json(); } catch (e) { box.innerHTML = '<p class="settings-hint">Could not reach the server — try again when online.</p>'; return; }
+            var paired = data.me && data.me.paired;
+            var html = '<p style="margin:0 0 8px;">This device: <strong>' + esc(LS('pos_device_name') || deviceId()) + '</strong> — '
+                + (paired ? '<span style="color:#27ae60; font-weight:700;">✓ paired</span>' : '<span style="color:#c0392b; font-weight:700;">not paired</span>')
+                + (typeof tillNumber === 'function' && tillNumber() ? ' · till ' + tillNumber() : '') + ' · release ' + esc(window.__APP_RELEASE) + '</p>'
+                + '<p style="margin:0 0 8px;">Shop setting: <strong>' + (data.mode === 'paired' ? 'Only paired devices can sync' : 'Open (any device with the link can sync)') + '</strong></p>'
+                + '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px;">'
+                + (paired ? '' : '<button type="button" class="settings-small-btn" data-ds="pair">🔐 Pair this device</button>')
+                + (paired ? '<button type="button" class="settings-small-btn" data-ds="code">➕ Pairing code for a new device</button>' : '')
+                + (paired ? '<button type="button" class="settings-small-btn" data-ds="rename">✏️ Name this device</button>' : '')
+                + (paired ? '<button type="button" class="settings-small-btn" data-ds="mode">' + (data.mode === 'paired' ? '🔓 Let any device sync again' : '🔒 Only paired devices may sync') + '</button>' : '')
+                + '<button type="button" class="settings-small-btn" data-ds="refresh">↻ Refresh</button></div><div id="device-security-msg" class="settings-hint" style="margin:0 0 8px;"></div>';
+            if (data.devices && data.devices.length) {
+                html += '<div class="table-scroll"><table><thead><tr><th>Device</th><th>Till</th><th>App release</th><th>Last sync</th><th>Paired</th><th></th></tr></thead><tbody>'
+                    + data.devices.map(function (d) {
+                        return '<tr><td>' + esc(d.name || d.id) + (d.me ? ' <em>(this one)</em>' : '') + '</td><td>' + (d.till || '—') + '</td><td>' + esc(d.version || '—')
+                            + (d.version && d.version !== window.__APP_RELEASE ? ' <span title="Older than this device — it updates when reopened" style="color:#e67e22;">⚠</span>' : '') + '</td><td>' + ago(d.lastSeen) + '</td><td>'
+                            + (d.revoked ? 'revoked' : d.paired ? '✓' : 'no') + '</td><td>' + (paired && d.paired && !d.me ? '<button type="button" class="settings-small-btn" data-ds="revoke" data-id="' + esc(d.id) + '">Revoke</button>' : '') + '</td></tr>';
+                    }).join('') + '</tbody></table></div>';
+            }
+            box.innerHTML = html;
+        }
+        async function onPanelClick(ev) {
+            var b = ev.target.closest('[data-ds]');
+            if (!b) return;
+            var msg = document.getElementById('device-security-msg');
+            var say = function (t, bad) { if (msg) { msg.textContent = t; msg.style.color = bad ? '#c0392b' : ''; } };
+            try {
+                var what = b.getAttribute('data-ds');
+                if (what === 'refresh') return renderPanel();
+                if (what === 'pair') { screenShown = false; showPairScreen(); return; }
+                if (what === 'code') { var c = await post({ action: 'code' }); say('Pairing code: ' + c.code + ' — type it on the new device within 10 minutes. It works once.'); return; }
+                if (what === 'rename') { var n = window.prompt('Name for this device (e.g. "Till 1 — front counter"):', LS('pos_device_name') || ''); if (n === null) return; LS('pos_device_name', n.trim()); await post({ action: 'rename', name: n.trim() }); return renderPanel(); }
+                if (what === 'revoke') { var h = await withPassword('Revoke this device? It will stop syncing until it is paired again.'); if (!h) return; await post({ action: 'revoke', deviceId: b.getAttribute('data-id'), proof: h }); return renderPanel(); }
+                if (what === 'mode') {
+                    var toPaired = /Only paired/.test(b.textContent);
+                    var hh = await withPassword(toPaired ? 'Only paired devices will be able to sync this shop. Devices set up here pair themselves; check the list for devices you do not recognise and revoke them.' : 'Any device with the shop link will be able to sync again.');
+                    if (!hh) return;
+                    await post({ action: 'mode', mode: toPaired ? 'paired' : 'open', proof: hh });
+                    return renderPanel();
+                }
+            } catch (e) { say(e.message || String(e), true); }
+        }
+        function injectPanel() {
+            var tab = document.getElementById('settings-tab');
+            if (!tab || document.getElementById('device-security-panel')) return;
+            var p = document.createElement('div');
+            p.className = 'panel';
+            p.id = 'device-security-panel';
+            p.innerHTML = '<h3 style="margin-top:0;">🔐 Devices &amp; security</h3><p class="settings-hint" style="margin-top:-6px;">Which devices sync this shop. Signing in and selling always work offline; pairing only decides who may sync.</p><div id="device-security-body"><p class="settings-hint">Open this section to load the list.</p></div>';
+            (tab.querySelector('.settings-content') || tab).appendChild(p);
+            p.addEventListener('click', onPanelClick);
+        }
+        window.renderDeviceSecurityPanel = function () { injectPanel(); return renderPanel(); };
+        function boot() {
+            injectPanel();
+            document.addEventListener('click', function (ev) {
+                var t = ev.target.closest && ev.target.closest('[data-tab="settings-tab"]');
+                if (t) setTimeout(function () { injectPanel(); renderPanel(); }, 80);
+            }, true);
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+    })();
+    </script>

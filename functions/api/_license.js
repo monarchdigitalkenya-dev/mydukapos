@@ -562,10 +562,16 @@ export function evaluateLicense(record) {
 // forwarding, so that's checked first; the raw request URL is still the
 // fallback for direct pages.dev / preview-deployment access (which never
 // goes through that Worker, so has no such header) and for local dev.
-export function hostnameFromRequest(request) {
+// X-Forwarded-Host is set by the wildcard-router Worker (the real shop subdomain). OPT-IN HARDENING (zip 119): when the Pages project
+// has ROUTER_SHARED_SECRET set, the header is only believed if the request also carries X-Router-Secret with that value — which only
+// the router (given the same secret) sends — so a caller hitting the Pages domain directly cannot claim to be any shop's subdomain.
+// Without the setting, behaviour is exactly as before.
+export function hostnameFromRequest(request, env) {
   try {
     const forwarded = request.headers.get('X-Forwarded-Host');
-    if (forwarded) return forwarded.toLowerCase().split(',')[0].trim();
+    const secret = env && env.ROUTER_SHARED_SECRET;
+    const trusted = !secret || request.headers.get('X-Router-Secret') === secret;
+    if (forwarded && trusted) return forwarded.toLowerCase().split(',')[0].trim();
     return new URL(request.url).hostname.toLowerCase();
   } catch (e) {
     return '';
@@ -598,7 +604,7 @@ export function subdomainLabel(hostname, rootDomain) {
 // before subdomains existed.
 export async function resolveClientId(request, env) {
   const url = new URL(request.url);
-  const hostname = hostnameFromRequest(request);
+  const hostname = hostnameFromRequest(request, env);
   const rootDomain = getRootDomain(env);
   const label = subdomainLabel(hostname, rootDomain);
 
