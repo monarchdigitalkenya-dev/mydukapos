@@ -181,10 +181,13 @@ for (const app of ['hotel/index.html', 'index.html', 'hospital/index.html', 'pro
     w.eval("showToast = function () {}; window.print = () => { window.dispatchEvent(new window.Event('afterprint')); }; lastKitchenTicketText = 'ORDER'; window.__relayWaitMs = 100");
     w.eval("receiptWidth = '80'");
     await w.eval('printKitchenTicketViaSystemDialog()');
-    assert.match(d.getElementById('print-page-style').textContent, /@page \{ size: 80mm auto; margin: 0; \}/, 'a slip as wide as the receipt, as long as its lines');
+    // zip 144: "80mm auto" was invalid CSS (dropped -> A4/Letter); the slip page is now the roll width x the slip's own length
+    const m80 = /@page \{ size: 80mm (\d+)mm; margin: 0; \}/.exec(d.getElementById('print-page-style').textContent);
+    assert.ok(m80, 'a slip as wide as the receipt, with a valid length');
+    assert.ok(Number(m80[1]) < 150, `as long as its lines (${m80[1]} mm), not a whole A4`);
     w.eval("receiptWidth = '58'");
     w.eval('setKitchenPrintPage()');
-    assert.match(d.getElementById('print-page-style').textContent, /size: 58mm auto/, 'follows the receipt width setting');
+    assert.match(d.getElementById('print-page-style').textContent, /size: 58mm \d+mm/, 'follows the receipt width setting');
     close();
   });
 }

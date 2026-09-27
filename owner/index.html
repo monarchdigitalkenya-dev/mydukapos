@@ -18700,7 +18700,8 @@ async function storageMeasureUnknown() {
         }
         // -> { kind: 'ok' | 'http' | 'timeout' | 'neterr', status }
         function probeHealth(ms) {
-            return timed(HEALTH + '?deep=1&t=' + Date.now(), { method: 'GET' }, ms).then(function (r) {
+            // (no ?deep=1: "is the server reachable?" must not wait on a storage read — a storage problem answers 503 on sync anyway)
+            return timed(HEALTH + '?t=' + Date.now(), { method: 'GET' }, ms).then(function (r) {
                 if (r.res) return { kind: r.res.ok ? 'ok' : 'http', status: r.res.status };
                 return { kind: r.timedOut ? 'timeout' : 'neterr', status: 0 };
             });
@@ -18736,7 +18737,10 @@ async function storageMeasureUnknown() {
                 var stale = function () { return S.lastOk > started; };
                 try {
                     var hinted = navigator.onLine === false;
-                    var h = await probeHealth(hinted ? 4000 : 8000);
+                    // zip 145: the same patience whatever navigator.onLine says. Installed apps on some Android phones report "offline"
+                    // with working internet; the shorter limits used then (4 s / 3 s) timed out on every check on a slow line, and the app
+                    // stayed "Offline" for good. A phone that is REALLY offline fails at once anyway, so waiting longer costs it nothing.
+                    var h = await probeHealth(12000);
                     if (h.kind === 'ok') {
                         S.lastOk = Date.now();
                         set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
@@ -18746,7 +18750,7 @@ async function storageMeasureUnknown() {
                         // the server ANSWERED: this device has internet; the POS side is failing (5xx, overloaded, maintenance)
                         set('backend_unavailable', 'the server answered ' + h.status);
                     } else {
-                        var net = await probeInternet(hinted ? 3000 : 6000);
+                        var net = await probeInternet(9000);
                         if (stale()) set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
                         else if (net) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time' : 'the POS server could not be reached');
                         else set('offline', hinted ? 'the device reports no network' : 'no answer from the internet');
@@ -18874,6 +18878,30 @@ async function storageMeasureUnknown() {
         };
         // For feature code that only needs "is it worth trying the network?" — false only when the manager has CHECKED there is none.
         window.posNetOffline = function () { return S.state === 'offline'; };
+
+        // zip 145: the service worker downloaded a newer version of the app while this (older) one was open — offer it. (Installed apps
+        // used to stay on the copy they were installed with; see sw.js.)
+        function showUpdateReady() {
+            try {
+                if (document.getElementById('posnet-update-ready')) return;
+                var bar = document.createElement('div');
+                bar.id = 'posnet-update-ready';
+                bar.setAttribute('role', 'status');
+                bar.style.cssText = 'position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:100000;background:#2c3e50;color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.3);font:14px system-ui,sans-serif;display:flex;gap:10px;align-items:center;max-width:94vw;';
+                bar.innerHTML = '<span>A newer version of the app is ready.</span>';
+                var b = document.createElement('button');
+                b.type = 'button'; b.textContent = 'Update now';
+                b.style.cssText = 'background:#27ae60;color:#fff;border:0;border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;';
+                b.onclick = function () { location.reload(); };
+                bar.appendChild(b);
+                (document.body || document.documentElement).appendChild(bar);
+            } catch (e) { /* cosmetic */ }
+        }
+        try {
+            if (navigator.serviceWorker && navigator.serviceWorker.addEventListener) {
+                navigator.serviceWorker.addEventListener('message', function (e) { if (e && e.data && e.data.type === 'app-update-ready') showUpdateReady(); });
+            }
+        } catch (e) { /* no service worker */ }
 
         function boot() { wrapDot(); check('start'); }
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();

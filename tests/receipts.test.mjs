@@ -29,13 +29,16 @@ for (const app of APPS) {
   });
 }
 
-// The system-dialog receipt uses the same column titles as the printed one.
+// The system-dialog receipt uses the same column titles as the printed one (zip 144: it is the same grid).
 for (const app of APPS.filter((a) => a !== 'water/index.html')) {
   test(`${app}: on-screen / system receipt table titles`, async () => {
     const { w, d, close } = await boot(app);
     w.eval('renderReceipt(' + JSON.stringify(SAMPLE_SALE) + ')');
-    const titles = [...d.querySelectorAll('#receipt-body thead td')].map((t) => t.textContent);
-    assert.deepEqual(titles, ['Item', 'Qty', 'Price', 'Amount']);
+    // zip 144: the preview IS the printed layout (the character grid), so its heading row is the printer's own heading row
+    const rows = [...d.querySelectorAll('#receipt-body .receipt-grid .rg-l')].map((t) => t.textContent);
+    const head = rows.find((r) => /^ITEM\s+QTY\s+PRICE\s+AMOUNT$/.test(r));
+    assert.ok(head, 'column headings row');
+    assert.ok(d.querySelector('#receipt-body .rg-b') && [...d.querySelectorAll('#receipt-body .rg-b')].some((e) => e.textContent === head), 'headings in bold');
     close();
   });
 }

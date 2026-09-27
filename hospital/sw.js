@@ -24,6 +24,11 @@ const POINTER_KEY = 'https://sw-internal/current-cache-name';
 // dead Wi-Fi hotspot doesn't leave the cashier staring at a blank screen.
 const NAVIGATION_NETWORK_TIMEOUT_MS = 3500;
 
+// zip 145 — BUMP THIS WITH EVERY RELEASE. A service worker only updates when THIS file changes; it had not changed for many releases,
+// so installed apps kept the service worker (and the old cached page) they were installed with. A new version here makes every
+// installed app install this worker, which re-downloads the whole shell (refreshShell) — the stuck phones catch up by themselves.
+const SW_VERSION = 'zip-145';
+
 // Paths are relative to the service worker's own location, not the site root.
 // Using absolute '/index.html' style paths silently breaks on any deployment
 // that isn't at the domain root (a Pages preview URL, a project subfolder, a
@@ -119,6 +124,27 @@ async function currentCache() {
   return caches.open(name || `${APP_ID}-shell-fallback`);
 }
 
+// Stores a fresh copy of the page (only when it really changed — its ETag) and tells the open app that a newer version is ready.
+async function savePageCopy(copyPromise) {
+  const got = await copyPromise;
+  if (!got) return;
+  try {
+    const copy = got.copy;
+    const tag = got.headers.get('etag') || got.headers.get('last-modified') || '';
+    const pointer = await caches.open(POINTER_CACHE);
+    const prev = await pointer.match('https://sw-internal/page-etag');
+    const prevTag = prev ? await prev.text() : null;
+    if (tag && tag === prevTag) return;
+    const cache = await currentCache();
+    await cache.put('./index.html', copy);
+    if (tag) await pointer.put('https://sw-internal/page-etag', new Response(tag));
+    if (prevTag) {
+      const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      wins.forEach((c) => { try { c.postMessage({ type: 'app-update-ready', sw: SW_VERSION }); } catch (e) { /* closed */ } });
+    }
+  } catch (e) { /* quota — not fatal */ }
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(refreshShell().then(() => self.skipWaiting()));
 });
@@ -176,6 +202,12 @@ self.addEventListener('fetch', (event) => {
     return tail && url.pathname.endsWith(tail);
   });
   if (!isNavigation && !isShellAsset) return;
+  if (isNavigation) {
+    event.__pageNetwork = fetch(new Request(req.url, { cache: 'no-cache', credentials: 'same-origin' }));
+    // the copy for the cache is cloned FIRST (before the browser starts reading the page), in the very first handler attached
+    const pageCopy = event.__pageNetwork.then((r) => (r && r.ok ? { copy: r.clone(), headers: r.headers } : null), () => null);
+    event.waitUntil(savePageCopy(pageCopy));                  // keeps the worker alive until the new copy is stored
+  }
 
   event.respondWith(
     (async () => {
@@ -207,46 +239,22 @@ self.addEventListener('fetch', (event) => {
         // cache is still updated on every success and is still the fallback the
         // moment the network is slow or gone — so offline opening is unaffected,
         // and the cached copy never drifts far out of date even between installs.
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), NAVIGATION_NETWORK_TIMEOUT_MS);
-          // 'no-cache' = ask the server "has it changed?" (a tiny conditional request, answered 304 when nothing changed) and use the browser's
-          // stored copy if not. It used to be 'reload', which downloaded the WHOLE page (1-2 MB) on every single open — the main reason the apps
-          // were slow to start on a phone's data connection. A new deployment still arrives at once (the server says it changed).
-          const res = await fetch(new Request(req.url, {
-            cache: 'no-cache',
-            signal: controller.signal,
-            credentials: 'same-origin',
-          }));
-          clearTimeout(timer);
-          const copy = res && res.ok ? res.clone() : null;
-          if (res && res.ok) {
-            // Rewrite the offline copy only when the page really changed (its ETag): writing 1-2 MB to Cache Storage on every open was pure waste.
-            (async () => {
-              try {
-                const tag = res.headers.get('etag') || res.headers.get('last-modified') || '';
-                const pointer = await caches.open(POINTER_CACHE);
-                const prev = await pointer.match('https://sw-internal/page-etag');
-                const prevTag = prev ? await prev.text() : null;
-                if (!tag || tag !== prevTag) {
-                  await cache.put('./index.html', copy);
-                  if (tag) await pointer.put('https://sw-internal/page-etag', new Response(tag));
-                }
-              } catch (e) { /* quota — not fatal */ }
-            })();
-            return res;
-          }
-          // Server answered but with an error (502/404/etc) — a cached working
-          // copy beats showing the shop an error page.
-          return (await cachedPage()) || res;
-        } catch (e) {
-          // Offline, or slower than the timeout.
-          const fallback = await cachedPage();
-          if (fallback) return fallback;
-          // Nothing cached yet (a first visit, or cleared storage). Do NOT give up on the first slow answer — that is what showed the
-          // browser's "webpage not available" on a slow connection: try again with no time limit; only if that fails too, show a friendly page.
-          try { return await fetch(req); } catch (e2) { return offlinePage(); }
-        }
+        // zip 145 — the download is NEVER aborted. After NAVIGATION_NETWORK_TIMEOUT_MS the cached copy is shown (the app opens fast
+        // on a slow line), but the download carries on and REPLACES the cached copy when it arrives (savePageCopy). It used to be
+        // aborted at 3.5 s: on a phone whose connection takes longer than that to answer, an installed app showed its old copy on every
+        // open and the copy was never refreshed — stuck for good on an old release (old offline detection: "Offline" with internet).
+        const network = event.__pageNetwork;
+        const timedOut = new Promise((r) => setTimeout(() => r('timeout'), NAVIGATION_NETWORK_TIMEOUT_MS));
+        let res = null, failed = false;
+        try { res = await Promise.race([network, timedOut]); } catch (e) { failed = true; }
+        if (res && res !== 'timeout' && res.ok) return res;
+        const fallback = await cachedPage();
+        if (fallback) return fallback;                                 // offline, slow, or an error answer: the cached app
+        if (res && res !== 'timeout') return res;                      // an error answer and nothing cached
+        // Nothing cached yet (a first visit, or cleared storage): wait for the download with no time limit; only if it fails, a
+        // friendly page.
+        if (!failed) { try { const r2 = await network; if (r2) return r2; } catch (e2) { /* below */ } }
+        try { return await fetch(req); } catch (e3) { return offlinePage(); }
       }
 
       // CACHE-FIRST for the static shell assets (manifest, icons). These are

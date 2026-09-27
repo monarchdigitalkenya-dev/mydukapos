@@ -446,7 +446,16 @@ function buildPoleDisplayBytes(line1, line2) {
 //@fn buildReceiptCanvas
 function buildReceiptCanvas(text, opts) {
             opts = opts || {};
-            let lines = text.split('\n');
+            // zip 144: the PDF / shared image uses the SAME laid-out lines as the paper (header and footer centred, items aligned as set),
+            // so a shared receipt looks exactly like the printed one.
+            let lines;
+            const secs = (typeof receiptSectionsFor === 'function') ? receiptSectionsFor(text) : null;
+            if (secs && typeof receiptGridLines === 'function') {
+                const al = typeof receiptItemAlign !== 'undefined' && (receiptItemAlign === 'center' || receiptItemAlign === 'right') ? receiptItemAlign : 'left';
+                lines = [...receiptGridLines(secs.header, 'center'), ...receiptGridLines(secs.items, al), ...receiptGridLines(secs.footer, 'center')];
+            } else {
+                lines = text.split('\n');   // other documents (statements) keep their own width
+            }
             const fontSize = 15;
             const lineHeight = Math.round(fontSize * 1.5);
             const paddingX = 24;
@@ -2637,11 +2646,12 @@ function generateReceiptRef() {
 
 //@fn getPaperCols
 function getPaperCols() {
-            const mm = receiptWidth === 'custom' ? (parseFloat(receiptCustomWidth) || 80) : (parseFloat(receiptWidth) || 80);
-            if (mm <= 58) return 32;
-            if (mm >= 80) return 48;
-            const cols = Math.round(mm * 0.6);
-            return Math.max(24, Math.min(64, cols));
+            // Characters per line = what the print head holds in the printer's standard font (Font A: 12 dots = 1.5 mm a character):
+            // 58 mm paper -> 48 mm printable -> 32; 80 mm -> 72 mm -> 48. Follows THIS device's printer (see receiptPaperMm). (zip 144)
+            const mm = receiptPaperMm();
+            if (mm >= 56 && mm <= 58) return 32;
+            if (mm >= 80 && mm < 100) return 48;
+            return Math.max(20, Math.min(64, Math.floor(receiptPrintableMm(mm) / 1.5)));
         }
 
 //@fn getServiceAvailableQty
@@ -4607,6 +4617,7 @@ function printOneBarcode(id) {
 //@fn printReceiptInNewWindow
 function printReceiptInNewWindow() {
             return new Promise((resolve) => {
+                try { fitReceiptGrids(); } catch (e) { /* the estimate stands */ }   // zip 144: exactly `cols` characters across the printable width
                 buildSystemPrintCopies();
                 setPrintMode('receipt');
                 let finished = false;
@@ -5105,7 +5116,7 @@ function queuePrintJob(jobFn) {
 
 //@fn receiptImageWidthPx
 function receiptImageWidthPx() {
-            const widthMm = receiptWidth === 'custom' ? (parseFloat(receiptCustomWidth) || 80) : (parseFloat(receiptWidth) || 80);
+            const widthMm = receiptPaperMm();
             return Math.max(360, Math.round(widthMm * 7.5));
         }
 
@@ -6458,6 +6469,7 @@ function runQueuedSystemPrint(setupAndPrintFn) {
                 // Some phones never fire 'afterprint': without a limit the next receipt in the queue waited behind this one for ever.
                 const safety = setTimeout(finish, window.__printSafetyMs || 20000);
                 window.addEventListener('afterprint', finish);
+                try { fitReceiptGrids(); } catch (e) { /* the estimate stands */ }
                 setupAndPrintFn();
             });
         }
@@ -9601,6 +9613,7 @@ function toggleVariantsBuilder() {
 
 //@fn triggerAutoPrintReceipt
 function triggerAutoPrintReceipt() {
+            if (window.__receiptRelayoutOnly) return;   // zip 144: re-laid out for another paper width — not a new print
             if (autoPrintEnabled) setTimeout(() => printReceipt(), 50);
         }
 
@@ -10148,14 +10161,15 @@ function thermalWrapLine(line, cols) {
             // Wrap at word boundaries so the PRINTER never has to break a line mid-word.
             line = line.replace(/\s+$/, '');
             if (line.length <= cols) return [line];
-            // A column-aligned line that is only a few characters too wide is squeezed (the
-            // widest gaps shrink first) instead of wrapped, so its columns stay lined up.
-            if (line.length - cols <= 6 && /\S {2,}\S/.test(line)) {
+            // A column-aligned line (fields separated by 2+ spaces) that is too wide is SQUEEZED — the widest gaps shrink first, down
+            // to one space — so its fields stay whole and the last one stays on the right edge. (Was: only when at most 6 too wide;
+            // a line laid out for wider paper then fell through to plain wrapping and split its numbers across lines.) (zip 144)
+            if (/\S {2,}\S/.test(line)) {
                 let over = line.length - cols;
                 const parts = line.split(/( {2,})/);
                 while (over > 0) {
                     let idx = -1, best = 1;
-                    parts.forEach((p, i) => { if (/^ {2,}$/.test(p) && p.length > best) { best = p.length; idx = i; } });
+                    parts.forEach((p, i) => { if (/^ {2,}$/.test(p) && i > 0 && p.length > best) { best = p.length; idx = i; } });
                     if (idx === -1) break;
                     parts[idx] = parts[idx].slice(1);
                     over--;
@@ -10168,8 +10182,16 @@ function thermalWrapLine(line, cols) {
             const room = cols - lead;
             const out = [];
             let cur = '';
-            line.trim().split(/ +/).forEach((word) => {
-                while (word.length > room) {                       // a single token longer than the paper
+            // Words; a currency and its amount ("KES 350.00", "-KES 50.00") are one word — never "KES" at the end of a line and the
+            // amount on the next.
+            const words = [];
+            line.trim().split(/ +/).forEach((w) => {
+                const prev = words[words.length - 1];
+                if (prev && /^-?(KES|KSH|Ksh|Kshs)$/.test(prev) && /^-?[\d.,]+/.test(w)) words[words.length - 1] = prev + ' ' + w;
+                else words.push(w);
+            });
+            words.forEach((word) => {
+                while (word.length > room) {                       // a single token longer than the paper (a long reference)
                     if (cur) { out.push(cur); cur = ''; }
                     out.push(indent + word.slice(0, room));
                     word = word.slice(room);
@@ -10255,13 +10277,13 @@ function thermalItemRow(cols, name, code, qtyStr, priceStr, amountStr, tag) {
 function thermalVatHeader(cols) {
             // The standard header is 33 characters - one more than a 58mm roll holds, so the last
             // letter wrapped onto its own line. Compact form for narrow paper.
-            if (cols >= 34) return 'CODE  RATE  VATABLE AMT   VAT AMT';
+            if (cols >= 34) { const vw = Math.floor((cols - 12) / 2); return 'CODE'.padEnd(6) + 'RATE'.padEnd(6) + 'VATABLE AMT'.padStart(cols - 12 - vw) + 'VAT AMT'.padStart(vw); }   // amounts on the right edge (zip 144)
             return 'CODE'.padEnd(5) + 'RATE'.padEnd(5) + 'VATABLE'.padStart(12) + 'VAT'.padStart(10);
         }
 
 //@fn thermalVatRow
 function thermalVatRow(cat, g, cols) {
-            if (cols >= 34) return cat.padEnd(6) + `${g.rate}%`.padEnd(6) + g.net.toFixed(2).padStart(12) + '  ' + g.vat.toFixed(2).padStart(8);
+            if (cols >= 34) { const vw = Math.floor((cols - 12) / 2); return cat.padEnd(6) + `${g.rate}%`.padEnd(6) + g.net.toFixed(2).padStart(cols - 12 - vw) + g.vat.toFixed(2).padStart(vw); }
             return cat.padEnd(5) + `${g.rate}%`.padEnd(5) + g.net.toFixed(2).padStart(12) + g.vat.toFixed(2).padStart(10);
         }
 
@@ -10299,7 +10321,7 @@ function buildSectionedReceiptBytes(headerText, itemsText, footerText, cutBytes)
             return concat([
                 b([0x1B, 0x40, 0x1B, 0x4D, 0x00]),                                   // initialise + font A
                 just(1), ...String(headerText).split('\n').map((l, i) => (i === 0 ? boldLine(l) : line(l))),
-                just(itemAlign), ...String(itemsText).split('\n').map((l) => (/^(TOTAL|AMOUNT DUE TODAY|ITEM\s+QTY)\b/.test(l) ? boldLine(l) : line(l))),
+                just(itemAlign), ...String(itemsText).split('\n').map((l) => (/^\s*(TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b/.test(l) ? boldLine(l) : line(l))),
                 just(1), line(footerText),
                 ...(refBarcode ? [line(''), refBarcode] : []),                        // scannable reference barcode (image)
                 b([0x1B, 0x64, 0x03]),                                                // feed
@@ -10446,12 +10468,20 @@ function buildReceiptDoc(sale, hooks) {
             if (receiptContact) headerLines.push(receiptContact);
             if (receiptExtraInfo) receiptExtraInfo.split('\n').forEach(l => { if (l.trim()) headerLines.push(l.trim()); });
             if (etimsPin) headerLines.push(`KRA PIN: ${etimsPin}`);
-            headerLines.push(hooks.docLabel ? hooks.docLabel(sale, ctx) : (isBill ? 'BILL / INVOICE' : 'Sales Receipt'));
+            const docLabel = hooks.docLabel ? hooks.docLabel(sale, ctx) : (isBill ? 'BILL / INVOICE' : 'Sales Receipt');
+            headerLines.push(docLabel);
             headerLines.push(rule);
-            headerLines.push(`Date: ${date.toLocaleDateString('en-GB')}   Time: ${date.toLocaleTimeString('en-GB')}`);
+            // One line when it fits (80 mm), otherwise Date and Time on lines of their own — never wrapped mid-way (zip 144)
+            const dateTime = `Date: ${date.toLocaleDateString('en-GB')}   Time: ${date.toLocaleTimeString('en-GB')}`;
+            if (dateTime.length <= cols) headerLines.push(dateTime);
+            else { headerLines.push(`Date: ${date.toLocaleDateString('en-GB')}`); headerLines.push(`Time: ${date.toLocaleTimeString('en-GB')}`); }
             headerLines.push(`Served by: ${sale.servedBy || adminServerName()}`);   // bills and receipts always say who served
             if (sale.customerName) headerLines.push(`Customer: ${sale.customerName}`);
-            if (sale.tableOrRoom) headerLines.push(`Table/Room: ${sale.tableOrRoom}`);
+            if (sale.tableOrRoom) {
+                // a module can say what the place is (Table 12 / Room 104) instead of the generic line (zip 144)
+                const loc = hooks.locationLines ? hooks.locationLines(sale) : null;
+                (Array.isArray(loc) ? loc : [`Table/Room: ${sale.tableOrRoom}`]).forEach(l => { if (l) headerLines.push(l); });
+            }
             if (hooks.headerExtra) (hooks.headerExtra(sale) || []).forEach(l => headerLines.push(l));
 
             // ---- item rows: one data set feeds BOTH the text and the on-screen table ----
@@ -10492,12 +10522,12 @@ function buildReceiptDoc(sale, hooks) {
             lines.push(rule);
             const totalLineIndex = lines.length;
             const totalLabel = hooks.totalLabel ? hooks.totalLabel(sale) : 'TOTAL';
-            lines.push(totalLabel.padEnd(labelCol) + kes(total).padStart(12));
+            lines.push(...receiptMoneyRow(totalLabel, kes(total), cols));
             const cartLevelOffers = Array.isArray(sale.cartOffersApplied)
                 ? sale.cartOffersApplied.filter(o => !entries.some(it => it.offerApplied && it.offerApplied.offerName === o.offerName && it.offerApplied.amount === o.amount && it.offerApplied.label === o.label))
                 : [];
             cartLevelOffers.forEach(o => lines.push(`Offer: ${o.label} (-KES ${Number(o.amount).toFixed(2)})`));
-            if (sale.totalDiscount > 0) lines.push(`Total Savings: ${kes(sale.totalDiscount)}`);
+            if (sale.totalDiscount > 0) lines.push(...receiptMoneyRow('Total Savings', kes(sale.totalDiscount), cols));
 
             // ---- payment ----
             const custom = hooks.paymentLines ? hooks.paymentLines(sale, ctx) : null;
@@ -10508,8 +10538,9 @@ function buildReceiptDoc(sale, hooks) {
             } else if (isBill) {
                 const paidNow = sale.amountPaid || 0;
                 if (paidNow > 0) {
-                    lines.push(`Paid Now: ${kes(paidNow)}`);
-                    lines.push(`STATUS: BALANCE ${kes(Math.max(0, total - paidNow))} — ${method === 'pod' ? 'PAY ON DELIVERY' : 'PAY LATER'}`);
+                    lines.push(...receiptMoneyRow('PAID', kes(paidNow), cols));
+                    lines.push(...receiptMoneyRow('BALANCE', kes(Math.max(0, total - paidNow)), cols));
+                    lines.push(`STATUS: ${method === 'pod' ? 'PAY ON DELIVERY' : 'PAY LATER'}`);
                 } else {
                     lines.push(method === 'pod' ? 'STATUS: UNPAID — PAY ON DELIVERY' : 'STATUS: UNPAID — PAY LATER');
                 }
@@ -10518,12 +10549,12 @@ function buildReceiptDoc(sale, hooks) {
                 if (details.length) { lines.push('Please settle via:'); details.forEach(d => lines.push(d)); }
                 else lines.push('Please contact us to arrange payment.');
             } else if (method === 'split') {
-                lines.push(`Paid by Cash: ${kes(sale.cashAmount)}`);
-                lines.push(`Paid by M-Pesa: ${kes(sale.mpesaAmount)}`);
+                lines.push(...receiptMoneyRow('Paid by Cash', kes(sale.cashAmount), cols));
+                lines.push(...receiptMoneyRow('Paid by M-Pesa', kes(sale.mpesaAmount), cols));
                 if (mpesaRef) lines.push(`M-Pesa Receipt: ${mpesaRef}`);
                 if (sale.cashAmount > 0) {
-                    lines.push(`Cash Tendered: ${kes(sale.amountTendered)}`);
-                    lines.push(`Change Given: ${kes(Math.max(0, sale.change || 0))}`);
+                    lines.push(...receiptMoneyRow('Cash Tendered', kes(sale.amountTendered), cols));
+                    lines.push(...receiptMoneyRow('CHANGE', kes(Math.max(0, sale.change || 0)), cols));
                 }
             } else if (method === 'mpesa') {
                 lines.push('Payment Method: M-PESA');
@@ -10534,8 +10565,8 @@ function buildReceiptDoc(sale, hooks) {
             } else if (method !== 'cash') {
                 lines.push(`Payment Method: ${String(method).toUpperCase()}`);
             } else {
-                lines.push('CASH'.padEnd(labelCol) + kes(sale.amountTendered).padStart(12));
-                lines.push('CHANGE'.padEnd(labelCol) + kes(Math.max(0, sale.change || 0)).padStart(12));
+                lines.push(...receiptMoneyRow('CASH', kes(sale.amountTendered), cols));
+                lines.push(...receiptMoneyRow('CHANGE', kes(Math.max(0, sale.change || 0)), cols));
             }
 
             // ---- items count + VAT table (skipped for pure "payment" records such as bill instalments) ----
@@ -10587,32 +10618,26 @@ function buildReceiptDoc(sale, hooks) {
             if (customerNo) footerLines.push(`Customer ${customerNo}`);
             if (showRef) footerLines.push(`Ref: ${sale.refNumber}`);
 
-            // ---- on-screen version: same content, real table ----
-            const linesToHtml = (arr) => arr.map(l => /^-+$/.test(l) ? '<hr style="border:none; border-top:1px solid #000; margin:4px 0;">' : escapeHtml(l)).join('<br>')
-                .replace(/(<hr[^>]*>)<br>/g, '$1').replace(/<br>(<hr)/g, '$1');
-            const cell = (content, bold, align) => `<td style="padding:3px 2px; text-align:${align || 'right'}; ${bold ? 'font-weight:bold;' : ''}">${content}</td>`;
-            let table = `<table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr style="border-bottom:1px solid #000;">` +
-                cell('Item', true, 'left') + cell('Qty', true) + cell('Price', true) + cell('Amount', true) + `</tr></thead><tbody>`;
-            let htmlLastSec = null;
-            orderedRows.forEach(r => {
-                if (showSections && r.sec !== htmlLastSec) { htmlLastSec = r.sec; table += `<tr><td colspan="4" style="padding:6px 2px 2px; font-weight:bold; text-align:left;">${escapeHtml(r.sec || '')}</td></tr>`; }
-                const nameCell = `<td style="padding:3px 2px; text-align:left;">${escapeHtml(r.html.name)}${r.code ? `<br><span style="font-size:10px; color:#7f8c8d;">#${escapeHtml(r.code)}</span>` : ''}</td>`;
-                table += `<tr>` + nameCell + cell(escapeHtml(r.html.qty)) + cell(escapeHtml(r.html.price)) + cell(escapeHtml(r.html.amount)) + `</tr>`;
-                r.subs.forEach(s => { table += `<tr><td colspan="4" style="padding:0 2px 3px 12px; font-size:10px; color:#7f8c8d; text-align:left;">${escapeHtml(s)}</td></tr>`; });
-            });
-            table += `</tbody><tfoot><tr style="border-top:1px solid #000;"><td colspan="3" style="padding:4px 2px; font-weight:bold; text-align:left;">${escapeHtml(totalLabel)}</td>` +
-                cell(escapeHtml(kes(total)), true) + `</tr></tfoot></table>`;
-
-            const itemAlignCss = receiptItemAlign === 'justified' ? 'left' : receiptItemAlign;
-            const barcodeHtml = showBarcode
-                ? `<div style="text-align:center; margin-top:6px;">${renderCode39SVG(sale.refNumber, { height: 40, narrow: 1.5 })}</div>` : '';
-            const html =
-                `<div style="text-align:center;">${linesToHtml(headerLines)}</div>` +
-                `<div style="text-align:${itemAlignCss};">${table}</div>` +
-                (afterItemLines.length ? `<div style="text-align:${itemAlignCss}; white-space:pre-wrap;">${linesToHtml(afterItemLines)}</div>` : '') +
-                `<div style="text-align:${itemAlignCss}; white-space:pre-wrap;">${linesToHtml(lines.slice(totalLineIndex + 1))}</div>` +
-                `<div style="text-align:center;">${linesToHtml(footerLines)}</div>` +
-                barcodeHtml;
+            // ---- on-screen / system-print version (zip 144): the SAME lines the printer gets, laid out on the same character grid ----
+            // It used to be a separate HTML table plus pre-wrap text at a fixed 12-13 px. On 58 mm paper that is ~23 characters a line
+            // for text laid out for 32 or 48: the browser re-wrapped it — words and numbers split, columns out of line, and the preview
+            // (always drawn 80 mm wide) looked fine while the paper did not.
+            const itemAlign = receiptItemAlign === 'center' ? 'center' : receiptItemAlign === 'right' ? 'right' : 'left';
+            const boldItem = (l) => /^\s*(TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b/.test(l);
+            const headBold = (l, i) => i === 0 || l.trim() === String(docLabel).trim();
+            let barcodeHtml = '';
+            if (showBarcode) {
+                // sized to the printable width: never wider than the paper (it was a fixed size and ran off 58 mm paper)
+                const n = String(sale.refNumber).length + 2;
+                const fitPx = receiptPrintableMm() * 96 / 25.4;
+                const narrow = Math.max(0.6, Math.min(1.5, fitPx / (14.5 * n + 20)));
+                barcodeHtml = `<div class="receipt-grid-barcode">${renderCode39SVG(sale.refNumber, { height: 40, narrow })}</div>`;
+            }
+            const html = receiptGridHtml([
+                { lines: headerLines, align: 'center', bold: headBold },
+                { lines, align: itemAlign, bold: boldItem },
+                { lines: footerLines, align: 'center' },
+            ], { cols }) + barcodeHtml;
 
             return { html, headerLines, lines, footerLines, total,
                 text: [...headerLines, ...lines, ...footerLines].join('\n'),
@@ -11605,7 +11630,7 @@ function buildReceiptEscPosBytes(headerText, itemsText, footerText) {
             const headerChunks = headerLines.map((line, i) => i === 0 ? ESCPOS.boldLine(line) : ESCPOS.text(line));
 
             const itemLines = itemsText.replace(/\r/g, '').split('\n');
-            const itemChunks = itemLines.map(line => /^(TOTAL|AMOUNT DUE TODAY|ITEM\s+QTY)\b/.test(line) ? ESCPOS.boldLine(line) : ESCPOS.text(line));
+            const itemChunks = itemLines.map(line => /^\s*(TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b/.test(line) ? ESCPOS.boldLine(line) : ESCPOS.text(line));
 
             return ESCPOS.concat([
                 ESCPOS.INIT,
@@ -13951,8 +13976,8 @@ function setKitchenPrintPage() {
             // The order ticket printed through the system dialog never set its own paper size, so a receipt printer got a full page's length of
             // paper for a few lines. Same width as the receipt and "auto" length: the slip is only as long as its lines.
             const pageStyle = document.getElementById('print-page-style');
-            const w = typeof receiptWidth !== 'undefined' ? (receiptWidth === 'custom' ? (parseFloat(receiptCustomWidth) || 80) : (parseFloat(receiptWidth) || 80)) : 80;
-            if (pageStyle) pageStyle.textContent = `@page { size: ${w}mm auto; margin: 0; }`;
+            const w = receiptPaperMm();
+            if (pageStyle) pageStyle.textContent = receiptPageRule(w, document.getElementById('kitchen-ticket-paper'));
             document.body.style.setProperty('--receipt-print-width', `${w}mm`);
             document.body.style.setProperty('--receipt-print-zoom', String(((typeof receiptScale !== 'undefined' && Number(receiptScale)) || 100) / 100));
         }
@@ -15290,4 +15315,250 @@ function netErrMsg(e, what) {
             const m = e && e.message;
             if (m && e.name !== 'TypeError' && e.name !== 'AbortError' && e.name !== 'SyntaxError' && !/failed to fetch|networkerror|load failed|network request failed/i.test(m)) return m;
             return netErrText(what);
+        }
+
+//@fn devicePaperWidth
+function devicePaperWidth() {
+            // zip 144 — THIS device's own printer paper ('' = follow the shop's Receipt Settings). The shop setting is synced to every till
+            // (and shared between branches), but each till has its own printer: a till with a 58 mm printer in a shop set to 80 mm got
+            // every line laid out 48 characters wide, and the PRINTER wrapped each one at 32 — broken words, "350.00 A" on a line of its own.
+            try { return localStorage.getItem('pos_device_paper_mm') || ''; } catch (e) { return ''; }
+        }
+
+//@fn receiptPaperMm
+function receiptPaperMm() {
+            // The paper width every receipt, bill, ticket and report on this device is laid out for (mm).
+            const dev = parseFloat(devicePaperWidth());
+            if (dev >= 30 && dev <= 120) return dev;
+            const rw = typeof receiptWidth !== 'undefined' ? receiptWidth : '80';
+            const cw = typeof receiptCustomWidth !== 'undefined' ? receiptCustomWidth : '';
+            const mm = rw === 'custom' ? (parseFloat(cw) || 80) : (parseFloat(rw) || 80);
+            return Math.max(30, Math.min(120, mm));
+        }
+
+//@fn receiptPrintableMm
+function receiptPrintableMm(paperMm) {
+            // What the print head can actually reach: 58 mm paper prints 48 mm (384 dots at 203 dpi), 80 mm prints 72 mm (576 dots).
+            // Laying a receipt out on the full paper width is what pushed its right edge off the head (clipped / scaled-down print).
+            const mm = paperMm || receiptPaperMm();
+            if (mm <= 58) return Math.max(26, mm - 10);
+            if (mm >= 80) return mm - 8;
+            return Math.round((48 + (mm - 58) * (24 / 22)) * 10) / 10;
+        }
+
+//@fn setDevicePaperWidth
+function setDevicePaperWidth(value) {
+            // '' = use the shop's setting; '58' / '80' / a width in mm = this device's printer. Kept on this device only (never synced).
+            const v = String(value == null ? '' : value).trim();
+            const n = parseFloat(v);
+            try {
+                if (!v || !(n >= 30 && n <= 120)) localStorage.removeItem('pos_device_paper_mm');
+                else localStorage.setItem('pos_device_paper_mm', String(n));
+            } catch (e) { /* private mode: this session only */ }
+            if (typeof syncDevicePaperWidthUI === 'function') syncDevicePaperWidthUI();
+            // an open receipt is laid out again for the new paper at once (the preview is always what will print)
+            try {
+                const modal = document.getElementById('receipt-modal');
+                if (modal && modal.style.display === 'flex' && typeof currentReceiptSale !== 'undefined' && currentReceiptSale
+                    && typeof renderReceipt === 'function' && Array.isArray(currentReceiptSale.items)) {
+                    window.__receiptRelayoutOnly = true;
+                    try { renderReceipt(currentReceiptSale); } finally { window.__receiptRelayoutOnly = false; }
+                }
+            } catch (e) { /* the next receipt uses it */ }
+            receiptApplyPaperVars();
+            if (typeof showToast === 'function') showToast(`This device's printer: ${receiptPaperMm()} mm paper (${getPaperCols()} characters a line).`);
+        }
+
+//@fn syncDevicePaperWidthUI
+function syncDevicePaperWidthUI() {
+            const dev = devicePaperWidth();
+            document.querySelectorAll('[data-device-paper]').forEach((b) => {
+                const on = (b.dataset.devicePaper || '') === (dev === '58' || dev === '80' ? dev : (dev ? 'custom' : ''));
+                b.classList.toggle('active', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+            document.querySelectorAll('.device-paper-now').forEach((el) => {
+                el.textContent = `${receiptPaperMm()} mm paper · ${getPaperCols()} characters a line${dev ? '' : ' (shop setting)'}`;
+            });
+        }
+
+//@fn receiptApplyPaperVars
+function receiptApplyPaperVars() {
+            // The on-screen paper is the real paper: same width, same printable area, same characters per line as the print.
+            try {
+                const paper = receiptPaperMm(), printable = receiptPrintableMm(paper);
+                const s = document.body.style;
+                s.setProperty('--rg-paper', paper + 'mm');
+                s.setProperty('--rg-side', ((paper - printable) / 2).toFixed(2) + 'mm');
+                s.setProperty('--rg-printable-px', String(printable * 96 / 25.4));
+            } catch (e) { /* cosmetic */ }
+        }
+
+//@fn ensureReceiptGridCss
+function ensureReceiptGridCss() {
+            if (document.getElementById('receipt-grid-css')) return;
+            const st = document.createElement('style');
+            st.id = 'receipt-grid-css';
+            // One layout for screen and print: a monospaced character grid, cols characters wide, sized so that exactly `cols`
+            // characters fill the printable width. Lines are laid out (and wrapped at word boundaries) BEFORE they reach the browser,
+            // so the browser never wraps anything itself — the old pre-wrap + word-break layout at a fixed 12-13 px is what split
+            // words and numbers ("350." / "00") on narrow paper.
+            st.textContent = [
+                '.receipt-grid{font-family:"Courier New",Courier,"Liberation Mono","Nimbus Mono PS","DejaVu Sans Mono","Roboto Mono","Droid Sans Mono",monospace !important;',
+                'font-size:var(--rg-font,11px) !important;line-height:1.28 !important;white-space:pre;width:calc(var(--rg-cols,32) * 1ch);margin:0 auto;text-align:left;',
+                'word-break:normal;overflow-wrap:normal;letter-spacing:0;font-variant-ligatures:none;font-kerning:none;color:#000;}',
+                // the apps set a proportional font on EVERY element (* { font-family: Segoe UI … }): the lines must take the grid's own
+                '.receipt-grid .rg-l{white-space:pre;min-height:1.28em;overflow:visible;font-family:inherit !important;font-size:inherit !important;line-height:inherit !important;letter-spacing:0 !important;}',
+                '.receipt-grid .rg-b{font-weight:700;}',
+                '.receipt-grid-barcode{text-align:center;margin:6px 0 2px;}',
+                '.receipt-grid-barcode svg{max-width:100%;height:auto;}',
+                '#receipt-modal .receipt-paper,#kitchen-ticket-modal .receipt-paper{box-sizing:border-box;width:var(--rg-paper,80mm);padding-left:var(--rg-side,4mm);padding-right:var(--rg-side,4mm);}',
+                '.device-paper-picker{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 8px;font-size:12px;}',
+                '.device-paper-picker button{padding:4px 10px;border-radius:14px;border:1px solid #bbb;background:#fff;color:#333;cursor:pointer;}',
+                '.device-paper-picker button.active{background:#2c3e50;color:#fff;border-color:#2c3e50;}',
+                '@media print{',
+                'body.printing-receipt .receipt-paper,body.printing-kitchen-ticket .receipt-paper{box-sizing:border-box !important;width:var(--rg-paper,80mm) !important;padding-left:var(--rg-side,4mm) !important;padding-right:var(--rg-side,4mm) !important;}',
+                'body.printing-receipt .receipt-paper.align-left{padding-left:max(0mm, calc(var(--rg-side,4mm) - 3mm)) !important;padding-right:calc(var(--rg-side,4mm) + 3mm) !important;}',
+                'body.printing-receipt .receipt-paper.align-right{padding-left:calc(var(--rg-side,4mm) + 3mm) !important;padding-right:max(0mm, calc(var(--rg-side,4mm) - 3mm)) !important;}',
+                'body.printing-receipt .receipt-grid,body.printing-kitchen-ticket .receipt-grid{font-size:var(--rg-font,11px) !important;}',
+                '.device-paper-picker{display:none !important;}',
+                '}',
+            ].join('');
+            document.head.appendChild(st);
+        }
+
+//@fn receiptGridSafe
+function receiptGridSafe(s) {
+            // One character = one column: tabs become a space; zero-width characters and emoji (drawn two columns wide, and not in a
+            // thermal printer's font) are removed so they can never push a column out of line.
+            return String(s == null ? '' : s).replace(/\t/g, ' ')
+                .replace(/[\u200B-\u200F\u2028\u2029\uFEFF]/g, '')
+                .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}]/gu, '')
+                .replace(/[\uD800-\uDFFF]/g, '');
+        }
+
+//@fn receiptGridLines
+function receiptGridLines(lines, align, cols) {
+            // The ONE line-layout step, shared by the preview, the system print dialog, the PDF and (through thermalPrepareText) the
+            // USB / Bluetooth printers: every line is fitted to `cols` characters and wrapped at word boundaries, never inside a word or
+            // a number, never leaving "KES" without its amount. Centre / right alignment is done with spaces, exactly as a printer does.
+            cols = cols || getPaperCols();
+            const out = [];
+            (Array.isArray(lines) ? lines : String(lines == null ? '' : lines).split('\n')).forEach((raw) => {
+                String(raw == null ? '' : raw).replace(/\r/g, '').split('\n').forEach((one) => {
+                    const fitted = thermalFitLegacyWidth(receiptGridSafe(one), cols);
+                    thermalWrapLine(fitted, cols).forEach((l) => {
+                        let t = l;
+                        if (align === 'center' && t.trim() && !/^-+$/.test(t.trim())) { t = t.trim(); t = ' '.repeat(Math.max(0, Math.floor((cols - t.length) / 2))) + t; }
+                        else if (align === 'right' && t.trim()) t = t.trim().padStart(cols);
+                        out.push(t);
+                    });
+                });
+            });
+            return out;
+        }
+
+//@fn receiptGridHtml
+function receiptGridHtml(blocks, opts) {
+            // blocks: [{ lines, align: 'left'|'center'|'right', bold(line, index) }]. Returns the grid, cols characters wide.
+            opts = opts || {};
+            const cols = opts.cols || getPaperCols();
+            ensureReceiptGridCss();
+            receiptApplyPaperVars();
+            const fontPx = (receiptPrintableMm() * 96 / 25.4) / (cols * 0.6);   // refined by fitReceiptGrids() once measurable
+            let html = `<div class="receipt-grid" data-cols="${cols}" style="--rg-cols:${cols}; --rg-font:${fontPx.toFixed(2)}px;">`;
+            (blocks || []).forEach((b) => {
+                if (!b) return;
+                receiptGridLines(b.lines || [], b.align || 'left', cols).forEach((l, i) => {
+                    const bold = typeof b.bold === 'function' ? !!b.bold(l, i) : false;
+                    html += `<div class="rg-l${bold ? ' rg-b' : ''}">${escapeHtml(l)}</div>`;
+                });
+            });
+            html += '</div>';
+            if (!window.__rgFitScheduled) {
+                window.__rgFitScheduled = true;
+                const run = () => { window.__rgFitScheduled = false; fitReceiptGrids(); };
+                if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run); else setTimeout(run, 0);
+            }
+            return html;
+        }
+
+//@fn fitReceiptGrids
+function fitReceiptGrids(root) {
+            // Fonts differ between devices (Courier New on Windows, another monospace on Android): measure the real character width
+            // and size the text so that exactly `cols` characters fill the printable width. Nothing to measure while hidden (the
+            // first estimate, 0.6 em per character, then stands) — it runs again on every print.
+            try {
+                const target = receiptPrintableMm() * 96 / 25.4;
+                (root || document).querySelectorAll('.receipt-grid').forEach((g) => {
+                    const w = g.getBoundingClientRect ? g.getBoundingClientRect().width : 0;
+                    if (!(w > 0)) return;
+                    const cur = parseFloat(g.style.getPropertyValue('--rg-font')) || 11;
+                    const next = cur * (target * 0.995) / w;
+                    if (Math.abs(next - cur) > 0.01) g.style.setProperty('--rg-font', next.toFixed(3) + 'px');
+                });
+            } catch (e) { /* the estimate stands */ }
+        }
+
+//@fn setPrintBodyText
+function setPrintBodyText(el, text, opts) {
+            // Any plain-text document (kitchen ticket, order slip, invoice, statement) shown in a print window: the same grid as receipts.
+            if (!el) return;
+            opts = opts || {};
+            el.innerHTML = receiptGridHtml([{ lines: String(text == null ? '' : text).split('\n'), align: opts.align || 'left', bold: opts.bold || ((l, i) => i === 0 && !!l.trim()) }]);
+        }
+
+//@fn receiptMoneyRow
+function receiptMoneyRow(label, value, cols) {
+            // "LABEL ............ KES 1,234.00": the amount always on the right edge, never split, never colliding with the label.
+            cols = cols || getPaperCols();
+            label = String(label); value = String(value);
+            if (label.length + 1 + value.length <= cols) return [label + ' '.repeat(cols - label.length - value.length) + value];
+            return [label, value.padStart(cols)];
+        }
+
+//@fn printPaperWidthTest
+async function printPaperWidthTest() {
+            // Prints two rulers straight to a USB / Bluetooth printer, with no fitting: the 32-character one always fits; if the
+            // 48-character one breaks onto a second line the printer is 58 mm. This is how to find out what a printer really holds.
+            const msgEl = document.getElementById('device-paper-test-msg');
+            const say = (t, err) => { if (msgEl) { msgEl.className = err ? 'settings-msg error' : 'settings-msg success'; msgEl.textContent = t; } else if (typeof showToast === 'function') showToast(t, !!err); };
+            const r32 = '12345678901234567890123456789012', r48 = r32 + '3456789012345678';
+            const text = ['PAPER WIDTH TEST', '', '32 characters:', r32, '', '48 characters:', r48, '', 'If the 48 line broke in two:', 'choose 58 mm.', 'If it printed on one line:', 'choose 80 mm.', '', '', ''].join('\n');
+            const bytes = new Uint8Array([0x1B, 0x40, 0x1B, 0x4D, 0x00, ...new TextEncoder().encode(text), 0x1D, 0x56, 0x42, 0x00]);
+            try {
+                if (printerMode === 'bluetooth' && typeof btPrinterCharacteristic !== 'undefined' && btPrinterCharacteristic) { await sendBytesViaBluetooth(bytes); say('Test sent over Bluetooth — see the note on the paper.'); return; }
+                if (printerMode === 'usb' && typeof usbPrinterDevice !== 'undefined' && usbPrinterDevice && usbPrinterEndpoint !== null) { await sendBytesViaUSB(bytes); say('Test sent over USB — see the note on the paper.'); return; }
+                say('Connect a USB or Bluetooth printer first (Settings ▸ Hardware). With the system print dialog, the receipt preview shows exactly what will print.', true);
+            } catch (e) { say('The test could not be sent: ' + (e && e.message ? e.message : e), true); }
+        }
+
+//@fn receiptPageRule
+function receiptPageRule(widthMm, contentEl, fixedLengthMm) {
+            // zip 144 — "@page { size: 58mm auto }" is NOT valid CSS (a length and `auto` cannot be mixed), so browsers dropped the whole
+            // size and printed on their default paper — A4 / Letter — shrinking the receipt into a corner or across pages. The page is
+            // now the roll's width and exactly as long as the document (measured), or the fixed length set in Receipt Settings.
+            const w = Math.round((Number(widthMm) || receiptPaperMm()) * 100) / 100;
+            let h = Number(fixedLengthMm) > 0 ? Number(fixedLengthMm) : 0;
+            if (!h) {
+                let px = 0;
+                try {
+                    px = contentEl ? Math.max(contentEl.scrollHeight || 0, contentEl.getBoundingClientRect ? contentEl.getBoundingClientRect().height : 0) : 0;
+                    // the on-screen buttons, the paper picker and the close button do not print: they are not paper to feed
+                    if (px > 0) contentEl.querySelectorAll('.receipt-actions, .device-paper-picker, .universal-modal-x').forEach((x) => { px -= x.getBoundingClientRect().height || 0; });
+                } catch (e) { px = 0; }
+                if (!(px > 0) && contentEl) {
+                    // not on screen (a kitchen / order slip prints without its window open): estimate from its lines, never a whole A4 of paper
+                    try {
+                        const grid = contentEl.querySelector('.receipt-grid');
+                        let rows = contentEl.querySelectorAll('.rg-l').length;
+                        if (!rows) rows = String(contentEl.textContent || '').split('\n').filter((l) => l.trim()).length;
+                        const fontPx = (grid && parseFloat(grid.style.getPropertyValue('--rg-font'))) || 11;
+                        if (rows > 0) px = rows * fontPx * 1.28 + (contentEl.querySelector('.receipt-grid-barcode') ? 60 : 0) + 30;
+                    } catch (e) { px = 0; }
+                }
+                h = px > 0 ? Math.ceil(px * 25.4 / 96) + 8 : 297;             // nothing to go on at all: an A4-long strip, cut after the last line
+            }
+            h = Math.max(40, Math.min(5000, h));
+            return `@page { size: ${w}mm ${h}mm; margin: 0; }`;
         }

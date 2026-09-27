@@ -58,28 +58,27 @@ const SW_FILES = ['sw.js', ...['water', 'hotel', 'hospital', 'production', 'serv
 function loadSw(file, { fetchImpl, cachesImpl }) {
   const handlers = {};
   const code = fs.readFileSync(path.join(ROOT, file), 'utf8').replace('NAVIGATION_NETWORK_TIMEOUT_MS = 3500', 'NAVIGATION_NETWORK_TIMEOUT_MS = 40');
-  const self = { addEventListener: (t, fn) => { handlers[t] = fn; }, location: { origin: 'https://x.test' }, skipWaiting() {}, clients: { claim() {} } };
+  const self = { addEventListener: (t, fn) => { handlers[t] = fn; }, location: { origin: 'https://x.test' }, skipWaiting() {}, clients: { claim() {}, matchAll: async () => (handlers.__clients || []) } };
   vm.runInNewContext(code, { self, caches: cachesImpl, fetch: fetchImpl, Request, Response, URL, AbortController, setTimeout, clearTimeout, crypto: globalThis.crypto, console: { warn() {}, log() {} } });
   return handlers;
 }
 const memCaches = (initial = {}) => {
   const stores = new Map(Object.entries(initial).map(([n, o]) => [n, new Map(Object.entries(o))]));
-  const mk = (name) => { if (!stores.has(name)) stores.set(name, new Map()); const m = stores.get(name); return { match: async (k) => { const key = typeof k === 'string' ? k : k.url || String(k); return m.get(key) || [...m.entries()].find(([kk]) => key.endsWith(kk.replace(/^\.\//, '')))?.[1]; }, put: async (k, v) => { m.set(typeof k === 'string' ? k : k.url, v); } }; };
+  const mk = (name) => { if (!stores.has(name)) stores.set(name, new Map()); const m = stores.get(name); return { match: async (k) => { const key = typeof k === 'string' ? k : k.url || String(k); const hit = m.get(key) || [...m.entries()].find(([kk]) => key.endsWith(kk.replace(/^\.\//, '')))?.[1]; return hit && hit.clone ? hit.clone() : hit; }, /* like the real Cache API: a fresh Response each time */ put: async (k, v) => { m.set(typeof k === 'string' ? k : k.url, v); } }; };
   return { open: async (n) => mk(n), keys: async () => [...stores.keys()], delete: async (n) => stores.delete(n) };
 };
-const navigate = async (handlers, url = 'https://x.test/hotel/?source=pwa') => {
-  let p; handlers.fetch({ request: { method: 'GET', url, mode: 'navigate' }, respondWith: (x) => { p = x; } });
+const navigate = async (handlers, url = 'https://x.test/hotel/?source=pwa', kept = []) => {
+  let p; handlers.fetch({ request: { method: 'GET', url, mode: 'navigate' }, respondWith: (x) => { p = x; }, waitUntil: (x) => { kept.push(x); } });
   return p;
 };
 const hangUntilAborted = (opts) => new Promise((_, rej) => { if (opts && opts.signal) opts.signal.addEventListener('abort', () => rej(new Error('aborted'))); });
 
 for (const file of SW_FILES) {
   test(`${file}: with nothing cached, a slow network is waited for (not the browser's error page); a dead network shows a friendly retry page; a broken cache falls back to the network`, async () => {
-    // a) slower than the limit, nothing cached: the second, unlimited try wins
-    let calls = 0;
-    let h = loadSw(file, { cachesImpl: memCaches(), fetchImpl: async (req, opts) => { calls++; const o = req.signal ? req : opts; if (req && req.signal) return hangUntilAborted(req); return new Response('THE APP', { status: 200 }); } });
+    // a) slower than the limit, nothing cached: the download is waited for (zip 145: it is never aborted, so the same one wins)
+    let h = loadSw(file, { cachesImpl: memCaches(), fetchImpl: () => new Promise((r) => setTimeout(() => r(new Response('THE APP', { status: 200 })), 150)) });
     let res = await navigate(h);
-    assert.equal(await res.text(), 'THE APP'); assert.ok(calls >= 2);
+    assert.equal(await res.text(), 'THE APP');
     // b) network completely down, nothing cached: a page, not an exception
     h = loadSw(file, { cachesImpl: memCaches(), fetchImpl: async () => { throw new TypeError('Failed to fetch'); } });
     res = await navigate(h);
@@ -90,6 +89,31 @@ for (const file of SW_FILES) {
     assert.equal(await res.text(), 'FROM NETWORK');
   });
 }
+for (const file of SW_FILES) {
+  test(`${file}: zip 145 — a slow network no longer strands an installed app on its old copy: the cached app opens at once, the download finishes, the copy is replaced and the open app is told`, async () => {
+    const stores = { 'minimartpos-shell-pointer': { 'https://sw-internal/current-cache-name': new Response('minimartpos-shell-abc'), 'https://sw-internal/page-etag': new Response('"old"') }, 'minimartpos-shell-abc': { './index.html': new Response('OLD APP') } };
+    // the same pointer / cache names whatever the app id (the test's memCaches matches by name, so point every app's names at them)
+    const code = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    const id = /const APP_ID = '([^']*)'/.exec(code)[1];
+    const st = {}; st[`${id}-shell-pointer`] = stores['minimartpos-shell-pointer']; st[`${id}-shell-abc`] = stores['minimartpos-shell-abc'];
+    st[`${id}-shell-pointer`]['https://sw-internal/current-cache-name'] = new Response(`${id}-shell-abc`);
+    const caches = memCaches(st);
+    const h = loadSw(file, { cachesImpl: caches, fetchImpl: () => new Promise((r) => setTimeout(() => r(new Response('NEW APP', { status: 200, headers: { etag: '"new"' } })), 200)) });
+    const told = []; h.__clients = [{ postMessage: (m) => told.push(m) }];
+    const kept = [];
+    const res = await navigate(h, 'https://x.test/?source=pwa', kept);
+    assert.equal(await res.text(), 'OLD APP', 'slow line: the cached app opens without waiting');
+    await Promise.all(kept);                                                        // the worker was kept alive for the download
+    const page = await (await caches.open(`${id}-shell-abc`)).match('./index.html');
+    assert.equal(await page.text(), 'NEW APP', 'the cached copy was replaced — the next open is the new release');
+    assert.deepEqual(told.map((m) => m.type), ['app-update-ready'], 'the open app was told a newer version is ready');
+    assert.match(code, /const SW_VERSION = 'zip-\d+';/, 'the service worker carries a release stamp');
+  });
+}
+test('every app ships the SAME service-worker release stamp (so an update reaches every installed app)', () => {
+  const v = SW_FILES.map((f) => /const SW_VERSION = '([^']+)';/.exec(fs.readFileSync(path.join(ROOT, f), 'utf8'))?.[1]);
+  assert.ok(v.every((x) => x && x === v[0]), v.join(', '));
+});
 test('a cached copy is still served when the network is slow (offline opening is unchanged)', async () => {
   const stores = { 'minimartpos-shell-pointer': { 'https://sw-internal/current-cache-name': new Response('minimartpos-shell-abc') }, 'minimartpos-shell-abc': { './index.html': new Response('CACHED APP') } };
   const h = loadSw('sw.js', { cachesImpl: memCaches(stores), fetchImpl: async (req) => hangUntilAborted(req) });
