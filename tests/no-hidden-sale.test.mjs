@@ -23,7 +23,9 @@ test('server: a database shop with no sales yet answers without any salesLog (th
   const sync = await load('pos-sync.js');
   await sync.onRequestPost({ request: new Request('https://x.pages.dev/api/pos-sync?c=C1', { method: 'POST', body: JSON.stringify({ businessName: 'Biz', updatedAt: Date.now(), inventory: [] }) }), env, waitUntil() {} });
   const os = await load('owner-storage.js');
+  kv.data.set('owner-session:tok', { value: '1' });
   await os.onRequestPost({ request: new Request('https://x.pages.dev/api/owner-storage', { method: 'POST', body: JSON.stringify({ action: 'migrate', clientId: 'C1' }), headers: { 'content-type': 'application/json', Authorization: 'Bearer tok' } }), env });
+  assert.equal(kv.data.get('pos-data:mode:C1').value, 'do', 'really a database shop');
   const res = await sync.onRequestGet({ request: new Request('https://x.pages.dev/api/pos-sync?c=C1'), env, waitUntil() {} });
   const body = await res.json();
   assert.ok(body.updatedAt > 0);

@@ -854,7 +854,7 @@ async function claimLicensePayment() {
                 await checkLicenseStatus();
                 if (upgradeScreenManuallyOpen) showUpgradeScreen(); // refresh the on-screen text with the new claimed status
             } catch (e) {
-                showToast('Could not reach the server — check your connection and try again.', true);
+                showToast(netErrText('Could not reach the server'), true);
             } finally {
                 paymentClaimInFlight = false;
                 if (btn) { btn.disabled = false; btn.textContent = 'I’ve made this payment'; }
@@ -1499,7 +1499,7 @@ async function deleteBranch(targetClientId, label) {
                 await renderBranchesPanel(true);
                 if (typeof renderDashboardBranchesSection === 'function') renderDashboardBranchesSection();
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(netErrText('Could not reach the server'), true);
             }
         }
 
@@ -1701,7 +1701,10 @@ function escapeQuotes(str) {
             // (a value inside onclick="fn('...')") or escapeHtml() (an attribute value).
             // Also neutralises backslashes, double quotes and newlines - the old version
             // only handled ', so a crafted name could break out of the handler/attribute.
-            return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;')
+            // zip 143: & < > are HTML-escaped too — "&#39;" in a name was turned back into ' by the browser inside onclick="…" and
+            // closed the string; and a few call sites put the result in text (an <option>), where < was not escaped.
+            return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+                .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
                 .replace(/\r/g, '\\r').replace(/\n/g, '\\n');
         }
 
@@ -3451,7 +3454,7 @@ async function loadRecoveryStatus() {
                     unlinkBtn.style.display = 'none';
                 }
             } catch (e) {
-                statusEl.textContent = 'Could not reach the server — check your connection.';
+                statusEl.textContent = netErrText('Could not reach the server');
             }
         }
 
@@ -4413,7 +4416,7 @@ async function persistPrintRoutingRules() {
                     body: JSON.stringify({ action: 'saveRules', rules: printRoutingRules }),
                 });
             } catch (e) {
-                showToast('Could not save routing rules — check your connection.', true);
+                showToast(netErrText('Could not save routing rules'), true);
             }
         }
 
@@ -5158,7 +5161,7 @@ async function registerEtims() {
                 refreshEtimsReceiptInfo();
             } catch (e) {
                 msgEl.className = 'settings-msg error';
-                msgEl.textContent = 'Could not reach the server — check your connection.';
+                msgEl.textContent = netErrText('Could not reach the server');
             }
         }
 
@@ -5186,7 +5189,7 @@ async function registerTillUrls() {
                 msgEl.textContent = '✅ Registered — payments made straight to your till will now show up below.';
             } catch (e) {
                 msgEl.className = 'settings-msg error';
-                msgEl.textContent = 'Could not reach the server — check your connection.';
+                msgEl.textContent = netErrText('Could not reach the server');
             }
         }
 
@@ -6039,7 +6042,7 @@ async function renderTillPayments(forceRefresh) {
                         <button type="button" class="settings-small-btn" style="background:${p.matched ? '#27ae60' : ''}; ${p.matched ? 'color:white;' : ''}" onclick="markTillPaymentMatched('${escapeJsAttr(p.transId)}', ${!p.matched})">${p.matched ? '✅ Matched' : 'Mark as matched'}</button>
                     </div>`).join('');
             } catch (e) {
-                el.innerHTML = '<p class="settings-msg error">Could not load — check your connection.</p>';
+                el.innerHTML = '<p class="settings-msg error">' + escapeHtml(netErrText('Could not load')) + '</p>';
             }
         }
 
@@ -7170,7 +7173,7 @@ async function searchOtherBranchesForExchange() {
                         <span>KES ${(r.price || 0).toFixed(2)}</span>
                     </div>`).join('');
             } catch (e) {
-                resultsBox.innerHTML = `<div class="search-item">Couldn’t reach other branches — check your connection.</div>`;
+                resultsBox.innerHTML = `<div class="search-item">${escapeHtml(netErrText('Couldn’t reach other branches'))}</div>`;
             }
         }
 
@@ -7298,7 +7301,7 @@ async function sendBillReminderSms(billId) {
                 const data = await res.json();
                 showToast(data.success ? `Reminder sent to ${phone}.` : (data.error || 'Could not send reminder.'), !data.success);
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(netErrText('Could not reach the server'), true);
             }
         }
 
@@ -7568,7 +7571,7 @@ async function setPaymentAccountBranch(accountId, branchClientId) {
                 paymentAccounts = data.accounts;
                 showToast(branchClientId ? `"${account.name}" connected to that branch.` : `"${account.name}" disconnected from any branch.`);
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(netErrText('Could not reach the server'), true);
             }
         }
 
@@ -8029,7 +8032,7 @@ function slimPayloadForPush(payload) {
             const MERGED = new Set(['staff', 'pendingInvites', 'inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers',
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
-                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs', 'cashShifts', 'approvalRequests', 'radiologyOrders', 'theatreCases', 'institutions', 'institutionCharges',
+                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs', 'cashShifts', 'approvalRequests', 'radiologyOrders', 'theatreCases', 'institutions', 'institutionCharges', 'resources', 'resourceSessions', 'facilityBookings', 'serviceRequests', 'customOrders', 'kegs',
                 'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes', 'rawMaterials']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
@@ -9479,7 +9482,7 @@ async function toggleReceiptSettingsShared(checked) {
                     showToast('Each branch now keeps its own separate receipt settings again.');
                 }
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(netErrText('Could not reach the server'), true);
             }
         }
 
@@ -9649,7 +9652,7 @@ async function unlinkRecoveryEmail() {
                 loadRecoveryStatus();
             } catch (e) {
                 msgEl.className = 'settings-msg error';
-                msgEl.textContent = 'Could not reach the server — check your connection.';
+                msgEl.textContent = netErrText('Could not reach the server');
             }
         }
 
@@ -9799,7 +9802,7 @@ function updateGasTabVisibility() {
             if (!btn) return;
             btn.style.display = doGasRefills ? '' : 'none';
             if (!doGasRefills && document.getElementById('gas-tab') && document.getElementById('gas-tab').classList.contains('active')) {
-                performTabSwitch(document.getElementById('sales-tab-btn'), 'sales-tab');
+                goToFirstAllowedTab(); // zip 143: not the Sales Counter unless this person was given it
             }
             if (doGasRefills) renderGasTab();
         }
@@ -12834,7 +12837,7 @@ async function updateStoreItemField(storeItemId, field, value) {
                 storeItemsCache = data.items;
                 renderStoreTab();
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(netErrText('Could not reach the server'), true);
                 renderStoreTab();
             }
         }
@@ -12855,7 +12858,7 @@ async function updateStoreItemQty(storeItemId, value) {
                 storeItemsCache = data.items;
                 renderStoreTab();
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(netErrText('Could not reach the server'), true);
                 renderStoreTab();
             }
         }
@@ -13632,9 +13635,12 @@ function renderStockTake() {
                 const code = escapeJsAttr(p.code);
                 const unit = p.unit || 'pcs';
                 const dual = !!p.dualUnit;
-                const sys = dual ? `${n(p.qty)} ${escapeHtml(unitLabel(unit))} + ${n(p.pieceQty)} loose` : `${n(p.qty)} ${escapeHtml(unitLabel(unit))}`;
-                const inputs = `<input type="text" inputmode="decimal" class="st-input" placeholder="${dual ? 'boxes' : 'counted'}" value="${escapeHtml(c.qty || '')}" oninput="stockTakeSet('${code}', 'qty', this.value)">`
-                    + (dual ? `<input type="text" inputmode="decimal" class="st-input" placeholder="loose" value="${escapeHtml(c.pieceQty || '')}" oninput="stockTakeSet('${code}', 'pieceQty', this.value)">` : '');
+                // zip 142 (hospitality): a bottle sold by the shot is counted as sealed bottles + the ml left in the open one (an open bottle is
+                // never counted as a full one); a keg product is counted as the sealed kegs in the store (kegs on tap are measured in 🍺 Bar & Kegs)
+                const bottle = !!p.bottleMl, keg = !!p.keg;
+                const sys = dual ? (bottle ? `${n(p.qty)} full bottle(s) + ${n(p.pieceQty)} ml open` : `${n(p.qty)} ${escapeHtml(unitLabel(unit))} + ${n(p.pieceQty)} loose`) : keg ? `${n(p.qty)} keg(s) in the store` : `${n(p.qty)} ${escapeHtml(unitLabel(unit))}`;
+                const inputs = `<input type="text" inputmode="decimal" class="st-input" placeholder="${dual ? (bottle ? 'full bottles' : 'boxes') : keg ? 'kegs in store' : 'counted'}" value="${escapeHtml(c.qty || '')}" oninput="stockTakeSet('${code}', 'qty', this.value)">`
+                    + (dual ? `<input type="text" inputmode="decimal" class="st-input" placeholder="${bottle ? 'ml in open bottle' : 'loose'}" value="${escapeHtml(c.pieceQty || '')}" oninput="stockTakeSet('${code}', 'pieceQty', this.value)">` : '');
                 return `<tr data-code="${escapeHtml(p.code)}"><td><strong>${escapeHtml(p.name)}</strong><div class="st-muted">${escapeHtml(p.code)}</div></td><td>${sys}</td><td class="st-inputs">${inputs}</td><td class="st-diff"></td><td style="display:flex; gap:4px; flex-wrap:wrap;"><button type="button" class="settings-small-btn st-mini" title="The count matches the system" onclick="stockTakeMatches('${code}')">✓ same</button><button type="button" class="settings-small-btn st-mini" style="background:#16a085; color:#fff;" title="Set this item's stock to the count typed above, right now — without applying anything else on this page" onclick="stockTakeApplyOne('${code}')">💾 Update</button></td></tr>`;
             }).join('') + (list.length > 400 ? `<tr><td colspan="5" class="st-muted">Showing the first 400 of ${list.length} — use the search box to narrow down.</td></tr>` : '');
             Array.from(tbody.querySelectorAll('tr[data-code]')).forEach((tr) => { const { item: p } = stockTakeFindByCode(tr.dataset.code); if (p) stockTakeFillDiffCell(tr, p); });
@@ -14643,7 +14649,7 @@ function todayBounds() {
 async function zReportPreflight() {
             try { if (typeof flushThenPull === 'function') await flushThenPull(); } catch (e) { /* handled below */ }
             if (typeof hasUnsyncedWork === 'function' && hasUnsyncedWork()) {
-                showToast('Not finalized: this device has sales or changes the server has not received yet. Connect to the internet and try again.', true);
+                showToast('Not finalized: this device has sales or changes the server has not received yet. They are being sent — try again in a moment. (' + netFailReason() + ')', true);
                 return false;
             }
             const online = typeof probeServer === 'function' ? (await probeServer(4000)) > 0 : true;
@@ -15170,4 +15176,118 @@ function installAutoDailyReportScheduler() {
             checkAutoDailyReportSchedule();
             setInterval(checkAutoDailyReportSchedule, 60000);
             document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAutoDailyReportSchedule(); });
+        }
+
+//@fn goToFirstAllowedTab
+function goToFirstAllowedTab() {
+            // Lands on the first tab this person may use (tab-bar order). A staff member is never parked on a tab they were not given —
+            // including the Sales Counter, which is a role like any other. With no tab at all, an explanation shows instead of a
+            // tab's contents. (zip 143)
+            let notice = document.getElementById('no-tabs-assigned-notice');
+            const firstContent = document.querySelector('.tab-content');
+            if (!notice && firstContent && firstContent.parentNode) {
+                notice = document.createElement('div');
+                notice.id = 'no-tabs-assigned-notice';
+                notice.style.cssText = 'display:none; margin:24px auto; max-width:480px; padding:20px; border-radius:10px; background:#fff8e1; color:#5d4037; text-align:center; font-size:15px; line-height:1.5;';
+                notice.innerHTML = '<div style="font-size:32px;">🔒</div><strong>No tabs have been given to your account yet.</strong><br>Ask the admin to tick the tabs you should use in 👥 Staff.';
+                firstContent.parentNode.insertBefore(notice, firstContent);
+            }
+            const allowed = Array.from(document.querySelectorAll('.tab-link[data-tab]')).find((b) => b.style.display !== 'none'
+                && document.getElementById(b.dataset.tab)
+                && !(typeof isTabLocked === 'function' && isTabLocked(b.dataset.tab)));
+            if (allowed) {
+                if (notice) notice.style.display = 'none';
+                performTabSwitch(allowed, allowed.dataset.tab);
+                return true;
+            }
+            document.querySelectorAll('.tab-content').forEach((el) => el.classList.remove('active'));
+            document.querySelectorAll('.tab-link').forEach((el) => el.classList.remove('active'));
+            if (notice) notice.style.display = 'block';
+            return false;
+        }
+
+//@fn openSalesCounterIfAllowed
+function openSalesCounterIfAllowed() {
+            // Every shortcut that jumps to the Sales Counter (a barcode scanned on another tab, "add to cart" from a booking,
+            // prescription or production screen) goes through here, so it can never open the till for someone who was not given it.
+            const btn = document.getElementById('sales-tab-btn');
+            if (typeof isTabLocked === 'function' && isTabLocked('sales-tab')) {
+                if (typeof showToast === 'function') showToast('The Sales Counter is not one of your tabs. Ask the admin to give it to you.', true);
+                return false;
+            }
+            const tab = document.getElementById('sales-tab');
+            if (tab && !tab.classList.contains('active')) performTabSwitch(btn, 'sales-tab');
+            return true;
+        }
+
+//@fn scannerStripFromField
+function scannerStripFromField(code) {
+            // A keyboard-wedge scanner types into whatever field has the cursor. A scan made while the cursor sat in "cash tendered",
+            // a quantity or a price used to leave the barcode's digits in that field (e.g. cash = 5901234123457) as well as adding the
+            // item. The scanned characters are taken back out of such a field. The Sales Counter search is simply cleared, and a field
+            // made for codes (barcode, search, reference) keeps what was scanned into it. (zip 143)
+            try {
+                const ae = document.activeElement;
+                if (!ae || !/^(INPUT|TEXTAREA)$/.test(ae.tagName) || !code) return;
+                if (ae.id === 'sales-search') { ae.value = ''; if (typeof liveSearch === 'function') liveSearch(''); return; }
+                if (/code|barcode|scan|search|ref|sku/i.test(`${ae.id} ${ae.name || ''} ${ae.placeholder || ''}`)) return;
+                const v = String(ae.value || '');
+                if (v.endsWith(code)) { ae.value = v.slice(0, v.length - code.length); ae.dispatchEvent(new Event('input', { bubbles: true })); }
+                else if (ae.type === 'number' && /^\d+$/.test(code) && v.replace(/\D/g, '').endsWith(code)) { ae.value = ''; ae.dispatchEvent(new Event('input', { bubbles: true })); }
+            } catch (e) { /* cosmetic */ }
+        }
+
+//@fn inventoryHasExactCode
+function inventoryHasExactCode(code) {
+            // Same matching rules as scanToCart: the item code, a dual-unit piece code, or a variant's own (box/piece) code.
+            const c = String(code || '').trim().toLowerCase();
+            if (!c || !Array.isArray(inventory)) return false;
+            return inventory.some((p) => p && ((p.code && String(p.code).toLowerCase() === c)
+                || (p.pieceCode && String(p.pieceCode).toLowerCase() === c)
+                || (Array.isArray(p.variants) && p.variants.some((v) => v && ((v.code && String(v.code).toLowerCase() === c) || (v.dualUnit && v.pieceCode && String(v.pieceCode).toLowerCase() === c))))));
+        }
+
+//@fn netFailReason
+function netFailReason() {
+            // zip 143 — the real reason a request failed, instead of "check your connection" for every failure (a server error, an
+            // expired session, a refused action, a slow answer). The connectivity manager's own verdict first (it checks /api/health and,
+            // only if that fails, the internet itself), then how the last API call actually failed.
+            try {
+                const net = window.PosNet;
+                if (net && net.state === 'offline') return 'this device is offline. Selling still works — this will work again when the internet is back.';
+                const f = window.__apiLastFail;
+                if (f && Date.now() - f.at < 20000) {
+                    if (f.kind === 'timeout') return 'the server took too long to answer. Your internet works — try again in a moment.';
+                    if (f.kind === 'network') {
+                        if (net) net.check('request failed');
+                        if (net && net.state === 'backend_unavailable') return 'your internet works, but the MyDukaPOS server is not answering. Try again in a moment.';
+                        if (net && net.state === 'online') return 'the request did not get through (the connection dropped for a moment) — try again.';
+                        return 'could not reach the server — check this device\'s internet connection.';
+                    }
+                    if (f.status === 401) return 'this device or your staff sign-in must be confirmed again (sign in with your PIN, or pair the device in Settings ▸ Devices & Security).';
+                    if (f.status === 403) return 'not allowed — this shop\'s link is not active, or your account may not do this.';
+                    if (f.status === 404) return 'not found on the server — refresh and try again.';
+                    if (f.status === 413) return 'too large to send in one go.';
+                    if (f.status === 429) return 'too many requests at once — wait a little and try again.';
+                    if (f.status >= 500) return `the server had a problem (error ${f.status}). Your internet works — try again in a moment.`;
+                    if (f.status) return `the server refused the request (error ${f.status}).`;
+                }
+                if (net && net.state === 'backend_unavailable') return 'your internet works, but the MyDukaPOS server is not answering. Try again in a moment.';
+                if (net && net.state === 'auth_required') return 'this device must be paired or signed in again before it can do this.';
+                return 'something went wrong — try again. (Your connection looks fine.)';
+            } catch (e) { return 'something went wrong — try again.'; }
+        }
+
+//@fn netErrText
+function netErrText(what) {
+            if (what === 'Could not reach the server') { const r = netFailReason(); return r.charAt(0).toUpperCase() + r.slice(1); }
+            return `${what}: ${netFailReason()}`;
+        }
+
+//@fn netErrMsg
+function netErrMsg(e, what) {
+            // A message the server itself sent is kept; a browser's own network error text ("Failed to fetch") is not.
+            const m = e && e.message;
+            if (m && e.name !== 'TypeError' && e.name !== 'AbortError' && e.name !== 'SyntaxError' && !/failed to fetch|networkerror|load failed|network request failed/i.test(m)) return m;
+            return netErrText(what);
         }

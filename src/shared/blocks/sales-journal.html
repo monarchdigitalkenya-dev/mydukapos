@@ -59,7 +59,9 @@
             if (items && items.length) { n = items.length; for (var i = 0; i < n; i++) { var it = items[i]; if (it) sum += (+it.price || 0) * (+it.qty || 0); } }
             return (r.timestamp || r.date || '') + '|' + (r.voided ? 1 : 0) + '|' + (r.voidedAt || '') + '|' + (r.unvoidedAt || '') + '|' + (r.paid === false ? 0 : 1)
                 + '|' + (r.amountPaid == null ? '' : r.amountPaid) + '|' + n + '|' + Math.round(sum * 100) + '|' + (r.qty == null ? '' : r.qty)
-                + '|' + (r.amount == null ? '' : r.amount) + '|' + (r.removed ? 1 : 0) + '|' + (r._deleted ? 1 : 0);
+                + '|' + (r.amount == null ? '' : r.amount) + '|' + (r.removed ? 1 : 0) + '|' + (r._deleted ? 1 : 0)
+                // zip 141: a sale signed later (staff session) or M-Pesa-checked later is a new version the server must receive
+                + (r.staffAuth && r.staffAuth.m ? '|a' + r.staffAuth.m : '') + (r.mpesaCheck && r.mpesaCheck.status ? '|m' + r.mpesaCheck.status : '');
         }
         window.salesJournalSig = sigOf;
         function deviceId() { try { return typeof getOrCreateDeviceId === 'function' ? getOrCreateDeviceId() : (localStorage.getItem('pos_device_id') || ''); } catch (e) { return ''; } }
@@ -211,12 +213,15 @@
                     if (tailOnly && e) { if (++knownRun >= 300) break; continue; }
                     knownRun = 0;
                     if (!e) {
+                        var freshNew = f === 'salesLog' && isFresh(r, now);
                         if (Math.abs(off) >= CLOCK_FIX_MS && !r.recordedLate && !r.deviceTimestamp && isFresh(r, now)) {
                             r.deviceTimestamp = r.timestamp;
                             r.timestamp = new Date(Date.parse(r.timestamp) + off).toISOString();
                             r.clockCorrectedBy = off;
                             fixed = true; stats.corrected++;
                         }
+                        // who made it (zip 141): a sale made here now is signed with the serving staff member's server session
+                        if (freshNew && !r.staffAuth && typeof window.staffSessionSign === 'function') { try { if (window.staffSessionSign(r)) fixed = true; } catch (err) { /* unsigned */ } }
                         // made on this device = not on the server yet ("pending"), whatever date it carries — a past sale recorded now
                         // too (zip 130). Only a BULK arrival of old-dated records in one save (a backup restored, history imported) is
                         // protected as "not confirmed" instead — decided after the loop.

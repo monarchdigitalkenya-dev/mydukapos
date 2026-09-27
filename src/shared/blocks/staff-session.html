@@ -1,0 +1,227 @@
+<!-- STAFF SESSION (zip 141) ------------------------------------------------------------------------------------------------------
+         Per-staff server sessions. Staff keep signing in with their PIN offline, exactly as before. When the device is online, the
+         same PIN also starts a SERVER session (/api/staff-session): the server checks the PIN against the staff record it holds and
+         returns a signed session for that person, with their permissions. Signed in offline? The PIN proof is kept in memory only
+         (never saved) and the session is asked for as soon as the device is online again.
+           * every NEW sale is signed with the serving staff member's session (a short session id + a signature over the sale's id,
+             time and total). The server checks it on every sync and stamps the sale; a sale is never refused or dropped for this;
+           * sales made before the session arrived are signed once it does (covering the time since that sign-in, at most a day);
+           * staff actions on the server (QR codes, menu, bookings, M-Pesa checks) carry the session (X-Staff-Token header);
+           * Settings ▸ Devices & Security ▸ "Staff sessions required": when on, the server refuses those actions without a valid
+             session or without the permission (e.g. a waiter cannot manage QR codes).
+         Self-contained on purpose (same code in every app). -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.__staffSessionInit) return;
+        window.__staffSessionInit = true;
+
+        var KEY = 'pos_staff_sessions_v1', UNSIGNED = 'pos_staff_unsigned_v1';
+        var pending = {};                                                  // sid -> { proof, since }  (memory only — never saved)
+
+        /* ---- SHA-256 / HMAC-SHA256, synchronous (a sale is signed inside the save that records it) ---- */
+        var K = [], H0 = [];
+        (function () { for (var n = 2, c = 0; c < 64; n++) { var p = true; for (var d = 2; d * d <= n; d++) if (n % d === 0) { p = false; break; } if (!p) continue; if (c < 8) H0[c] = (Math.pow(n, 1 / 2) % 1) * 4294967296 | 0; K[c++] = (Math.pow(n, 1 / 3) % 1) * 4294967296 | 0; } })();
+        function utf8(s) { return new TextEncoder().encode(String(s)); }
+        function sha256(bytes) {
+            var len = bytes.length, padded = new Uint8Array(((len + 9 + 63) >> 6) << 6);
+            padded.set(bytes); padded[len] = 0x80;
+            var view = new DataView(padded.buffer);
+            view.setUint32(padded.length - 8, Math.floor(len / 0x20000000), false);
+            view.setUint32(padded.length - 4, (len << 3) >>> 0, false);
+            var w = new Int32Array(64), H = H0.slice();
+            function r(x, n) { return (x >>> n) | (x << (32 - n)); }
+            for (var off = 0; off < padded.length; off += 64) {
+                for (var i = 0; i < 16; i++) w[i] = view.getInt32(off + i * 4, false);
+                for (i = 16; i < 64; i++) { var s0 = r(w[i - 15], 7) ^ r(w[i - 15], 18) ^ (w[i - 15] >>> 3), s1 = r(w[i - 2], 17) ^ r(w[i - 2], 19) ^ (w[i - 2] >>> 10); w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0; }
+                var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+                for (i = 0; i < 64; i++) {
+                    var t1 = (h + (r(e, 6) ^ r(e, 11) ^ r(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;
+                    var t2 = ((r(a, 2) ^ r(a, 13) ^ r(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+                    h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+                }
+                H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0; H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+            }
+            var out = new Uint8Array(32);
+            for (i = 0; i < 8; i++) { out[i * 4] = H[i] >>> 24; out[i * 4 + 1] = (H[i] >>> 16) & 255; out[i * 4 + 2] = (H[i] >>> 8) & 255; out[i * 4 + 3] = H[i] & 255; }
+            return out;
+        }
+        function hex(b) { var s = ''; for (var i = 0; i < b.length; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16); return s; }
+        function hmacHex(key, msg) {
+            var k = utf8(key); if (k.length > 64) k = sha256(k);
+            var ik = new Uint8Array(64), ok = new Uint8Array(64);
+            for (var i = 0; i < 64; i++) { var x = i < k.length ? k[i] : 0; ik[i] = x ^ 0x36; ok[i] = x ^ 0x5c; }
+            var m = utf8(msg), inner = new Uint8Array(64 + m.length); inner.set(ik); inner.set(m, 64);
+            var ih = sha256(inner), outer = new Uint8Array(96); outer.set(ok); outer.set(ih, 64);
+            return hex(sha256(outer));
+        }
+        window.staffSessionHmac = hmacHex;
+        // the same message the server checks (functions/api/_staff-auth.js saleMessage)
+        function saleMessage(r) {
+            var s = 0;
+            (Array.isArray(r.items) ? r.items : []).forEach(function (it) { if (it) s += (+it.price || 0) * (+it.qty || 0); });
+            return r.id + '|' + (r.deviceTimestamp || r.timestamp || '') + '|' + Math.round(s * 100);
+        }
+
+        /* ---- the sessions this device holds (one per staff member) ---- */
+        function readJ(k) { try { return JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch (e) { return {}; } }
+        function writeJ(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage full: signing is best effort */ } }
+        function currentSid() {
+            try { return typeof currentServer !== 'undefined' && currentServer && currentServer.id ? String(currentServer.id) : 'admin'; } catch (e) { return 'admin'; }
+        }
+        function sessionFor(sid) {
+            var s = readJ(KEY)[sid];
+            return s && s.exp > Date.now() ? s : null;
+        }
+        window.staffSessionFor = sessionFor;
+        window.staffSessionCurrent = function () { return sessionFor(currentSid()); };
+
+        function apiUrlOf(p) { return typeof apiUrl === 'function' ? apiUrl(p) : p; }
+        function online() { try { return typeof window.posNetOffline === 'function' ? !window.posNetOffline() : navigator.onLine !== false; } catch (e) { return true; } }
+
+        async function request(sid) {
+            var p = pending[sid];
+            if (!p || p.busy || !online()) return false;
+            p.busy = true;
+            try {
+                var body = sid === 'admin' ? { admin: true, proof: p.proof, since: p.since } : { staffId: sid, proof: p.proof, since: p.since };
+                var res = await fetch(apiUrlOf('/api/staff-session'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                var d = await res.json().catch(function () { return {}; });
+                if (res.ok && d.ok && d.sessionId) {
+                    var all = readJ(KEY);
+                    Object.keys(all).forEach(function (k) { if (!(all[k] && all[k].exp > Date.now())) delete all[k]; });
+                    all[sid] = { sessionId: d.sessionId, token: d.token, secret: d.secret, exp: d.exp, name: d.name, perms: d.perms || [], since: p.since, at: Date.now() };
+                    writeJ(KEY, all);
+                    delete pending[sid];
+                    signWaiting(sid);
+                    return true;
+                }
+                // a wrong PIN / removed / locked account here means the server's staff list differs from this device's: stop asking
+                if (res.status === 401 || res.status === 403 || res.status === 400) { delete pending[sid]; return false; }
+                if (res.status === 404 && (d.code === 'unknown_staff')) { p.busy = false; return false; }   // not synced yet: later
+                if (res.status === 404 || res.status === 405) { delete pending[sid]; return false; }       // server without sessions
+            } catch (e) { /* offline: later */ }
+            if (pending[sid]) pending[sid].busy = false;
+            return false;
+        }
+        // Called right after a PIN (or the Admin password) was checked on this device. `proof` = SHA-256 of what was typed.
+        window.staffSessionStart = function (sid, proof) {
+            sid = String(sid || 'admin');
+            if (!proof || typeof proof !== 'string' || /^p2\$/.test(proof)) return;
+            var held = sessionFor(sid);
+            if (held && held.exp - Date.now() > 4 * 3600000) return;           // still good for a while
+            pending[sid] = { proof: proof, since: Date.now() };
+            request(sid);
+        };
+        function retryAll() { Object.keys(pending).forEach(function (sid) { if (Date.now() - pending[sid].since > 16 * 3600000) delete pending[sid]; else request(sid); }); }
+        window.addEventListener('online', function () { setTimeout(retryAll, 1500); });
+        setInterval(retryAll, 60000);
+
+        /* ---- signing sales (called by the sales journal when it sees a NEW sale made on this device) ---- */
+        function signWith(s, r) {
+            r.staffAuth = { s: s.sessionId, m: hmacHex(s.secret, saleMessage(r)).slice(0, 32) };
+        }
+        window.staffSessionSign = function (r) {
+            if (!r || typeof r !== 'object' || !r.id || r.staffAuth) return false;
+            var sid = currentSid(), s = sessionFor(sid);
+            if (s) { signWith(s, r); return true; }
+            var w = readJ(UNSIGNED);                                           // signed later, when this person's session arrives
+            w[String(r.id)] = { sid: sid, at: Date.now() };
+            var ids = Object.keys(w); if (ids.length > 2000) ids.slice(0, ids.length - 2000).forEach(function (k) { delete w[k]; });
+            writeJ(UNSIGNED, w);
+            return false;
+        };
+        function signWaiting(sid) {
+            try {
+                var s = sessionFor(sid), w = readJ(UNSIGNED);
+                if (!s) return;
+                var key = (window.__LOG_KEYS && window.__LOG_KEYS.salesLog) || 'pos_sales_log';
+                var list = typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : null;
+                if (!list) return;
+                var n = 0, from = (s.since || 0) - 60000;
+                list.forEach(function (r) {
+                    var e = r && w[String(r.id)];
+                    if (!e || e.sid !== sid || r.staffAuth || e.at < from) return;
+                    signWith(s, r); delete w[String(r.id)]; n++;
+                });
+                Object.keys(w).forEach(function (k) { if (Date.now() - w[k].at > 2 * 86400000) delete w[k]; });
+                writeJ(UNSIGNED, w);
+                if (n) {
+                    localStorage.setItem(key, JSON.stringify(list));
+                    try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll sends it */ }
+                }
+            } catch (e) { /* best effort */ }
+        }
+        window.staffSessionSignWaiting = signWaiting;
+
+        /* ---- every API call carries the serving staff member's session ---- */
+        if (typeof window.fetch === 'function' && !window.fetch.__staffWrapped) {
+            var baseFetch = window.fetch;
+            var wrapped = function (input, init) {
+                try {
+                    var url = typeof input === 'string' ? input : (input && input.url) || '';
+                    if (url.indexOf('/api/') !== -1) {
+                        var s = sessionFor(currentSid());
+                        if (s && s.token) {
+                            init = Object.assign({}, init || {});
+                            var h = new Headers(init.headers || (typeof input !== 'string' && input && input.headers) || undefined);
+                            if (!h.has('X-Staff-Token')) h.set('X-Staff-Token', s.token);
+                            init.headers = h;
+                        }
+                    }
+                } catch (e) { /* send as it was */ }
+                return baseFetch.call(this, input, init);
+            };
+            Object.keys(baseFetch).forEach(function (k) { wrapped[k] = baseFetch[k]; });
+            wrapped.__staffWrapped = true;
+            window.fetch = wrapped;
+        }
+
+        /* ---- Settings ▸ Devices & Security: the session and the "required" switch ---- */
+        function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+        async function renderCard() {
+            var host = document.getElementById('settings-section-devices');
+            if (!host) return;
+            var card = document.getElementById('staff-session-card');
+            if (!card) {
+                card = document.createElement('div');
+                card.id = 'staff-session-card';
+                card.style.cssText = 'margin-top:14px; padding-top:10px; border-top:1px solid rgba(0,0,0,0.1);';
+                host.appendChild(card);
+                card.addEventListener('click', onCardClick);
+            }
+            var s = window.staffSessionCurrent(), sid = currentSid();
+            var who = s ? '✅ ' + esc(s.name) + ' — confirmed by the server until ' + new Date(s.exp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : pending[sid] ? '⏳ Signed in on this device — the server will confirm it when the device is online.'
+                : '⚪ Not confirmed by the server (signed in before this update, or offline). Sign in again with your PIN while online.';
+            var mode = '…';
+            try { var res = await fetch(apiUrlOf('/api/staff-session'), { method: 'GET' }); var d = await res.json().catch(function () { return {}; }); mode = d.mode || (res.status === 404 ? 'unavailable' : 'off'); } catch (e) { mode = 'offline'; }
+            var mgr = s && (s.perms || []).indexOf('*') !== -1 && (sid === 'admin' || (function () { try { var m = staff.find(function (x) { return String(x.id) === sid; }); return !!(m && m.isManager); } catch (e) { return false; } })());
+            card.innerHTML = '<h4 style="margin:0 0 6px;">👤 Staff sessions</h4>'
+                + '<p class="settings-hint" style="margin:0 0 6px;">' + who + '</p>'
+                + '<p class="settings-hint" style="margin:0 0 8px;">Every new sale is signed by the staff member serving, and the server checks it. <b>Staff sessions required</b>: '
+                + (mode === 'enforce' ? 'ON — QR codes, the online menu, bookings and M-Pesa checks need a staff member confirmed by the server, with the permission.' : mode === 'off' ? 'off — those actions work as before; the server only records who did them.' : mode === 'offline' ? 'can\'t check (offline).' : 'this server doesn\'t support it yet.') + '</p>'
+                + (mode === 'enforce' || mode === 'off' ? (mgr ? '<button type="button" class="settings-small-btn" data-ss="mode">' + (mode === 'enforce' ? 'Turn off' : 'Require staff sessions') + '</button>' : '<p class="settings-hint" style="margin:0;">Only the Admin or a manager, confirmed by the server, can change this.</p>') : '')
+                + '<div id="staff-session-msg" class="settings-hint" style="margin-top:6px;"></div>';
+            card.dataset.mode = mode;
+        }
+        async function onCardClick(ev) {
+            var b = ev.target.closest && ev.target.closest('[data-ss="mode"]');
+            if (!b) return;
+            var card = document.getElementById('staff-session-card'), msg = document.getElementById('staff-session-msg');
+            var to = card.dataset.mode === 'enforce' ? 'off' : 'enforce';
+            if (to === 'enforce' && !confirm('Require staff sessions?\n\nStaff who signed in while offline must sign in again (online) before managing QR codes, the online menu, bookings or M-Pesa checks. Selling is never blocked.')) return;
+            try {
+                var res = await fetch(apiUrlOf('/api/staff-session'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'mode', mode: to }) });
+                var d = await res.json().catch(function () { return {}; });
+                if (!res.ok) throw new Error(d.error || 'Could not change it.');
+            } catch (e) { if (msg) msg.textContent = e.message || String(e); return; }
+            renderCard();
+        }
+        window.renderStaffSessionCard = renderCard;
+        document.addEventListener('click', function (ev) {
+            var t = ev.target.closest && ev.target.closest('[data-section="settings-section-devices"], [data-tab="settings-tab"]');
+            if (t) setTimeout(renderCard, 150);
+        }, true);
+    })();
+    </script>

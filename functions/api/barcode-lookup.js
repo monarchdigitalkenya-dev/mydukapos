@@ -46,8 +46,8 @@ async function lookupUpcItemDb(code, env) {
     headers['key_type'] = env.UPCITEMDB_KEY_TYPE || '3scale';
   }
 
-  const res = await fetch(`${base}?upc=${encodeURIComponent(code)}`, { headers });
-  if (!res.ok) return null;
+  const res = await timedFetch(`${base}?upc=${encodeURIComponent(code)}`, { headers });
+  if (!res.ok) { if (res.status === 404) return null; throw new Error('lookup source answered ' + res.status); }   // a quota/5xx is not "unknown product"
   const data = await res.json();
   const item = data && Array.isArray(data.items) ? data.items[0] : null;
   if (!item || !item.title) return null;
@@ -63,8 +63,8 @@ async function lookupUpcItemDb(code, env) {
 }
 
 async function lookupOpenFoodFacts(code) {
-  const res = await fetch(`https://world.openfoodfacts.org/api/v0/product/${encodeURIComponent(code)}.json`);
-  if (!res.ok) return null;
+  const res = await timedFetch(`https://world.openfoodfacts.org/api/v0/product/${encodeURIComponent(code)}.json`);
+  if (!res.ok) { if (res.status === 404) return null; throw new Error('lookup source answered ' + res.status); }   // a quota/5xx is not "unknown product"
   const data = await res.json();
   if (data.status !== 1 || !data.product) return null;
 
@@ -82,6 +82,19 @@ async function lookupOpenFoodFacts(code) {
   };
 }
 
+// zip 143: each source gets 4 s — a slow database used to hold the cashier's scan for as long as it liked.
+async function timedFetch(url, opts = {}, ms = 4000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(url, { ...opts, signal: ctrl.signal }); } finally { clearTimeout(t); }
+}
+
+// zip 143: answers are cached for every shop (a product's name is the same everywhere): a repeat scan is instant, and the free
+// UPCitemdb allowance (100 a day, shared by every shop behind this server) is not spent twice on the same code. "Not found" is kept
+// for a day only, so a product added to the databases later is found.
+const CACHE_HIT_TTL = 30 * 24 * 3600, CACHE_MISS_TTL = 24 * 3600;
+const cacheKey = (code) => `barcode-cache:v1:${code}`;
+
 export async function onRequestOptions() {
   return new Response(null, { status: 204, headers: CORS_HEADERS });
 }
@@ -93,6 +106,8 @@ export async function onRequestGet(context) {
   if (!code) {
     return jsonResponse({ error: 'Missing code' }, 400);
   }
+  // Barcodes are short and plain (EAN/UPC digits, Code-128 letters/digits). Anything else is not looked up (zip 143).
+  if (code.length > 64 || !/^[A-Za-z0-9._-]+$/.test(code)) return jsonResponse({ found: false, reason: 'not a product barcode' });
 
   // Resolves to this shop whether they're on their own subdomain
   // (georgehardware.mydukapos.store) or a legacy ?c= link — see _license.js.
@@ -101,19 +116,29 @@ export async function onRequestGet(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
 
+  const kv = env.mydukapos_kv;
+  try {
+    const cached = kv ? await kv.get(cacheKey(code)) : null;
+    if (cached) return jsonResponse({ ...JSON.parse(cached), cached: true });
+  } catch (e) { /* cache is optional */ }
+  const remember = async (body, ttl) => { try { if (kv) await kv.put(cacheKey(code), JSON.stringify(body), { expirationTtl: ttl }); } catch (e) { /* optional */ } };
+
+  let sourceFailed = false;
   try {
     const fromUpc = await lookupUpcItemDb(code, env);
-    if (fromUpc) return jsonResponse(fromUpc);
+    if (fromUpc) { await remember(fromUpc, CACHE_HIT_TTL); return jsonResponse(fromUpc); }
   } catch (e) {
-    // fall through to the next source
+    sourceFailed = true;   // fall through to the next source
   }
 
   try {
     const fromOff = await lookupOpenFoodFacts(code);
-    if (fromOff) return jsonResponse(fromOff);
+    if (fromOff) { await remember(fromOff, CACHE_HIT_TTL); return jsonResponse(fromOff); }
   } catch (e) {
-    // fall through to "not found"
+    sourceFailed = true;   // fall through to "not found"
   }
 
+  // A source that timed out or failed is not proof the product is unknown — only a clean "not found" is remembered.
+  if (!sourceFailed) await remember({ found: false }, CACHE_MISS_TTL);
   return jsonResponse({ found: false });
 }

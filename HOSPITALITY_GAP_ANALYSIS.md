@@ -97,3 +97,41 @@ Every phase extends the existing tabs, bills, stock ledger, printers and sync. N
    * Hospitality roles with granular permissions (waiter sees own orders…), outlets / departments.
    * Hospitality reports (table / waiter, bar variance, occupancy, utilisation).
    * The M-Pesa typed-code "unverified until reconciled" fix.
+
+## Status after zip 140
+Phases 1–7 of the delivery plan are built (see `CHANGES_ZIP_140.md`), each end-to-end tested:
+* the order engine and waiter screens;
+* kitchen / bar routing and the display;
+* secure QR ordering;
+* the facility engine (pool, pool tables, reservations);
+* hotel operations;
+* custom orders, catering and events;
+* roles, outlets, reports, and M-Pesa code verification.
+
+**Still open (deliberately not faked):**
+* **Per-staff authorization on the server.** Today the server checks the shop, the paired device, published prices, QR tokens,
+  bookings and M-Pesa codes; staff permissions are checked in the app. Per-staff server checks need per-staff server sessions.
+* **Split bill by person / amount.** Split by item is done: move ticked items.
+* **Bar units.** Bottle → shot / ml deductions for cocktails. Recipes deduct whatever units an item is set up with today.
+* **Loyalty tiers.** The existing loyalty tokens are unchanged.
+
+## Status after zip 141
+The four items still open after zip 140 are built (see `CHANGES_ZIP_141.md`), each end-to-end tested:
+* **Per-staff server sessions.** The server checks the staff PIN against its own staff record, signs a session with that person's
+  permissions, checks every sale's staff signature on sync (stamping it, never dropping it), and — when the shop turns it on —
+  refuses QR / menu / booking / M-Pesa-check actions without a confirmed staff member or the permission.
+* **Split bill by person / amount**, each part a real sale with a receipt.
+* **Bar units**: bottle → tot / shot / double / glass, the open bottle counted in whole ml.
+* **Loyalty member levels** on top of the token brackets.
+
+**Still open (deliberately not faked):**
+* **Cocktails from several bottles.** A pour takes one bottle's ml. A cocktail can use the existing dish recipe (ingredients in
+  bottles), which is itemised now but counted in fractions of a bottle.
+* **Breakage** as its own stock movement type (today: a stock adjustment with a reason).
+* **Member discounts applied automatically.** Levels show perks; any discount stays the cashier's decision.
+
+## Status after zip 142
+* **Bar units: done.** Shots, doubles, glasses and bottles from open bottles, with exact ml, never oversold. See `CHANGES_ZIP_142.md`.
+* **Draught kegs: done.** Individual kegs with conflict-free multi-till counting, replace / wastage / measure / reconciliation, low
+  alerts and audit.
+* Breakage of packaged stock is still a stock adjustment with a reason. Keg wastage has its own reasons.

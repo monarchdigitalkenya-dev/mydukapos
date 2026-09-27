@@ -22,6 +22,7 @@
 //   demo-account-index:v1             -> array of lead summaries, newest first
 //   demo-account-reg-rate:<ip>        -> registration rate-limit counter
 
+import { loginBlocked, noteLoginFailure } from './_ratelimit.js';
 import { createClient, clientLink, listProducts, evaluateLicense, getLicense, deleteClient, getDemoDurationMs } from './_license.js';
 import { requireOwnerAuth } from './_owner-auth.js';
 import { sendEmail } from './_email.js';
@@ -235,8 +236,10 @@ export async function onRequestPost(context) {
 
   if (action === 'login') {
     const email = normalizeEmail(body.email);
+    const blocked = await loginBlocked(env, request, 'demo:' + email);
+    if (blocked) return blocked;
     const account = await verifyPassword(env, email, body.password);
-    if (!account) return jsonResponse({ error: 'Incorrect email or password.' }, 401);
+    if (!account) { await noteLoginFailure(env, request, 'demo:' + email); return jsonResponse({ error: 'Incorrect email or password.' }, 401); }
     const token = await createSession(env, email);
     return jsonResponse({ token });
   }

@@ -162,7 +162,7 @@ function reports(M) {
 function people(M) {
   return ch('people', '👥', 'Staff, access and security', {
     steps: [
-      'Open **⚙️ Settings ▸ 👥 Staff Accounts** (or the **👥 Staff** tab) and add a staff member\u2019s name. Tick the tabs they may use (the Sales Counter is always allowed). Tap **Generate invite link**.',
+      'Open **⚙️ Settings ▸ 👥 Staff Accounts** (or the **👥 Staff** tab) and add a staff member\u2019s name. Tick the tabs they may use — the Sales Counter too; a staff member sees only the tabs ticked for them. Tap **Generate invite link**.',
       'Send the link to them. They open it, choose a **PIN** (4+ characters) and they are in — no shop password needed. The link then turns into their personal login link: they should bookmark it.',
       'A staff member is listed once: a double tap on "Create my account" cannot make two copies.',
       '**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.',
@@ -336,10 +336,17 @@ MODS.shop = {
 MODS.hotel = {
   name: 'Hotel POS', title: 'Hotel POS — User Guide', tagline: 'Restaurants, bars, hotels and lodges — dishes, kitchen, tabs for tables and rooms, bills and reports.',
   itemsPlural: 'items and dishes', itemWord: 'item', addTab: '📦 Add New Items', restockTab: '📥 Restock',
-  tabs: ['🛒 Sales Counter', '🍳 Kitchen', '🧾 Tabs', '📊 Dashboard', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['🛒 Sales Counter', '🍳 Kitchen', '🧾 Tabs', '🍽️ Service Orders', '📺 Kitchen & Bar Display', '🍺 Bar & Kegs', '🎱 Facilities', '🏨 Hotel', '🎂 Custom Orders & Events', '📈 Hospitality Reports', '📊 Dashboard', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
   tabText: {
     'Kitchen': 'Dishes prepared and sold today: log portions prepared, see sold and left, shelf life.',
     'Tabs': 'Open tabs for a table, room or guest: add rounds of orders over time, settle at the end.',
+    'Service Orders': 'Waiters: start an order for a table, room or guest (dine-in, takeaway, room service, poolside…), see your active orders, and in the side panel add, remove, exchange, add a note, move / split / merge, and settle the order for billing — only the change prints for the kitchen or bar. New QR orders from customers wait here to be accepted.',
+    'Bar & Kegs': 'Shots, doubles and bottles from open bottles; draught kegs (take from the store, connect, replace, wastage, measure), low-keg alerts, keg reconciliation and the bar audit.',
+    'Kitchen & Bar Display': 'The screen for the kitchen, the bar, the bakery… each sees only its own items: New → Accepted → Preparing → Ready → Served, with the waiting time, late orders in red and rush orders first. Waiters are told when their items are ready.',
+    'Facilities': 'Pool, pool / snooker tables, cabanas, conference rooms…: start, pause and end timed sessions, sell pool passes (with capacity and expiry), and book any facility without double booking. Time and passes go on the customer\u2019s one bill with their food and drinks.',
+    'Custom Orders & Events': 'Custom cakes, special meals and platters, catering and events: take the details (size, flavour, message, allergies, guests, menu…) and reference pictures, quote, record the customer\u2019s approval, take the deposit (a real payment with a receipt), schedule, produce, quality-check, tell the customer it is ready, and collect the balance. Events can book their venue; packages (e.g. a family pool package) sell food, drinks and pool access as one priced item.',
+    'Hospitality Reports': 'For a day or a period: sales, payments (cash, M-Pesa — with any not verified — card), what is still outstanding and the estimated profit, kept apart; by outlet, order type, source, waiter and table; top products and drinks; every order change with its reason; hotel occupancy and room revenue; pool passes and busiest hour; pool-table hours and use; custom orders and their balances.',
+    'Hotel': 'Rooms at a glance for the next 14 days, reservations (never sold twice), arrivals and check-in, housekeeping (dirty → cleaning → clean → inspected), service requests (towels, cot, decorations…) and room types with their nightly rates.',
     'Tables & Rooms': 'Set up your tables, rooms and utensils (generate Table 01… in one go).',
   },
   custom: [
@@ -377,6 +384,44 @@ MODS.hotel = {
         'Sales use up the prepared portions; a void gives a portion back. Two tills\u2019 sales and preparations add up on both.',
       ],
       tips: ['A finished batch is closed so old sales never eat a new batch.'],
+    }),
+    ch('split', '👥', 'Splitting a bill', {
+      intro: 'Guests at one table can pay separately. Open the order, tap **Settle**, then:',
+      steps: [
+        '**👥 Split by person** — tick what this person had (e.g. 1 burger, 1 beer). Their share of the service charge is added. Choose cash, M-Pesa or card and **Take this payment**. They get their own receipt.',
+        '**➗ Pay a share (amount)** — type what this person pays, or tap **÷ equally** to split the balance between a number of people.',
+        'Repeat for each person. The order shows **paid so far** and the **balance**. The last payment closes it, or **Settle** takes the rest — its receipt lists what was not paid yet, less the shares already taken.',
+        'Items already paid for can\u2019t be removed or moved to another table. A voided part puts its amount back on the balance.',
+      ],
+    }),
+    ch('bar', '🍺', 'Shots, doubles, bottles and draught kegs', {
+      intro: 'Everything is in **🍺 Bar & Kegs**. Packaged drinks (a 500 ml Tusker bottle, a can) stay ordinary items: 1 sold = 1 off.',
+      steps: [
+        '**A bottle sold by the shot:** in **⚙️ Set up a drink**, pick the bottle (e.g. Johnnie Walker Black), its size (750 ml), and tick the servings with their size and price — **Shot 30 ml KES 350**, **Double 60 ml KES 650** — and the price of the whole **Bottle**. The business default shot size is set once (e.g. 30 ml); a product can use its own (40 ml, 50 ml).',
+        '**Selling:** on the **🛒 Sales Counter** the bartender taps **SHOT**, **DOUBLE** or **BOTTLE** under the drink. Nobody types millilitres. A shot takes 30 ml from the open bottle; a new bottle is opened by itself; a whole bottle is always a sealed one. The till never sells more than is there ("Only 20 ml left").',
+        '**Stock:** each bottle shows **full bottles · 1 open (450 ml) · ml in all**. In **📋 Stock Take** count the full bottles and the ml in the open one — an open bottle is never counted as full.',
+        '**A keg:** set up the keg product (e.g. Tusker Lager Keg, **50 L**, low alert at **5 L**) with its servings (**300 ml**, **500 ml**, **1 L**) and prices. Receive kegs in **📥 Restock** (they are the sealed kegs in the store).',
+        '**Take a keg from the store** and connect it to a tap. Each keg has its own number, tap, status (Full, Active, Low, Empty, Disconnected, Closed, Spoiled) and history. Selling 500 ml takes 500 ml from the oldest active keg; when it runs dry the next full keg is connected by itself (you can switch that off).',
+        '**Replace** a keg (the old one is closed at what is left, written off with its history kept, and the next one goes on the same tap), record **💧 Wastage** (spillage, foam, leakage… — a reason is required), **📏 Measure** what is really in a keg, **Close** or mark **Spoiled**.',
+        '**🧮 Keg reconciliation:** opening − sold − wastage = expected; measured − expected = **variance**. **📈 Hospitality Reports** also show beverage sales by serving, shots, and kegs.',
+        'Keg and shot drinks work everywhere: tables, bar orders, room service, charge to a room, split bills, QR orders (only when there is stock). Two bartenders on two tills — even offline — always add up.',
+        'Only managers, supervisors and storekeepers (**bar.manage**) can set up drinks, change sizes or prices, take / replace / close kegs, record wastage or measure. Bartenders sell and see the kegs. Every action is in the **📜 Bar audit**.',
+      ],
+    }),
+    ch('levels', '⭐', 'Loyalty member levels', {
+      steps: [
+        'In **⚙️ Settings ▸ Loyalty**, under the spend brackets, add **member levels** (e.g. Silver from KES 20,000, Gold from KES 100,000) with a **token multiplier** and **perks**, and the period that counts (365 days, or 0 for ever).',
+        'A customer\u2019s level comes from what they spent in that period — worked out from the sales, so every till agrees. Their sales earn tokens × the multiplier; reaching a level is announced.',
+        'When you settle an order for a member, their level and perks are shown. Paying an order (tab) now earns tokens too. Any discount stays your decision.',
+      ],
+    }),
+    ch('staffsessions', '👤', 'Staff sessions (the server checks who is working)', {
+      steps: [
+        'Staff still sign in with their PIN, even offline. When the device is online, the same PIN also starts a **server session** for that person.',
+        'Every new sale is signed with the serving staff member\u2019s session, and the server checks it. **📈 Hospitality Reports ▸ Who made each sale** shows confirmed, waiting, not signed and ⚠ flagged sales (e.g. a waiter who may not take payments, or a sale changed after it was made). No sale is ever refused or hidden.',
+        'Signed in offline? The sales are signed once the device is back online (covering up to a day).',
+        '**⚙️ Settings ▸ 🔐 Devices & Security ▸ Staff sessions required** (Admin or a manager): the server then refuses QR codes, the online menu, bookings and M-Pesa checks without a confirmed staff member, and QR codes / the menu need a supervisor. Selling is never blocked.',
+      ],
     }),
     ch('closed', '🧾', 'Bills for hotels', {
       steps: ['Rooms and corporate customers often pay later: use **Bill (Pay Later)** or leave the tab open.', 'Settle from **🧾 Bills**. Paid bills stay under **Show closed bills** so you can look back.'],

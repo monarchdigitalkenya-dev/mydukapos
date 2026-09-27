@@ -36,6 +36,7 @@ import {
   chooseAutoCutoff, writeArchive, dropArchivedIncoming, AUTO_ARCHIVE_AT, shopMode, shopCall, migratingResponse,
 } from './_state-store.js';
 import { deviceGuard } from './_device-auth.js';
+import { stampSales } from './_staff-auth.js';
 
 // CORS is decided per request (see _cors.js): the apps call this on their own origin, so only the shop's own
 // domain family is ever answered — no more `Access-Control-Allow-Origin: *`.
@@ -195,6 +196,10 @@ async function handlePost(context) {
     return jsonResponse({ error: 'Request body must be a JSON object.' }, 400, cors);
   }
 
+  // WHO MADE EACH SALE (zip 141): check each sale's staff signature and stamp what was found (see _staff-auth.js). Never refuses or
+  // drops a sale; if the check itself fails the push goes ahead unstamped (shown as "not checked").
+  try { await stampSales(env, clientId, body); } catch (e) { /* never block a sale */ }
+
   // DATABASE MODE: hand the push to the shop's own database. Its cost follows the size of THIS push, not of the shop, so there is
   // no size ceiling to guard (only a cap on one request, so a single push can't exhaust the Durable Object's memory).
   const pushMode = await shopMode(env, clientId);
@@ -298,7 +303,7 @@ async function handlePost(context) {
       // Storage accepts about one write a second per shop: another device's save just landed. Wait a moment, then RE-READ and
       // re-merge (so that save is kept too) and write again.
       contended = true;
-      if (++attempt >= 4) throw e;
+      if (++attempt >= 6) throw e;                     // zip 142: 6 tries (was 4) — three or four tills saving in the same second all get through
       await sleep(700 + Math.floor(Math.random() * 900));
     }
   }

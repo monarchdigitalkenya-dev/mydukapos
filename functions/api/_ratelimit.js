@@ -17,6 +17,12 @@ export const LIMITS = {
   stk: (env) => num(env && env.STK_HOURLY_LIMIT, 60),
   // device pairing attempts per shop per hour (zip 120) — stops a password/code being guessed by brute force
   pair: (env) => num(env && env.PAIR_HOURLY_LIMIT, 20),
+  // QR ordering (zip 136): per shop per hour, and per single table / room code per hour (keyed by the code itself)
+  qr: (env) => num(env && env.QR_HOURLY_LIMIT, 600),
+  qrtok: (env) => num(env && env.QR_CODE_HOURLY_LIMIT, 15),
+  // staff server sessions (zip 141): PIN attempts per staff member per hour, and sign-ins per shop per hour
+  staffPin: (env) => num(env && env.STAFF_PIN_HOURLY_LIMIT, 20),
+  staffShop: (env) => num(env && env.STAFF_SIGNIN_HOURLY_LIMIT, 400),
 };
 
 // -> { ok, used, limit, retryAfter }   `cost` = how many units this request would consume (e.g. recipients).
@@ -62,4 +68,37 @@ export function rateLimitResponse(what, r, headers = {}) {
     error: `Too many ${what} from this shop in the last hour (limit ${r.limit}). Try again in about ${Math.ceil(r.retryAfter / 60)} minute(s), or contact support if this is expected.`,
     code: 'rate_limited', limit: r.limit, retryAfter: r.retryAfter,
   }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(r.retryAfter), ...headers } });
+}
+
+// zip 143 — password guessing. The owner sign-in (one account that controls every shop), the website/demo account sign-in and the
+// recovery-password checks had no limit at all. Only FAILED attempts are counted, per caller IP and per account, per hour — someone
+// who knows their password is never slowed down. Limits: LOGIN_FAILS_PER_IP (default 30) and LOGIN_FAILS_PER_ACCOUNT (default 20).
+const LOGIN_WINDOW_SEC = 3600;
+function loginKeys(request, account) {
+  const ip = (request && request.headers && (request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For'))) || 'unknown';
+  const bucket = Math.floor(Date.now() / (LOGIN_WINDOW_SEC * 1000));
+  return [
+    { key: `rl:loginfail:ip:${ip}:${bucket}`, limit: (env) => num(env && env.LOGIN_FAILS_PER_IP, 30) },
+    ...(account ? [{ key: `rl:loginfail:acct:${String(account).toLowerCase().slice(0, 200)}:${bucket}`, limit: (env) => num(env && env.LOGIN_FAILS_PER_ACCOUNT, 20) }] : []),
+  ];
+}
+// -> null when allowed, or a 429 Response to send back
+export async function loginBlocked(env, request, account, headers = {}) {
+  for (const k of loginKeys(request, account)) {
+    let used = 0;
+    try { used = Number(await env.mydukapos_kv.get(k.key)) || 0; } catch (e) { return null; }   // never lock anyone out because the limiter failed
+    if (used >= k.limit(env)) {
+      return new Response(JSON.stringify({ error: 'Too many wrong passwords. Wait an hour and try again, or use "Forgot password".', code: 'rate_limited' }),
+        { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(LOGIN_WINDOW_SEC), ...headers } });
+    }
+  }
+  return null;
+}
+export async function noteLoginFailure(env, request, account) {
+  for (const k of loginKeys(request, account)) {
+    try {
+      const used = Number(await env.mydukapos_kv.get(k.key)) || 0;
+      await env.mydukapos_kv.put(k.key, String(used + 1), { expirationTtl: LOGIN_WINDOW_SEC * 2 });
+    } catch (e) { /* ignore */ }
+  }
 }

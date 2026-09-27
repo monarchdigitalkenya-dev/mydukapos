@@ -13,7 +13,7 @@
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-133';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-143';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -45,10 +45,15 @@
                 if (token()) headers.set('X-Device-Token', token());
                 var args = typeof input === 'string' ? [input, Object.assign({}, init, { headers: headers })] : [new Request(input, Object.assign({}, init, { headers: headers }))];
                 return realFetch.apply(this, args).then(function (res) {
+                    // zip 143: remember how the last API call failed, so a message can say what really happened (see netErrText)
+                    try { if (res && !res.ok) window.__apiLastFail = { kind: 'http', status: res.status, at: Date.now() }; } catch (e) { /* cosmetic */ }
                     if (res && res.status === 401) {
                         res.clone().json().then(function (b) { if (b && b.code === 'device_not_paired') notPaired(); }).catch(function () {});
                     }
                     return res;
+                }, function (err) {
+                    try { window.__apiLastFail = { kind: err && err.name === 'AbortError' ? 'timeout' : 'network', at: Date.now() }; } catch (e) { /* cosmetic */ }
+                    throw err;
                 });
             };
             wrapped.__deviceWrapped = true;

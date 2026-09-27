@@ -38,9 +38,17 @@ export async function onRequestOptions() {
 
 export async function onRequestGet(context) {
   const { request, env } = context;
-  const clientId = await resolveClientId(request, env);
-  const record = await getLicense(env, clientId);
-  const result = evaluateLicense(record);
+  let clientId, record, result;
+  try {
+    clientId = await resolveClientId(request, env);
+    record = await getLicense(env, clientId);
+    result = evaluateLicense(record);
+  } catch (e) {
+    // zip 143: storage briefly failing is "try again", never an answer about the licence (no `valid` field on purpose)
+    return new Response(JSON.stringify({ error: 'The licence could not be checked right now — try again in a moment.', code: 'busy' }), {
+      status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '5', 'Cache-Control': 'no-store', ...CORS_HEADERS },
+    });
+  }
 
   return jsonResponse({
     serverNow: Date.now(),

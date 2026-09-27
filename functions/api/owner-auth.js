@@ -22,6 +22,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
+import { loginBlocked, noteLoginFailure } from './_ratelimit.js';
 import {
   getOwnerAccount,
   createOwnerAccount,
@@ -88,8 +89,11 @@ export async function onRequestPost(context) {
   if (action === 'login') {
     const identifier = String(body.identifier || '').trim();
     const password = String(body.password || '');
+    const blocked = await loginBlocked(env, request, 'owner');
+    if (blocked) return blocked;
     const account = await verifyOwnerLogin(env, identifier, password);
     if (!account) {
+      await noteLoginFailure(env, request, 'owner');
       return jsonResponse({ error: 'Incorrect email/phone or password.' }, 401);
     }
     const token = await createOwnerSession(env, account);

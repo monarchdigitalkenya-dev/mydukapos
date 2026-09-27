@@ -28,6 +28,7 @@ import { loadGatewayConfig, saveGatewayConfig, clearGatewayProvider, hasPaystack
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { getCallbackKey, ensureCallbackKey, withKey } from './_callback-key.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -64,7 +65,7 @@ export async function onRequestGet(context) {
     paystackWebhookUrl: `${origin}/api/paystack-webhook?c=${encodeURIComponent(clientId)}`,
     mpesaCallbackUrl: `${origin}/api/mpesa-callback?c=${encodeURIComponent(clientId)}`,
     paywaveWebhookUrl: `${origin}/api/paywave-webhook?c=${encodeURIComponent(clientId)}`,
-    kcbIpnUrl: `${origin}/api/kcb-ipn?c=${encodeURIComponent(clientId)}`,
+    kcbIpnUrl: withKey(`${origin}/api/kcb-ipn?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'kcb')),
   });
 }
 
@@ -88,6 +89,8 @@ export async function onRequestPost(context) {
   }
 
   await saveGatewayConfig(env, clientId, body);
+  // zip 143: KCB settings saved -> this shop's IPN URL (shown in Settings, given to KCB) carries a secret key from now on
+  if (body && Object.keys(body).some((k) => /^kcb/i.test(k))) { try { await ensureCallbackKey(env, clientId, 'kcb'); } catch (e) { /* URL stays unsigned */ } }
   return jsonResponse({ ok: true });
 }
 

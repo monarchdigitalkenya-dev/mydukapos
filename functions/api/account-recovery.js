@@ -53,6 +53,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
+import { loginBlocked, noteLoginFailure } from './_ratelimit.js';
 import { requireValidLicense } from './_license.js';
 import { sendEmail } from './_email.js';
 
@@ -267,8 +268,10 @@ export async function onRequestPost(context) {
       if (!email) return jsonResponse({ error: 'This link has no account set up yet.' }, 404);
       const record = await getAccountRecordMigrating(env, email);
       if (!record) return jsonResponse({ error: 'This link has no account set up yet.' }, 404);
+      const blocked = await loginBlocked(env, request, 'recovery:' + clientId);
+      if (blocked) return blocked;
       const hash = await sha256Hex(record.salt + password);
-      if (hash !== record.passwordHash) return jsonResponse({ error: 'Incorrect password.' }, 401);
+      if (hash !== record.passwordHash) { await noteLoginFailure(env, request, 'recovery:' + clientId); return jsonResponse({ error: 'Incorrect password.' }, 401); }
       return jsonResponse({ ok: true });
     }
 
@@ -357,10 +360,12 @@ export async function onRequestPost(context) {
     // for; that's decided by which link the device was opened from.
     const email = normalizeEmail(body.email);
     const password = String(body.password || '');
+    const blocked = await loginBlocked(env, request, 'recovery-email:' + email);
+    if (blocked) return blocked;
     const record = await getAccountRecordMigrating(env, email);
     if (!record) return jsonResponse({ error: 'No shop is linked to that email.' }, 404);
     const hash = await sha256Hex(record.salt + password);
-    if (hash !== record.passwordHash) return jsonResponse({ error: 'Incorrect password.' }, 401);
+    if (hash !== record.passwordHash) { await noteLoginFailure(env, request, 'recovery-email:' + email); return jsonResponse({ error: 'Incorrect password.' }, 401); }
     return jsonResponse({ ok: true });
   }
 

@@ -106,7 +106,13 @@ export function mergeProductRecords(stored, incoming) {
 // window, and a stale copy could re-open a closed tab/shift or put an approval back to "pending". Now: the listed arrays are
 // unioned by id (nothing in them is ever removed), the status only moves forward, and a decided approval is never undone.
 export const NESTED_MERGE = {
-  tabs: { arrays: ['orders'], status: { OPEN: 0, CLOSED: 1, VOID: 2 } },
+  // MOVED: everything moved to another order (zip 134). lineStatus: the kitchen / bar display's status per line — merged per line, the
+  // newest wins, so a kitchen tablet marking "ready" and a waiter adding a round at the same moment never undo each other (zip 135).
+  // zip 142: a keg container. usedBy[device] = { ml, at } is what ONE device served from it (only that device writes its key), so
+  // two bartenders on two tills always add up and a re-sent push changes nothing; wastage / measurements / status changes are
+  // events joined by id; the status only moves forward (Full → Active → Empty → Closed / Spoiled).
+  kegs: { arrays: ['events'], status: { FULL: 0, ACTIVE: 1, DISCONNECTED: 1, EMPTY: 2, CLOSED: 3, SPOILED: 3 }, maps: { usedBy: 'at' } },
+  tabs: { arrays: ['orders', 'partPayments'], status: { OPEN: 0, CLOSED: 1, MOVED: 1, VOID: 2 }, maps: { lineStatus: 'at', lineNotes: null } },
   cashShifts: { arrays: ['adjustments'], status: { open: 0, closed: 1 } },
   // zip 132: two devices adding images to the same imaging order keep both. No status ranking (a corrected report legitimately
   // goes from "verified" back to "reported"): the newest record decides the rest. For the same image, what is further along
@@ -134,6 +140,16 @@ export function mergeNestedRecord(field, stored, incoming) {
       merged = a.map((x) => (x && x.id != null && byId.has(String(x.id)) ? spec.better(x, byId.get(String(x.id))) : x));
     }
     if (extra.length || Array.isArray(base[f])) out[f] = merged.concat(extra);
+  });
+  Object.entries(spec.maps || {}).forEach(([f, timeKey]) => {
+    const a = base[f] && typeof base[f] === 'object' ? base[f] : {}, b = other[f] && typeof other[f] === 'object' ? other[f] : {};
+    if (!Object.keys(b).length) return;
+    const m = { ...a };
+    Object.entries(b).forEach(([k, v]) => {
+      if (!(k in m)) { m[k] = v; return; }
+      if (timeKey && v && m[k] && (Number(v[timeKey]) || 0) > (Number(m[k][timeKey]) || 0)) m[k] = v;
+    });
+    out[f] = m;
   });
   if (field === 'cashShifts') {
     const decided = (r) => r && r.approval && (r.approval.status === 'approved' || r.approval.status === 'rejected');
@@ -256,6 +272,15 @@ export const MERGE_BY_ID_FIELDS = [
   'radiologyOrders',
   // Hospital theatre / procedure cases.
   'theatreCases',
+  // Hospitality (zip 137): bookable resources (pools, pool tables, cabanas, conference rooms …), their timed sessions / passes, and
+  // facility reservations. Edited in place (status, pauses, charges), so merged per record.
+  'resources', 'resourceSessions', 'facilityBookings',
+  // Hotel service requests (towels, cot, laundry, setups, maintenance: requested -> assigned -> in progress -> done). zip 138
+  'serviceRequests',
+  // Custom orders (cakes, special meals, catering, events): request -> quote -> approval -> deposit -> ... -> completed. zip 139
+  'customOrders',
+  // Draught kegs (zip 142): each keg taken into use, merged per record with NESTED_MERGE.kegs (per-device served counters + events).
+  'kegs',
   // Aqua POS raw materials (caps, labels, preforms ...). Were replaced as ONE whole list, so any device's push put back every
   // other device's material edits and stock counts. Now per record (its stock is ledger-managed: see CELL_SPECS).
   'rawMaterials',
@@ -941,6 +966,18 @@ export function businessSig(r) {
   if (items && items.length) { n = items.length; for (let i = 0; i < n; i++) { const it = items[i]; if (it) sum += (+it.price || 0) * (+it.qty || 0); } }
   return (r.timestamp || r.date || '') + '|' + (r.voided ? 1 : 0) + '|' + (r.voidedAt || '') + '|' + (r.unvoidedAt || '') + '|' + (r.paid === false ? 0 : 1)
     + '|' + (r.amountPaid == null ? '' : r.amountPaid) + '|' + n + '|' + Math.round(sum * 100) + '|' + (r.qty == null ? '' : r.qty)
-    + '|' + (r.amount == null ? '' : r.amount) + '|' + (r.removed ? 1 : 0) + '|' + (r._deleted ? 1 : 0);
+    + '|' + (r.amount == null ? '' : r.amount) + '|' + (r.removed ? 1 : 0) + '|' + (r._deleted ? 1 : 0)
+    // zip 141: signed later by a staff session / M-Pesa-checked later = a new version (same as salesJournalSig on the device)
+    + (r.staffAuth && r.staffAuth.m ? '|a' + r.staffAuth.m : '') + (r.mpesaCheck && r.mpesaCheck.status ? '|m' + r.mpesaCheck.status : '');
 }
 
+
+// ---- Reservations: one resource cannot be booked twice for overlapping times (zip 137) ------------------------------------------
+export const BOOKING_ACTIVE = ['BOOKED', 'CHECKED_IN'];
+// -> the existing booking that overlaps `b` on the same resource, or null. Times are ms; a booking ending exactly when another
+// starts is not a clash.
+export function bookingConflict(existing, b) {
+  if (!b || !b.resourceId || !(Number(b.end) > Number(b.start)) || !BOOKING_ACTIVE.includes(b.status || 'BOOKED')) return null;
+  return (Array.isArray(existing) ? existing : []).find((x) => x && x.id !== b.id && x._deleted !== true && x.resourceId === b.resourceId
+    && BOOKING_ACTIVE.includes(x.status) && Number(x.start) < Number(b.end) && Number(b.start) < Number(x.end)) || null;
+}

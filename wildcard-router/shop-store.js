@@ -20,7 +20,7 @@
 // Talks to the Pages Function (functions/api/pos-sync.js) over fetch(): POST /push /state /changes /history /import /export /stats.
 
 import {
-  businessSig, MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
+  businessSig, bookingConflict, MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
   allocateTill, noteDevice, NESTED_MERGE, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
@@ -458,6 +458,24 @@ export class ShopStore {
             }
           }
           return json({ have: out });
+        }
+        // zip 137: book a resource — the clash check and the insert happen in this one request (a Durable Object runs one request
+        // at a time), so two tills booking the same pool table for the same hour cannot both succeed.
+        case '/book': {
+          const rec = body.record;
+          if (!rec || !rec.id) return json({ ok: false, error: 'bad booking' }, 400);
+          const existing = this.q('SELECT json FROM records WHERE col = ? AND del = 0', 'facilityBookings').map((r) => { try { return JSON.parse(r.json); } catch (e) { return null; } });
+          const clash = bookingConflict(existing, rec);
+          if (clash) return json({ ok: false, conflict: clash });
+          this.push({ facilityBookings: [rec] }, Number(body.serverNow) || Date.now());
+          return json({ ok: true });
+        }
+        // zip 141: one staff record, for the server's PIN check when a staff member starts a server session (staff-session.js)
+        case '/staff-member': {
+          const row = this.getRow('staff', 'id:' + String(body.id || ''));
+          let m = null;
+          if (row && row.del !== 1) { try { const r = JSON.parse(row.json); m = { id: r.id, name: r.name, pinHash: r.pinHash, roles: r.roles, isManager: !!r.isManager, removed: !!r.removed, lockedDates: r.lockedDates, openAccountOverrideDate: r.openAccountOverrideDate || '' }; } catch (e) { m = null; } }
+          return json({ member: m });
         }
         case '/stats': return json(this.stats());
         // only the two password hashes (device pairing checks the shop password against them — see device-pair.js)

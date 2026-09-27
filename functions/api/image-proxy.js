@@ -14,6 +14,8 @@
 // internal address (basic SSRF guard), caps the response size, and only
 // ever returns image content-types — never arbitrary files.
 
+import { requireValidLicense } from './_license.js';
+
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // 6MB — generous; the frontend downsizes further anyway
 
 const CORS_HEADERS = {
@@ -39,6 +41,8 @@ function isSafeUrl(url) {
   if (host === 'localhost' || host === '0.0.0.0' || host.endsWith('.local')) return false;
   if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(host)) return false;
   if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) return false;
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)) return false;   // carrier-grade NAT (zip 143)
+  if (host.startsWith('[') || /^\d+$/.test(host)) return false;                  // IPv6 literals and bare-number hosts (zip 143)
   return true;
 }
 
@@ -47,7 +51,10 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestGet(context) {
-  const { request } = context;
+  const { request, env } = context;
+  // zip 143: only a shop's own app may use this proxy (it was open to the whole internet — free bandwidth for anyone)
+  const license = await requireValidLicense(request, env);
+  if (!license.valid) return errorResponse('This link is not active.', 403);
   const requestUrl = new URL(request.url);
   const target = requestUrl.searchParams.get('url');
   if (!target) return errorResponse('Missing url parameter.');
@@ -60,11 +67,19 @@ export async function onRequestGet(context) {
   }
   if (!isSafeUrl(parsedTarget)) return errorResponse('That URL is not allowed.');
 
+  // Redirects are followed by hand (at most 3) so every hop is checked by isSafeUrl — a public URL can no longer bounce the
+  // proxy to an address it would have refused (zip 143).
   let upstream;
   try {
-    upstream = await fetch(parsedTarget.toString(), {
-      headers: { 'User-Agent': 'MinimartPOS-ImageProxy/1.0' },
-    });
+    let current = parsedTarget;
+    for (let hop = 0; ; hop++) {
+      upstream = await fetch(current.toString(), { headers: { 'User-Agent': 'MinimartPOS-ImageProxy/1.0' }, redirect: 'manual' });
+      if (upstream.status < 300 || upstream.status >= 400) break;
+      const loc = upstream.headers.get('location');
+      if (!loc || hop >= 3) return errorResponse('Image not found at that URL.', 404);
+      current = new URL(loc, current);
+      if (!isSafeUrl(current)) return errorResponse('That URL is not allowed.');
+    }
   } catch (e) {
     return errorResponse('Could not fetch that image.', 502);
   }

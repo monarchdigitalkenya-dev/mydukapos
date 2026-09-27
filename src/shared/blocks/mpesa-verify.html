@@ -1,0 +1,67 @@
+<!-- MPESA VERIFY (zip 140) ------------------------------------------------------------------------------------------------------
+     A typed M-Pesa code is not proof of payment (anyone can type one). Every sale that carries a typed M-Pesa code is checked in the
+     background against Safaricom's own records that reached this shop (completed STK prompts, and payments straight to the till /
+     paybill), and the code is claimed by that sale so it cannot pay for a second one — functions/api/mpesa-verify.js.
+     Each such sale gets sale.mpesaCheck = { status: verified | amount_mismatch | duplicate | not_found, at, tries }. Daily Sales
+     shows a warning for anything not verified; nothing is ever changed about the money itself — a person decides. -->
+<script>
+(function () {
+    'use strict';
+    if (window.__mpesaVerifyInit) return;
+    window.__mpesaVerifyInit = true;
+    var FINAL = { verified: 1, amount_mismatch: 1, duplicate: 1 };
+    var busy = false, unsupported = false;
+    function list() { try { return typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []; } catch (e) { return []; } }
+    function needs(s) {
+        if (!s || s.voided || !(Number(s.mpesaAmount) > 0) || !s.mpesaReceiptNumber) return false;
+        var c = s.mpesaCheck;
+        if (c && FINAL[c.status]) return false;
+        var t = Date.parse(s.timestamp); if (isFinite(t) && Date.now() - t > 14 * 86400000) return false;   // older sales: not re-checked
+        return !c || Date.now() - (c.at || 0) > Math.min(6 * 3600000, 60000 * Math.pow(2, Math.min(8, c.tries || 0)));
+    }
+    window.mpesaVerifyPending = function () { return list().filter(function (s) { return s && !s.voided && Number(s.mpesaAmount) > 0 && s.mpesaReceiptNumber && !(s.mpesaCheck && s.mpesaCheck.status === 'verified'); }); };
+    window.mpesaVerifyNow = async function () {
+        if (busy || unsupported) return 0;
+        try { if (typeof window.posNetOffline === 'function' ? window.posNetOffline() : navigator.onLine === false) return 0; } catch (e) { /* try */ }
+        var todo = list().filter(needs).slice(0, 20);
+        if (!todo.length) return 0;
+        busy = true;
+        var n = 0;
+        try {
+            for (var i = 0; i < todo.length; i++) {
+                var s = todo[i], res;
+                try { res = await fetch(typeof apiUrl === 'function' ? apiUrl('/api/mpesa-verify') : '/api/mpesa-verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: s.mpesaReceiptNumber, amount: Number(s.mpesaAmount) || 0, saleId: s.id }) }); } catch (e) { break; }
+                if (res.status === 404 || res.status === 405) { unsupported = true; break; }
+                if (!res.ok) continue;
+                var d = await res.json().catch(function () { return {}; });
+                if (!d.status) continue;
+                var prev = s.mpesaCheck || {};
+                s.mpesaCheck = { status: d.status, at: Date.now(), tries: (prev.tries || 0) + 1, paid: d.paid != null ? d.paid : d.amount, source: d.source || '', usedBy: d.usedBy || undefined };
+                s.updatedAt = Date.now();
+                n++;
+            }
+        } finally { busy = false; }
+        if (n) {
+            try { safeSetItem(window.__LOG_KEYS && window.__LOG_KEYS.salesLog || 'pos_sales_log', JSON.stringify(list())); } catch (e) { /* next save */ }
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll sends it */ }
+            try { window.mpesaVerifyBanner(); } catch (e) { /* cosmetic */ }
+        }
+        return n;
+    };
+    var LABEL = { amount_mismatch: 'paid less than the sale', duplicate: 'code already used for another sale', not_found: 'no M-Pesa record found yet' };
+    window.mpesaVerifyBanner = function () {
+        var tab = document.getElementById('daily-sales-tab');
+        if (!tab) return;
+        var el = document.getElementById('mpesa-verify-banner');
+        if (!el) { el = document.createElement('div'); el.id = 'mpesa-verify-banner'; el.style.cssText = 'margin:0 0 10px; padding:8px 10px; border-radius:8px; background:#fef5e7; border:1px solid #f0c36d; font-size:13px; display:none;'; tab.insertBefore(el, tab.firstChild); }
+        var bad = window.mpesaVerifyPending().filter(function (s) { var t = Date.parse(s.timestamp); return !isFinite(t) || Date.now() - t < 14 * 86400000; });
+        if (!bad.length) { el.style.display = 'none'; return; }
+        el.style.display = '';
+        el.textContent = '';
+        var h = document.createElement('strong'); h.textContent = '⚠ ' + bad.length + ' M-Pesa payment' + (bad.length > 1 ? 's' : '') + ' not verified: '; el.appendChild(h);
+        el.appendChild(document.createTextNode(bad.slice(0, 8).map(function (s) { return (s.refNumber || s.id) + ' ' + s.mpesaReceiptNumber + ' — ' + ((s.mpesaCheck && LABEL[s.mpesaCheck.status]) || 'checking…'); }).join(' · ') + (bad.length > 8 ? ' …' : '') + '. A typed code is only proof once M-Pesa confirms it.'));
+    };
+    setTimeout(function () { window.mpesaVerifyNow(); }, 20000);
+    setInterval(function () { window.mpesaVerifyNow(); try { window.mpesaVerifyBanner(); } catch (e) { /* cosmetic */ } }, 60000);
+})();
+</script>

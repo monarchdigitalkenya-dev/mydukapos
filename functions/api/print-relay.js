@@ -31,7 +31,7 @@
 //     resending the full registerDevice payload every few seconds).
 //   { action: 'getRules' } / { action: 'saveRules', rules }
 //     Read/write the shop's print-routing rules array. Shape per rule:
-//     { id, trigger: 'receipt'|'kitchen-ticket', sourceStation: 'any'|<station>,
+//     { id, trigger: 'receipt'|'kitchen-ticket'|'ticket:<prep station>', sourceStation: 'any'|<station>,
 //       destinations: [ '<station name>' | 'device:<deviceId>', ... ], active }
 //   { action: 'checkAvailable' }
 //     True if at least one device at this shop is online, has a printer,
@@ -283,7 +283,11 @@ export async function onRequestPost(context) {
     if (!body.jobType || !body.text) return jsonResponse({ error: 'Missing job content.' }, 400);
 
     const devices = decorateOnline(pruneStaleDevices(await getDevices(env, clientId)));
-    const rules = (await getRules(env, clientId)).filter((r) => r.active !== false && r.trigger === body.jobType);
+    const allRules = (await getRules(env, clientId)).filter((r) => r.active !== false);
+    let rules = allRules.filter((r) => r.trigger === body.jobType);
+    // zip 135: a preparation station's tickets ("ticket:bar", "ticket:kitchen" …) use that station's own rules; a station with none
+    // uses the shop's general order-ticket rules, then (below) whichever printer is available.
+    if (!rules.length && /^ticket:/.test(String(body.jobType))) rules = allRules.filter((r) => r.trigger === 'kitchen-ticket');
     const sourceStation = body.sourceStation || null;
 
     // A rule applies if it's not scoped to a source station, or its source

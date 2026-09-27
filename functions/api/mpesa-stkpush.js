@@ -52,6 +52,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
+import { ensureCallbackKey, withKey } from './_callback-key.js';
 import { loadGatewayConfig, resolveProvider } from './_gateway-config.js';
 import { requireValidLicense, resolveClientId } from './_license.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
@@ -401,7 +402,8 @@ export async function onRequestPost(context) {
     const origin = new URL(request.url).origin;
     // The client id is embedded in the callback URL itself, so Safaricom's
     // POST to mpesa-callback.js carries it right back to us.
-    const callbackUrl = `${origin}/api/mpesa-callback?c=${encodeURIComponent(clientId)}`;
+    // zip 143: the callback URL carries this shop's secret key, so only Safaricom/KCB (who were given it) can report a result
+    const callbackUrl = withKey(`${origin}/api/mpesa-callback?c=${encodeURIComponent(clientId)}`, await ensureCallbackKey(env, clientId, 'stk'));
 
     const result = provider === 'paystack'
       ? await sendViaPaystack({ phone, amount, accountRef, description }, cfg)

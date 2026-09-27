@@ -17,6 +17,8 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
+import { checkCallback } from './_callback-key.js';
+
 function txKey(clientId, id) {
   return `mpesa-tx:${clientId}:${id}`;
 }
@@ -56,9 +58,18 @@ export async function onRequestPost(context) {
   const existing = existingRaw ? JSON.parse(existingRaw) : {};
   // A completed payment is final: a repeated or late callback for the same CheckoutRequestID never turns it back into "failed".
   if (existing.status === 'success') return ack();
+  // zip 143: only a callback carrying this shop's key is believed (see _callback-key.js). A prompt sent before the key existed (the
+  // moment of an update) is still accepted for that prompt.
+  const signed = await checkCallback(env, clientId, 'stk', request.url);
+  if (!signed.ok && !(existing.createdAt && existing.createdAt < signed.keyCreatedAt)) return ack();
 
   if (callback.ResultCode === 0) {
     const items = callback.CallbackMetadata && callback.CallbackMetadata.Item;
+    // zip 140: also indexed by the M-Pesa receipt number, so a code typed on a till can be checked against Safaricom's own record
+    const receipt = String(extractMetadataValue(items, 'MpesaReceiptNumber') || '').toUpperCase();
+    if (/^[A-Z0-9]{8,14}$/.test(receipt)) {
+      await env.mydukapos_kv.put(`mpesa-receipt:${clientId}:${receipt}`, JSON.stringify({ source: 'stk', amount: Number(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0, phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone || '', at: Date.now(), checkoutRequestId: callback.CheckoutRequestID }), { expirationTtl: 400 * 24 * 3600 });
+    }
     await env.mydukapos_kv.put(kvKey, JSON.stringify({
       ...existing,
       status: 'success',

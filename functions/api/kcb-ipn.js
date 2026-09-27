@@ -22,6 +22,8 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
+import { checkCallback } from './_callback-key.js';
+
 function tillPaymentKey(clientId, transId) {
   return `till-payment:${clientId}:${transId}`;
 }
@@ -62,6 +64,7 @@ export async function onRequestPost(context) {
   const transId = data.transactionReference;
   if (!transId) return ack();
 
+  const signed = await checkCallback(env, clientId, 'kcb', request.url);
   const record = {
     transId,
     transTime: data.timestamp || '',
@@ -73,6 +76,8 @@ export async function onRequestPost(context) {
     orgBalance: data.balance || '',
     matched: false,
     receivedAt: Date.now(),
+    // zip 143: false when the URL did not carry this shop's key (see _callback-key.js) — kept for the record, never proof of payment
+    trusted: signed.ok,
     provider: 'kcb',
   };
 
@@ -81,6 +86,11 @@ export async function onRequestPost(context) {
   // and could be attached to a second sale — and must not add the id to the index twice.
   const already = await env.mydukapos_kv.get(tillPaymentKey(clientId, transId));
   const isRepeat = !!already;
+  // An unsigned post for a shop that has a key is not stored where the till looks for payments: it cannot pre-empt the real one.
+  if (!signed.ok) {
+    await env.mydukapos_kv.put(`till-payment-rejected:${clientId}:${transId}`, JSON.stringify(record), { expirationTtl: 30 * 24 * 3600 });
+    return ack();
+  }
   if (!isRepeat) await env.mydukapos_kv.put(tillPaymentKey(clientId, transId), JSON.stringify(record));
 
   try {

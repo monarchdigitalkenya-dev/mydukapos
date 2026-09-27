@@ -21,7 +21,7 @@ for (const { app, dashboardFn } of APPS) {
   test(`${app}: landing on Dashboard before the branch-group info arrives still shows branch details once it does, without switching tabs away and back`, async () => {
     const fetchImpl = async (url, opts = {}) => {
       if (String(url).includes('/api/license-status')) {
-        return { ok: true, status: 200, json: async () => ({ branchGroupId: 'grp1', isMainBranch: true }) };
+        return { ok: true, status: 200, json: async () => ({ valid: true, reason: 'permanent', type: 'permanent', serverNow: Date.now(), branchGroupId: 'grp1', isMainBranch: true }) };   // (the real endpoint always says valid — zip 143 ignores an answer that does not)
       }
       if (String(url).includes('/api/branches')) {
         return { ok: true, status: 200, json: async () => ({ isBranchGroup: true, branches: [{ id: 'c1', isSelf: true, label: 'Main', todayRevenue: 0, monthRevenue: 0, stockValue: 0, lowStockCount: 0, staffCount: 1 }] }) };

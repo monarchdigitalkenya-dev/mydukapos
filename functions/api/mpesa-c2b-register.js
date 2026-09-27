@@ -12,6 +12,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
+import { ensureCallbackKey, withKey } from './_callback-key.js';
 import { loadGatewayConfig, hasDarajaConfig } from './_gateway-config.js';
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
@@ -63,8 +64,10 @@ export async function onRequestPost(context) {
   }
 
   const origin = new URL(request.url).origin;
-  const confirmationUrl = `${origin}/api/mpesa-c2b-confirmation?c=${encodeURIComponent(clientId)}`;
-  const validationUrl = `${origin}/api/mpesa-c2b-validation?c=${encodeURIComponent(clientId)}`;
+  // zip 143: registered with this shop's secret key, so a forged "payment received" can no longer be posted for the shop
+  const cbKey = await ensureCallbackKey(env, clientId, 'c2b');
+  const confirmationUrl = withKey(`${origin}/api/mpesa-c2b-confirmation?c=${encodeURIComponent(clientId)}`, cbKey);
+  const validationUrl = withKey(`${origin}/api/mpesa-c2b-validation?c=${encodeURIComponent(clientId)}`, cbKey);
 
   try {
     const token = await darajaAccessToken(cfg);
@@ -82,7 +85,9 @@ export async function onRequestPost(context) {
     if (!res.ok || (data.ResponseCode !== undefined && String(data.ResponseCode) !== '0')) {
       throw new Error(data.errorMessage || data.ResponseDescription || 'Safaricom declined the URL registration request.');
     }
-    return jsonResponse({ success: true, confirmationUrl, validationUrl, message: data.ResponseDescription || 'Registered.' });
+    // The key went to Safaricom server-to-server; the page is shown the URLs without it (zip 143).
+    const shown = (u) => u.replace(/&k=[^&]*/, '&k=•••');
+    return jsonResponse({ success: true, confirmationUrl: shown(confirmationUrl), validationUrl: shown(validationUrl), message: data.ResponseDescription || 'Registered.' });
   } catch (err) {
     return jsonResponse({ error: err.message || 'Unexpected error contacting Safaricom.' }, 500);
   }

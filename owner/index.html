@@ -3331,7 +3331,7 @@
                 <p style="font-size:13px; color:#555; margin:0 0 8px;">Invite staff to create their own login. Pick which tabs they're allowed to use below — everything else stays invisible to them. Once set up, copy their personal 🔗 link and send it to them — opening it asks only for their PIN, no shop password needed. Manage roles, attendance, and lock a day off for anyone already added in the 👥 Staff tab.</p>
                 <div id="staff-list"><p style="font-size:12px; color:#95a5a6; margin:0;">No staff added yet.</p></div>
                 <input type="text" id="new-staff-name-input" placeholder="Staff member's name" style="margin-top:10px;">
-                <label class="label" style="margin-top:8px; display:block;">Allowed tabs (Sales Counter is always included)</label>
+                <label class="label" style="margin-top:8px; display:block;">Allowed tabs (tick every tab this person may use)</label>
                 <div id="new-staff-roles" class="role-checkbox-grid"></div>
                 <button class="btn-main settings-small-btn" onclick="generateInviteLink()">✉️ Generate Invite Link</button>
                 <div id="invite-link-result" style="display:none;">
@@ -3761,15 +3761,15 @@
             const q = escapeQuotes(label);
             return `
                 <div class="loc-reservation-fields">
-                    <input type="text" placeholder="Guest / reserved by" value="${escapeQuotes(r.name || '')}"
+                    <input type="text" placeholder="Guest / reserved by" value="${escapeHtml(r.name || '')}"
                         onchange="updateLocReservationField('${kind}', '${q}', 'name', this.value)">
-                    <input type="text" placeholder="Phone" value="${escapeQuotes(r.phone || '')}"
+                    <input type="text" placeholder="Phone" value="${escapeHtml(r.phone || '')}"
                         onchange="updateLocReservationField('${kind}', '${q}', 'phone', this.value)">
-                    <input type="number" min="1" placeholder="Party size" value="${escapeQuotes(r.partySize ? String(r.partySize) : '')}"
+                    <input type="number" min="1" placeholder="Party size" value="${escapeHtml(r.partySize ? String(r.partySize) : '')}"
                         onchange="updateLocReservationField('${kind}', '${q}', 'partySize', this.value)">
-                    <input type="datetime-local" value="${escapeQuotes(r.time || '')}"
+                    <input type="datetime-local" value="${escapeHtml(r.time || '')}"
                         onchange="updateLocReservationField('${kind}', '${q}', 'time', this.value)">
-                    <input type="text" placeholder="Notes (e.g. window seat, allergy)" value="${escapeQuotes(r.notes || '')}"
+                    <input type="text" placeholder="Notes (e.g. window seat, allergy)" value="${escapeHtml(r.notes || '')}"
                         onchange="updateLocReservationField('${kind}', '${q}', 'notes', this.value)">
                 </div>`;
         }
@@ -3845,6 +3845,18 @@
 
         /* ---------- STAFF ACCOUNTS ---------- */
         let staff = safeJSONParse('pos_staff', []);               // [{ id, name, pinHash, roles: [tabId,...], lockedDates: ['YYYY-MM-DD',...] }]
+        // zip 143: 🔗 Generate Link used to be shown to every console staff member whatever their ticks. It is now a role like any
+        // other tab. Staff who already had it keep it exactly once (salesTabMigrated); after that, unticking it sticks.
+        (function () {
+            let changed = false;
+            staff.forEach((m) => {
+                if (!m || m.salesTabMigrated) return;
+                if (!Array.isArray(m.roles)) m.roles = [];
+                if (!m.roles.includes('sales-tab')) m.roles.push('sales-tab');
+                m.salesTabMigrated = true; changed = true;
+            });
+            if (changed) { try { localStorage.setItem('pos_staff', JSON.stringify(staff)); } catch (e) { /* kept in memory */ } }
+        })();
         let pendingInvites = safeJSONParse('pos_pending_invites', []); // [{ token, name, roles, createdAt }]
         let currentServer = JSON.parse(sessionStorage.getItem('pos_current_server')) || null; // { id, name } — this browser tab only
 
@@ -3977,15 +3989,23 @@
         }
 
         async function checkLicenseStatus() {
+            let licAnswered = false;   // zip 143: did the server answer at all?
             try {
                 const res = await fetch(apiUrl('/api/license-status'));
+                licAnswered = true;
                 const data = await res.json();
+                // zip 143: only a real licence answer is believed. A server error (5xx / a Cloudflare error page / { error }) used to be taken
+                // as the licence: `valid` was missing, so the app locked ("not recognized") and that bad answer was saved for later estimates.
+                if (!res.ok || !data || typeof data.valid !== 'boolean') throw new Error('not a licence answer (' + res.status + ')');
                 licenseInfo = data;
                 if (data.clientId) myClientId = data.clientId;
                 if (data.slug) myClientSlug = data.slug;
                 saveLicenseCheckpoint(data);
                 applyLicenseUI();
             } catch (e) {
+                // zip 143: the server ANSWERED, just not with a licence — this device is online, so the last real answer stands: never
+                // lock the app, and never say "offline", over a server hiccup. Only no answer at all falls back to the offline estimate.
+                if (licAnswered) return;
                 // Offline, or the request otherwise failed — fall back to a
                 // tamper-resistant local estimate instead of just freezing
                 // whatever was last known indefinitely (see estimateLicenseOffline).
@@ -4024,7 +4044,7 @@
                     const reasonEl = document.getElementById('license-lock-reason');
                     if (reasonEl) {
                         reasonEl.textContent = licenseInfo.reason === 'clock_tampered'
-                            ? 'This device is offline and its clock doesn’t match what we last confirmed — connect to the internet to verify your trial status.'
+                            ? 'The licence server could not be reached and this device’s clock is earlier than when it was last confirmed. Check the date and time on this device — it checks again by itself.'
                             : licenseInfo.reason === 'locked'
                                 ? 'This link has been locked by the admin.'
                                 : licenseInfo.reason === 'expired'
@@ -4070,7 +4090,7 @@
                 showToast('Marked as paid — you’ll be upgraded once it’s confirmed.');
                 checkLicenseStatus();
             } catch (e) {
-                showToast('Could not reach the server — check your connection and try again.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             } finally {
                 paymentClaimInFlight = false;
                 if (btn) { btn.disabled = false; btn.textContent = 'I’ve made this payment'; }
@@ -4150,7 +4170,20 @@
             const isOwnerApi = (url) => /\/api\/(owner-|client-log|leads|website-|demo-account|email-config|gemini-capture-config)/.test(url);
             window.fetch = async function (input, init) {
                 const url = typeof input === 'string' ? input : (input && input.url) || '';
-                const res = await realFetch.apply(this, arguments);
+                let res;
+                try {
+                    res = await realFetch.apply(this, arguments);
+                } catch (err) {
+                    // zip 143: remember HOW it failed, so the message can say what really happened (see ownerErrText)
+                    const aborted = !!(err && err.name === 'AbortError');
+                    if (/\/api\//.test(url)) window.__ownerLastFail = { kind: aborted ? 'timeout' : 'network', at: Date.now(), url };
+                    if (!aborted && window.PosNet && /\/api\//.test(url)) window.PosNet.report('neterr', 'an owner request got no answer');
+                    throw err;
+                }
+                if (/\/api\//.test(url)) {
+                    if (!res.ok) window.__ownerLastFail = { kind: 'http', status: res.status, at: Date.now(), url };
+                    else if (window.PosNet) window.PosNet.report('ok');
+                }
                 if (res.status !== 401 || !isOwnerApi(url) || /\/api\/owner-auth/.test(url)) return res;
                 const hdrs = new Headers((init && init.headers) || (typeof input !== 'string' && input && input.headers) || {});
                 if (!hdrs.get('Authorization')) {
@@ -4179,6 +4212,45 @@
                 return res;
             };
         })();
+
+        // zip 143 — "check your connection" was shown for EVERY failure: a server error, an ended session, a slow endpoint, a Cloudflare
+        // error page that was not JSON. With working internet the owner was told to connect to the internet. This gives the real reason:
+        // the connectivity manager's own verdict first (it checks /api/health and, only if that fails, the internet itself), then how
+        // the last request actually failed.
+        function ownerFailReason() {
+            try {
+                if (window.PosNet && window.PosNet.state === 'offline') return 'this device is offline. It will work again as soon as the internet is back.';
+                const f = window.__ownerLastFail;
+                if (f && Date.now() - f.at < 20000) {
+                    if (f.kind === 'timeout') return 'the server took too long to answer. Your internet works — try again in a moment.';
+                    if (f.kind === 'network') {
+                        if (window.PosNet) window.PosNet.check('owner request failed');
+                        if (window.PosNet && window.PosNet.state === 'backend_unavailable') return 'your internet works, but the MyDukaPOS server is not answering. Try again in a moment.';
+                        if (window.PosNet && window.PosNet.state === 'online') return 'the request did not get through (the connection dropped for a moment) — try again.';
+                        return 'could not reach the server — check this device\'s internet connection.';
+                    }
+                    if (f.status === 401) return consoleStaffMode ? 'owner only — this page is signed in as staff.' : 'your owner session has ended — sign in again.';
+                    if (f.status === 403) return 'permission denied.';
+                    if (f.status === 404) return 'that record no longer exists (it may have been deleted). Refresh the list.';
+                    if (f.status === 429) return 'too many requests at once — wait a few seconds and try again.';
+                    if (f.status >= 500) return `the server had a problem (error ${f.status}). Your internet works — try again in a moment.`;
+                    if (f.status) return `the server refused the request (error ${f.status}).`;
+                }
+                if (window.PosNet && window.PosNet.state === 'backend_unavailable') return 'your internet works, but the MyDukaPOS server is not answering. Try again in a moment.';
+                return 'something went wrong — try again. (Your connection looks fine.)';
+            } catch (e) { return 'something went wrong — try again.'; }
+        }
+        function ownerErrText(what) {
+            // "Could not reach the server: the server had a problem (error 500)" would contradict itself — the reason says it all
+            if (what === 'Could not reach the server') { const r = ownerFailReason(); return r.charAt(0).toUpperCase() + r.slice(1); }
+            return `${what}: ${ownerFailReason()}`;
+        }
+        // A message the server itself sent (e.g. "That subdomain is taken") is kept; a browser's own network error text is not.
+        function ownerErrMsg(e, what) {
+            const m = e && e.message;
+            if (m && e.name !== 'TypeError' && e.name !== 'AbortError' && e.name !== 'SyntaxError' && !/failed to fetch|networkerror|load failed|network request failed/i.test(m)) return m;
+            return ownerErrText(what);
+        }
 
         /* ---------- WEBSITE CONTENT (public site + every app's upgrade prompt) ---------- */
 
@@ -4223,7 +4295,7 @@
                 : websitePaymentMethodsDraft.map((m, idx) => `
                     <div style="border:1px solid var(--light); border-radius:6px; padding:14px; margin-bottom:12px;">
                         <label class="label">Label</label>
-                        <input type="text" value="${escapeQuotes(m.label)}" placeholder="e.g. Bank Transfer" oninput="updateWebsitePaymentMethod(${idx}, 'label', this.value)">
+                        <input type="text" value="${escapeHtml(m.label)}" placeholder="e.g. Bank Transfer" oninput="updateWebsitePaymentMethod(${idx}, 'label', this.value)">
                         <div class="type-toggle" style="margin-top:10px;">
                             <button type="button" class="type-toggle-btn ${m.type !== 'photo' ? 'active' : ''}" onclick="setWebsitePaymentMethodType(${idx}, 'text')">✏️ Type it out</button>
                             <button type="button" class="type-toggle-btn ${m.type === 'photo' ? 'active' : ''}" onclick="setWebsitePaymentMethodType(${idx}, 'photo')">🖼️ Photo (e.g. QR code)</button>
@@ -4303,7 +4375,7 @@
                 websiteTestimonialsDraft = (data.content.testimonials || []).map(t => ({ ...t }));
                 renderWebsiteTestimonials();
             } catch (e) {
-                if (errEl) errEl.textContent = 'Could not reach the server — check your connection.';
+                if (errEl) errEl.textContent = ownerErrText('Could not reach the server');
             }
         }
 
@@ -4368,7 +4440,7 @@
                 }
                 renderWebsiteProductEditor();
             } catch (e) {
-                if (errEl) errEl.textContent = 'Could not reach the server — check your connection.';
+                if (errEl) errEl.textContent = ownerErrText('Could not reach the server');
             }
         }
 
@@ -4419,8 +4491,8 @@
             const cards = websiteMarketingDraft[draftKey];
             el.innerHTML = cards.map((c, idx) => `
                 <div style="border:1px solid var(--light); border-radius:6px; padding:10px; margin-bottom:8px;">
-                    <input type="text" value="${escapeQuotes(c.tag)}" placeholder="Tag (e.g. Inventory)" oninput="updateWebsiteCard('${draftKey}', ${idx}, 'tag', this.value)">
-                    <input type="text" value="${escapeQuotes(c.title)}" placeholder="Title" style="margin-top:6px;" oninput="updateWebsiteCard('${draftKey}', ${idx}, 'title', this.value)">
+                    <input type="text" value="${escapeHtml(c.tag)}" placeholder="Tag (e.g. Inventory)" oninput="updateWebsiteCard('${draftKey}', ${idx}, 'tag', this.value)">
+                    <input type="text" value="${escapeHtml(c.title)}" placeholder="Title" style="margin-top:6px;" oninput="updateWebsiteCard('${draftKey}', ${idx}, 'title', this.value)">
                     <textarea rows="2" style="width:100%; font-family:inherit; padding:8px; border-radius:4px; border:1px solid var(--light); margin-top:6px;" placeholder="Description" oninput="updateWebsiteCard('${draftKey}', ${idx}, 'desc', this.value)">${escapeHtml(c.desc)}</textarea>
                 </div>`).join('');
         }
@@ -4439,8 +4511,8 @@
             el.innerHTML = websiteMarketingDraft.showcases.map((s, idx) => `
                 <div style="border:1px solid var(--light); border-radius:6px; padding:12px; margin-bottom:10px;">
                     <p class="label" style="margin-top:0;">Showcase photo ${idx + 1}</p>
-                    <input type="text" value="${escapeQuotes(s.eyebrow)}" placeholder="Small label above the heading" oninput="updateWebsiteShowcase(${idx}, 'eyebrow', this.value)">
-                    <input type="text" value="${escapeQuotes(s.title)}" placeholder="Heading" style="margin-top:6px;" oninput="updateWebsiteShowcase(${idx}, 'title', this.value)">
+                    <input type="text" value="${escapeHtml(s.eyebrow)}" placeholder="Small label above the heading" oninput="updateWebsiteShowcase(${idx}, 'eyebrow', this.value)">
+                    <input type="text" value="${escapeHtml(s.title)}" placeholder="Heading" style="margin-top:6px;" oninput="updateWebsiteShowcase(${idx}, 'title', this.value)">
                     <textarea rows="2" style="width:100%; font-family:inherit; padding:8px; border-radius:4px; border:1px solid var(--light); margin-top:6px;" placeholder="Description" oninput="updateWebsiteShowcase(${idx}, 'desc', this.value)">${escapeHtml(s.desc)}</textarea>
                     <div style="margin-top:8px;">
                         <input type="file" accept="image/*" onchange="handleWebsiteShowcasePhoto(${idx}, this.files)">
@@ -4497,7 +4569,7 @@
                             <span style="cursor:grab; font-size:18px; color:#95a5a6; padding-top:6px;" title="Drag to reorder">⠿</span>
                             <img src="${s.dataUrl}" style="width:70px; height:70px; object-fit:cover; border-radius:4px; border:1px solid var(--light); flex-shrink:0;">
                             <div style="flex:1;">
-                                <input type="text" value="${escapeQuotes(s.caption)}" placeholder="Caption (optional)" oninput="updateWebsiteProductScreenshotCaption('${key}', ${idx}, this.value)">
+                                <input type="text" value="${escapeHtml(s.caption)}" placeholder="Caption (optional)" oninput="updateWebsiteProductScreenshotCaption('${key}', ${idx}, this.value)">
                             </div>
                             <button type="button" class="settings-small-btn" style="background:var(--danger); color:white; flex-shrink:0;" onclick="removeWebsiteProductScreenshotAt('${key}', ${idx})">✕</button>
                         </div>`).join('') || '<p style="color:#7f8c8d; font-size:13px; margin:0 0 8px;">No screenshots uploaded yet for this product.</p>'}
@@ -4508,7 +4580,7 @@
                 <div id="website-product-features-list">
                     ${product.features.map((f, idx) => `
                         <div style="border:1px solid var(--light); border-radius:6px; padding:10px; margin-bottom:8px;">
-                            <input type="text" value="${escapeQuotes(f.title)}" placeholder="Feature title" oninput="updateWebsiteProductFeature('${key}', ${idx}, 'title', this.value)">
+                            <input type="text" value="${escapeHtml(f.title)}" placeholder="Feature title" oninput="updateWebsiteProductFeature('${key}', ${idx}, 'title', this.value)">
                             <textarea rows="2" style="width:100%; font-family:inherit; padding:8px; border-radius:4px; border:1px solid var(--light); margin-top:6px;" placeholder="Short description" oninput="updateWebsiteProductFeature('${key}', ${idx}, 'desc', this.value)">${escapeHtml(f.desc)}</textarea>
                             <button type="button" class="settings-small-btn" style="background:var(--danger); color:white; margin-top:6px;" onclick="removeWebsiteProductFeature('${key}', ${idx})">✕ Remove</button>
                         </div>`).join('')}
@@ -4681,7 +4753,7 @@
                     </tr>
                 `).join('');
             } catch (e) {
-                body.innerHTML = '<tr><td colspan="9" style="padding:12px 6px; color:#c0392b;">Could not load signups — check your connection.</td></tr>';
+                body.innerHTML = '<tr><td colspan="9" style="padding:12px 6px; color:#c0392b;">' + escapeHtml(ownerErrText('Could not load signups')) + '</td></tr>';
             }
         }
 
@@ -4700,7 +4772,7 @@
                 ownerClientsCacheAt = 0;
                 loadWebSignups();
             } catch (e) {
-                showToast(e.message || 'Could not reach the server — check your connection.', true);
+                showToast(ownerErrMsg(e, 'Could not reach the server'), true);
             }
         }
 
@@ -4718,7 +4790,7 @@
                 showToast('Demo allowance reset.');
                 loadWebSignups();
             } catch (e) {
-                showToast(e.message || 'Could not reset — check your connection.', true);
+                showToast(ownerErrMsg(e, 'Could not reset'), true);
             }
         }
 
@@ -4729,7 +4801,7 @@
                 await loadLeadsSheetList();
                 await loadLeadsStaffList();
             } catch (e) {
-                showToast('Could not load leads — check your connection.');
+                showToast(ownerErrText('Could not load leads'));
             }
         }
 
@@ -4755,7 +4827,7 @@
             const saved = localStorage.getItem(LEADS_WORKING_AS_STORAGE_KEY) || 'Admin';
             const options = leadsAssigneeOptions();
             const current = options.includes(saved) ? saved : 'Admin';
-            select.innerHTML = options.map(name => `<option value="${escapeQuotes(name)}" ${name === current ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('');
+            select.innerHTML = options.map(name => `<option value="${escapeHtml(name)}" ${name === current ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('');
             localStorage.setItem(LEADS_WORKING_AS_STORAGE_KEY, current);
         }
 
@@ -4798,7 +4870,7 @@
             try {
                 await leadsApiCall('saveStaff', { staff: leadsStaffList });
             } catch (e) {
-                showToast('Could not save — check your connection.');
+                showToast(ownerErrText('Could not save'));
             }
         }
         async function removeLeadsStaff(idx) {
@@ -4808,7 +4880,7 @@
             try {
                 await leadsApiCall('saveStaff', { staff: leadsStaffList });
             } catch (e) {
-                showToast('Could not save — check your connection.');
+                showToast(ownerErrText('Could not save'));
             }
         }
 
@@ -4873,10 +4945,10 @@
                 const assigneeList = assigneeOptions.includes(l.assignedTo) || !l.assignedTo ? assigneeOptions : [...assigneeOptions, l.assignedTo];
                 return `
                 <tr style="${l.dead ? 'opacity:0.5;' : ''} border-bottom:1px solid var(--light);">
-                    <td style="padding:6px;"><input type="text" value="${escapeQuotes(l.name || '')}" placeholder="Name" style="width:120px;" onchange="updateLeadField(${idx}, 'name', this.value)"></td>
-                    <td style="padding:6px;"><input type="tel" value="${escapeQuotes(l.phone || '')}" placeholder="Phone" style="width:110px;" onchange="updateLeadField(${idx}, 'phone', this.value)"></td>
+                    <td style="padding:6px;"><input type="text" value="${escapeHtml(l.name || '')}" placeholder="Name" style="width:120px;" onchange="updateLeadField(${idx}, 'name', this.value)"></td>
+                    <td style="padding:6px;"><input type="tel" value="${escapeHtml(l.phone || '')}" placeholder="Phone" style="width:110px;" onchange="updateLeadField(${idx}, 'phone', this.value)"></td>
                     <td style="padding:6px;"><select style="width:110px;" onchange="updateLeadField(${idx}, 'product', this.value)">${Object.entries(WEBSITE_PRODUCT_LABELS).map(([k, label]) => `<option value="${k}" ${k === l.product ? 'selected' : ''}>${label.replace(/^[^\s]+\s/, '')}</option>`).join('')}</select></td>
-                    <td style="padding:6px;"><select style="width:100px;" onchange="updateLeadField(${idx}, 'assignedTo', this.value)"><option value="" ${!l.assignedTo ? 'selected' : ''}>—</option>${assigneeList.map(name => `<option value="${escapeQuotes(name)}" ${name === l.assignedTo ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select></td>
+                    <td style="padding:6px;"><select style="width:100px;" onchange="updateLeadField(${idx}, 'assignedTo', this.value)"><option value="" ${!l.assignedTo ? 'selected' : ''}>—</option>${assigneeList.map(name => `<option value="${escapeHtml(name)}" ${name === l.assignedTo ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}</select></td>
                     <td style="padding:6px; text-align:center;"><input type="checkbox" ${l.contacted ? 'checked' : ''} onchange="updateLeadField(${idx}, 'contacted', this.checked)"></td>
                     <td style="padding:6px; text-align:center;"><input type="checkbox" ${l.scheduled ? 'checked' : ''} onchange="updateLeadField(${idx}, 'scheduled', this.checked)"></td>
                     <td style="padding:6px;">${l.scheduled ? `<input type="date" value="${l.meetingDate || ''}" onchange="updateLeadField(${idx}, 'meetingDate', this.value)">` : ''}</td>
@@ -4942,7 +5014,7 @@
                                 <td style="padding:6px; text-align:center;">${l.dead ? '✓' : '—'}</td>
                             </tr>`).join('');
                 } catch (e) {
-                    showToast('Search failed — check your connection.');
+                    showToast(ownerErrText('Search failed'));
                 }
             }, 300);
         }
@@ -5023,7 +5095,7 @@
                 const balanceOwed = lead.balanceOwed || 0;
                 el.innerHTML = `
                     <label class="label">Client link</label>
-                    <input type="text" readonly value="${escapeQuotes(lead.clientLink)}" style="width:100%; margin-bottom:8px;">
+                    <input type="text" readonly value="${escapeHtml(lead.clientLink)}" style="width:100%; margin-bottom:8px;">
                     <button type="button" class="settings-small-btn" onclick="navigator.clipboard.writeText('${escapeQuotes(lead.clientLink)}'); showToast('Link copied.')">Copy link</button>
                     <div style="margin-top:14px; padding:10px; background:var(--light); border-radius:6px;">
                         <p class="label" style="margin:0 0 4px;">Billing</p>
@@ -5065,7 +5137,7 @@
                 renderLeadsTable();
                 showToast('Client link generated.');
             } catch (e) {
-                showToast('Could not generate a link — check your connection.');
+                showToast(ownerErrText('Could not generate a link'));
             }
         }
 
@@ -5089,7 +5161,7 @@
                 renderLeadDetailLinkSection(lead);
                 showToast('Payment recorded.');
             } catch (e) {
-                showToast('Could not record payment — check your connection.');
+                showToast(ownerErrText('Could not record payment'));
             }
         }
 
@@ -5149,10 +5221,10 @@
                 return `
                 <tr style="${m.done ? 'opacity:0.5;' : ''} ${overdue ? 'background:rgba(231,76,60,0.06);' : ''} border-bottom:1px solid var(--light);">
                     <td style="padding:6px;"><input type="date" value="${m.meetingDate || ''}" onchange="updateMeetingField(${idx}, 'meetingDate', this.value)"></td>
-                    <td style="padding:6px;"><input type="text" value="${escapeQuotes(m.leadName || '')}" style="width:120px;" onchange="updateMeetingField(${idx}, 'leadName', this.value)"></td>
-                    <td style="padding:6px;"><input type="tel" value="${escapeQuotes(m.phone || '')}" style="width:110px;" onchange="updateMeetingField(${idx}, 'phone', this.value)"></td>
+                    <td style="padding:6px;"><input type="text" value="${escapeHtml(m.leadName || '')}" style="width:120px;" onchange="updateMeetingField(${idx}, 'leadName', this.value)"></td>
+                    <td style="padding:6px;"><input type="tel" value="${escapeHtml(m.phone || '')}" style="width:110px;" onchange="updateMeetingField(${idx}, 'phone', this.value)"></td>
                     <td style="padding:6px;"><select style="width:110px;" onchange="updateMeetingField(${idx}, 'product', this.value)">${Object.entries(WEBSITE_PRODUCT_LABELS).map(([k, label]) => `<option value="${k}" ${k === m.product ? 'selected' : ''}>${label.replace(/^[^\s]+\s/, '')}</option>`).join('')}</select></td>
-                    <td style="padding:6px;"><input type="text" value="${escapeQuotes(m.notes || '')}" style="width:140px;" onchange="updateMeetingField(${idx}, 'notes', this.value)"></td>
+                    <td style="padding:6px;"><input type="text" value="${escapeHtml(m.notes || '')}" style="width:140px;" onchange="updateMeetingField(${idx}, 'notes', this.value)"></td>
                     <td style="padding:6px; text-align:center;"><input type="checkbox" ${m.done ? 'checked' : ''} onchange="updateMeetingField(${idx}, 'done', this.checked)"></td>
                     <td style="padding:6px;"><button type="button" class="settings-small-btn" style="background:var(--danger); color:white;" onclick="deleteMeeting('${m.id}')">✕</button></td>
                 </tr>`;
@@ -5216,11 +5288,11 @@
                         <div style="display:flex; flex-wrap:wrap; gap:12px; margin-top:8px;">
                             <div style="flex:1;">
                                 <label class="label">Name</label>
-                                <input type="text" value="${escapeQuotes(t.name)}" oninput="updateWebsiteTestimonial(${idx}, 'name', this.value)">
+                                <input type="text" value="${escapeHtml(t.name)}" oninput="updateWebsiteTestimonial(${idx}, 'name', this.value)">
                             </div>
                             <div style="flex:1;">
                                 <label class="label">Role / Location</label>
-                                <input type="text" value="${escapeQuotes(t.role)}" oninput="updateWebsiteTestimonial(${idx}, 'role', this.value)">
+                                <input type="text" value="${escapeHtml(t.role)}" oninput="updateWebsiteTestimonial(${idx}, 'role', this.value)">
                             </div>
                         </div>
                         <button type="button" class="settings-small-btn" style="background:var(--danger); color:white; margin-top:10px;" onclick="removeWebsiteTestimonial(${idx})">✕ Remove</button>
@@ -5320,7 +5392,7 @@
                 statusEl.className = 'settings-msg success';
                 statusEl.textContent = '✅ Published — live on the website and every demo now.';
             } catch (e) {
-                errEl.textContent = 'Could not reach the server — check your connection.';
+                errEl.textContent = ownerErrText('Could not reach the server');
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Save & Publish Changes';
@@ -5426,7 +5498,7 @@
                 showOwnerAuthForm(data.hasAccount ? 'login' : 'signup');
             } catch (e) {
                 const msgEl = document.getElementById('owner-auth-error');
-                if (msgEl) msgEl.textContent = 'Could not reach the server. Check your connection and reload.';
+                if (msgEl) msgEl.textContent = ownerErrText('Could not reach the server');
             }
             return false;
         }
@@ -5484,7 +5556,7 @@
                 window.location.reload();
                 return;
             } catch (e) {
-                errEl.textContent = 'Could not reach the server. Check your connection and try again.';
+                errEl.textContent = ownerErrText('Could not reach the server');
             } finally {
                 btn.disabled = false;
             }
@@ -5637,7 +5709,7 @@
                 // fetchOwnerClients).
                 ownerClientsCacheAt = 0;
             } catch (e) {
-                errEl.textContent = 'Could not reach the server. Check your connection and try again.';
+                errEl.textContent = ownerErrText('Could not reach the server');
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Generate Link';
@@ -5763,7 +5835,7 @@
                 clients = await fetchOwnerClients(q, forceRefresh);
                 unifiedClientsCache = clients;
             } catch (e) {
-                listEl.innerHTML = `<p class="empty-state">Could not load clients — check your connection.</p>`;
+                listEl.innerHTML = `<p class="empty-state">${escapeHtml(ownerErrText('Could not load clients'))}</p>`;
                 return;
             }
 
@@ -5925,7 +5997,7 @@
                 if (!res.ok || data.error) { errEl.textContent = data.error || 'Could not save that.'; return; }
                 groupIncomeCache[groupKey] = { label: groupLabel, entries: data.entries || [] };
             } catch (e) {
-                errEl.textContent = 'Could not reach the server — check your connection.';
+                errEl.textContent = ownerErrText('Could not reach the server');
                 return;
             }
 
@@ -6003,8 +6075,8 @@
                 paymentHtml = '<span style="color:#27ae60; font-weight:bold;">✅ Permanent — fully paid</span>';
             } else if (client.paymentClaimed) {
                 paymentHtml = `<p class="settings-hint" style="margin:0 0 8px;">Claimed payment${client.paymentClaimedAt ? ' on ' + new Date(client.paymentClaimedAt).toLocaleString('en-GB') : ''} — not yet confirmed.</p>
-                    <button type="button" class="btn-main" onclick="confirmDemoUpgrade('${escapeQuotes(client.id)}', '${escLabel.replace(/'/g, "\\'")}', '${client.product}')">✅ Confirm Payment</button>
-                    <button type="button" class="settings-small-btn" style="background:var(--danger); color:white; margin-left:6px;" onclick="rejectDemoPayment('${escapeQuotes(client.id)}', '${escLabel.replace(/'/g, "\\'")}')">❌ False</button>`;
+                    <button type="button" class="btn-main" onclick="confirmDemoUpgrade('${escapeQuotes(client.id)}', '${escLabel}', '${client.product}')">✅ Confirm Payment</button>
+                    <button type="button" class="settings-small-btn" style="background:var(--danger); color:white; margin-left:6px;" onclick="rejectDemoPayment('${escapeQuotes(client.id)}', '${escLabel}')">❌ False</button>`;
             } else {
                 paymentHtml = '<span style="color:#7f8c8d;">No payment claimed yet.</span>';
             }
@@ -6044,7 +6116,7 @@
                 <div style="margin-top:10px;">${paymentHtml}</div>
 
                 <label class="label" style="margin-top:10px;">Notes</label>
-                <textarea id="client-notes-${escapeQuotes(client.id)}" rows="2" style="width:100%; font-family:inherit; padding:6px; border-radius:4px; border:1px solid var(--light);" placeholder="e.g. paid via M-Pesa, prefers WhatsApp">${escapeHtml(client.notes || '')}</textarea>
+                <textarea id="client-notes-${escapeHtml(client.id)}" rows="2" style="width:100%; font-family:inherit; padding:6px; border-radius:4px; border:1px solid var(--light);" placeholder="e.g. paid via M-Pesa, prefers WhatsApp">${escapeHtml(client.notes || '')}</textarea>
                 <button type="button" class="settings-small-btn" style="margin-top:4px;" onclick="saveClientNotes('${escapeQuotes(client.id)}', '${client.product}')">💾 Save Notes</button>
 
                 <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
@@ -6071,7 +6143,7 @@
                 showToast('Notes saved.');
                 ownerClientsCacheAt = 0;
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6091,7 +6163,7 @@
             try {
                 clients = await fetchOwnerClients(q, forceRefresh);
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="6" class="empty-state">Could not load links — check your connection.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="6" class="empty-state">${escapeHtml(ownerErrText('Could not load links'))}</td></tr>`;
                 return;
             }
 
@@ -6192,7 +6264,7 @@
                 showToast(action === 'lock' ? 'Link locked.' : 'Link unlocked.');
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6226,7 +6298,7 @@
                 if (clientDetailCurrentGroup) openGroupedClientDetail(clientDetailCurrentGroup.key, clientDetailCurrentGroup.type);
                 renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6255,7 +6327,7 @@
                 showToast(`Extended by ${days} day${days === 1 ? '' : 's'}.`);
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6361,7 +6433,7 @@
                 const data = await res.json();
                 if (!res.ok || data.error) { errEl.textContent = data.error || 'Could not save that.'; btn.disabled = false; return; }
             } catch (e) {
-                errEl.textContent = 'Could not reach the server — check your connection.'; btn.disabled = false; return;
+                errEl.textContent = ownerErrText('Could not reach the server'); btn.disabled = false; return;
             }
             const label = client.businessName || client.label || client.slug || client.id;
             const productLabel = WEBSITE_PRODUCT_LABELS[client.product] || client.product;
@@ -6420,7 +6492,7 @@
                 renderBillsTab();
                 showToast('Reminder sent — their admin will see it the next time their POS checks in.');
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6443,7 +6515,7 @@
                 renderPendingUpgrades(true);
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6467,7 +6539,7 @@
                 showToast(`Moved "${label}" to Trash — restorable for 30 days.`);
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6509,7 +6581,7 @@
                 ownerClientsCacheAt = 0;
                 fetchTrash();
                 renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
-            } catch (e) { showToast('Could not reach the server — check your connection.', true); }
+            } catch (e) { showToast(ownerErrText('Could not reach the server'), true); }
         }
 
         // Only the label (display name) is editable — the subdomain slug itself
@@ -6531,7 +6603,7 @@
             const dl = document.getElementById('edit-client-name-datalist');
             if (dl) {
                 const names = Array.from(new Set(unifiedClientsCache.map(c => (c.clientName || '').trim()).filter(Boolean))).sort();
-                dl.innerHTML = names.map(n => `<option value="${escapeQuotes(n)}"></option>`).join('');
+                dl.innerHTML = names.map(n => `<option value="${escapeHtml(n)}"></option>`).join('');
             }
 
             document.getElementById('edit-client-modal').style.display = 'flex';
@@ -6566,7 +6638,7 @@
                 renderGroupedClientsList('demo', true);
                 renderGroupedClientsList('permanent', true);
             } catch (e) {
-                errEl.textContent = 'Could not reach the server — check your connection.';
+                errEl.textContent = ownerErrText('Could not reach the server');
             }
         }
 
@@ -6595,7 +6667,7 @@
                 document.getElementById('reset-password-value').textContent = data.tempPassword;
                 document.getElementById('reset-password-modal').style.display = 'flex';
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6642,8 +6714,8 @@
                     <td>${c.product === 'hotel' ? '🏨 Hotel/Restaurant/Bar' : c.product === 'hospital' ? '🩺 Hospital' : c.product === 'production' ? '🏭 Production' : c.product === 'pharmacy' ? '💊 Pharmacy' : c.product === 'services' ? '💇 Services (Bookings)' : c.product === 'water' ? '💧 Water Refill Station' : '🏪 General Shop'}</td>
                     <td>${c.paymentClaimedAt ? new Date(c.paymentClaimedAt).toLocaleString('en-GB') : '—'}</td>
                     <td>
-                        <button class="btn-main" style="padding:6px 12px; font-size:13px;" onclick="confirmDemoUpgrade('${escapeQuotes(c.id)}', '${escapeQuotes(label.replace(/'/g, "\\'"))}', '${c.product}')">✅ Confirm Payment</button>
-                        <button class="settings-small-btn" style="background:var(--danger); color:white;" onclick="rejectDemoPayment('${escapeQuotes(c.id)}', '${escapeQuotes(label.replace(/'/g, "\\'"))}')">❌ False</button>
+                        <button class="btn-main" style="padding:6px 12px; font-size:13px;" onclick="confirmDemoUpgrade('${escapeQuotes(c.id)}', '${escapeQuotes(label)}', '${c.product}')">✅ Confirm Payment</button>
+                        <button class="settings-small-btn" style="background:var(--danger); color:white;" onclick="rejectDemoPayment('${escapeQuotes(c.id)}', '${escapeQuotes(label)}')">❌ False</button>
                     </td>
                 </tr>`;
             }).join('');
@@ -6666,7 +6738,7 @@
                 renderPendingUpgrades(true);
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6692,7 +6764,7 @@
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
                 closeClientDetailModal();
             } catch (e) {
-                showToast('Could not reach the server — check your connection.', true);
+                showToast(ownerErrText('Could not reach the server'), true);
             }
         }
 
@@ -6727,7 +6799,7 @@
             try {
                 clients = await fetchOwnerClients('', true);
             } catch (e) {
-                showToast('Could not load dashboard data — check your connection.', true);
+                showToast(ownerErrText('Could not load dashboard data'), true);
                 return;
             }
 
@@ -6926,7 +6998,7 @@
                 }, MPESA_TIMEOUT_MS);
 
             } catch (e) {
-                setMpesaStatus('📴 Could not reach the payment service. Check your connection and try again.', 'mpesa-status-error');
+                setMpesaStatus('📴 ' + ownerErrText('Could not reach the payment service'), 'mpesa-status-error');
                 btn.disabled = false;
                 btn.textContent = '📲 Send M-Pesa Prompt';
             }
@@ -6978,6 +7050,7 @@
             }
         }
         let pushTimer = null;
+        let ownerLocalGen = 0, ownerPushedGen = 0;   // zip 143: see ownerHasUnsentChanges()
         let pollTimer = null;
         let syncSocket = null;
         let wsReconnectTimer = null;
@@ -7336,9 +7409,17 @@
         // Debounced push: waits until local edits settle for a moment before uploading,
         // so rapid changes (e.g. adding several cart items) don't spam the network.
         function queuePush() {
+            ownerLocalGen++;               // zip 143: this device now holds a change the server may not have
             if (pushTimer) clearTimeout(pushTimer);
             pushTimer = setTimeout(pushNow, 300);
         }
+
+        // zip 143 — NO REVERTS. A pull replaces this console's lists with the server's copy (applyRemotePayload). It used to be applied
+        // even while this device still held a change the server did not have yet (an edit inside the 300 ms before its push, a push still
+        // on its way, or a push that failed): the edit then "reverted" on the next 7-second poll. Now every change (queuePush, and every
+        // pushNow) takes a number; a push that the server accepted records the number it carried. A pull is applied only when everything
+        // this device changed has reached the server and nothing changed while the pull was on its way — otherwise the change is sent first.
+        function ownerHasUnsentChanges() { return ownerLocalGen > ownerPushedGen; }
 
         // Awaits pushNow() and, if it silently failed (offline, network
         // hiccup, server error — pushNow() itself never throws for these),
@@ -7349,7 +7430,7 @@
         async function pushNowOrWarn(whatChanged) {
             const ok = await pushNow();
             if (!ok) {
-                showToast(`${whatChanged} saved on this device, but couldn’t reach the server — check your connection and try again, or it may revert.`, true);
+                showToast(`${whatChanged} is saved on this device and will be sent by itself as soon as the server takes it — it will not be undone. (${ownerFailReason()})`, true);
             }
             return ok;
         }
@@ -7394,6 +7475,8 @@
 
         async function pushNow() {
             markSync('syncing');
+            if (pushTimer) { clearTimeout(pushTimer); pushTimer = null; }
+            const pushGen = ++ownerLocalGen;   // zip 143: what this push carries (see ownerHasUnsentChanges)
             const payload = collectSyncPayload();
             if (!window.__keyAck) window.__keyAck = ownerLoadKeyAck();
             const keysNow = {};
@@ -7424,6 +7507,7 @@
                 });
                 if (res.ok) {
                     const data = await res.json();
+                    ownerPushedGen = Math.max(ownerPushedGen, pushGen);
                     Object.keys(keysNow).forEach((c) => { window.__keyAck[c] = keysNow[c]; });
                     ownerSaveKeyAck();
                     // "Synced up to <server time>" is only true if the server had nothing newer than what this device held when the push arrived.
@@ -7436,6 +7520,10 @@
                     return true;
                 } else {
                     if (res.status === 403) checkLicenseStatus();
+                    if (window.PosNet) window.PosNet.reportHttp(res.status);
+                    // A refusal that sending again can never fix (a bad request) must not freeze pulls for ever: only failures worth retrying
+                    // (no answer, busy, a server error) keep this device's change marked as not yet on the server.
+                    if (res.status >= 400 && res.status < 500 && ![401, 403, 408, 425, 429].includes(res.status)) ownerPushedGen = Math.max(ownerPushedGen, pushGen);
                     markSync('error');
                     return false;
                 }
@@ -7474,6 +7562,12 @@
         async function pullStateOnce() {
             if ((window.posNetOffline ? window.posNetOffline() : navigator.onLine === false) && (await probeServer(4000)) === 0) { markSync('offline'); return; }
             markSync('syncing');
+            // zip 143: a change this device has not got onto the server yet goes first — the pull must never overwrite it
+            if (ownerHasUnsentChanges()) {
+                const sent = await pushNow();
+                if (!sent && ownerHasUnsentChanges()) { markSync('error'); return; }
+            }
+            const genAtStart = ownerLocalGen;
             const localUpdatedAt = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
             // a cold server or a slow connection needs more than 3.5 s; each time one runs out of patience while the server IS reachable the next
             // try gets twice as long (up to 90 s)
@@ -7489,6 +7583,12 @@
                 window.__pullPatienceMs = 0;
                 if (data && data.unchanged) { markSync('synced'); return; }
                 if (data && data.updatedAt && data.updatedAt > localUpdatedAt) {
+                    // something changed here while the pull was on its way: send it, then pull again (never apply over it)
+                    if (ownerLocalGen !== genAtStart || ownerHasUnsentChanges()) {
+                        markSync('syncing');
+                        setTimeout(() => { try { flushThenPull(); } catch (e2) { /* the poll will */ } }, 300);
+                        return;
+                    }
                     applyRemotePayload(data);
                 }
                 markSync('synced');
@@ -7552,6 +7652,7 @@
                     const data = JSON.parse(evt.data);
                     const localUpdatedAt = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
                     if (data && data.updatedAt && data.updatedAt > localUpdatedAt) {
+                        if (ownerHasUnsentChanges()) { flushThenPull(); return; }   // zip 143: never over an unsent change
                         applyRemotePayload(data);
                         safeSetItem('pos_last_synced_at', String(data.updatedAt));
                         markSync('synced');
@@ -8091,8 +8192,8 @@
             // other way) turns out to be locked, bounce to the Sales Counter instead
             // of leaving locked content visible without ever having asked for the password.
             const startupActiveTab = document.querySelector('.tab-content.active');
-            if (startupActiveTab && startupActiveTab.id !== 'sales-tab' && isTabLocked(startupActiveTab.id)) {
-                performTabSwitch(document.getElementById('sales-tab-btn'), 'sales-tab');
+            if (startupActiveTab && isTabLocked(startupActiveTab.id)) {
+                ownerGoToFirstAllowedTab();
             }
         });
 
@@ -8550,7 +8651,7 @@
                 emailConfigLoaded = true;
                 updateEmailFromAddressWarning();
             } catch (e) {
-                statusEl.textContent = 'Could not load email settings — check your connection.';
+                statusEl.textContent = ownerErrText('Could not load email settings');
             }
         }
 
@@ -8583,7 +8684,7 @@
                 msgEl.textContent = 'Saved.';
                 loadEmailConfig();
             } catch (e) {
-                msgEl.textContent = e.message || 'Could not save — check your connection.';
+                msgEl.textContent = ownerErrMsg(e, 'Could not save');
             }
         }
 
@@ -8602,7 +8703,7 @@
                 if (!res.ok || data.error) throw new Error(data.error || 'Could not send the test email.');
                 msgEl.textContent = `Sent to ${to} — check the inbox.`;
             } catch (e) {
-                msgEl.textContent = e.message || 'Could not send — check your connection.';
+                msgEl.textContent = ownerErrMsg(e, 'Could not send');
             }
         }
 
@@ -8640,7 +8741,7 @@
                 document.getElementById('ai-capture-gemini-key-input').value = '';
                 document.getElementById('ai-capture-gemini-key-label-input').value = '';
             } catch (e) {
-                statusEl.textContent = 'Could not load AI Capture List settings — check your connection.';
+                statusEl.textContent = ownerErrText('Could not load AI Capture List settings');
             }
         }
 
@@ -8669,7 +8770,7 @@
                 loadGeminiCaptureConfig();
             } catch (e) {
                 msgEl.className = 'settings-msg error';
-                msgEl.textContent = e.message || 'Could not save — check your connection.';
+                msgEl.textContent = ownerErrMsg(e, 'Could not save');
             }
         }
 
@@ -8688,7 +8789,7 @@
                 msgEl.textContent = 'Removed.';
             } catch (e) {
                 msgEl.className = 'settings-msg error';
-                msgEl.textContent = e.message || 'Could not remove — check your connection.';
+                msgEl.textContent = ownerErrMsg(e, 'Could not remove');
             }
             loadGeminiCaptureConfig();
         }
@@ -8845,7 +8946,7 @@
                 refreshEtimsReceiptInfo();
             } catch (e) {
                 msgEl.className = 'settings-msg error';
-                msgEl.textContent = 'Could not reach the server — check your connection.';
+                msgEl.textContent = ownerErrText('Could not reach the server');
             }
         }
 
@@ -9620,14 +9721,11 @@
         }
 
         // Checkboxes shown in the invite form for picking which tabs a brand-new staff
-        // member will be allowed to use. Sales Counter is always on and can't be unchecked.
+        // member will be allowed to use. Every tab, the Sales Counter included, is a tick-box role (zip 143).
         function renderNewStaffRoleCheckboxes() {
             const container = document.getElementById('new-staff-roles');
             if (!container) return;
             container.innerHTML = ROLE_TABS.map(t => {
-                if (t.id === 'sales-tab') {
-                    return `<label><input type="checkbox" checked disabled> ${t.label}</label>`;
-                }
                 const checked = newStaffSelectedRoles.includes(t.id) ? 'checked' : '';
                 return `<label><input type="checkbox" ${checked} onchange="toggleNewStaffRole('${t.id}', this.checked)"> ${t.label}</label>`;
             }).join('');
@@ -10337,7 +10435,6 @@
             const roles = (member && Array.isArray(member.roles)) ? member.roles : [];
 
             document.querySelectorAll('.tabs .tab-link').forEach((btn) => {
-                if (btn.id === 'sales-tab-btn') return; // always visible — never lockable
                 if (!serving) { btn.style.display = ''; return; }
                 if (btn.id === 'staff-tab-btn') { btn.style.display = 'none'; return; } // never a role
                 if (btn.id === 'settings-tab-btn') { btn.style.display = 'none'; return; } // never a role
@@ -10434,10 +10531,20 @@
             // If whatever tab was open is now locked (everything but Sales Counter
             // locks automatically for a serving worker), bounce back to the till.
             const activeTabEl = document.querySelector('.tab-content.active');
-            if (activeTabEl && activeTabEl.id !== 'sales-tab' && isTabLocked(activeTabEl.id)) {
-                const salesBtn = document.getElementById('sales-tab-btn');
-                performTabSwitch(salesBtn, 'sales-tab');
+            if (activeTabEl && isTabLocked(activeTabEl.id)) {
+                ownerGoToFirstAllowedTab();
             }
+        }
+
+        // zip 143: the first tab this person was given (tab-bar order) — never a tab they were not.
+        function ownerGoToFirstAllowedTab() {
+            const allowed = Array.from(document.querySelectorAll('.tab-link[data-tab]')).find((b) => b.style.display !== 'none'
+                && document.getElementById(b.dataset.tab) && !isTabLocked(b.dataset.tab));
+            if (allowed) { performTabSwitch(allowed, allowed.dataset.tab); return true; }
+            document.querySelectorAll('.tab-content').forEach((el) => el.classList.remove('active'));
+            document.querySelectorAll('.tab-link').forEach((el) => el.classList.remove('active'));
+            showToast('No tabs have been given to your account yet — ask the owner.', true);
+            return false;
         }
 
         function logoutServer() {
@@ -10548,7 +10655,7 @@
             const ok = await pushNowOrWarn('Login password'); // immediate, not debounced — a password must not be lost if the tab closes before it syncs
 
             msgEl.className = ok ? 'settings-msg success' : 'settings-msg error';
-            msgEl.textContent = ok ? 'Login password updated.' : 'Saved on this device only — could not reach the server. Check your connection.';
+            msgEl.textContent = ok ? 'Login password updated.' : 'Saved on this device; it will be sent by itself — ' + ownerFailReason();
             currentEl.value = '';
             newEl.value = '';
             confirmEl.value = '';
@@ -10583,7 +10690,7 @@
             const ok = await pushNowOrWarn('Management password'); // immediate, not debounced — see changeLoginPassword() for why
 
             msgEl.className = ok ? 'settings-msg success' : 'settings-msg error';
-            msgEl.textContent = ok ? 'Management password updated.' : 'Saved on this device only — could not reach the server. Check your connection.';
+            msgEl.textContent = ok ? 'Management password updated.' : 'Saved on this device; it will be sent by itself — ' + ownerFailReason();
             currentEl.value = '';
             newEl.value = '';
             confirmEl.value = '';
@@ -10604,7 +10711,7 @@
         ];
 
         // Tabs that can be handed out to a staff member as a "role" via checkboxes.
-        // Sales Counter is always included (it's never lockable). The Staff panel itself
+        // Every tab here, the Sales Counter included, is granted by a tick (zip 143). The Staff panel itself
         // is deliberately excluded — staff can never manage other staff, no matter what
         // roles they're given.
         const ROLE_TABS = [
@@ -10664,7 +10771,7 @@
         }
 
         function isTabLocked(tabId) {
-            if (tabId === 'sales-tab') return false; // Point of sale is never lockable — staff must always reach it
+            if (tabId === 'sales-tab' && !currentServer) return false; // the owner always reaches it; staff only when given it (zip 143)
             if (currentServer) {
                 // Workers: only tabs explicitly granted as a role are reachable. The
                 // Staff panel and Settings are never reachable for a checked-in worker, role or not.
@@ -11666,7 +11773,7 @@
             const services = options.filter(isServiceProduct);
             const items = options.filter(p => !isServiceProduct(p));
 
-            const optionFor = (p) => `<option value="${escapeQuotes(p.code)}" ${p.code === selectedCode ? 'selected' : ''}>${escapeHtml(p.name)}</option>`;
+            const optionFor = (p) => `<option value="${escapeHtml(p.code)}" ${p.code === selectedCode ? 'selected' : ''}>${escapeHtml(p.name)}</option>`;
 
             let html = `<option value="">— choose —</option>`;
             if (services.length) html += `<optgroup label="🛠️ Services">` + services.map(optionFor).join('') + `</optgroup>`;
@@ -11691,7 +11798,7 @@
                     </div>
                     ${row.mode === 'existing'
                         ? `<select style="flex:2; min-width:150px;" onchange="updateComboRowCode(${idx}, this.value)">${comboItemOptionsHtml(row.code)}</select>`
-                        : `<input type="text" style="flex:2; min-width:150px;" placeholder="e.g. Free soda refill" value="${escapeQuotes(row.customName)}" oninput="updateComboRowCustomName(${idx}, this.value)">`
+                        : `<input type="text" style="flex:2; min-width:150px;" placeholder="e.g. Free soda refill" value="${escapeHtml(row.customName)}" oninput="updateComboRowCustomName(${idx}, this.value)">`
                     }
                     <input type="number" min="1" step="1" style="width:70px;" placeholder="Qty" value="${row.qty}" oninput="updateComboRowQty(${idx}, this.value)">
                     <button type="button" class="remove-btn" onclick="removeComboRow(${idx})">✕</button>
@@ -11737,7 +11844,7 @@
             const ingredients = components.filter(isIngredientProduct);
             const items = components.filter(p => !isIngredientProduct(p));
 
-            const optionFor = (p) => `<option value="${escapeQuotes(p.code)}" ${p.code === selectedCode ? 'selected' : ''}>${escapeHtml(p.name)} (${formatQtyDisplay(p.qty, p.unit)} ${unitLabel(p.unit)} in stock)</option>`;
+            const optionFor = (p) => `<option value="${escapeHtml(p.code)}" ${p.code === selectedCode ? 'selected' : ''}>${escapeHtml(p.name)} (${formatQtyDisplay(p.qty, p.unit)} ${unitLabel(p.unit)} in stock)</option>`;
 
             let html = `<option value="">— choose ingredient —</option>`;
             if (ingredients.length) {
@@ -11766,7 +11873,7 @@
                             ${ingredientOptionsHtml(row.code)}
                         </select>
                         <input type="text" inputmode="decimal" style="flex:1; min-width:90px;" placeholder="e.g. 1/2 or 0.5"
-                            value="${escapeQuotes(String(row.qtyPerUnit))}"
+                            value="${escapeHtml(String(row.qtyPerUnit))}"
                             oninput="updateRecipeRowQty(${idx}, this.value)">
                         <span style="font-size:12px; color:#7f8c8d; min-width:34px;">${unitLabel(unit)}</span>
                         <span class="recipe-qty-hint" data-idx="${idx}" style="font-size:11px; color:#95a5a6; min-width:44px;">${hint && hint !== String(row.qtyPerUnit).trim() ? '= ' + escapeHtml(hint) : ''}</span>
@@ -13209,8 +13316,16 @@
                 '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
             }[c]));
         }
+        // zip 143 (security): a value placed inside onclick="fn('...')". It was only ' -> \' — so a business name, client name or
+        // lead containing " or \' or &#39; broke out of the handler and ran script in the OWNER's browser (where the owner session lives).
+        // Now: JavaScript-string escaping first, then HTML-attribute escaping (the browser undoes the second before running the first).
+        // A value placed in an attribute such as value="..." uses escapeHtml instead.
         function escapeQuotes(str) {
-            return String(str).replace(/'/g, "\\'");
+            return String(str)
+                .replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+                .replace(/\r/g, '\\r').replace(/\n/g, '\\n')
+                .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')
+                .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
 
         /* ---------- FLOATING TOUCHSCREEN KEYBOARD ----------
@@ -13718,6 +13833,7 @@
             }
             const salesTab = document.getElementById('sales-tab');
             if (!salesTab.classList.contains('active')) {
+                if (isTabLocked('sales-tab')) { showToast('That tab is not one of yours.', true); return; }
                 document.getElementById('sales-tab-btn').click();
             }
             addToCart(product.code, mode);
@@ -13754,12 +13870,20 @@
                 return;
             }
 
+            // zip 143: no online lookup when the device is offline (the manager has checked) — straight to manual entry
+            if (window.posNetOffline && window.posNetOffline()) { showToast('Offline — enter the item details by hand (the barcode is filled in).'); document.getElementById('inv-name').focus(); return; }
+            const nameBefore = document.getElementById('inv-name').value;
             showToast('Looking up this barcode...');
             try {
                 const info = await lookupBarcode(code);
+                // zip 143: a slower answer for an EARLIER scan must not fill in the item scanned since, nor replace a name typed meanwhile
+                if (document.getElementById('inv-code').value !== code) return;
+                const nameNow = document.getElementById('inv-name').value;
+                if (info && info.found && info.name && nameNow !== nameBefore && nameNow.trim()) { showToast(`Barcode database suggests: ${info.name} — your typed name was kept.`); document.getElementById('inv-qty').focus(); return; }
                 if (info && info.found && info.name) {
                     document.getElementById('inv-name').value = info.name;
-                    showToast(`Found: ${info.name}. Add the price, quantity, and expiry date.`);
+                    // The online database knows names, never Kenyan VAT: the VAT class is left for the person to confirm (never guessed from its category).
+                    showToast(`Found: ${info.name}. Check the name and the VAT class, then add the price and quantity.`);
                     if (info.image) fetchAndAttachLookupImage(info.image);
                 } else {
                     showToast('No product info found for this barcode — enter the details manually.');
@@ -16440,12 +16564,12 @@
 
             const datalist = document.getElementById('restock-item-names');
             if (datalist) {
-                datalist.innerHTML = inventory.filter(p => p.type !== 'service').map(p => `<option value="${escapeQuotes(p.name)}">`).join('');
+                datalist.innerHTML = inventory.filter(p => p.type !== 'service').map(p => `<option value="${escapeHtml(p.name)}">`).join('');
             }
 
             tbody.innerHTML = restockDraft.map(r => `
                 <tr>
-                    <td><input type="text" list="restock-item-names" value="${escapeQuotes(r.name)}" placeholder="e.g. Tusker Lager 500ml" oninput="updateRestockRowField(${r.rowId}, 'name', this.value)"></td>
+                    <td><input type="text" list="restock-item-names" value="${escapeHtml(r.name)}" placeholder="e.g. Tusker Lager 500ml" oninput="updateRestockRowField(${r.rowId}, 'name', this.value)"></td>
                     <td>
                         <select onchange="updateRestockRowField(${r.rowId}, 'unit', this.value)">
                             <option value="pcs" ${r.unit === 'pcs' ? 'selected' : ''}>pcs</option>
@@ -16456,9 +16580,9 @@
                             <option value="ft" ${r.unit === 'ft' ? 'selected' : ''}>ft</option>
                         </select>
                     </td>
-                    <td><input type="text" inputmode="decimal" placeholder="e.g. 2 or 1/2" value="${escapeQuotes(r.qty)}" oninput="updateRestockRowField(${r.rowId}, 'qty', this.value)"></td>
-                    <td><input type="number" min="0" step="0.01" value="${escapeQuotes(r.cost)}" oninput="updateRestockRowField(${r.rowId}, 'cost', this.value)"></td>
-                    <td><input type="number" min="0" step="0.01" value="${escapeQuotes(r.sellPrice)}" placeholder="optional" oninput="updateRestockRowField(${r.rowId}, 'sellPrice', this.value)"></td>
+                    <td><input type="text" inputmode="decimal" placeholder="e.g. 2 or 1/2" value="${escapeHtml(r.qty)}" oninput="updateRestockRowField(${r.rowId}, 'qty', this.value)"></td>
+                    <td><input type="number" min="0" step="0.01" value="${escapeHtml(r.cost)}" oninput="updateRestockRowField(${r.rowId}, 'cost', this.value)"></td>
+                    <td><input type="number" min="0" step="0.01" value="${escapeHtml(r.sellPrice)}" placeholder="optional" oninput="updateRestockRowField(${r.rowId}, 'sellPrice', this.value)"></td>
                     <td class="restock-line-total" data-row-id="${r.rowId}">KES ${restockRowLineTotal(r).toFixed(2)}</td>
                     <td><button class="settings-small-btn" style="padding:4px 10px; font-size:12px; background:var(--danger);" onclick="removeRestockRow(${r.rowId})">🗑️</button></td>
                 </tr>
@@ -16927,17 +17051,17 @@
 
             const datalist = document.getElementById('contract-item-names');
             if (datalist) {
-                datalist.innerHTML = inventory.filter(p => isSellableProduct(p) && isStockedProduct(p)).map(p => `<option value="${escapeQuotes(p.name)}">`).join('');
+                datalist.innerHTML = inventory.filter(p => isSellableProduct(p) && isStockedProduct(p)).map(p => `<option value="${escapeHtml(p.name)}">`).join('');
             }
 
             tbody.innerHTML = contractDraft.map(r => {
                 const priceCell = activeContractType === 'retail'
                     ? `<span style="color:#7f8c8d;">KES ${contractRowUnitPrice(r).toFixed(2)}</span>`
-                    : `<input type="number" min="0" step="0.01" value="${escapeQuotes(r.price)}" placeholder="0.00" oninput="updateContractRowField(${r.rowId}, 'price', this.value)">`;
+                    : `<input type="number" min="0" step="0.01" value="${escapeHtml(r.price)}" placeholder="0.00" oninput="updateContractRowField(${r.rowId}, 'price', this.value)">`;
                 return `
                 <tr>
-                    <td><input type="text" list="contract-item-names" value="${escapeQuotes(r.name)}" placeholder="e.g. Tusker Lager 500ml" oninput="updateContractRowField(${r.rowId}, 'name', this.value); renderContractTotals();"></td>
-                    <td><input type="number" min="0" step="1" value="${escapeQuotes(r.qty)}" oninput="updateContractRowField(${r.rowId}, 'qty', this.value)"></td>
+                    <td><input type="text" list="contract-item-names" value="${escapeHtml(r.name)}" placeholder="e.g. Tusker Lager 500ml" oninput="updateContractRowField(${r.rowId}, 'name', this.value); renderContractTotals();"></td>
+                    <td><input type="number" min="0" step="1" value="${escapeHtml(r.qty)}" oninput="updateContractRowField(${r.rowId}, 'qty', this.value)"></td>
                     <td>${priceCell}</td>
                     <td class="contract-line-total" data-row-id="${r.rowId}">KES ${contractRowLineTotal(r).toFixed(2)}</td>
                     <td><button class="settings-small-btn" style="padding:4px 10px; font-size:12px; background:var(--danger);" onclick="removeContractRow(${r.rowId})">🗑️</button></td>
@@ -17181,7 +17305,7 @@
                 return `
                 <div class="form-group" style="display:flex; flex-wrap:wrap; align-items:center; gap:8px;">
                     <span style="flex:2;">${escapeHtml(it.name)}<br><span style="font-size:12px; color:#7f8c8d;">${held} held</span></span>
-                    <input type="number" min="0" max="${held}" step="1" placeholder="0" style="flex:1;" data-code="${escapeQuotes(it.code)}" id="return-qty-${escapeQuotes(it.code)}">
+                    <input type="number" min="0" max="${held}" step="1" placeholder="0" style="flex:1;" data-code="${escapeQuotes(it.code)}" id="return-qty-${escapeHtml(it.code)}">
                 </div>`;
             }).join('');
             document.getElementById('contract-return-modal').style.display = 'flex';
@@ -17334,7 +17458,7 @@
             const current = select.value;
             const items = inventory.filter(p => (p.type || 'item') !== 'service');
             select.innerHTML = `<option value="">— Not linked, label only —</option>` +
-                items.map(p => `<option value="${escapeQuotes(p.code)}">${escapeHtml(p.name)} (#${escapeHtml(p.code)})</option>`).join('');
+                items.map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)} (#${escapeHtml(p.code)})</option>`).join('');
             if (items.some(p => p.code === current)) select.value = current;
         }
 
@@ -17352,7 +17476,7 @@
                 const linkedProduct = b.linkedCode ? inventory.find(p => p.code === b.linkedCode) : null;
                 return `
                 <tr>
-                    <td><input type="checkbox" data-id="${escapeQuotes(b.id)}"></td>
+                    <td><input type="checkbox" data-id="${escapeHtml(b.id)}"></td>
                     <td>${escapeHtml(b.label)}</td>
                     <td style="font-family:monospace;">${escapeHtml(b.value)}</td>
                     <td>${linkedProduct ? escapeHtml(linkedProduct.name) : '—'}</td>
