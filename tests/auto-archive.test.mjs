@@ -19,6 +19,11 @@ test('at 80% full the oldest history moves to the device archive, the lists are 
   w.eval(`salesLog = ${JSON.stringify([...old, ...recent])}`);
   w.eval("safeSetItem('pos_sales_log', JSON.stringify(salesLog))");
   assert.ok(used(w) >= 4000000 * 0.98, 'the device is ~80% full: ' + used(w));
+  // zip 131: old sales the server has NOT confirmed are never archived (they are what gets sent) ...
+  assert.equal(await w.eval("storageAutoArchive('check')"), false);
+  assert.equal(w.eval('salesLog.length'), 340, 'nothing moved while the server has not confirmed the old sales');
+  w.eval("salesJournalSeenRecords('salesLog', salesLog)");                    // ...the first sync confirms the server holds them
+  w.eval("window.__resetAutoArchiveThrottle && __resetAutoArchiveThrottle()");
   assert.equal(await w.eval("storageAutoArchive('check')"), true);
   assert.equal(w.eval('salesLog.length'), 40, 'only recent sales remain in the lists');
   assert.ok(w.eval("salesLog.every(s => s.id.startsWith('new'))"));
@@ -52,6 +57,7 @@ test('a save that runs out of room does not show the cashier an error; the devic
   const old = Array.from({ length: 250 }, (_, i) => sale('old' + i, 200 + (i % 100), hard(10500)));
   w.eval(`salesLog = ${JSON.stringify([...old, sale('new0', 1, 'x')])}`);
   w.eval("safeSetItem('pos_sales_log', JSON.stringify(salesLog))");
+  w.eval("salesJournalSeenRecords('salesLog', salesLog.slice(0, 250))");     // the old sales are confirmed on the server
   for (let i = 0; i < 2; i++) w.localStorage.setItem(`filler-${i}~s0`, hard(700000));            // leave too little room for the next save
   const before = used(w);
   const big = JSON.stringify({ data: hard(900000) });

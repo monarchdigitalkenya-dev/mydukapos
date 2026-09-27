@@ -13,7 +13,7 @@
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-128';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-133';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -83,7 +83,7 @@
         }
         // Quietly pair a device that already holds the shop password (every set-up device does — it signs in offline with it).
         async function autoPair() {
-            if (token() || navigator.onLine === false) return;
+            if (token() || (window.posNetOffline && window.posNetOffline())) return;
             var h = LS('pos_pw_hash') || LS('aqua_pw_hash');
             if (!h) return;
             try { await pair({ proof: h }); } catch (e) { /* offline or refused: tried again later */ }
@@ -96,8 +96,9 @@
         document.addEventListener('click', function (ev) {
             var dot = ev.target && ev.target.closest && ev.target.closest('#sync-status');
             if (!dot || typeof syncRetryNow !== 'function') return;
+            try { if (window.PosNet) window.PosNet.check('tap on the dot'); } catch (e) { /* optional */ }
             syncRetryNow();
-            try { if (typeof showToast === 'function' && dot.dataset.state !== 'synced') showToast('Syncing now…'); } catch (e) { /* cosmetic */ }
+            try { if (typeof showToast === 'function' && dot.dataset.state !== 'synced') showToast(window.PosNet ? window.PosNet.message() : 'Syncing now…'); } catch (e) { /* cosmetic */ }
         });
         // Opening Daily Sales starts on today, unfiltered (zip 124 — see dailySalesOpenOnToday). Capture phase: before the tab's own code.
         document.addEventListener('click', function (ev) {
@@ -213,7 +214,7 @@
         async function renderPanel() {
             var box = document.getElementById('device-security-body');
             if (!box) return;
-            if (navigator.onLine === false) { box.innerHTML = syncBoxHtml() + '<p class="settings-hint">Offline — the device list needs a connection. This device keeps working normally.</p>'; return; }
+            if (window.posNetOffline && window.posNetOffline()) { box.innerHTML = syncBoxHtml() + '<p class="settings-hint">Offline — the device list needs a connection. This device keeps working normally.</p>'; return; }
             var data;
             try { var res = await fetch(apiPath('/api/device-pair')); data = await res.json(); } catch (e) { box.innerHTML = syncBoxHtml() + '<p class="settings-hint">Could not reach the server — try again when online.</p>'; return; }
             var paired = data.me && data.me.paired;

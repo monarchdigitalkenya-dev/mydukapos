@@ -93,14 +93,50 @@ export async function deleteAccount(env, email) {
   await env.mydukapos_kv.put(INDEX_KEY, JSON.stringify(next));
 }
 
+// SESSIONS (zip 130). A session used to exist ONLY as a KV record written at sign-in. KV takes up to a minute to reach every Cloudflare
+// location (and caches "not found"), so a request landing elsewhere right after signing in could be told the session does not
+// exist — the same false "please sign in" the Owner Console had (fixed in zip 127). The token is now SIGNED with a key derived from
+// the account's own salt + password hash (never leaves the server), so any location verifies it at once; a password change ends
+// older sessions. The KV record is still written, and plain tokens from before keep working until they expire.
+async function hmacHex(keyText, msg) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(keyText), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+const b64u = (t) => btoa(unescape(encodeURIComponent(t))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = (t) => decodeURIComponent(escape(atob(String(t).replace(/-/g, '+').replace(/_/g, '/'))));
+async function sessionKey(account) { return sha256Hex('demo-session-v2|' + (account.salt || '') + '|' + (account.passwordHash || '')); }
+function sameText(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+
 export async function createSession(env, email) {
-  const token = randomToken();
-  await env.mydukapos_kv.put(SESSION_PREFIX + token, email, { expirationTtl: SESSION_TTL_SECONDS });
-  return token;
+  const rand = randomToken();
+  const normalized = normalizeEmail(email);
+  await env.mydukapos_kv.put(SESSION_PREFIX + rand, email, { expirationTtl: SESSION_TTL_SECONDS });
+  let account = null;
+  try { account = await getAccount(env, normalized); } catch (e) { account = null; }
+  if (!account || !account.passwordHash) return rand;
+  const exp = (Date.now() + SESSION_TTL_SECONDS * 1000).toString(36);
+  const body = b64u(normalized) + '.' + rand + '.' + exp;
+  return 'd2.' + body + '.' + (await hmacHex(await sessionKey(account), body));
 }
 
 export async function emailFromToken(env, token) {
-  if (!token) return '';
+  if (!token || String(token).length > 600) return '';
+  const p = String(token).split('.');
+  if (p.length === 5 && p[0] === 'd2') {
+    let email = '';
+    try { email = unb64u(p[1]); } catch (e) { return ''; }
+    if (!(parseInt(p[3], 36) > Date.now())) return '';
+    let account = null;
+    try { account = await getAccount(env, email); } catch (e) { account = null; }
+    const body = p[1] + '.' + p[2] + '.' + p[3];
+    if (account && account.passwordHash && sameText(await hmacHex(await sessionKey(account), body), p[4])) return email;
+    return (await env.mydukapos_kv.get(SESSION_PREFIX + p[2])) || '';      // the account record itself is still spreading
+  }
   return (await env.mydukapos_kv.get(SESSION_PREFIX + token)) || '';
 }
 

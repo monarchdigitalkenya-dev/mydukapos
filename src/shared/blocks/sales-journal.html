@@ -217,11 +217,10 @@
                             r.clockCorrectedBy = off;
                             fixed = true; stats.corrected++;
                         }
-                        // made here just now (or a past sale being recorded now) = not on the server yet; a record that simply appeared
-                        // with an old date (a backup restored, history imported) is protected too, but as "not confirmed"
-                        var t0 = Date.parse(r.timestamp || r.date);
-                        var st0 = r.recordedLate || !isFinite(t0) || Math.abs(now - t0) < 2 * 86400000 ? 'pending' : 'unconfirmed';
-                        e = { st: st0, sig: sigOf(r), at: now, ls: lsOk };
+                        // made on this device = not on the server yet ("pending"), whatever date it carries — a past sale recorded now
+                        // too (zip 130). Only a BULK arrival of old-dated records in one save (a backup restored, history imported) is
+                        // protected as "not confirmed" instead — decided after the loop.
+                        e = { st: 'pending', sig: sigOf(r), at: now, ls: lsOk };
                         m.set(id, e); out.push(r);
                     } else {
                         var sg = sigOf(r);
@@ -235,6 +234,15 @@
                 // Stock changes, returns and expenses have several ways of being deleted on purpose (delete an expense, a stock take...):
                 // once the IndexedDB journal is loaded, one that this device's own SUCCESSFUL save left out was removed on purpose.
                 // Sales are never assumed removed — only the explicit salesJournalForget() calls (reset, purge, delete voided) do that.
+                // Safety net (zip 131): a sale not yet on the server that a save left out, without a deliberate removal (those call
+                // salesJournalForget right after saving), is put straight back from the journal: not only at the next start-up.
+                if (f === 'salesLog' && loaded && lsOk) {
+                    var inList = new Set();
+                    for (var q = 0; q < a.length; q++) { var qd = idOf(a[q]); if (qd) inList.add(qd); }
+                    var lost = false;
+                    m.forEach(function (e3, id3) { if (!lost && (e3.st === 'pending' || e3.st === 'unconfirmed') && !inList.has(id3)) lost = true; });
+                    if (lost) setTimeout(restoreLost, 0);
+                }
                 var shrank = a.length < (lastLen[f] || 0);
                 lastLen[f] = a.length;
                 if (lsOk && loaded && f !== 'salesLog' && shrank) {
@@ -242,6 +250,13 @@
                     for (var j = 0; j < a.length; j++) { var jd = idOf(a[j]); if (jd) have.add(jd); }
                     m.forEach(function (e2, id2) { if ((e2.st === 'pending' || e2.st === 'unconfirmed') && !have.has(id2)) { e2.st = 'removed'; gone.push(id2); } });
                     if (gone.length) patchRecords(f, gone, { status: 'removed', removedReason: 'removed on this device', removedAt: Date.now() });
+                }
+                var newOnes = out.filter(function (r) { var me1 = m.get(idOf(r)); return me1 && me1.at === now && me1.st === 'pending'; });
+                if (newOnes.length > 50) {
+                    newOnes.forEach(function (r) {
+                        var t0 = Date.parse(r.timestamp || r.date);
+                        if (isFinite(t0) && Math.abs(now - t0) >= 2 * 86400000 && !r.recordedLate) m.get(idOf(r)).st = 'unconfirmed';
+                    });
                 }
                 if (out.length) {
                     stats.captured += out.length;
@@ -355,15 +370,27 @@
                 if (done.length) patchRecords(f, done, { status: 'removed', removedReason: 'moved to the device archive', removedAt: Date.now() });
             } catch (e) { /* bookkeeping */ }
         };
+        // Does the server already hold exactly this version of the record (the journal saw it accepted)? — then it is not sent again.
+        window.salesJournalKnownOnServer = function (f, r) {
+            var id = idOf(r), e = id && meta[f] && meta[f].get(id);
+            return !!e && e.st === 'synced' && e.sig === sigOf(r);
+        };
         window.salesJournalIsPending = function (f, id) {
             var e = meta[f] && meta[f].get(String(id));
             return !!e && e.st === 'pending';
+        };
+        // Not yet known to be on the server: unsent, or an older record the server has not confirmed (zip 131). Such a record must stay
+        // in the everyday list, which is what gets sent: the device archive never takes it.
+        window.salesJournalNotOnServer = function (f, id) {
+            var e = meta[f] && meta[f].get(String(id));
+            return !!e && (e.st === 'pending' || e.st === 'unconfirmed');
         };
         // 'synced' | 'pending' | 'syncing' | 'retrying' | 'unconfirmed' | null (not tracked)
         window.salesSyncStatus = function (id, f) {
             var e = meta[f || 'salesLog'] && meta[f || 'salesLog'].get(String(id));
             if (!e || e.st === 'removed') return null;
             if (e.st === 'synced') return 'synced';
+            if (e.st === 'unconfirmed') return 'unconfirmed';       // an old record we only lack proof for: never shown as "retrying"
             if (window.__pushInFlight > 0) return 'syncing';
             if ((window.__pushFails || 0) > 0) return 'retrying';
             return e.st;
@@ -391,6 +418,20 @@
                 (arrOf(f) || []).forEach(function (r) { var id = idOf(r); if (id && !meta[f].has(id)) meta[f].set(id, { st: 'unconfirmed', sig: sigOf(r), at: 0 }); });
             });
         }
+        // Only sales the journal still counts as not on the server (checked after any deliberate removal has been recorded).
+        function restoreLost() {
+            if (restoreBusy) return;
+            restoreBusy = true;
+            readAll().then(function (rows) {
+                var m = meta.salesLog;
+                restoreMissing(rows.filter(function (row) {
+                    if (row.field !== 'salesLog') return false;
+                    var e = m.get(row.id);
+                    return !!e && (e.st === 'pending' || e.st === 'unconfirmed');
+                }));
+            }).catch(function () { /* the next start-up restores them */ }).then(function () { restoreBusy = false; });
+        }
+        var restoreBusy = false;
         function restoreMissing(rows) {
             var restored = {};
             FIELDS.forEach(function (f) {
@@ -619,7 +660,7 @@
                 if (!b1 || !b2) return;
                 var inRange = function (x) { var k = bizDay(x.timestamp); return k >= fromKey && k <= toKey; };
                 var found = await readDeviceArchive(inRange);
-                if (navigator.onLine !== false) { try { found = found.concat(await readServerHistory(b1.from, b2.to + 1)); } catch (err) { /* offline: the device's own archive only */ } }
+                if (!(window.posNetOffline && window.posNetOffline())) { try { found = found.concat(await readServerHistory(b1.from, b2.to + 1)); } catch (err) { /* offline: the device's own archive only */ } }
                 var have = new Set((arrOf('salesLog') || []).map(function (x) { return String(x && x.id); }));
                 var seen = new Set(), list = [];
                 found.forEach(function (x) {
@@ -689,6 +730,25 @@
                 window.reportsGenerate = wr;
             }
         }
+        // Profits & Expenses (zip 130): the same older / hidden sales count in the period's revenue and profit, while that tab is open.
+        function wrapProfits() {
+            if (typeof window.renderProfitReport !== 'function' || window.renderProfitReport.__journal || typeof profitReportRange !== 'function') return;
+            var origP = window.renderProfitReport;
+            var wp = function () {
+                var self = this, args = arguments, rr = null;
+                try { rr = profitReportRange(); } catch (e) { rr = null; }
+                if (!rr || typeof rr.from !== 'string' || typeof rr.to !== 'string') return origP.apply(self, args);
+                var key = rr.from + '|' + rr.to;
+                var out = withExtras(extras[key] ? extras[key].list : null, function () { return origP.apply(self, args); });
+                var tab = document.getElementById('profits-tab');
+                if (!scoped() && tab && (tab.classList.contains('active') || tab.style.display === 'block')) {
+                    loadExtras(key, rr.from, rr.to, function () { try { window.renderProfitReport(); } catch (e) { /* cosmetic */ } });
+                }
+                return out;
+            };
+            wp.__journal = true;
+            window.renderProfitReport = wp;
+        }
         window.salesJournalExtras = function () { var all = []; Object.keys(extras).forEach(function (k) { all = all.concat(extras[k].list); }); return all; };
 
         /* ---- once per device (zip 128): bring back sales that were hidden before this release ---- */
@@ -731,7 +791,7 @@
             if (done && !force) return { skipped: true };
             var before = (arrOf('salesLog') || []).length;
             var repaired = repairRecords();
-            if (navigator.onLine === false) return { repaired: repaired, online: false };
+            if (window.posNetOffline && window.posNetOffline()) return { repaired: repaired, online: false };
             // a full fetch (not "changes since"): sales this device lost, that the server still has, come back into its list
             try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ }
             var ok = false;
@@ -876,7 +936,7 @@
             var tries = async function (fn, n) { var last; for (var i = 0; i < n; i++) { try { var v = await fn(); if (v !== false) return v; } catch (e) { last = e; } await wait(2000 * Math.pow(2, i)); } if (last) throw last; return false; };
             var before = (arrOf('salesLog') || []).length;
             try {
-                if (navigator.onLine === false && typeof probeServer === 'function' && (await probeServer(4000)) === 0) throw new Error('This device is offline. Nothing was changed; try again when it is online.');
+                if (window.PosNet && (await window.PosNet.check('sync to this device')) === 'offline') throw new Error('This device is offline. Nothing was changed; try again when it is online.');
                 say(0, 'run', 'Checking this device may sync…');
                 var dp = null;
                 try { var res = await fetch(typeof apiUrl === 'function' ? apiUrl('/api/device-pair') : '/api/device-pair'); dp = await res.json(); } catch (e) { dp = null; }
@@ -933,6 +993,7 @@
         try { repairRecords(); } catch (e) { /* never block the start */ }   // before the app first draws (a broken record used to stop it)
         function boot() {
             wrapRender();
+            wrapProfits();
             clockBanner();
             start();
         }

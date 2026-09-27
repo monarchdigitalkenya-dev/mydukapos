@@ -20,7 +20,7 @@
 // Talks to the Pages Function (functions/api/pos-sync.js) over fetch(): POST /push /state /changes /history /import /export /stats.
 
 import {
-  MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
+  businessSig, MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
   allocateTill, noteDevice, NESTED_MERGE, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
@@ -447,6 +447,18 @@ export class ShopStore {
         case '/export': return text(this.stateText(null));
         case '/changes': return text(this.changesText(body.cursor));
         case '/history': return json(this.history(body.col, body.from, body.to, body.limit, body.after));
+        // zip 129: which of these records does the database hold, and in which business version (see businessSig) — so a device
+        // sends only what the server does not have yet.
+        case '/have': {
+          const out = {};
+          if (LOGS.has(body.col) && Array.isArray(body.ids)) {
+            for (const id of body.ids.slice(0, 5000)) {
+              const row = this.getRow(body.col, 'id:' + id);
+              if (row && row.del !== 1) { try { out[id] = businessSig(JSON.parse(row.json)); } catch (e) { /* unreadable: send again */ } }
+            }
+          }
+          return json({ have: out });
+        }
         case '/stats': return json(this.stats());
         // only the two password hashes (device pairing checks the shop password against them — see device-pair.js)
         case '/registry': return json(this.getCore().deviceRegistry || {});

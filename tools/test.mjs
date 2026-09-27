@@ -7,5 +7,7 @@ import { ROOT } from './lib.mjs';
 
 const dir = path.join(ROOT, 'tests');
 const files = fs.readdirSync(dir).filter((f) => f.endsWith('.test.mjs')).map((f) => path.join('tests', f));
-const r = spawnSync(process.execPath, ['--test', ...files], { cwd: ROOT, stdio: 'inherit' });
+// The tills run on Kenya time (the business date follows it — see bizDayKey). The tests do too, so a test that says "today" means the
+// same day at any hour of the run (run under UTC after 21:00, "today" in Kenya is already tomorrow).
+const r = spawnSync(process.execPath, ['--test', ...files], { cwd: ROOT, stdio: 'inherit', env: { ...process.env, TZ: process.env.TZ || 'Africa/Nairobi' } });
 process.exit(r.status ?? 1);

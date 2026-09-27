@@ -105,3 +105,19 @@ test('an owner session that really ended shows the sign-in form (not a dead mess
   assert.match(t.d.getElementById('owner-auth-error').textContent, /session has ended/);
   t.close();
 });
+
+test('website / demo account sessions (zip 130): recognised at once even where the session record has not arrived yet; forged ones refused', async () => {
+  const { store, kv } = kvStore();
+  const env = { mydukapos_kv: kv };
+  const acc = await mod('_account.js');
+  const salt = 'abc';
+  store.set('demo-account:me@shop.ke', JSON.stringify({ email: 'me@shop.ke', salt, passwordHash: await acc.sha256Hex(salt + 'pw123456') }));
+  const token = await acc.createSession(env, 'me@shop.ke');
+  assert.match(token, /^d2\./);
+  store.delete('demo-account-session:' + token.split('.')[2]);            // this location has not received the session record yet
+  assert.equal(await acc.emailFromToken(env, token), 'me@shop.ke');
+  const p = token.split('.'); p[4] = '0'.repeat(64);
+  assert.equal(await acc.emailFromToken(env, p.join('.')), '', 'a forged signature');
+  store.set('demo-account-session:oldtok', 'me@shop.ke');
+  assert.equal(await acc.emailFromToken(env, 'oldtok'), 'me@shop.ke', 'sessions from before still work');
+});

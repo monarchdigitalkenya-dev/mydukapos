@@ -130,6 +130,67 @@
             return { n: n, saved: saved };
         }
 
+        /* ---------- photos to Cloudflare R2 (zip 133) ----------
+           Product / menu photos used to live INSIDE the item list as text (data:image…): every one travelled with every sync and filled
+           the device. Now, whenever the device is online, each such photo is uploaded once to the shop's media store (R2) and the item
+           keeps only its short address (/api/media?k=p&id=…). The id is the photo's own fingerprint (SHA-256), so a retried or repeated
+           upload stores nothing twice. The item is changed only if its photo is still the one uploaded (an edit meanwhile wins). The
+           service worker keeps each photo on the device after its first load, so they still show offline. A server without the media
+           store (an older deployment) is left alone. */
+        var offloading = false, mediaUnsupported = false;
+        async function photoId(dataUrl) {
+            try {
+                var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(dataUrl));
+                return 'p-' + Array.from(new Uint8Array(buf)).slice(0, 20).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+            } catch (e) { return 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12); }
+        }
+        function mediaHref(path) { return typeof apiUrl === 'function' ? apiUrl(path) : path; }
+        window.storageOffloadPhotos = async function (limit) {
+            if (offloading || mediaUnsupported) return 0;
+            try { if (typeof window.posNetOffline === 'function' ? window.posNetOffline() : navigator.onLine === false) return 0; } catch (e) { /* try anyway */ }
+            var src = itemSource();
+            if (!src) return 0;
+            var todo = src.list.filter(function (it) { return isPhoto(it) && /^data:image\/(jpeg|png|webp);base64,/.test(it.image); }).slice(0, limit || 25).map(function (it) { return { code: it.code, id: it.id, before: it.image }; });
+            if (!todo.length) return 0;
+            offloading = true;
+            var done = [];
+            try {
+                for (var i = 0; i < todo.length; i++) {
+                    var t = todo[i], res;
+                    try {
+                        res = await fetch(mediaHref('/api/media'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ k: 'p', id: await photoId(t.before), dataUrl: t.before }) });
+                    } catch (e) { break; }                                            // offline now: the rest wait
+                    if (res.status === 404 || res.status === 405) { mediaUnsupported = true; break; }
+                    if (!res.ok) { if (res.status === 400 || res.status === 413) continue; break; }   // this photo cannot move (stays as it is)
+                    var d = await res.json();
+                    if (d && d.url) done.push({ code: t.code, id: t.id, before: t.before, after: mediaHref(d.url) });
+                }
+            } finally { offloading = false; }
+            var cur = itemSource(), n = 0;
+            if (!cur) return 0;
+            done.forEach(function (r) {
+                var it = cur.list.find(function (x) { return x && (r.code != null ? x.code === r.code : x.id === r.id) && x.image === r.before; });
+                if (it) { it.image = r.after; it.updatedAt = Date.now(); n++; try { var im = new Image(); im.src = r.after; } catch (e) { /* warmed on first view */ } }
+            });
+            if (n) {
+                if (typeof safeSetItem === 'function') safeSetItem(cur.key, JSON.stringify(cur.list));
+                try { if (typeof markLocalDirty === 'function') markLocalDirty(); } catch (e) {}
+                try { if (typeof queuePush === 'function') queuePush(); } catch (e) {}
+                try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e) {}
+            }
+            return n;
+        };
+        setTimeout(function () { window.storageOffloadPhotos(); }, window.__photoOffloadDelayMs != null ? window.__photoOffloadDelayMs : 45000);
+        setInterval(function () { window.storageOffloadPhotos(); }, 10 * 60 * 1000);
+        // A photo that cannot be shown (offline and never loaded on this device) shows a plain placeholder, not a broken-image icon.
+        document.addEventListener('error', function (ev) {
+            var el = ev.target;
+            if (el && el.tagName === 'IMG' && /\/api\/media\?/.test(el.getAttribute('src') || '') && !el.dataset.mediaFallback) {
+                el.dataset.mediaFallback = '1';
+                el.src = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><rect width='120' height='120' fill='%23eee'/><text x='60' y='66' font-size='12' text-anchor='middle' fill='%23999'>photo</text></svg>";
+            }
+        }, true);
+
         /* ---------- usage numbers ---------- */
 
         function usage() {
@@ -340,6 +401,7 @@
         var FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'];
         var DB = 'pos_local_archive', STORE = 'archives';
         var running = false, lastRun = 0;
+        window.__resetAutoArchiveThrottle = function () { lastRun = 0; };      // tests
 
         // The app's own arrays (declared with `let` in the app script, so reachable by name from here).
         var ARR = {
@@ -432,6 +494,8 @@
                     var t = recordTime(a[i]);
                     if (!isFinite(t) || t >= cutoff) continue;
                     // never move a record the server has not got yet: it stays in the list (and is sent) until it is on the server (zip 127)
+                    // ...nor one the server has not CONFIRMED yet (an older record from before the journal): zip 131
+                    if (a[i] && a[i].id != null && typeof window.salesJournalNotOnServer === 'function' && window.salesJournalNotOnServer(f, a[i].id)) continue;
                     if (a[i] && a[i].id != null && typeof window.salesJournalIsPending === 'function' && window.salesJournalIsPending(f, a[i].id)) continue;
                     old.push(a[i]);
                 }

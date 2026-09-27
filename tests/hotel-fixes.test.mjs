@@ -97,7 +97,15 @@ test('server: a settled / more-paid bill is never put back by an older-looking c
 // ---------- 3. the sync dot: no words, no flicker ----------
 for (const app of ['hotel/index.html', 'index.html', 'water/index.html', 'owner/index.html']) {
   test(`${app}: the sync indicator is a wordless dot (green online, black offline, orange syncing) that does not flicker on quick syncs or blips`, async () => {
-    const { w, d, errors, close } = await boot(app, { wait: 800 });
+    // zip 129: "offline" is decided by a real check (window.PosNet), so this test has a network it can switch off
+    const net = { up: true };
+    const fetch = async (url) => {
+      if (!net.up) throw new TypeError('Failed to fetch');
+      if (String(url).includes('/api/health')) return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response('{"unchanged":true,"updatedAt":1}', { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const { w, d, errors, close } = await boot(app, { wait: 800, fetch });
+    w.__posNetInternetProbe = async () => net.up;
     w.eval('window.__syncDotDelayMs = 120; window.__syncDotOfflineMs = 250');
     const el = d.getElementById('sync-status');
     const seen = [];
@@ -105,7 +113,7 @@ for (const app of ['hotel/index.html', 'index.html', 'water/index.html', 'owner/
     assert.equal(el.textContent, '', 'no words');
     assert.ok(el.classList.contains('sync-dot'));
     w.eval("markSync('synced')"); await sleep(30);
-    assert.equal(el.dataset.state, 'synced'); assert.ok(el.classList.contains('sync-synced')); assert.equal(el.title, 'Online');
+    assert.equal(el.dataset.state, 'synced'); assert.ok(el.classList.contains('sync-synced')); assert.match(el.title, /^Online/);          // zip 129: plain-language detail after the word
     seen.length = 0;
     // 20 quick polls (a poll that answers fast): the dot never leaves green
     for (let i = 0; i < 20; i++) { w.eval("markSync('syncing')"); await sleep(5); w.eval("markSync('synced')"); await sleep(5); }
@@ -121,10 +129,12 @@ for (const app of ['hotel/index.html', 'index.html', 'water/index.html', 'owner/
     assert.equal(el.dataset.state, 'synced');
     // really offline: black, and it stays black while it keeps trying (no orange every few seconds)
     seen.length = 0;
+    net.up = false;
     w.eval("markSync('offline')"); await sleep(400);
-    assert.equal(el.dataset.state, 'offline'); assert.ok(el.classList.contains('sync-offline')); assert.equal(el.title, 'Offline');
+    assert.equal(el.dataset.state, 'offline'); assert.ok(el.classList.contains('sync-offline')); assert.match(el.title, /^Offline/);
     for (let i = 0; i < 5; i++) { w.eval("markSync('syncing')"); await sleep(200); w.eval("markSync('offline')"); await sleep(20); }
     assert.deepEqual(seen, ['offline'], 'black stays black through repeated retries');
+    net.up = true;
     w.eval("markSync('synced')"); await sleep(30);
     assert.equal(el.dataset.state, 'synced');
     assert.deepEqual(errors, []);

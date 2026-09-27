@@ -2510,7 +2510,7 @@ function hashSealGateOpen() {
 //@fn hashSealGateCheck
 async function hashSealGateCheck() {
             if (hashSealGateOpen()) return true;
-            if (navigator.onLine === false || typeof fetch !== 'function') return false;
+            if ((window.posNetOffline && window.posNetOffline()) || typeof fetch !== 'function') return false;
             let since = 0;
             try { since = Number(localStorage.getItem('pos_release_since') || 0); } catch (e) { /* none */ }
             if (!since || Date.now() - since < 3 * 86400000) return false;
@@ -3605,7 +3605,7 @@ async function maybeAutoDetectCustomerDisplay() {
 
 //@fn maybeFetchAutoImage
 async function maybeFetchAutoImage(code, name) {
-            if (!navigator.onLine) return;
+            if (window.posNetOffline ? window.posNetOffline() : !navigator.onLine) return;
             try {
                 const res = await fetch(apiUrl(`/api/image-search?q=${encodeURIComponent(name)}`));
                 const data = await res.json();
@@ -4758,6 +4758,14 @@ function perfInstall() {
 
 //@fn markSync
 function markSync(status) {
+            // zip 129: connectivity is decided in ONE place (window.PosNet, the connectivity block). A sync that worked says so; a request
+            // that got no answer is only a reason for it to CHECK — it never sets "offline" by itself.
+            try {
+                if (window.PosNet) {
+                    if (status === 'synced') window.PosNet.report('ok');
+                    else if (status === 'offline') window.PosNet.report('neterr', 'a sync request got no answer');
+                }
+            } catch (e) { /* the dot still updates below */ }
             // What the app KNOWS (window.__syncStatus) is updated at once; what is SHOWN (the dot) changes calmly: a poll that answers in a fraction of a
             // second never turns the dot orange, a blip never turns it black, and the dot does not go orange again every few seconds while offline.
             // A busy server for a few seconds is not an error: the change is on its way again (see trackPush). Only a failure that lasts a
@@ -4776,7 +4784,7 @@ function markSync(status) {
                 return;
             }
             // offline / error: only if it lasts (a phone that just changed network, a slow answer)
-            ui.timer = setTimeout(() => show(status), navigator.onLine === false ? 600 : (window.__syncDotOfflineMs || 3000));
+            ui.timer = setTimeout(() => show(status), window.__syncDotOfflineMs || 3000);
         }
 
 //@fn probeServer
@@ -4787,7 +4795,9 @@ async function probeServer(ms) {
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), ms || 6000);
             try {
-                const res = await fetch(apiUrl(SYNC_URL + '?since=99999999999999'), { method: 'GET', signal: controller.signal, cache: 'no-store' });
+                // zip 129: the tiny health endpoint (no licence lookup, no shop data, never cached) — the old probe was the full sync
+                // endpoint, and a slow answer from it was taken as "no internet".
+                const res = await fetch('/api/health?t=' + Date.now(), { method: 'GET', signal: controller.signal, cache: 'no-store' });
                 // Side effect only — never changes what this function returns.
                 // Feeds the offline eTIMS clock-drift guard (water/AquaPOS
                 // today; harmless no-op via the typeof guard anywhere else
@@ -4846,9 +4856,15 @@ async function pullStateOnce() {
                 // ?since= lets the server answer \"unchanged\" (a few bytes) instead of
                 // re-sending the whole shop every poll — see pos-sync.js onRequestGet.
                 const res = await fetch(apiUrl(SYNC_URL + (localUpdatedAt > 0 ? '?since=' + localUpdatedAt : '')), { method: 'GET', signal: controller.signal });
-                if (res.status === 403) { checkLicenseStatus(); markSync('offline'); return; }
-                // The server answered, so this is not "Offline": a server that is busy or failing is a sync error and is retried by the poll.
-                if (!res.ok) { markSync(res.status >= 500 || res.status === 429 ? 'error' : 'offline'); return; }
+                // The server ANSWERED, so none of these is "offline" (zip 129: 403 and 4xx used to show as Offline).
+                if (!res.ok) {
+                    let code = '';
+                    try { code = ((await res.clone().json()) || {}).code || ''; } catch (e) { /* no body */ }
+                    if (window.PosNet) window.PosNet.reportHttp(res.status, code);
+                    if (res.status === 403) checkLicenseStatus();
+                    markSync('error');
+                    return;
+                }
                 const data = await res.json();
                 window.__pullPatienceMs = 0;
                 if (data && data.unchanged) { markSync('synced'); return; }
@@ -4935,6 +4951,8 @@ function preparePulledPayload(data) {
                 if (!data || typeof data !== 'object') return data;
                 try { if (typeof window.salesJournalSeen === 'function') window.salesJournalSeen(data); } catch (e) { /* housekeeping */ }
                 if (data._hotFrom) window.__lastHotFrom = data._hotFrom;
+                // what the server just sent, it has: those records are not sent back (zip 129)
+                ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'].forEach((f) => { if (Array.isArray(data[f]) && data[f].length) ackServerRecords(f, data[f]); });
                 const local = {
                     salesLog: typeof salesLog === 'undefined' ? null : salesLog,
                     stockMovementLog: typeof stockMovementLog === 'undefined' ? null : stockMovementLog,
@@ -4960,6 +4978,9 @@ function preparePulledPayload(data) {
                 Object.keys(local).forEach((f) => {
                     const mine = local[f];
                     const theirs = data[f];
+                    // A database shop's answer lists only the logs it holds rows for, so a shop whose first sales have not reached it yet
+                    // sends no salesLog at all. "Not sent" is not "empty": keep this device's records (the apps would otherwise apply []).
+                    if (Array.isArray(mine) && mine.length && theirs == null) { out[f] = mine; return; }
                     if (!Array.isArray(mine) || !Array.isArray(theirs) || mine.length === 0) return;
                     const have = new Set();
                     theirs.forEach((r) => { const k = keyOf(r); if (k != null) have.add(k); });
@@ -4983,6 +5004,7 @@ async function pushNow() {
                 let seqAtStart = '0';
                 try { seqAtStart = localStorage.getItem('pos_dirty_seq') || '0'; } catch (e) { /* best effort */ }
                 const payload = collectSyncPayload();
+                try { await syncHaveCheck(payload); } catch (e) { /* batching covers it */ }
                 const slim = slimPayloadForPush(payload);
                 // A push that never gets an answer used to sit at "Syncing…" for as long as the browser cared to wait (minutes), blocking
                 // every later push and pull behind it. It now gives up after 40 s (the poll retries).
@@ -4997,6 +5019,7 @@ async function pushNow() {
                     });
                     if (res.ok) {
                         slim.commit();
+                        pushBacklogAfter(slim);
                         const data = await res.json();
                         if (data && data.till) rememberTillNumber(data.till);
                         const ledgerJustOn = !!(data && data.ledger) && stockLedgerMark(true);
@@ -5014,7 +5037,7 @@ async function pushNow() {
                         const missedSomething = movedStock || (typeof data.prev === 'number' && data.prev > heldUpTo && heldUpTo > 0);
                         if (!missedSomething) safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
                         else setTimeout(() => { try { if (window.__pullInFlight) window.__pullAgain = true; else pullState(); } catch (e) { /* the poll will */ } }, 50);
-                        ackLocalDirty(seqAtStart);
+                        if (!slim.more) ackLocalDirty(seqAtStart);               // more batches to send: still "unsent work"
                         snapshotInventorySync();
                         snapshotExtraSyncedFields();
                         window.__pushFails = 0; window.__pushBackoffUntil = 0; window.__pushFailKind = '';
@@ -5022,14 +5045,21 @@ async function pushNow() {
                         return true;
                     } else {
                         notePushHttp(res);                                  // the server ANSWERED: busy (sent again in seconds) or refused
+                        const code = await pushErrorCode(res);
+                        if (window.PosNet) window.PosNet.reportHttp(res.status, code);
                         if (res.status === 403) checkLicenseStatus();
-                        if (res.status === 413) { notifySyncTooLarge(res); markSync('offline'); return false; }
+                        if (res.status === 413) {
+                            if (code === 'push_too_large') { pushShrinkBatches(); markSync('syncing'); return false; }   // smaller batches, sent again
+                            notifySyncTooLarge(res); markSync('error'); return false;
+                        }
                         markSync('error');
                         return false;
                     }
                 } catch (e) {
-                    // no answer / timed out: is there a connection at all?
+                    // no answer / timed out. A push that timed out while the server IS reachable was too big for this line: smaller
+                    // batches next time (zip 129). Whether the device is online at all is decided by the connectivity manager.
                     window.__pushFailKind = 'network';
+                    if (e && e.name === 'AbortError') pushShrinkBatches();
                     markSync((await probeServer(5000)) > 0 ? 'error' : 'offline');
                     return false;
                 } finally {
@@ -7464,17 +7494,11 @@ function setGasTxType(type) {
 
 //@fn setImageSource
 function setImageSource(mode) {
-            imageSourceMode = mode;
-            document.getElementById('src-camera-btn').classList.toggle('active', mode === 'camera');
-            document.getElementById('src-upload-btn').classList.toggle('active', mode === 'upload');
-            document.getElementById('camera-wrapper').style.display = mode === 'camera' ? 'block' : 'none';
-            document.getElementById('upload-wrapper').classList.toggle('show', mode === 'upload');
-
-            if (mode === 'camera') {
-                initCamera();
-            } else {
-                stopCamera();
-            }
+            // Zip 132: adding an item uploads a photo from the device only; the camera is never opened here.
+            imageSourceMode = 'upload';
+            const up = document.getElementById('upload-wrapper');
+            if (up) up.classList.add('show');
+            stopCamera();
         }
 
 //@fn setLocStatus
@@ -7870,8 +7894,9 @@ function ackServerRecords(field, records) {
             // (before that, everything is sent anyway).
             try { if (typeof window.salesJournalSeenRecords === 'function') window.salesJournalSeenRecords(field, records); } catch (e) { /* housekeeping */ }
             try {
-                const ack = window.__pushAck && window.__pushAck[field];
-                if (!ack) return;
+                // zip 129: also before this session's first push — the server HAS these, so they are never uploaded again
+                window.__pushAck = window.__pushAck || {};
+                const ack = window.__pushAck[field] || (window.__pushAck[field] = new Map());
                 records.forEach((r) => { const k = pushKeyOf(r); if (k != null) ack.set(k, pushSigOf(r)); });
             } catch (e) { /* housekeeping only */ }
         }
@@ -7961,22 +7986,34 @@ function slimPayloadForPush(payload) {
             const body = { ...payload };
             const pending = {};
             const keyOf = pushKeyOf, sigOf = pushSigOf;
+            // zip 129: a push used to carry the WHOLE history the first time after the app opened (nothing acknowledged yet). On a slow
+            // line that upload timed out, was retried in full, and never finished — "retrying… sending…" for ever, no sale reaching the
+            // server. Now a record is left out when the server already has it in the same version — seen in a pull, confirmed by
+            // /api/sync-have (syncHaveCheck), or marked "on the server" by the sales journal — and what is left goes in BATCHES (newest
+            // first), the next batch straight after the last one is accepted.
+            let more = false;
+            const scale = window.__pushBatchScale || 1;
+            const CAP = { salesLog: 150, stockMovementLog: 400, returns: 150, expenses: 150, tradeCredits: 150, attendanceLog: 300, adminActivityLog: 300, dispatchLog: 150 };
+            const known = typeof window.salesJournalKnownOnServer === 'function' ? window.salesJournalKnownOnServer : null;
             LOG_FIELDS.forEach((field) => {
                 const arr = payload[field];
                 if (!Array.isArray(arr) || arr.length === 0) return;
-                const ack = window.__pushAck[field];
-                const sigs = new Map();
+                const ack = window.__pushAck[field] || (window.__pushAck[field] = new Map());
                 const changed = [];
                 for (let i = 0; i < arr.length; i++) {
                     const r = arr[i];
                     const k = keyOf(r);
-                    if (k == null) return;                    // unmatched records: leave this log whole
+                    if (k == null) return;                    // unmatched records: leave this log whole (the server can't match them)
                     const sg = sigOf(r);
-                    sigs.set(k, sg);
-                    if (!ack || ack.get(k) !== sg) changed.push(r);
+                    if (ack.get(k) === sg) continue;
+                    if (known && known(field, r)) { ack.set(k, sg); continue; }
+                    changed.push(r);
                 }
-                pending[field] = sigs;
-                if (ack) body[field] = changed;
+                const cap = Math.max(10, Math.floor((CAP[field] || 200) * scale));
+                const send = changed.length > cap ? changed.slice(changed.length - cap) : changed;
+                if (send.length < changed.length) more = true;
+                pending[field] = new Map(send.map((r) => [keyOf(r), sigOf(r)]));
+                body[field] = send;
             });
             // What this push carries of each log, by version (zip 127): once the server answers OK, the sales journal marks exactly these
             // versions "on the server" — a record changed while the push was on its way stays waiting for the next one.
@@ -8037,8 +8074,9 @@ function slimPayloadForPush(payload) {
             try { body._dev = { v: window.__APP_RELEASE || '', app: (location.pathname.split('/')[1] || 'shop').slice(0, 20) }; } catch (e) { /* optional */ }
             return {
                 body,
+                more,
                 commit() {
-                    Object.keys(pending).forEach((f) => { window.__pushAck[f] = pending[f]; });
+                    Object.keys(pending).forEach((f) => { const m = window.__pushAck[f] || (window.__pushAck[f] = new Map()); pending[f].forEach((sg, k) => m.set(k, sg)); });
                     fieldSigs.forEach((sg, f) => { window.__fieldAck.set(f, sg); });
                     Object.keys(keysNow).forEach((c) => { window.__keyAck[c] = keysNow[c]; });
                     saveKeyAck();
@@ -8046,6 +8084,68 @@ function slimPayloadForPush(payload) {
                     try { if (typeof window.salesJournalSent === 'function') window.salesJournalSent(sentVersions); } catch (e) { /* never block a push */ }
                 },
             };
+        }
+
+//@fn pushBacklogAfter
+// After a push the server accepted (zip 129): more batches left -> send the next one right away; none left -> the backlog is done.
+function pushBacklogAfter(slim) {
+            window.__pushBacklog = !!(slim && slim.more);
+            if (window.__pushBacklog) {
+                setTimeout(() => {
+                    try { if (typeof queuePush === 'function') queuePush(); else if (typeof pushNow === 'function') pushNow(); } catch (e) { /* the poll sends it */ }
+                }, window.__pushBatchGapMs != null ? window.__pushBatchGapMs : 250);
+            } else if ((window.__pushBatchScale || 1) < 1) {
+                window.__pushBatchScale = Math.min(1, (window.__pushBatchScale || 1) * 2);    // it went through: grow back
+            }
+        }
+
+//@fn pushShrinkBatches
+// A push that timed out, or that the server called too large: half the batch size next time (down to 1/16), so it fits the line.
+function pushShrinkBatches() {
+            window.__pushBatchScale = Math.max(1 / 16, (window.__pushBatchScale || 1) / 2);
+        }
+
+//@fn pushErrorCode
+async function pushErrorCode(res) {
+            try { const b = await res.clone().json(); return (b && b.code) || ''; } catch (e) { return ''; }
+        }
+
+//@fn syncHaveCheck
+// Before this session's first push (zip 129): ask the server which of this device's sales / stock changes / returns / expenses it
+// ALREADY holds, in the same version (pushed earlier by this device, or by another one) — /api/sync-have. Those are marked
+// acknowledged and never uploaded again. Once per session per log; a server that cannot answer (offline, an older shop database)
+// simply leaves the batching to do the work.
+async function syncHaveCheck(payload) {
+            if (window.__haveChecked === 'done' || typeof window.salesJournalSig !== 'function') return;
+            if (window.__haveCheckBusy) return window.__haveCheckBusy;
+            window.__haveCheckBusy = (async () => {
+                const FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses'];
+                window.__pushAck = window.__pushAck || {};
+                let complete = true;
+                for (const f of FIELDS) {
+                    const arr = payload && Array.isArray(payload[f]) ? payload[f] : [];
+                    const ack = window.__pushAck[f] || (window.__pushAck[f] = new Map());
+                    const ask = [];
+                    arr.forEach((r) => { if (r && r.id != null) { const k = pushKeyOf(r); if (k != null && ack.get(k) !== pushSigOf(r)) ask.push(r); } });
+                    for (let i = 0; i < ask.length; i += 2000) {
+                        const part = ask.slice(i, i + 2000);
+                        const ctrl = new AbortController();
+                        const timer = setTimeout(() => ctrl.abort(), 20000);
+                        try {
+                            const res = await fetch(apiUrl('/api/sync-have'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ col: f, ids: part.map((r) => String(r.id)) }), signal: ctrl.signal });
+                            if (res.status === 404 || res.status === 501) { window.__haveChecked = 'done'; return; }   // not available here: batching only
+                            if (!res.ok) { complete = false; break; }
+                            const have = ((await res.json()) || {}).have || {};
+                            const confirmed = [];
+                            part.forEach((r) => { const v = have[String(r.id)]; if (v != null && v === window.salesJournalSig(r)) { ack.set(pushKeyOf(r), pushSigOf(r)); confirmed.push(r); } });
+                            try { if (confirmed.length && typeof window.salesJournalSeenRecords === 'function') window.salesJournalSeenRecords(f, confirmed); } catch (e) { /* bookkeeping */ }
+                        } catch (e) { complete = false; break; } finally { clearTimeout(timer); }
+                    }
+                    if (!complete) break;
+                }
+                if (complete) window.__haveChecked = 'done';
+            })();
+            try { await window.__haveCheckBusy; } finally { window.__haveCheckBusy = null; }
         }
 
 //@fn handleOwnerNotice
@@ -8266,7 +8366,7 @@ function ackLocalDirty(seqAtPushStart) {
 function hasUnsyncedWork() {
             let persisted = false;
             try { persisted = (parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0) > (parseInt(localStorage.getItem('pos_acked_seq') || '0', 10) || 0); } catch (e) { /* best effort */ }
-            return !!(window.__pushQueued || window.__pushInFlight > 0 || window.__pushFailed === true || persisted);
+            return !!(window.__pushQueued || window.__pushInFlight > 0 || window.__pushFailed === true || window.__pushBacklog === true || persisted);
         }
 
 //@fn flushPendingPush
@@ -11849,7 +11949,12 @@ function etimsLogPeriodRange() {
 
 //@fn genSaleId
 function genSaleId() {
-            return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            // 10 random characters (zip 131): two tills that make a sale in the same millisecond must never share an id (the server
+            // merges sales by id, so one would silently replace the other).
+            let r = '';
+            try { const b = new Uint32Array(2); crypto.getRandomValues(b); r = b[0].toString(36).padStart(7, '0').slice(-6) + b[1].toString(36).padStart(7, '0').slice(-4); } catch (e) { /* older browser */ }
+            if (r.length < 10) r = (Math.random().toString(36).slice(2, 8) + '000000').slice(0, 6) + (Math.random().toString(36).slice(2, 6) + '0000').slice(0, 4);
+            return `${Date.now()}-${r}`;
         }
 
 //@fn generateRandomStaffPin

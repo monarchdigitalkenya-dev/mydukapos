@@ -153,3 +153,31 @@ test('the missing-sales check lists sales with an impossible date and moves one 
   assert.ok(t.w.eval('salesLog[0].deviceTimestamp'), 'the original date is kept');
   t.close();
 });
+
+test('zip 130: a past sale recorded now is "not sent yet" (badge), while a bulk import of old records is only "not confirmed"', async () => {
+  const t = await boot('index.html', { storage: { pos_biz_name: 'Biz' }, indexedDB: new IDBFactory(), wait: 900 });
+  t.w.eval(PRINTER);
+  t.w.eval(`salesLog.push(${JSON.stringify(sale('past1', 10))}); safeSetItem('pos_sales_log', JSON.stringify(salesLog))`);
+  assert.match(t.w.eval("salesSyncStatus('past1')"), /^(pending|syncing|retrying)$/, 'shown as not sent yet (no server in this test, so it may already be retrying)');
+  const bulk = Array.from({ length: 60 }, (_, i) => sale('imp' + i, 30));
+  t.w.eval(`${JSON.stringify(bulk)}.forEach(s => salesLog.push(s)); safeSetItem('pos_sales_log', JSON.stringify(salesLog))`);
+  assert.equal(t.w.eval("salesSyncStatus('imp5')"), 'unconfirmed');
+  t.close();
+});
+
+test('zip 130: Profits & Expenses counts the older sales kept only in history for the chosen period', async () => {
+  const idb = new IDBFactory();
+  const t = await boot('index.html', { storage: { pos_biz_name: 'Biz' }, indexedDB: idb, wait: 900 });
+  t.w.eval(PRINTER);
+  const dev = sale('devArchP', 40);
+  await t.w.eval(`new Promise(function (res) { var q = indexedDB.open('pos_local_archive', 1); q.onupgradeneeded = function () { q.result.createObjectStore('archives', { keyPath: 'id' }); };
+    q.onsuccess = function () { var tx = q.result.transaction('archives', 'readwrite'); tx.objectStore('archives').put({ id: 'a1', at: Date.now(), keepDays: 30, counts: { salesLog: 1 }, fields: { salesLog: [${JSON.stringify(dev)}] } }); tx.oncomplete = function () { q.result.close(); res(); }; }; })`);
+  const day = t.w.eval(`bizDayKey('${dev.timestamp}')`);
+  t.d.querySelector('.tab-link[data-tab="profits-tab"]').click();
+  t.w.eval(`setProfitPeriod && setProfitPeriod('custom'); document.getElementById('profit-date-from').value = '${day}'; document.getElementById('profit-date-to').value = '${day}'; renderProfitReport()`);
+  await sleep(600);
+  t.w.eval('renderProfitReport()');
+  assert.match(t.d.getElementById('profits-tab').textContent, /100/, 'the archived sale (KES 100) is in the period');
+  assert.equal(t.w.eval('salesLog.length'), 0, 'shown, not piled onto the device');
+  t.close();
+});

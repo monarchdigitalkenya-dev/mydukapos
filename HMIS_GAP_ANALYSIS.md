@@ -67,7 +67,7 @@ Still open: postpartum, newborn feeding/immunisation/NICU, radiology, theatre, S
 ## Zip 94 update
 Done: **Radiology / imaging** (new tab): X-ray, ultrasound, CT, MRI, mammography, other; order numbers (RAD-YYMMDD-XXXX), clinical indication + priority (emergency first), request -> scheduled -> performed -> reported -> verified & released (steps cannot be skipped), findings + impression, critical-finding banner until the clinician is marked notified, corrections keep the original (reason required, needs re-verification), external image/accession reference, charge added to the patient's bill (price from a matching Service if one exists, otherwise flagged "price needed"), cancel with reason (unpaid charge cancelled), timeline + audit, per-record sync (`radiologyOrders`).
 Not built / not claimed: no image storage, viewer, PACS or DICOM; no attachments; no worklist integration with imaging machines.
-Known small gap: a cancelled charge is labelled "Unpaid" in the patient's billing history list (it does not appear in the cashier's pending bills).
+Fixed in zip 132: a cancelled (or not-carried) charge is shown as cancelled and no longer makes the bill "Unpaid" or adds to its total.
 Still open: theatre, postpartum, newborn feeding/immunisation/NICU, SMS reminders, server-side role enforcement, e-claims adapters.
 
 ## Zip 95 update
@@ -149,3 +149,11 @@ Regression caught and fixed: `loadPatientBill()` behavior change required updati
 (6 call sites) to also call the new confirmMedicationCarry() step — all 9 of its tests pass again.
 6 new tests in hmis-integrity.test.mjs (free-text prescribing, the empty-row edge case, history/timeline
 display, the full decline flow, the all-ticked-normal-path case, and the print function) — all passing.
+
+
+## Zip 132 update — the open items
+Done:
+* **Pharmacy and Cashier are separate stations.** 💳 Cashier / Counter takes payment (stock comes off then, as before). 💊 Pharmacy (Dispensing) has its own queue and a worklist of paid prescriptions: ✔ Dispensed (who / when, in the journey and the audit) or ✖ Not collected (reason). Unpaid medicines are sent to the Cashier first; after paying, "Send to…" suggests the Pharmacy.
+* **Appointments** use the search-first patient picker.
+* **Void and discount requests:** a cashier requests, a manager approves or rejects (with a reason) in 💵 Cashier Shift ▸ Approvals, on any device. An approved discount applies only to the unchanged cart it was asked for, and only once.
+* **Radiology images:** added from the device, compressed before upload (JPEG, at most 1600 px and ~350 KB), kept on the device until uploaded (retried offline), and viewable on any device. Still not a PACS / DICOM viewer.

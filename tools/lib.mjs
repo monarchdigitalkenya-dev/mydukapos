@@ -99,6 +99,7 @@ export const SHARED_BLOCKS = {
   'tap-rescue': { startMarker: '<!-- TAP RESCUE', owner: true },      // first-tap reliability when the screen redraws mid-tap (zip 122)
   'one-tab': { startMarker: '<!-- ONE TAB' },
   'sales-journal': { startMarker: '<!-- SALES JOURNAL' },              // every completed sale also kept in IndexedDB until the server has it (zip 127)                          // one working tab per app, so tabs never save over each other's sales (zip 125)
+  'connectivity': { startMarker: '<!-- CONNECTIVITY', owner: true },            // ONE connectivity manager (window.PosNet): online / offline / server unavailable / auth (zip 129)
   'storage-compress': { startMarker: '<!-- STORAGE COMPRESSION', owner: true },   // must come first in <head>: everything below reads localStorage through it
   'error-reporting': { startMarker: '<!-- ERROR REPORTING', owner: true },   // also goes into the owner console
   // Orders tab (purchase orders) sits next to Restock. Water's Restocking tab is a different design

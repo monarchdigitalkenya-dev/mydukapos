@@ -10,7 +10,9 @@ import { makeKV, seedShop } from './kv-fake.mjs';
 const mkSales = (n, from = 0) => Array.from({ length: n }, (_, i) => ({ id: `s${from + i}`, timestamp: new Date(1789890000000 + (from + i) * 1000).toISOString(), items: [{ code: '1', qty: 1, price: 10 }], paymentMethod: 'cash', cashAmount: 10 }));
 
 for (const app of ['index.html', 'hotel/index.html', 'water/index.html']) {
-  test(`${app}: first push is whole, then only new/changed records; a failed push resends`, async () => {
+  // zip 129: the first push no longer uploads the whole history at once (on a slow line it timed out, was retried in full, and never
+  // finished): it goes in batches of 150 sales, the next straight after the last is accepted, until everything is there.
+  test(`${app}: the first push goes in batches until everything is sent, then only new/changed records; a failed push resends`, async () => {
     const bodies = [];
     let fail = false;
     const fetch = (u, o) => {
@@ -26,7 +28,10 @@ for (const app of ['index.html', 'hotel/index.html', 'water/index.html']) {
     w.eval(`salesLog = ${JSON.stringify(mkSales(200))}`);
     bodies.length = 0;
     await push();
-    assert.equal(bodies.at(-1).salesLog.length, 200, 'first push after load sends everything (safe reset point)');
+    assert.equal(bodies.at(-1).salesLog.length, 150, 'first batch (newest first)');
+    await push();
+    assert.equal(bodies.at(-1).salesLog.length, 50, 'the rest');
+    assert.equal(new Set(bodies.flatMap((b) => b.salesLog.map((s) => s.id))).size, 200, 'all 200, each once');
     await push();
     assert.equal(bodies.at(-1).salesLog.length, 0, 'nothing new -> nothing sent');
     w.eval(`salesLog.push(${JSON.stringify(mkSales(1, 200)[0])})`);

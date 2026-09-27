@@ -1,0 +1,245 @@
+<!-- CONNECTIVITY (zip 129) ---------------------------------------------------------------------------------------------------
+         ONE place decides whether this device is online (window.PosNet). Nothing else sets "Offline".
+           * Why: the dot used to turn "Offline" whenever the heaviest request (/api/pos-sync) was slow or failed — and a device that
+             could not finish one push (its whole history on a slow line, a "too large" answer, a licence/pairing answer) never ran
+             another pull, so nothing ever set it back: OFFLINE with working internet, "retrying… sending…" for ever.
+           * States: online · checking · offline (this device has no internet) · backend_unavailable (internet works, the POS server
+             is not answering — retried) · auth_required (the server answered 401/403: pairing / licence) · config_error (the server
+             refused, e.g. shop too large). A failed sync request is NEVER taken as "offline" by itself: it asks for a check.
+           * The check: GET /api/health (no licence, no data, never cached) — answered → reachable; then, only if that failed,
+             an independent internet probe (no-cors, Cloudflare + Google) — reachable → backend_unavailable, else offline.
+             navigator.onLine is used only as a hint (it is wrong on some phones and PCs).
+           * Recovery is automatic, without a refresh: the browser's online event, the app coming back to the screen, focus,
+             pageshow / resume (PWA), a network change (Wi-Fi ⇄ mobile data), waking from sleep, a tap on the dot, and a steady
+             retry with backoff (2 s, 4 s, 8 s, 15 s, then every 30 s) while not online. The moment it is online again, the
+             waiting sales are sent and the shop is fetched (syncRetryNow).
+         Self-contained on purpose (same code in every app and the owner console). -->
+    <script>
+    (function () {
+        'use strict';
+        if (window.PosNet) return;
+        var HEALTH = '/api/health';
+        var PROBES = ['https://www.gstatic.com/generate_204', 'https://1.1.1.1/cdn-cgi/trace'];
+        var BACKOFF = [2000, 4000, 8000, 15000, 30000];
+        var S = { state: 'checking', detail: '', since: Date.now(), lastOk: 0, lastCheck: 0, fails: 0, nextAt: 0, checking: null, checkStarted: 0, lastTick: Date.now(), authIssue: '', lastSync: null, history: [] };
+        var listeners = [];
+        var MSG = {
+            online: 'Online',
+            checking: 'Checking the connection…',
+            offline: 'Offline — this device has no internet. Selling works; everything is sent automatically when the connection is back.',
+            backend_unavailable: 'Your internet works, but the POS server is not answering right now. Retrying automatically — selling works and nothing is lost.',
+            auth_required: 'Connected — but this device must be paired or signed in again before it can sync.',
+            config_error: 'Connected — but the server refused the sync. Nothing is lost; support has been told.',
+        };
+        function note(kind, detail) { S.history.unshift({ at: Date.now(), kind: kind, detail: String(detail || '').slice(0, 120) }); if (S.history.length > 40) S.history.length = 40; }
+
+        function set(state, detail) {
+            var prev = S.state;
+            S.detail = detail || '';
+            if (state === 'online') { S.fails = 0; }
+            if (state === prev) { paint(); return; }
+            S.state = state; S.since = Date.now();
+            note('state', prev + ' -> ' + state + (detail ? ' (' + detail + ')' : ''));
+            listeners.forEach(function (fn) { try { fn(state, prev); } catch (e) { /* a listener never breaks the manager */ } });
+            paint();
+            if (state === 'online' && prev !== 'online') recover(prev);
+        }
+        // Back online: send what is waiting and fetch the shop — right away, no refresh.
+        function recover(prev) {
+            if (!S.wasOnline) { S.wasOnline = true; return; }       // the first time at start-up: the app's own start-up sync is already running
+            try { window.__pushBackoffUntil = 0; } catch (e) { /* none */ }
+            setTimeout(function () {
+                try { if (typeof window.syncRetryNow === 'function') window.syncRetryNow(); } catch (e) { /* the poll carries on */ }
+                try { if (typeof window.connectSyncSocket === 'function') window.connectSyncSocket(); } catch (e) { /* optional */ }
+            }, 0);
+        }
+
+        function timed(url, opts, ms) {
+            var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+            var o = Object.assign({ cache: 'no-store', credentials: 'same-origin' }, opts || {});
+            if (ctrl) o.signal = ctrl.signal;
+            var t = setTimeout(function () { try { ctrl && ctrl.abort(); } catch (e) {} }, ms);
+            return fetch(url, o).then(function (res) { clearTimeout(t); return { res: res }; }, function (err) { clearTimeout(t); return { err: err, timedOut: !!(err && err.name === 'AbortError') }; });
+        }
+        // -> { kind: 'ok' | 'http' | 'timeout' | 'neterr', status }
+        function probeHealth(ms) {
+            return timed(HEALTH + '?deep=1&t=' + Date.now(), { method: 'GET' }, ms).then(function (r) {
+                if (r.res) return { kind: r.res.ok ? 'ok' : 'http', status: r.res.status };
+                return { kind: r.timedOut ? 'timeout' : 'neterr', status: 0 };
+            });
+        }
+        // Does this device have internet at all? Opaque (no-cors) requests to two independent sites: any answer = yes.
+        function probeInternet(ms) {
+            if (window.__posNetInternetProbe) return window.__posNetInternetProbe();          // (tests)
+            return new Promise(function (resolve) {
+                var left = PROBES.length, done = false;
+                PROBES.forEach(function (u) {
+                    timed(u + (u.indexOf('?') === -1 ? '?' : '&') + 't=' + Date.now(), { mode: 'no-cors', credentials: 'omit' }, ms).then(function (r) {
+                        if (done) return;
+                        if (r.res) { done = true; resolve(true); return; }
+                        if (--left === 0) resolve(false);
+                    });
+                });
+            });
+        }
+
+        function schedule() {
+            if (S.state === 'online') S.nextAt = Date.now() + 60000;              // heartbeat (sync successes push it further)
+            else { S.nextAt = Date.now() + BACKOFF[Math.min(S.fails, BACKOFF.length - 1)]; S.fails++; }
+        }
+        // The one check. Never throws, never hangs (each probe has its own time limit), never runs twice at once.
+        function check(reason) {
+            if (S.checking && Date.now() - S.checkStarted < 25000) return S.checking;
+            S.checkStarted = Date.now();
+            S.lastCheck = Date.now();
+            note('check', reason);
+            var started = S.checkStarted;
+            S.checking = (async function () {
+                // a sync that SUCCEEDED while this check was running is newer proof than a failed probe: it wins
+                var stale = function () { return S.lastOk > started; };
+                try {
+                    var hinted = navigator.onLine === false;
+                    var h = await probeHealth(hinted ? 4000 : 8000);
+                    if (h.kind === 'ok') {
+                        S.lastOk = Date.now();
+                        set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
+                    } else if (stale()) {
+                        set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
+                    } else if (h.kind === 'http') {
+                        // the server ANSWERED: this device has internet; the POS side is failing (5xx, overloaded, maintenance)
+                        set('backend_unavailable', 'the server answered ' + h.status);
+                    } else {
+                        var net = await probeInternet(hinted ? 3000 : 6000);
+                        if (stale()) set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
+                        else if (net) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time' : 'the POS server could not be reached');
+                        else set('offline', hinted ? 'the device reports no network' : 'no answer from the internet');
+                    }
+                } catch (e) {
+                    set('backend_unavailable', 'check failed');
+                } finally {
+                    schedule();
+                    S.checking = null;
+                }
+                return S.state;
+            })();
+            return S.checking;
+        }
+
+        // What the sync code tells it. A request that failed is only a reason to CHECK.
+        function report(kind, info) {
+            if (kind === 'ok') {
+                S.lastOk = Date.now();
+                S.authIssue = '';
+                if (S.state !== 'online') set('online');
+                else paint();
+                S.nextAt = Date.now() + 60000;
+                return;
+            }
+            if (kind === 'auth') { S.authIssue = info || 'auth'; S.lastOk = Date.now(); set('auth_required', S.authIssue); return; }
+            if (kind === 'config') { S.lastOk = Date.now(); set('config_error', info || ''); return; }
+            if (kind === 'busy') {
+                // one "busy, try again in 2 s" is normal traffic; only a server that stays failing is "unavailable"
+                if (Date.now() - S.lastOk > 60000) check('server busy for a minute');
+                return;
+            }
+            // 'neterr' / 'timeout': no answer to a sync request — find out why, but do not decide from it
+            if (!S.checking) check(info || kind);                            // (one check at a time; each request failure may start one)
+        }
+        function reportHttp(status, code) {
+            status = Number(status) || 0;
+            if (status >= 200 && status < 400) return report('ok');
+            if (status === 401 || status === 403) return report('auth', code || (status === 401 ? 'device_not_paired' : 'licence'));
+            if (status === 413) return code === 'push_too_large' ? report('busy') : report('config', code || 'too large');
+            if (status === 408 || status === 425 || status === 429 || status >= 500) return report('busy', status);
+            return report('config', 'http ' + status);
+        }
+
+        /* ---- the dot: one picture of connectivity + sync, in plain words ---- */
+        function effective(sync) {
+            var net = S.state;
+            if (net === 'offline') return 'offline';
+            if (net === 'backend_unavailable' || net === 'auth_required' || net === 'config_error') return 'error';
+            if (sync === 'offline') return 'syncing';                        // a failed request is being checked, not "offline"
+            if (net === 'checking' && sync !== 'synced') return 'syncing';
+            return sync || 'syncing';
+        }
+        function message() {
+            var net = S.state, sync = S.lastSync;
+            if (net === 'online') {
+                if (sync === 'synced') return 'Online — everything is on the server';
+                if (sync === 'error') return 'Online — Sync problem: the last sync did not go through; retrying by itself (tap to sync now)';
+                return 'Online — Syncing… (tap to sync now)';
+            }
+            if (net === 'auth_required') return S.authIssue === 'device_not_paired' ? 'Connected — this device must be paired (Settings ▸ Devices & Security) before it can sync.' : (S.authIssue === 'licence' ? 'Connected — the shop\'s link is not active. Selling works; contact support.' : MSG.auth_required);
+            return MSG[net] || MSG.checking;
+        }
+        var origSet = null;
+        function paint() {
+            try {
+                var fn = origSet || window.setSyncStatus;
+                if (typeof fn !== 'function') return;
+                var eff = effective(S.lastSync);
+                if (eff === 'offline' && S.painted !== 'offline') {
+                    // black only if it lasts (a phone changing network, a blip): the same calm the dot always had. The timer is not
+                    // restarted by later repaints, so it always fires.
+                    if (!S.paintTimer) S.paintTimer = setTimeout(function () {
+                        S.paintTimer = null;
+                        if (effective(S.lastSync) === 'offline' && S.painted !== 'offline') { S.painted = 'offline'; fn('offline'); }
+                    }, navigator.onLine === false ? 600 : (window.__syncDotOfflineMs || 3000));
+                } else {
+                    if (S.paintTimer) { clearTimeout(S.paintTimer); S.paintTimer = null; }
+                    if (eff !== S.painted) { S.painted = eff; fn(eff); }         // redraw only on a real change (no flicker)
+                }
+                var el = document.getElementById('sync-status');
+                if (el) { var m = message(); el.title = m; el.setAttribute('aria-label', m); el.dataset.net = S.state; }
+            } catch (e) { /* cosmetic */ }
+        }
+        function wrapDot() {
+            if (typeof window.setSyncStatus !== 'function' || window.setSyncStatus.__posNet) return;
+            origSet = window.setSyncStatus;
+            var w = function (status) { S.lastSync = status; paint(); };
+            w.__posNet = true;
+            window.setSyncStatus = w;
+        }
+
+        /* ---- when to check ---- */
+        function tick() {
+            var now = Date.now();
+            var gap = now - S.lastTick, slept = gap > 20000;                 // timers paused: the device slept or the app was frozen
+            S.lastTick = now;
+            if (slept) { note('wake', Math.round(gap / 1000) + ' s'); S.nextAt = 0; }
+            if (S.checking && now - S.checkStarted > 25000) S.checking = null;   // a hung check never blocks the next one
+            if (document.visibilityState === 'hidden' && S.state === 'online') return;
+            if (now >= S.nextAt) check(slept ? 'woke up' : 'timer');
+        }
+        function soon(reason) { S.fails = 0; S.nextAt = 0; check(reason); }
+        window.addEventListener('online', function () { soon('network back'); setTimeout(function () { if (S.state !== 'online') soon('network back (settled)'); }, 3000); });
+        window.addEventListener('offline', function () { soon('network lost'); });
+        document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') soon('back on screen'); });
+        window.addEventListener('focus', function () { if (S.state !== 'online' || Date.now() - S.lastOk > 30000) soon('focus'); });
+        window.addEventListener('pageshow', function () { soon('page shown'); });
+        document.addEventListener('resume', function () { soon('resumed'); });
+        try { var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection; if (c && c.addEventListener) c.addEventListener('change', function () { soon('network changed'); }); } catch (e) { /* optional */ }
+
+        window.PosNet = {
+            get state() { return S.state; },
+            get detail() { return S.detail; },
+            get lastOk() { return S.lastOk; },
+            check: check,
+            report: report,
+            reportHttp: reportHttp,
+            message: message,
+            online: function () { return S.state === 'online'; },
+            offline: function () { return S.state === 'offline'; },
+            subscribe: function (fn) { listeners.push(fn); return function () { listeners = listeners.filter(function (f) { return f !== fn; }); }; },
+            history: function () { return S.history.slice(); },
+            _state: S,
+        };
+        // For feature code that only needs "is it worth trying the network?" — false only when the manager has CHECKED there is none.
+        window.posNetOffline = function () { return S.state === 'offline'; };
+
+        function boot() { wrapDot(); check('start'); }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+        setInterval(tick, 2000);
+    })();
+    </script>

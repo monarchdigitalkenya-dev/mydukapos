@@ -108,6 +108,13 @@ export function mergeProductRecords(stored, incoming) {
 export const NESTED_MERGE = {
   tabs: { arrays: ['orders'], status: { OPEN: 0, CLOSED: 1, VOID: 2 } },
   cashShifts: { arrays: ['adjustments'], status: { open: 0, closed: 1 } },
+  // zip 132: two devices adding images to the same imaging order keep both. No status ranking (a corrected report legitimately
+  // goes from "verified" back to "reported"): the newest record decides the rest. For the same image, what is further along
+  // wins: removed > uploaded > still uploading.
+  radiologyOrders: { arrays: ['images'], status: {}, better: (a, b) => {
+    const rank = (x) => (x && x.removedAt ? 2 : x && x.status === 'uploaded' ? 1 : 0);
+    return rank(b) > rank(a) ? b : a;
+  } },
 };
 export function mergeNestedRecord(field, stored, incoming) {
   const spec = NESTED_MERGE[field];
@@ -121,7 +128,12 @@ export function mergeNestedRecord(field, stored, incoming) {
     const a = Array.isArray(base[f]) ? base[f] : [], b = Array.isArray(base === stored ? incoming[f] : stored[f]) ? (base === stored ? incoming[f] : stored[f]) : [];
     const seen = new Set(a.map((x) => (x && x.id != null ? String(x.id) : null)).filter(Boolean));
     const extra = b.filter((x) => x && x.id != null && !seen.has(String(x.id)));
-    if (extra.length || Array.isArray(base[f])) out[f] = a.concat(extra);
+    let merged = a;
+    if (spec.better) {
+      const byId = new Map(b.filter((x) => x && x.id != null).map((x) => [String(x.id), x]));
+      merged = a.map((x) => (x && x.id != null && byId.has(String(x.id)) ? spec.better(x, byId.get(String(x.id))) : x));
+    }
+    if (extra.length || Array.isArray(base[f])) out[f] = merged.concat(extra);
   });
   if (field === 'cashShifts') {
     const decided = (r) => r && r.approval && (r.approval.status === 'approved' || r.approval.status === 'rejected');
@@ -917,3 +929,18 @@ export function stripTombstones(state) {
   }
   return out;
 }
+
+// The BUSINESS version of a log record (zip 129): the same string the apps' sales journal computes (window.salesJournalSig in
+// src/shared/blocks/sales-journal.html — keep the two identical). Two copies with the same value are the same sale / movement /
+// expense as far as the shop is concerned, whatever bookkeeping fields (updatedAt shifted for clock drift, ctx, _srv) differ.
+// Used by /api/sync-have: "which of these records do you already have, in this version?"
+export function businessSig(r) {
+  if (!r || typeof r !== 'object') return '';
+  const items = r.items;
+  let n = 0, sum = 0;
+  if (items && items.length) { n = items.length; for (let i = 0; i < n; i++) { const it = items[i]; if (it) sum += (+it.price || 0) * (+it.qty || 0); } }
+  return (r.timestamp || r.date || '') + '|' + (r.voided ? 1 : 0) + '|' + (r.voidedAt || '') + '|' + (r.unvoidedAt || '') + '|' + (r.paid === false ? 0 : 1)
+    + '|' + (r.amountPaid == null ? '' : r.amountPaid) + '|' + n + '|' + Math.round(sum * 100) + '|' + (r.qty == null ? '' : r.qty)
+    + '|' + (r.amount == null ? '' : r.amount) + '|' + (r.removed ? 1 : 0) + '|' + (r._deleted ? 1 : 0);
+}
+

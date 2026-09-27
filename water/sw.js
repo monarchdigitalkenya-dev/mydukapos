@@ -166,12 +166,27 @@ self.addEventListener('sync', (event) => {
 // and goes straight to the network. Those already fail gracefully on their own
 // (see pullState()/pushNow() in index.html, which catch network errors and
 // just show an "offline" sync badge) when there's no connection.
+const MEDIA_CACHE = 'mydukapos-media-v1';            // shared by every app on this site; not an app-shell cache, so never cleared by an update
+async function mediaCacheFirst(req) {
+  try {
+    const cache = await caches.open(MEDIA_CACHE);
+    const hit = await cache.match(req, { ignoreVary: true });
+    if (hit) return hit;
+    const res = await fetch(req);
+    if (res.ok) { try { await cache.put(req, res.clone()); } catch (e) { /* storage full: shown, not kept */ } }
+    return res;
+  } catch (e) { return Response.error(); }
+}
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;   // never touch cross-origin requests
+  // Product / menu photos kept in R2 (zip 133): they never change once stored (a new photo gets a new id), so each is kept on the
+  // device after its first load and shown from there — also offline. Only product photos (k=p): clinical images are never cached here.
+  if (url.pathname.endsWith('/api/media') && url.searchParams.get('k') === 'p') { event.respondWith(mediaCacheFirst(req)); return; }
   if (url.pathname.includes('/api/')) return;        // never cache API calls
 
   // A navigation is anything that opens the app (typing the URL, tapping the
