@@ -1,0 +1,71 @@
+// MyDukaPOS for Android — ONE project, one build flavour per app (Shop, Hotel, HMIS, Production, Pharmacy, Services, AquaPOS).
+// The list, names, application ids, colours and the version come from native/apps.json (the same file the Windows build reads).
+import groovy.json.JsonSlurper
+
+plugins { id 'com.android.application' }
+
+def cfg = new JsonSlurper().parse(file('../../apps.json'))
+
+android {
+    namespace 'com.mydukapos.app'
+    compileSdk 34
+
+    defaultConfig {
+        minSdk 24
+        targetSdk 34
+        versionCode cfg.version.code as int
+        versionName cfg.version.name
+        buildConfigField 'String', 'ROOT_DOMAIN', "\"${cfg.rootDomain}\""
+    }
+
+    buildFeatures { buildConfig true }
+
+    // the first-start screen is shared with the Windows app
+    sourceSets { main { assets.srcDirs += ['../../launcher'] } }
+
+    flavorDimensions 'module'
+    productFlavors {
+        cfg.apps.each { a ->
+            create(a.key) {
+                dimension 'module'
+                applicationId a.appId
+                resValue 'string', 'app_name', a.name
+                resValue 'color', 'brand', a.color
+                buildConfigField 'String', 'MODULE', "\"${a.key}\""
+                buildConfigField 'String', 'PRODUCT', "\"${a.product}\""
+                buildConfigField 'String', 'MODULE_PATH', "\"${a.path}\""
+                buildConfigField 'String', 'APP_NAME', "\"${a.name}\""
+            }
+        }
+    }
+
+    // RELEASE SIGNING — the keystore and its passwords are NEVER in the repository. They come from the environment (a CI secret or
+    // the build machine): MYDUKA_KEYSTORE (path to the .jks), MYDUKA_KEYSTORE_PASSWORD, MYDUKA_KEY_ALIAS, MYDUKA_KEY_PASSWORD.
+    // Without them the release APK is built UNSIGNED (it cannot be installed until signed) — never with an invented key.
+    def ks = System.getenv('MYDUKA_KEYSTORE')
+    signingConfigs {
+        if (ks && file(ks).exists()) {
+            release {
+                storeFile file(ks)
+                storePassword System.getenv('MYDUKA_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('MYDUKA_KEY_ALIAS')
+                keyPassword System.getenv('MYDUKA_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (ks && file(ks).exists()) signingConfig signingConfigs.release
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-splashscreen:1.0.1'
+    implementation 'androidx.webkit:webkit:1.11.0'
+}

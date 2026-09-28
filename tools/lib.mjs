@@ -101,6 +101,7 @@ export const SHARED_BLOCKS = {
   'sales-journal': { startMarker: '<!-- SALES JOURNAL' },
   'mpesa-verify': { startMarker: '<!-- MPESA VERIFY' },
   'staff-session': { startMarker: '<!-- STAFF SESSION' },               // per-staff server sessions + signed sales (zip 141)                // a typed M-Pesa code is checked against M-Pesa's own records (zip 140)              // every completed sale also kept in IndexedDB until the server has it (zip 127)                          // one working tab per app, so tabs never save over each other's sales (zip 125)
+  'native-app': { startMarker: '<!-- NATIVE APPS' },                  // the Android / Windows apps: their printers, Settings ▸ Install App downloads (zip 148)
   'connectivity': { startMarker: '<!-- CONNECTIVITY', owner: true },            // ONE connectivity manager (window.PosNet): online / offline / server unavailable / auth (zip 129)
   'storage-compress': { startMarker: '<!-- STORAGE COMPRESSION', owner: true },   // must come first in <head>: everything below reads localStorage through it
   'error-reporting': { startMarker: '<!-- ERROR REPORTING', owner: true },   // also goes into the owner console

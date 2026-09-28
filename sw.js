@@ -1,4 +1,4 @@
-// sw.js — MinimartPOS offline app-shell cache
+// sw.js — MyDukaPOS offline app-shell cache
 //
 // Caches the page itself (plus its manifest/icons) so the app OPENS with no
 // internet connection at all, not just keeps working once it's already open.
@@ -27,7 +27,7 @@ const NAVIGATION_NETWORK_TIMEOUT_MS = 3500;
 // zip 145 — BUMP THIS WITH EVERY RELEASE. A service worker only updates when THIS file changes; it had not changed for many releases,
 // so installed apps kept the service worker (and the old cached page) they were installed with. A new version here makes every
 // installed app install this worker, which re-downloads the whole shell (refreshShell) — the stuck phones catch up by themselves.
-const SW_VERSION = 'zip-147';
+const SW_VERSION = 'zip-148';
 
 // Paths are relative to the service worker's own location, not the site root.
 // Using absolute '/index.html' style paths silently breaks on any deployment
@@ -86,7 +86,7 @@ async function refreshShell() {
   const succeeded = fetched.filter((f) => f.ok);
   const failed = fetched.filter((f) => !f.ok).map((f) => f.path);
   if (failed.length) {
-    console.warn('[MinimartPOS] These shell assets could not be cached:', failed);
+    console.warn('[MyDukaPOS] These shell assets could not be cached:', failed);
   }
   // Offline (or every request failed) during install: leave whatever cache
   // and pointer already exist from the last successful install untouched,

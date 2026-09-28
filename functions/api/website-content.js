@@ -50,6 +50,9 @@ function randomId() {
 // doesn't change anything visible until the owner actually edits it.
 const DEFAULT_CONTENT = {
   price: 3000,
+  // zip 148: the plan after the one-time price — how many days it includes, then the monthly fee (0 = no monthly fee)
+  includedDays: 60,
+  monthlyFee: 400,
   paymentPhone: '0113607529',
   // Which products appear in the public site's homepage grid and app.html's
   // switcher — a hidden product's own detail page (app.html?product=X)
@@ -138,6 +141,10 @@ export async function onRequestPost(context) {
     if (isNaN(price) || price < 0) {
       return jsonResponse({ error: 'Enter a valid price.' }, 400);
     }
+    const includedDays = body.content.includedDays === undefined ? DEFAULT_CONTENT.includedDays : Math.floor(Number(body.content.includedDays));
+    if (!Number.isFinite(includedDays) || includedDays < 0 || includedDays > 3650) return jsonResponse({ error: 'Enter the number of days the price includes (0–3650).' }, 400);
+    const monthlyFee = body.content.monthlyFee === undefined ? DEFAULT_CONTENT.monthlyFee : Number(body.content.monthlyFee);
+    if (!Number.isFinite(monthlyFee) || monthlyFee < 0) return jsonResponse({ error: 'Enter a valid monthly fee (0 for none).' }, 400);
     const paymentPhone = String(body.content.paymentPhone || '').trim();
     if (!paymentPhone) {
       return jsonResponse({ error: 'Enter a payment phone number.' }, 400);
@@ -190,7 +197,7 @@ export async function onRequestPost(context) {
     // to the codebase later is recognized as "new since last save" and
     // defaults to visible (see the migration logic in getContent above)
     // instead of silently vanishing until someone notices and re-checks it.
-    const content = { price, paymentPhone, visibleProducts, alternatePaymentMethods, testimonials: cleanTestimonials, knownProducts: validKeys };
+    const content = { price, includedDays, monthlyFee, paymentPhone, visibleProducts, alternatePaymentMethods, testimonials: cleanTestimonials, knownProducts: validKeys };
     await env.mydukapos_kv.put(CONTENT_KEY, JSON.stringify(content));
     content.demoDurationHours = demoDurationHours;
     return jsonResponse({ content });

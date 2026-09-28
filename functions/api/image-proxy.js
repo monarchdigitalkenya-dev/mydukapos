@@ -73,7 +73,7 @@ export async function onRequestGet(context) {
   try {
     let current = parsedTarget;
     for (let hop = 0; ; hop++) {
-      upstream = await fetch(current.toString(), { headers: { 'User-Agent': 'MinimartPOS-ImageProxy/1.0' }, redirect: 'manual' });
+      upstream = await fetch(current.toString(), { headers: { 'User-Agent': 'MyDukaPOS-ImageProxy/1.0' }, redirect: 'manual' });
       if (upstream.status < 300 || upstream.status >= 400) break;
       const loc = upstream.headers.get('location');
       if (!loc || hop >= 3) return errorResponse('Image not found at that URL.', 404);

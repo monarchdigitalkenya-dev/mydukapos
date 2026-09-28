@@ -1726,6 +1726,9 @@ function estimateLicenseOffline() {
                 checkpoint = null;
             }
             if (!checkpoint) return null; // never successfully checked even once — nothing to estimate from
+            // zip 150: a saved answer is only good for the link that got it. One from another link (or from before links were recorded)
+            // says nothing about THIS one — better no estimate than telling a permanent link its "trial has ended".
+            if (checkpoint.link !== ((typeof clientToken !== 'undefined' && clientToken) || location.host)) return null;
 
             if (checkpoint.type === 'permanent') {
                 return { valid: checkpoint.valid, reason: checkpoint.reason, type: 'permanent', clientId: myClientId, offlineEstimate: true };
@@ -4567,7 +4570,7 @@ function printHTMLDirect(bodyHtml, extraCss) {
             };
             window.addEventListener('afterprint', finishUp);
             window.print();
-            setTimeout(finishUp, 5000);
+            setTimeout(finishUp, window.MyDukaNative ? 600000 : 5000);   // zip 148: the Android / Windows app fires afterprint when ITS print is done
         }
 
 //@fn printItemSalesRecordFromModal
@@ -4588,7 +4591,7 @@ function printKitchenTicket() {
 //@fn printKitchenTicketManualJob
 async function printKitchenTicketManualJob(text) {
             if (printerMode === 'bluetooth') {
-                if (!btPrinterCharacteristic) {
+                if (!btPrinterCharacteristic && !(window.nativeBytePrinter && window.nativeBytePrinter())) {
                     showToast('Bluetooth printer not connected — using the system print dialog instead.', true);
                     await printKitchenTicketViaSystemDialog();
                     return;
@@ -4630,7 +4633,7 @@ function printReceiptInNewWindow() {
                 window.addEventListener('afterprint', finishUp);
                 window.print();
                 // Safety net in case 'afterprint' never fires on some browsers.
-                setTimeout(finishUp, 5000);
+                setTimeout(finishUp, window.MyDukaNative ? 600000 : 5000);   // zip 148: the Android / Windows app fires afterprint when ITS print is done
             });
         }
 
@@ -4661,7 +4664,7 @@ function printReportInNewWindow() {
                 };
                 window.addEventListener('afterprint', finishUp);
                 window.print();
-                setTimeout(finishUp, 5000);
+                setTimeout(finishUp, window.MyDukaNative ? 600000 : 5000);   // zip 148: the Android / Windows app fires afterprint when ITS print is done
             });
         }
 
@@ -5053,7 +5056,8 @@ async function pushNow() {
                         const movedStock = ledgerJustOn || !!(data && data.ledger && (
                             (Array.isArray(slim.body.stockMovementLog) && slim.body.stockMovementLog.length)
                             || (Array.isArray(slim.body.inventory) && slim.body.inventory.some((r) => r && r.code != null && typeof r.qty === 'number' && typeof r._sq !== 'number'))));
-                        const missedSomething = movedStock || (typeof data.prev === 'number' && data.prev > heldUpTo && heldUpTo > 0);
+                        // heldUpTo === 0 means this device has never pulled: whatever the server held before our push is unseen too, so it must be fetched.
+                        const missedSomething = movedStock || (typeof data.prev === 'number' && data.prev > heldUpTo);
                         if (!missedSomething) safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
                         else setTimeout(() => { try { if (window.__pullInFlight) window.__pullAgain = true; else pullState(); } catch (e) { /* the poll will */ } }, 50);
                         if (!slim.more) ackLocalDirty(seqAtStart);               // more batches to send: still "unsent work"
@@ -6855,6 +6859,9 @@ function saveLicenseCheckpoint(data) {
                     // comes back EARLIER than this, the clock has been wound back,
                     // since real time cannot move backward.
                     checkedAtLocal: Date.now(),
+                    // zip 150: which link this answer was for. localStorage is shared by every link opened on the same address, so
+                    // without this one link's saved answer (a demo's countdown) could be applied to another link (a permanent one).
+                    link: (typeof clientToken !== 'undefined' && clientToken) || location.host,
                 }));
             } catch (e) { /* storage full or unavailable — offline estimate just won't have a checkpoint */ }
         }
@@ -12437,13 +12444,9 @@ async function printReceipt() {
             window.__receiptPrinting = true;
             window.__lastPrintOk = null;                                   // set to false by the USB / Bluetooth printers when a print fails
             try {
-                // A receipt is only printed for a sale that is durably saved (zip 127): on this device, in its journal, or on the server.
-                // The journal write takes milliseconds; only a device whose storage is full AND has no journal is ever asked.
-                if (sale && sale.id != null && typeof window.salesJournalDurable === 'function') {
-                    const d = await window.salesJournalDurable(sale.id);
-                    if (d.tracked && !d.local && !d.journal && !d.server
-                        && !confirm('This sale could NOT be saved on this device (its storage is full). It is being sent to the server — keep the app open until the sync dot is green.\n\nPrint the receipt anyway?')) return;
-                }
+                // zip 147b: never held back or asked — a sale not yet stored is saved / sent again automatically (ensureSaleSaved).
+                if (sale && sale.id != null && !saleStoredLocally(sale) && typeof ensureSaleSaved === 'function'
+                    && typeof salesLog !== 'undefined' && salesLog.some((x) => x && x.id === sale.id)) ensureSaleSaved(sale);
                 await queuePrintJob(printReceiptJob);
                 if (window.__lastPrintOk === false) return;                // failed: the printer already said so; the preview stays for another try
                 markReceiptPrinted(sale);
@@ -15290,11 +15293,29 @@ function renderAutoDailyReportStatus() {
             if (!status) return;
             if (!autoDailyReportEnabled) { status.textContent = 'Off — the Daily Sales Report is only printed manually.'; return; }
             const today = todayLocalDateStr();
-            const todays = autoDailyReportLog.find(e => e.businessDate === today);
+            const todays = autoDailyReportLog.filter(e => e.businessDate === today).pop();                    // the latest attempt (zip 148: retries)
             if (!todays) { status.textContent = `Scheduled for ${autoDailyReportTime} today — not yet run.`; return; }
             const when = new Date(todays.executedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
             const label = todays.printStatus === 'printed' ? `printed at ${when}` : todays.printStatus === 'print-blocked' ? `generated at ${when}, but nothing was printed (${escapeHtml(todays.error || 'no printer path available')})` : todays.printStatus === 'print-failed' ? `generated at ${when}, but printing failed (${escapeHtml(todays.error || 'unknown error')})` : `generated at ${when}`;
             status.textContent = `Today's report already ${label}.`;
+            // zip 148: a print that was blocked or failed can be tried again (recorded as a new attempt; today still runs only once by itself)
+            if (todays.printStatus !== 'printed') {
+                const b = document.createElement('button');
+                b.type = 'button'; b.className = 'settings-small-btn'; b.style.marginLeft = '8px'; b.textContent = '🔁 Print it again';
+                b.onclick = () => retryAutoDailyReportPrint();
+                status.appendChild(b);
+            }
+        }
+
+//@fn retryAutoDailyReportPrint
+function retryAutoDailyReportPrint() {
+            const today = todayLocalDateStr();
+            const before = autoDailyReportLog.filter((e) => e.businessDate === today).length;
+            runAutoDailyReport();
+            const mine = autoDailyReportLog.filter((e) => e.businessDate === today);
+            if (mine.length > before) mine[mine.length - 1].retryOf = before;
+            safeSetItem('pos_auto_daily_report_log', JSON.stringify(autoDailyReportLog));
+            renderAutoDailyReportStatus();
         }
 
 //@fn runAutoDailyReport

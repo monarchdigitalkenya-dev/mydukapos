@@ -46,6 +46,7 @@ export async function boot(app, opts = {}) {
       if (opts.indexedDB) w.indexedDB = opts.indexedDB;   // jsdom has none; tests pass a fake-indexeddb factory
       if (opts.usb) Object.defineProperty(w.navigator, 'usb', { value: typeof opts.usb === 'function' ? opts.usb(w) : opts.usb, configurable: true });
       if (opts.bluetooth) Object.defineProperty(w.navigator, 'bluetooth', { value: typeof opts.bluetooth === 'function' ? opts.bluetooth(w) : opts.bluetooth, configurable: true });
+      if (opts.beforeParse) opts.beforeParse(w);           // e.g. the Android / Windows app's bridge (window.MyDukaNative) — zip 148
     },
   });
   // Wait for the page to finish loading, then a short settle for the app's own async start-up (failed fetches, timers).

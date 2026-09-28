@@ -1,0 +1,74 @@
+# MyDukaPOS for Windows — builds the installers of the 7 apps (NSIS .exe and .msi, x64) on a real Windows machine, records size and
+# SHA-256 of each, then INSTALLS the Shop app silently, starts it, checks it is running, and uninstalls it.
+# Code signing (optional, recommended — SmartScreen warns about unsigned installers): repository secrets CSC_LINK (base64 of the .pfx)
+# and CSC_KEY_PASSWORD. Without them the installers are unsigned (they install; Windows shows "Unknown publisher").
+name: windows
+on:
+  push:
+    branches: [ 'claude/**', 'main' ]
+    paths: [ 'native/**', '.github/workflows/windows.yml' ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Install build tools
+        working-directory: native/windows
+        run: npm install --no-audit --no-fund
+      - name: Build the installers (all 7 apps)
+        working-directory: native/windows
+        env:
+          CSC_LINK: '${{ secrets.CSC_LINK }}'
+          CSC_KEY_PASSWORD: '${{ secrets.CSC_KEY_PASSWORD }}'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: node build.mjs
+      - name: Verify and collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release/windows | Out-Null
+          $rows = @()
+          Get-ChildItem native/windows/dist -Recurse -Include *.exe,*.msi | Where-Object { $_.DirectoryName -notmatch 'unpacked' } | ForEach-Object {
+            Copy-Item $_.FullName release/windows/
+            $sig = Get-AuthenticodeSignature $_.FullName
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            $rows += [pscustomobject]@{ file = $_.Name; size = $_.Length; sha256 = $h; signature = "$($sig.Status)"; signer = "$($sig.SignerCertificate.Subject)"; arch = 'x64' }
+            Write-Host "$($_.Name)  size=$($_.Length)  sha256=$h  signature=$($sig.Status)"
+          }
+          if ($rows.Count -lt 14) { throw "expected 14 installers (7 apps x .exe/.msi), got $($rows.Count)" }
+          $rows | ConvertTo-Json | Set-Content release/windows/manifest.json
+      - uses: actions/upload-artifact@v4
+        with: { name: mydukapos-windows, path: release/windows, if-no-files-found: error, retention-days: 30 }
+      - name: Install the Shop app (Setup.exe) silently, start it, check it runs, uninstall
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          # every wait has its own limit (Start-Process -Wait in PowerShell 7 also waits for child processes, and can hang)
+          $setup = Get-ChildItem release/windows -Filter 'MyDukaPOS-*-Setup.exe' | Where-Object { $_.Name -match '^MyDukaPOS-\d' } | Select-Object -First 1
+          Write-Host "installing $($setup.Name)"
+          $p = Start-Process $setup.FullName -ArgumentList '/S' -PassThru
+          if (-not $p.WaitForExit(240000)) { throw 'the installer did not finish within 4 minutes' }
+          Write-Host "installer exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) {
+            Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Application Error' } -MaxEvents 3 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.Message }
+            throw "the installer failed (exit code $($p.ExitCode))"
+          }
+          ./native/windows/check-installed.ps1
+      - name: Install the Shop app (.msi) silently, start it, check it runs, uninstall
+        if: always()
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $msi = Get-ChildItem release/windows -Filter 'MyDukaPOS-*.msi' | Where-Object { $_.Name -match '^MyDukaPOS-\d' } | Select-Object -First 1
+          Write-Host "installing $($msi.Name)"
+          $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$($msi.FullName)`"", '/qn', '/l*v', 'msi-install.log' -PassThru
+          if (-not $p.WaitForExit(240000)) { throw 'msiexec did not finish within 4 minutes' }
+          Write-Host "msiexec exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Get-Content msi-install.log -Tail 40; throw "the MSI install failed (exit code $($p.ExitCode))" }
+          ./native/windows/check-installed.ps1 -NoUninstaller
+          $u = Start-Process msiexec.exe -ArgumentList '/x', "`"$($msi.FullName)`"", '/qn' -PassThru
+          if ($u.WaitForExit(120000)) { Write-Host "MSI uninstall exit code: $($u.ExitCode)" } else { Write-Host 'WARNING: the MSI uninstall did not finish within 2 minutes' }

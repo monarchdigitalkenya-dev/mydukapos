@@ -61,6 +61,7 @@ export async function onRequestGet(context) {
     remainingMs: result.remainingMs !== undefined ? result.remainingMs : null,
     paymentClaimed: record ? !!record.paymentClaimed : false,
     label: record ? record.label : '',
+    product: record ? record.product || 'shop' : '',                // which app this link is for (the native apps check it — zip 148)
     branchGroupId: record ? record.branchGroupId || null : null,
     isMainBranch: record ? !!record.isMainBranch : false,
     // A payment reminder from the owner that the admin has not dismissed yet (see owner-notice.js).

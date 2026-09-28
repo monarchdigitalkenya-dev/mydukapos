@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>MyDukaPOS</title>
+<style>
+  body { margin:0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background:#f4f6f8; color:#2c3e50; }
+  .wrap { max-width:440px; margin:0 auto; padding:10vh 20px 20px; }
+  h1 { font-size:24px; margin:0 0 4px; } .sub { color:#7f8c8d; margin:0 0 22px; font-size:14px; }
+  label { font-size:13px; font-weight:600; } input { width:100%; box-sizing:border-box; padding:13px 12px; font-size:16px; border:1px solid #cfd8dc; border-radius:8px; margin:6px 0 12px; }
+  button { width:100%; padding:14px; border:0; border-radius:8px; background:#27ae60; color:#fff; font-size:16px; font-weight:700; }
+  button:disabled { opacity:.6; } .err { color:#c0392b; font-size:14px; min-height:20px; margin-top:10px; } .hint { font-size:13px; color:#7f8c8d; margin-top:18px; line-height:1.45; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title">MyDukaPOS</h1>
+  <p class="sub">Enter your shop's link once. After that the app opens straight into your shop — with or without internet.</p>
+  <label for="link">Your shop link</label>
+  <input id="link" type="url" inputmode="url" autocomplete="url" placeholder="yourshop.mydukapos.store" autofocus>
+  <button id="go" type="button">Open my shop</button>
+  <div class="err" id="err" role="alert"></div>
+  <p class="hint">It is the same link you open in the browser (the one your provider sent). Staff: use your own staff link.</p>
+</div>
+<script>
+  // Native side: window.MyDukaLauncher (Android: LauncherBridge.java; Windows: preload.js). It checks the link with the server first.
+  var L = window.MyDukaLauncher;
+  try { var i = JSON.parse(L.info()); document.getElementById('title').textContent = i.appName || 'MyDukaPOS'; document.getElementById('link').placeholder = 'yourshop.' + (i.rootDomain || 'mydukapos.store'); } catch (e) {}
+  window.__launcherCb = function (id, r) {
+    var b = document.getElementById('go'); b.disabled = false; b.textContent = 'Open my shop';
+    if (!r || !r.ok) document.getElementById('err').textContent = (r && r.error) || 'The link could not be checked.';
+  };
+  // the Windows app answers through a message (its bridge runs in an isolated world)
+  window.addEventListener('message', function (e) { var d = e.data; if (d && d.type === 'launcherCb') window.__launcherCb(d.id, d.r); });
+  function go() {
+    var v = document.getElementById('link').value.trim();
+    if (!v) { document.getElementById('err').textContent = 'Enter your shop link.'; return; }
+    document.getElementById('err').textContent = '';
+    var b = document.getElementById('go'); b.disabled = true; b.textContent = 'Checking…';
+    L.open(v, 'l' + Date.now());
+  }
+  document.getElementById('go').onclick = go;
+  document.getElementById('link').onkeydown = function (e) { if (e.key === 'Enter') go(); };
+</script>
+</body>
+</html>

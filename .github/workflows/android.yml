@@ -1,0 +1,92 @@
+# MyDukaPOS for Android — builds the 7 apps (one flavour each), checks every APK with Android's own tools, and runs the Shop app on
+# an Android emulator. Artifacts: release/android/ (release APKs — SIGNED only when the keystore secrets exist — and debug/test APKs).
+#
+# Release signing (never in the repository): add these repository secrets (Settings ▸ Secrets and variables ▸ Actions):
+#   MYDUKA_KEYSTORE_B64       base64 of the release keystore (.jks)      MYDUKA_KEYSTORE_PASSWORD
+#   MYDUKA_KEY_ALIAS                                                      MYDUKA_KEY_PASSWORD
+# Without them the release APKs are built UNSIGNED (Android refuses to install an unsigned APK); the debug/test APKs are installable
+# for testing but are NOT for customers.
+name: android
+on:
+  push:
+    branches: [ 'claude/**', 'main' ]
+    paths: [ 'native/**', '.github/workflows/android.yml' ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - name: Release keystore (only when the secret exists)
+        env: { KS_B64: '${{ secrets.MYDUKA_KEYSTORE_B64 }}' }
+        run: |
+          if [ -n "$KS_B64" ]; then echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"; echo "MYDUKA_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"; echo "signing: yes"; else echo "signing: NO (release APKs will be unsigned)"; fi
+      - name: Build all apps (release + debug)
+        env:
+          MYDUKA_KEYSTORE_PASSWORD: '${{ secrets.MYDUKA_KEYSTORE_PASSWORD }}'
+          MYDUKA_KEY_ALIAS: '${{ secrets.MYDUKA_KEY_ALIAS }}'
+          MYDUKA_KEY_PASSWORD: '${{ secrets.MYDUKA_KEY_PASSWORD }}'
+        run: |
+          cd native/android
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease assembleDebug
+      - name: Verify every APK and collect them
+        run: |
+          set -e
+          BT="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | grep -E '^3[4-9]\.' | sort -V | tail -1)"
+          VER=$(node -p "require('./native/apps.json').version.name")
+          mkdir -p release/android
+          echo '[' > release/android/manifest.json; first=1
+          for apk in $(find native/android/app/build/outputs/apk -name '*.apk' | sort); do
+            flavor=$(echo "$apk" | sed -E 's#.*/apk/([^/]+)/([^/]+)/.*#\1#'); type=$(echo "$apk" | sed -E 's#.*/apk/([^/]+)/([^/]+)/.*#\2#')
+            name=$(node -p "((require('./native/apps.json').apps.find(a => a.key === '$flavor') || {}).name || '$flavor').replace(/ /g, '-')")
+            badging=$("$BT/aapt2" dump badging "$apk")
+            pkg=$(echo "$badging" | sed -nE "s/^package: name='([^']+)'.*/\1/p")
+            vname=$(echo "$badging" | sed -nE "s/.*versionName='([^']+)'.*/\1/p")
+            vcode=$(echo "$badging" | sed -nE "s/.*versionCode='([^']+)'.*/\1/p")
+            label=$(echo "$badging" | sed -nE "s/^application-label:'(.*)'/\1/p")
+            if "$BT/apksigner" verify "$apk" >/dev/null 2>&1; then signed=$("$BT/apksigner" verify --print-certs "$apk" | grep -m1 'certificate DN' | sed 's/.*DN: //'); else signed=""; fi
+            if [ "$type" = "debug" ]; then suffix="debug-TEST-ONLY"; elif [ -n "$signed" ]; then suffix="release"; else suffix="release-UNSIGNED"; fi
+            out="release/android/${name}-${VER}-${suffix}.apk"
+            cp "$apk" "$out"
+            size=$(stat -c %s "$out"); sha=$(sha256sum "$out" | cut -d' ' -f1)
+            echo "$out  package=$pkg  version=$vname ($vcode)  label=$label  signed-by=${signed:-UNSIGNED}  size=$size  sha256=$sha"
+            [ $first = 1 ] || echo ',' >> release/android/manifest.json; first=0
+            printf '{"file":"%s","flavor":"%s","type":"%s","package":"%s","versionName":"%s","versionCode":"%s","label":"%s","signedBy":"%s","size":%s,"sha256":"%s"}\n' \
+              "$(basename "$out")" "$flavor" "$type" "$pkg" "$vname" "$vcode" "$label" "${signed:-}" "$size" "$sha" >> release/android/manifest.json
+            # the app must be what it says it is
+            want=$(node -p "(require('./native/apps.json').apps.find(a => a.key === '$flavor') || {}).appId")
+            [ "$pkg" = "$want" ] || { echo "WRONG PACKAGE ID: $pkg != $want"; exit 1; }
+          done
+          echo ']' >> release/android/manifest.json
+          ls -la release/android
+      - uses: actions/upload-artifact@v4
+        with: { name: mydukapos-android, path: release/android, if-no-files-found: error, retention-days: 30 }
+
+  emulator:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: mydukapos-android, path: apks }
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Install and launch the Shop app on Android 11; the launcher checks a link natively
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: bash native/tools/emulator-check.sh apks
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: emulator-screens, path: emulator-out, if-no-files-found: ignore }
