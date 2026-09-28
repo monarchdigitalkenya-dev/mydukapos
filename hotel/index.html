@@ -874,6 +874,17 @@
         .loc-card select { width: 100%; font-size: 12px; padding: 5px 6px; margin: 0; }
         .svc-side-panel { position: fixed; top: 0; right: 0; bottom: 0; width: max(33vw, 340px); max-width: 100vw; background: var(--bg-surface, #fff); box-shadow: -4px 0 18px rgba(0,0,0,.18); padding: 14px; overflow-y: auto; z-index: 9000; transform: translateX(105%); transition: transform .18s ease; }
         .svc-side-panel.open { transform: none; }
+        /* zip 147: the waiter's Orders tab — menu buttons, and a side panel whose width the waiter can drag (kept per device) */
+        .svc-menu { display:grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap:6px; margin-top:8px; max-height:46vh; overflow-y:auto; }
+        .svc-menu-btn { border:1px solid var(--light, #ddd); background: var(--bg-surface, #fff); border-radius:8px; padding:8px 6px; text-align:left; cursor:pointer; font-size:13px; line-height:1.25; min-height:54px; }
+        .svc-menu-btn small { color:#7f8c8d; }
+        .svc-menu-btn:disabled { opacity:.45; cursor:not-allowed; }
+        .svc-draft-row { display:flex; align-items:center; gap:6px; padding:6px 0; border-bottom:1px solid var(--light, #eee); font-size:14px; }
+        .svc-draft-row .svc-draft-name { flex:1; min-width:0; }
+        body.svc-simple .svc-advanced, body.svc-simple .svc-adv { display:none !important; }
+        .svc-side-panel { width: var(--svc-panel-w, max(33vw, 340px)); min-width: 280px; }
+        .svc-panel-grip { position:absolute; left:0; top:0; bottom:0; width:10px; cursor:ew-resize; touch-action:none; }
+        .svc-panel-grip::after { content:''; position:absolute; left:3px; top:50%; width:4px; height:44px; margin-top:-22px; border-radius:2px; background:rgba(0,0,0,.18); }
         .hotel-grid { border-collapse: collapse; font-size: 12px; }
         .hotel-grid th, .hotel-grid td { border: 1px solid var(--light, #ddd); padding: 3px 5px; text-align: center; min-width: 30px; }
         .hotel-grid td:first-child, .hotel-grid td:nth-child(2) { text-align: left; }
@@ -3257,25 +3268,39 @@
         </div>
     </div>
 
-    <!-- TAB: SERVICE ORDERS (zip 134) — waiters: start an order, see active orders, change / exchange / settle in the side panel -->
+    <!-- TAB: ORDERS (zip 134; simplified for waiters in zip 147) — build the order HERE (no Sales Counter): table / room, the items,
+         POST ORDER (the kitchen / bar get their slip, no prices), then "📋 Orders" to see, update or settle your orders. -->
     <div id="service-tab" class="tab-content">
         <div class="panel">
-            <h3>🍽️ Service Orders</h3>
-            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                <h3 style="margin:0;">🍽️ Orders</h3>
+                <button class="btn-main" id="svc-my-orders-btn" onclick="openMyOrders()">📋 Orders <span id="svc-my-orders-count"></span></button>
+            </div>
+            <div id="svc-draft-target" style="margin:8px 0 4px; font-size:13px;"></div>
+            <div id="svc-new-fields" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-top:8px;">
                 <div style="flex:1; min-width:150px;"><label class="label" style="font-size:11px;">Table / room</label><select id="svc-new-location"></select></div>
                 <div style="flex:1; min-width:140px;"><label class="label" style="font-size:11px;">Customer name (optional)</label><input type="text" id="svc-new-guest" placeholder="e.g. Mary"></div>
                 <div style="flex:1; min-width:140px;"><label class="label" style="font-size:11px;">Order type</label><select id="svc-new-type"></select></div>
-                <button class="btn-main" onclick="hospStartOrder()">➕ New order</button>
             </div>
-            <p class="settings-hint" style="margin-top:6px;">A new order opens the Sales Counter screen (search, categories, photos, barcode) for that table — "Add This Order to Tab" sends it: the kitchen gets the food, the bar gets the drinks. Tap an active order to change it, exchange items, or settle it for billing.</p>
-            <div id="svc-qr-inbox" style="display:grid; gap:8px; margin-top:12px;"></div>
-            <div style="display:flex; gap:6px; margin-top:10px;"><input type="text" id="svc-scan-input" placeholder="📷 Scan a table / room code (or paste its link)" onkeydown="if(event.key==='Enter'){ hospScanLocationCode(this.value); this.value=''; }"></div>
-            <h4 style="margin:14px 0 6px;">Active orders</h4>
-            <div id="svc-active-orders" style="display:grid; gap:8px;"></div>
-            <details style="margin-top:14px;"><summary style="cursor:pointer; font-weight:600;">⚙️ Stations, printers &amp; modifiers</summary><div id="hosp-station-settings" style="margin-top:8px;"></div></details>
+            <input type="text" id="svc-item-search" placeholder="🔍 Search the menu (name or code)…" oninput="renderSvcMenu()" style="margin-top:10px;">
+            <div id="svc-menu" class="svc-menu"></div>
+            <h4 style="margin:12px 0 6px;">This order</h4>
+            <div id="svc-draft"></div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+                <button class="btn-main" id="svc-post-btn" style="background:#27ae60; flex:1; min-width:180px;" onclick="svcPostOrder()">📤 POST ORDER</button>
+                <button class="settings-small-btn" onclick="svcClearDraft()">Clear</button>
+            </div>
+            <div class="svc-advanced">
+                <p class="settings-hint" style="margin-top:12px;">Cashiers and supervisors can also build an order on the Sales Counter screen (search, categories, photos, barcode): <button class="settings-small-btn" onclick="hospStartOrder()">➕ New order on the Sales Counter</button></p>
+                <div id="svc-qr-inbox" style="display:grid; gap:8px; margin-top:12px;"></div>
+                <div style="display:flex; gap:6px; margin-top:10px;"><input type="text" id="svc-scan-input" placeholder="📷 Scan a table / room code (or paste its link)" onkeydown="if(event.key==='Enter'){ hospScanLocationCode(this.value); this.value=''; }"></div>
+                <h4 style="margin:14px 0 6px;">Active orders</h4>
+                <div id="svc-active-orders" style="display:grid; gap:8px;"></div>
+                <details style="margin-top:14px;"><summary style="cursor:pointer; font-weight:600;">⚙️ Stations, printers &amp; modifiers</summary><div id="hosp-station-settings" style="margin-top:8px;"></div></details>
+            </div>
         </div>
     </div>
-    <div id="svc-panel" class="svc-side-panel"></div>
+    <div id="svc-panel" class="svc-side-panel"><div class="svc-panel-grip" title="Drag to make the panel wider or narrower"></div><div id="svc-panel-body"></div></div>
 
     <!-- TAB: HOSPITALITY REPORTS (zip 140) -->
     <div id="hosp-reports-tab" class="tab-content">
@@ -7167,7 +7192,7 @@
 
     <!-- APP ENGINE SCRIPTS -->
     <script>
-    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addBulkRow,addComboRow,addContractRow,addCrossBranchExchangeItem,addCrossBranchItemToCart,addDeliveryAgent,addDeliveryZone,addLoyaltyTier,addRecipeCaptureIngredient,addRecipeRow,addSameItemAsReplacement,addTradeCreditManually,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyExpensesOnlyRestriction,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,autoGenerateBarcodeValue,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,broadcastCustomerDisplayChange,buildAlignedRow,buildDrawerKickAsciiString,buildDrawerKickBytes,buildInventoryItemName,buildPoleDisplayBytes,buildReceiptCanvas,buildSystemPrintCopies,cancelCartTotalQuote,captureReviewInventoryOptions,captureScanModalNow,cellLooksNumeric,changeCartPrice,checkAiCaptureStatus,checkBillReminders,checkEtimsStatus,checkExistingContractMatch,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,checkPrintRelayAvailable,claimLicensePayment,clearAuthUrlParams,clearInventorySearch,clearMpesaPayerFields,clearSystemPrintCopies,closeAddCustomerModal,closeAddPrintRoutingRule,closeAdhocSaleModal,closeAttendanceClockModal,closeBarcodeScanModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeContractReturnModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeDemoPurgeModal,closeKitchenTicket,closeKitchenTicketAfterPrint,closePromoOfferModal,closeReceipt,closeReceiptAfterPrint,closeRecipeCaptureReviewModal,closeRecordBillModal,closeRecordPastSaleModal,closeSalesReport,closeStoreImportFromInventoryModal,closeTabsOverflowMenu,closeUpgradeScreen,completeBarcodeScanModal,computeFlatOfferResults,computeLineOfferDiscount,computeStaffStats,computeTokensEarned,confirmAdhocSale,connectPoleDisplay,contractRowLineTotal,contractRowProduct,contractRowUnitPrice,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,createBillNotification,csvEscape,currentActiveTabId,currentAdminSettingsRestriction,currentNotifViewerId,currentPromoOfferTargets,currentStockValueTotals,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,daysUntilExpiry,debtBalance,debtPaidSoFar,decimalToFraction,defaultDeviceName,deleteBarcode,deleteBranch,deleteInventoryItem,deletePrintRoutingRule,deletePromoOffer,deleteTradeCredit,deleteWebAuthnCredential,detectOnceFromScanModal,dismissCustomerDisplayDetectBanner,dismissNotificationPromptBanner,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureSaleIds,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchBranchDetail,fetchBranchesSummary,fetchReceiptSettingsSharing,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findInventoryByName,findSaleForVoid,flagWithinImportIngredientDuplicates,formatFileSize,formatHours,formatPickedPhone,formatQty,formatQtyDisplay,formatRemaining,formatShiftTime,formatShortDate,fuzzyMatchInventory,generateItemCode,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getEffectivePrice,getExchangeNetPayable,getExchangeReplacementTotal,getExpiringItems,getFaultyReturns,getLocState,getLowStockRecipeServices,getOrCreateDeviceId,getServiceAvailableQty,getServiceUnitCost,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleImageUpload,handleSplitAmountChange,heartbeatDeviceNetwork,ingredientOptionsHtml,initBulkAddForm,initCamera,initCameraScanOnLoad,initCustomerDisplayMode,initDeviceNetworkUI,initLoyaltySettingsUI,initPasswordToggles,initPhonebookPickers,isAdminServing,isBillNotifRelevant,isExpired,isExpiringSoon,isIngredientProduct,isKeyboardTypeable,isOfferActive,isPhoneField,isRecipeComponent,isRunningStandalone,isSellableProduct,isStaffLockedToday,itemOffers,itemTotalSold,jpegBytesToPdfBlob,jumpToSaleByRef,kbBackspace,kbEnter,kbInsertText,kbKeyTap,kbResolveTarget,kbSwitchMode,kbToggleShift,kitchenTicketPrintJob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadContractForMoreItems,loadNotifiedToday,loadPrintRoutingRules,loadRecoveryStatus,loadSheetJsOnce,loadStoreItems,loadUpgradePromptContent,logStockMovementDated,looksLikeRowNumberColumn,lookupBarcode,markAllBillNotificationsRead,markBillNotificationRead,markDeliveryNotificationsRead,markTillPaymentMatched,maybeAutoDetectCustomerDisplay,maybeFetchAutoImage,maybeOfferNotificationPrompt,maybeSendBillCreatedSms,maybeSendThankYouSms,maybeShowExpiryNudge,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,offerAvailableCategories,offerSummaryLine,onBillUpfrontAmountChange,onBulkCategoryChanged,onBulkRowCodeInput,onBulkRowFieldInput,onBulkRowNameInput,onPromoOfferTypeChange,onRecordBillUpfrontChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAddPromoOffer,openAdhocSaleModal,openAttendanceClockModal,openBoxToPieces,openCartTotalQuoteEditor,openCashDrawer,openContractReturnModal,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openEditPromoOffer,openLicenseWhatsapp,openOfferModal,openPoleDisplayPort,openRecordBillModal,openRecordPastSaleModal,openSettingsSection,openWebAuthnDb,padPoleLine,parseHexBytes,parseQtyInput,performBulkDeclareOpeningStock,performCartTotalQuote,performEditOpeningStock,performResetExceptInventory,persistPrintRoutingRules,pickPhoneForField,populateServerFilter,previewBarcode,printAttendanceSheet,printBarcodeSheet,printDebtsStatement,printHTMLDirect,printItemSalesRecordFromModal,printKitchenTicket,printKitchenTicketManualJob,printOneBarcode,printReceiptInNewWindow,printRelayHasRealPrinter,printReportInNewWindow,printRoutingDestinationLabel,printSystemDrawerKickTest,printViaSystemDialog,productType,profitPeriodLabel,promptAppInstall,pruneOrphanedLocStates,pullState,pushNewStockAlerts,pushNow,pushSharedReceiptSettingsIfNeeded,qtyInputHint,queuePrintJob,receiptImageWidthPx,recipeIngredientMatchOptions,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeBulkRow,removeComboRow,removeContractRow,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,removeOffer,removeRecipeCaptureDish,removeRecipeCaptureIngredient,removeRecipeRow,removeRoom,removeTable,renderAdminActivityLog,renderAndPrintBarcodes,renderAttendanceHistory,renderAttendanceRosterTable,renderBarcodeLinkOptions,renderBarcodesTab,renderBillNotifyStaffList,renderBillsTabScoped,renderBizImportReviewTables,renderCameraScanTorchButton,renderComboRows,renderContractTotals,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderInventoryPager,renderInventoryTableScoped,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderProfitsTabScoped,renderPromoOfferTargetCategories,renderPromoOfferTargetProducts,renderRecipeRows,renderRestockTotals,renderStockValuationSummary,renderTillPayments,renderTrendsPieCharts,reportFilenameBase,reprintExchangeReceipt,requestBulkDeclareOpeningStock,requestEditOpeningStock,requestResetExceptInventory,requestSetOpeningStock,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetMpesaState,resetPromoOfferModalFields,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,restockRowLineTotal,restoreStockForSaleUnit,retakePhoto,round2,runBackgroundCameraScanTick,runQueuedSystemPrint,runScanModalTick,safeJSONParse,safeSetItem,salesTablePeriodLabel,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveAttendanceLocal,saveContract,saveDebtsLocal,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveNotifiedToday,saveOffersLocal,savePrintRoutingRule,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,searchOtherBranchesForCart,searchOtherBranchesForExchange,selectLoginAdmin,selectLoginStaff,selectPastSaleItem,choosePastSalePriceTier,selectServerToLogin,selectUnavailableItem,sendBillReminderSms,sendToPoleDisplay,setAddItemMode,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBarcodeScanModalStatus,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setComboRowMode,setContractType,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setDeviceName,setDeviceStation,setEtimsLogPeriod,setExchangeTopupMethod,setFieldAndFireInput,setImageSource,setLocStatus,setOfferType,setOrderType,setPoleDisplayMode,setProfitPeriod,setPromoOfferScope,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSalesTablePeriod,setShowItemImageGrid,setSmsProvider,setStockReportPeriod,setTabReadOnly,setTradeCreditDirection,settleTradeCredit,setupPoleDisplayConnectListener,showAuthStep,showCustomerDisplayDetectBanner,showLoginPickerStep,showNotificationPromptBanner,showRecoverySignInStep,showUpgradeScreen,slugifyServiceName,snapCaptureListPhoto,snapPhoto,snapshotExtraSyncedFields,snapshotInventorySync,soldQtyAfter,soldQtyWithinRange,staffExpensesAccessLevel,staffShiftsFor,stampDirtyExtraSyncedFields,stampDirtyInventory,startAdminShiftIfNeeded,startBackgroundCameraScan,startDeviceNetworkHeartbeat,startLicensePolling,startNewContract,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,stopBackgroundCameraScan,stopCamera,submitBarcodeScanManual,submitDemoPurgeConfirm,submitPrintRelayJob,supplierOptionsHtml,switchTab,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAdhocBorrowedFields,toggleAutoOpenDrawer,toggleBillNotifyStaff,toggleCameraScanTorch,toggleChangePinPanel,toggleComboBuilder,toggleFloatingKeyboard,toggleInteractivePricing,toggleInventorySearchClear,toggleKitchenTicket,toggleNewStaffRole,toggleOfferCustomDate,togglePrintRoutingRule,togglePromoOfferActive,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScanModalTorch,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleStoreManualForm,toggleTradeCreditManualForm,toggleUnavailableExchangeForm,triggerAutoPrintReceipt,triggerAutoPrintReport,triggerInventoryRowImageUpload,tryAutoReconnectPoleDisplay,unitLabel,unlinkRecoveryEmail,unreadBillNotifications,updateAttendanceRosterExpectedTime,updateBarcodeCopies,updateBillReminderDays,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateCameraScanStatusText,updateComboRowCode,updateComboRowCustomName,updateComboRowQty,updateContractRowField,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateLicenseLockHintText,updateLocReservationField,updateLowStockDescText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updatePrintRelaySectionVisibility,updateRecipeCaptureDish,updateRecipeCaptureIngredient,updateRecipeCaptureIngredientMatch,updateRecipeRowIngredient,updateRecipeRowQty,updateRecipeSummary,updateRestockRowField,updateServerBtnLabel,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,getPaperCols,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,usbPrinterNameKey,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,poState,poNewRow,poRound3,poFormatDateTime,poStatusMeta,poLineOutstanding,poOrderStats,poIsOpen,poCanEdit,poFindProduct,poSave,poNextOrderNo,poActor,poRefreshFormLists,poOpenForm,poCloseForm,poAddRow,poRemoveRow,poRowLineTotal,poRenderTotals,poRenderRows,poUpdateRowField,poFillRowFromProduct,poEnsureSupplier,poSaveOrder,poSetFilter,poVisibleOrders,poToggleDetails,poActionsHtml,poDetailsHtml,renderOrdersList,renderOrdersTab,renderOrdersIfOpen,poMarkInTransit,poCancelOrder,poRemoveOrder,poCloseShort,poOpenArriveModal,poCloseArriveModal,poRenderArriveModal,poArriveToggleLine,poArriveQtyChange,poArriveRefresh,poApplyArrivedLine,poConfirmArrival,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,applyPriceSelectTier,attendanceRosterList,buildBillOwedMessage,cellLooksLikeCurrency,closeChangeStaffPinModal,closePinSetConfirmModal,collapseTabsIfNeeded,commitRecipeCaptureReview,confirmBillSettle,copyPinSetConfirmValue,detectCsvColumnsAI,editBillDueDate,etimsLogPeriodRange,genSaleId,generateRandomStaffPin,importInventoryCsv,levenshteinDistance,onBarcodeLinkChange,openBarcodeScanModal,performRestoreBackup,printReceipt,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,salesTablePeriodRange,saveRecordBillModal,sendPendingExchangeSms,showPinSetConfirmModal,stopCaptureListCamera,submitChangeStaffPin,toggleRecipeBuilder,toggleTabsOverflowMenu,updateCaptureReviewField,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice,markSync,probeServer,pullStateOnce,hwKey,hwStatus,hwIsReady,hwSingleFlight,hwUsbReconnect,hwBtFindCharacteristic,hwBtAttach,hwBtWatch,hwBtReconnect,hwEnsureReady,hwLinkLost,hwWrapPrinting,hwKeeperStart,hwKick,hwSchedule,hwTick,claimUsbPrinterEndpointOnce,hwWithTimeout,heldSaleKey,heldSaleGet,heldSalePanel,heldSaleFields,holdCurrentSale,resumeHeldSale,renderHeldSaleBar,heldSaleInstall,pastSalePaymentChanged,pastSalePaymentDetails,pastSaleStore,lowStockItems,lowStockInDraft,renderLowStockStrip,lowStockAdd,lowStockAddAll,lowStockInstall,poSupplierRecord,poOrderTotal,poOrderText,poSendOrder,stockTakeState,stockTakeItems,stockTakeDiff,stockTakeFindByCode,stockTakeResyncParent,stockTakeApplyOne,stockTakeValueOf,stockTakeSet,stockTakeFillDiffCell,stockTakeRenderSummary,renderStockTake,stockTakeMatches,stockTakeClear,stockTakeApply,stockTakeHistoryGet,renderStockTakeHistory,stockTakeInstall,setKitchenPrintPage,pruneClosedBills,authWatchInstall,dayKeyOf,assignCustomerNo,itemSuggestMatches,itemSuggestBox,itemSuggestShow,itemSuggestHide,itemSuggestPick,itemSuggestInstall,markReceiptPrinted,soldTotalsMap,showBusyBanner,hideBusyBanner,nextPaint,reportMoney,reportShort,reportsRange,reportSales,reportSaleTotal,reportSaleCost,reportBarSvg,reportLineSvg,reportTable,reportCards,reportBuildSales,reportBuildInsights,reportBuildStaff,reportBuildStock,reportBuildBillsDebts,reportBuildExpenses,reportsGenerate,reportsRangeChanged,reportsCsv,reportsPrint,reportsInstall,reportsGoto,perfInstall,dedupeStaff,markLocalDirty,ackLocalDirty,cartLineMinimumPrice,cartTotalBelowMinimumMessage,vatRateForCategory,KRA_VAT_CATEGORY_LABELS,recordKraClassificationChange,defaultKraClassification,KRA_REFERENCE_RULES_BUILTIN,kraReferenceRules,addKraReferenceRule,matchKraReferenceRules,runKraClassificationAssistant,submitNewKraReferenceRule,acceptKraAssistantSuggestion,readKraClassificationFromForm,populateKraClassificationForm,validateSaleForEtims,autoDailyReportState,setAutoDailyReportEnabled,setAutoDailyReportTime,setAutoDailyReportMissedBehavior,renderAutoDailyReportStatus,runAutoDailyReport,checkAutoDailyReportSchedule,installAutoDailyReportScheduler,stockLedgerOn,stockLedgerMark,stockRecSig,stockMoveDelta,stockPendingMoves,stockSimulate,stockMovesByKey,reconcileLocalStockChanges,stockApplyPulledLedger,logStockCount,stockTakeRecordCount,stockTakeHistoryFromLog,stockAlignBatches,stockKeyMoves,stockMoveAuditText,stockCellFieldsOf,extraRecSig,printStockTakeReport,stockIntegrityCheck,generateReceiptRef,tillNumber,rememberTillNumber,returnQtyGuard,saleCtxNow,stampLocalContext,syncJournal,syncJournalAuditEvents,syncJournalConflicts,saleCtxText,reportFreshnessHtml,reportRefreshAfterSync,zReportPreflight,requireManagementApproval,stockTakeApprovalLimit,stockTakeSetApprovalLimit,serverDayCheck,serverDayCheckHtml,serverDayCheckInto,todayBounds,pbkdf2Hex,hashSalt,sealHash,hashMatches,sealStoredHashes,hashSealGateOpen,hashSealGateCheck,stockReportTotals,reportRowLimit,reportShowMore,notePushHttp,syncRetryNow,salesDatePickerValue,dailySalesOpenOnToday,bizTzOffsetMin,bizDayKey,bizDayBounds,bizDayKeyCompute,pushBacklogAfter,pushShrinkBatches,pushErrorCode,syncHaveCheck,goToFirstAllowedTab,openSalesCounterIfAllowed,scannerStripFromField,inventoryHasExactCode,netFailReason,netErrText,netErrMsg,devicePaperWidth,receiptPaperMm,receiptPrintableMm,setDevicePaperWidth,syncDevicePaperWidthUI,receiptApplyPaperVars,ensureReceiptGridCss,receiptGridSafe,receiptGridLines,receiptGridHtml,fitReceiptGrids,setPrintBodyText,receiptMoneyRow,printPaperWidthTest,receiptPageRule */
+    /* @shared:begin names=_codeMatches,_normCode,activeServerName,addBulkRow,addComboRow,addContractRow,addCrossBranchExchangeItem,addCrossBranchItemToCart,addDeliveryAgent,addDeliveryZone,addLoyaltyTier,addRecipeCaptureIngredient,addRecipeRow,addSameItemAsReplacement,addTradeCreditManually,adminHasOpenShift,advanceDeliveryStatus,advanceDueDate,apiUrl,applyExpensesOnlyRestriction,applySecondaryAdminSettingsGate,attemptManualLogin,attendanceDeviationLabel,attendanceTodayEntry,attendanceTodayKey,autoGenerateBarcodeValue,backToLoginPicker,base64urlDecode,base64urlEncode,billFulfillmentBadgeHtml,branchSwitchingAllowed,broadcastCustomerDisplayChange,buildAlignedRow,buildDrawerKickAsciiString,buildDrawerKickBytes,buildInventoryItemName,buildPoleDisplayBytes,buildReceiptCanvas,buildSystemPrintCopies,cancelCartTotalQuote,captureReviewInventoryOptions,captureScanModalNow,cellLooksNumeric,changeCartPrice,checkAiCaptureStatus,checkBillReminders,checkEtimsStatus,checkExistingContractMatch,checkForInviteToken,checkImageSearchStatus,checkPaymentGatewayStatus,checkPrintRelayAvailable,claimLicensePayment,clearAuthUrlParams,clearInventorySearch,clearMpesaPayerFields,clearSystemPrintCopies,closeAddCustomerModal,closeAddPrintRoutingRule,closeAdhocSaleModal,closeAttendanceClockModal,closeBarcodeScanModal,closeBillHistoryModal,closeBizImportReviewModal,closeCaptureReviewModal,closeCaptureSourceModal,closeColumnMappingModal,closeContractReturnModal,closeDebtModal,closeDebtPaymentModal,closeDeliveryOrderModal,closeDeliveryPaymentModal,closeDemoPurgeModal,closeKitchenTicket,closeKitchenTicketAfterPrint,closePromoOfferModal,closeReceipt,closeReceiptAfterPrint,closeRecipeCaptureReviewModal,closeRecordBillModal,closeRecordPastSaleModal,closeSalesReport,closeStoreImportFromInventoryModal,closeTabsOverflowMenu,closeUpgradeScreen,completeBarcodeScanModal,computeFlatOfferResults,computeLineOfferDiscount,computeStaffStats,computeTokensEarned,confirmAdhocSale,connectPoleDisplay,contractRowLineTotal,contractRowProduct,contractRowUnitPrice,copyGatewayUrl,copyInviteLink,copySmsWebhookUrl,copyStaffLoginLink,copyTextToClipboard,createBillNotification,csvEscape,currentActiveTabId,currentAdminSettingsRestriction,currentNotifViewerId,currentPromoOfferTargets,currentStockValueTotals,customerStatementPeriodLabel,customerStatementPeriodRange,dataUrlToUint8Array,daysUntilExpiry,debtBalance,debtPaidSoFar,decimalToFraction,defaultDeviceName,deleteBarcode,deleteBranch,deleteInventoryItem,deletePrintRoutingRule,deletePromoOffer,deleteTradeCredit,deleteWebAuthnCredential,detectOnceFromScanModal,dismissCustomerDisplayDetectBanner,dismissNotificationPromptBanner,downloadBlob,downloadReceiptPdf,downloadReportPdf,endStaffShift,enrollAdminBiometric,enrollManagerBiometric,ensureSaleIds,ensureViewedBranchLoaded,escapeJsAttr,escapeQuotes,estimateLicenseOffline,etimsLogPeriodLabel,expectedTimesForPersonKey,extractNumber,fetchBranchDetail,fetchBranchesSummary,fetchReceiptSettingsSharing,fetchSmsOptOutCount,fileExt,fillSmsTemplate,findCsvColumn,findDeliveryAgentById,findDeliveryRecord,findInventoryByName,findSaleForVoid,flagWithinImportIngredientDuplicates,formatFileSize,formatHours,formatPickedPhone,formatQty,formatQtyDisplay,formatRemaining,formatShiftTime,formatShortDate,fuzzyMatchInventory,generateItemCode,generateToken,getAllDeliveryAgents,getAssignedDeliveryOrders,getCurrentActiveTabId,getCustomerStatementSales,getEffectivePrice,getExchangeNetPayable,getExchangeReplacementTotal,getExpiringItems,getFaultyReturns,getLocState,getLowStockRecipeServices,getOrCreateDeviceId,getServiceAvailableQty,getServiceUnitCost,gridRowsFromSheet,handleBillUpfrontSplitChange,handleCaptureListUpload,handleDeliveryPaymentSplitChange,handleExchangeSplitChange,handleImageUpload,handleSplitAmountChange,heartbeatDeviceNetwork,ingredientOptionsHtml,initBulkAddForm,initCamera,initCameraScanOnLoad,initCustomerDisplayMode,initDeviceNetworkUI,initLoyaltySettingsUI,initPasswordToggles,initPhonebookPickers,isAdminServing,isBillNotifRelevant,isExpired,isExpiringSoon,isIngredientProduct,isKeyboardTypeable,isOfferActive,isPhoneField,isRecipeComponent,isRunningStandalone,isSellableProduct,isStaffLockedToday,itemOffers,itemTotalSold,jpegBytesToPdfBlob,jumpToSaleByRef,kbBackspace,kbEnter,kbInsertText,kbKeyTap,kbResolveTarget,kbSwitchMode,kbToggleShift,kitchenTicketPrintJob,linkRecoveryEmail,listWebAuthnCredentials,loadBackupsList,loadContractForMoreItems,loadNotifiedToday,loadPrintRoutingRules,loadRecoveryStatus,loadSheetJsOnce,loadStoreItems,loadUpgradePromptContent,logStockMovementDated,looksLikeRowNumberColumn,lookupBarcode,markAllBillNotificationsRead,markBillNotificationRead,markDeliveryNotificationsRead,markTillPaymentMatched,maybeAutoDetectCustomerDisplay,maybeFetchAutoImage,maybeOfferNotificationPrompt,maybeSendBillCreatedSms,maybeSendThankYouSms,maybeShowExpiryNudge,money,nextDeliveryStatus,nextDeliveryStatusActionLabel,normalizeKenyanPhone,notificationsSupported,offerAvailableCategories,offerSummaryLine,onBillUpfrontAmountChange,onBulkCategoryChanged,onBulkRowCodeInput,onBulkRowFieldInput,onBulkRowNameInput,onPromoOfferTypeChange,onRecordBillUpfrontChange,onReturnQtyChanged,openAddCustomerModal,openAddDebtModal,openAddPromoOffer,openAdhocSaleModal,openAttendanceClockModal,openBoxToPieces,openCartTotalQuoteEditor,openCashDrawer,openContractReturnModal,openCustomerDisplayWindow,openDebtPaymentModal,openDeliveryOrderModal,openDeliveryPaymentModal,openEditPromoOffer,openLicenseWhatsapp,openOfferModal,openPoleDisplayPort,openRecordBillModal,openRecordPastSaleModal,openSettingsSection,openWebAuthnDb,padPoleLine,parseHexBytes,parseQtyInput,performBulkDeclareOpeningStock,performCartTotalQuote,performEditOpeningStock,performResetExceptInventory,persistPrintRoutingRules,pickPhoneForField,populateServerFilter,previewBarcode,printAttendanceSheet,printBarcodeSheet,printDebtsStatement,printHTMLDirect,printItemSalesRecordFromModal,printKitchenTicket,printKitchenTicketManualJob,printOneBarcode,printReceiptInNewWindow,printRelayHasRealPrinter,printReportInNewWindow,printRoutingDestinationLabel,printSystemDrawerKickTest,printViaSystemDialog,productType,profitPeriodLabel,promptAppInstall,pruneOrphanedLocStates,pullState,pushNewStockAlerts,pushNow,pushSharedReceiptSettingsIfNeeded,qtyInputHint,queuePrintJob,receiptImageWidthPx,recipeIngredientMatchOptions,refreshEtimsReceiptInfo,registerEtims,registerSyncedField,registerTillUrls,removeAiCaptureOwnKey,removeBiometric,removeBulkRow,removeComboRow,removeContractRow,removeDeliveryAgent,removeDeliveryZone,removeExchangeReplacementItem,removeLoyaltyTier,removeOffer,removeRecipeCaptureDish,removeRecipeCaptureIngredient,removeRecipeRow,removeRoom,removeTable,renderAdminActivityLog,renderAndPrintBarcodes,renderAttendanceHistory,renderAttendanceRosterTable,renderBarcodeLinkOptions,renderBarcodesTab,renderBillNotifyStaffList,renderBillsTabScoped,renderBizImportReviewTables,renderCameraScanTorchButton,renderComboRows,renderContractTotals,renderDailySalesScoped,renderDeliveriesNotifList,renderDeliveryAgentSelect,renderDeliveryZoneSelect,renderDeliveryZonesList,renderFaultyItemsRegister,renderInventoryPager,renderInventoryTableScoped,renderLoyaltyTiersList,renderNewStaffRoleCheckboxes,renderProfitsTabScoped,renderPromoOfferTargetCategories,renderPromoOfferTargetProducts,renderRecipeRows,renderRestockTotals,renderStockValuationSummary,renderTillPayments,renderTrendsPieCharts,reportFilenameBase,reprintExchangeReceipt,requestBulkDeclareOpeningStock,requestEditOpeningStock,requestResetExceptInventory,requestSetOpeningStock,resetEtimsConfig,resetExchangeState,resetImageSearchConfig,resetMpesaState,resetPromoOfferModalFields,resetReturnForm,resetSmsConfig,resetUnavailableExchangeForm,restockRowLineTotal,restoreStockForSaleUnit,retakePhoto,round2,runBackgroundCameraScanTick,runQueuedSystemPrint,runScanModalTick,safeJSONParse,safeSetItem,salesTablePeriodLabel,sanitizeBarcodeValue,saveAiCaptureOwnKey,saveAttendanceLocal,saveContract,saveDebtsLocal,saveGatewayForcedProvider,saveGatewayKcbConfig,saveGatewayPaystackKey,saveGatewayPaywaveConfig,saveImageSearchConfig,saveLicenseCheckpoint,saveNotifiedToday,saveOffersLocal,savePrintRoutingRule,saveReturnOrExchange,saveSmsConfig,saveThankYouTemplate,saveWebAuthnCredential,scheduleSyncSocketReconnect,scopedField,scrollToTop,searchOtherBranchesForCart,searchOtherBranchesForExchange,selectLoginAdmin,selectLoginStaff,selectPastSaleItem,choosePastSalePriceTier,selectServerToLogin,selectUnavailableItem,sendBillReminderSms,sendToPoleDisplay,setAddItemMode,setAllBroadcastRecipients,setAllFaultyItemsSelected,setAutoThankYouEnabled,setBarcodeScanModalStatus,setBillFulfillmentType,setBillUpfrontMethod,setCameraScanStatus,setComboRowMode,setContractType,setCustomerStatementPeriod,setDailySalesMethodFilter,setDeliveryPaymentCaptureMethod,setDeviceName,setDeviceStation,setEtimsLogPeriod,setExchangeTopupMethod,setFieldAndFireInput,setImageSource,setLocStatus,setOfferType,setOrderType,setPoleDisplayMode,setProfitPeriod,setPromoOfferScope,setQtyDisplayFormat,setReceiptCopies,setReturnMode,setSalesTablePeriod,setShowItemImageGrid,setSmsProvider,setStockReportPeriod,setTabReadOnly,setTradeCreditDirection,settleTradeCredit,setupPoleDisplayConnectListener,showAuthStep,showCustomerDisplayDetectBanner,showLoginPickerStep,showNotificationPromptBanner,showRecoverySignInStep,showUpgradeScreen,slugifyServiceName,snapCaptureListPhoto,snapPhoto,snapshotExtraSyncedFields,snapshotInventorySync,soldQtyAfter,soldQtyWithinRange,staffExpensesAccessLevel,staffShiftsFor,stampDirtyExtraSyncedFields,stampDirtyInventory,startAdminShiftIfNeeded,startBackgroundCameraScan,startDeviceNetworkHeartbeat,startLicensePolling,startNewContract,startStaffShift,statusLabelFor,stockMovementDeltaAfter,stockMovementDeltaWithinRange,stockReportPeriodLabel,stockReportPeriodRange,stopBackgroundCameraScan,stopCamera,submitBarcodeScanManual,submitDemoPurgeConfirm,submitPrintRelayJob,supplierOptionsHtml,switchTab,syncExchangeSplitDefaults,syncNotificationSettingsUI,testPoleDisplay,testPoleDisplayRawInit,textToPdfBlob,textToPngBlob,todayLocalDateStr,toggleAdhocBorrowedFields,toggleAutoOpenDrawer,toggleBillNotifyStaff,toggleCameraScanTorch,toggleChangePinPanel,toggleComboBuilder,toggleFloatingKeyboard,toggleInteractivePricing,toggleInventorySearchClear,toggleKitchenTicket,toggleNewStaffRole,toggleOfferCustomDate,togglePrintRoutingRule,togglePromoOfferActive,toggleReceiptSettingsShared,toggleReturnReasonOther,toggleScanModalTorch,toggleScrollToTopVisibility,toggleServerDropdown,toggleStaffRosterDetail,toggleStoreManualForm,toggleTradeCreditManualForm,toggleUnavailableExchangeForm,triggerAutoPrintReceipt,triggerAutoPrintReport,triggerInventoryRowImageUpload,tryAutoReconnectPoleDisplay,unitLabel,unlinkRecoveryEmail,unreadBillNotifications,updateAttendanceRosterExpectedTime,updateBarcodeCopies,updateBillReminderDays,updateBizImportDebtField,updateBizImportStockField,updateBroadcastCharCount,updateCameraScanStatusText,updateComboRowCode,updateComboRowCustomName,updateComboRowQty,updateContractRowField,updateDeliveriesBadge,updateDeliveryZone,updateExchangeLinePrice,updateExchangeLineQty,updateLicenseLockHintText,updateLocReservationField,updateLowStockDescText,updateLoyaltyTier,updateMobileCartFab,updateOwnerName,updatePrintRelayPolling,updatePrintRelaySectionVisibility,updateRecipeCaptureDish,updateRecipeCaptureIngredient,updateRecipeCaptureIngredientMatch,updateRecipeRowIngredient,updateRecipeRowQty,updateRecipeSummary,updateRestockRowField,updateServerBtnLabel,verifyBiometric,verifyManagerPin,warnAboutCorruptedStorageIfNeeded,workbookToTextDocument,watchUsbPrinterDisconnect,thermalAscii,thermalWrapLine,thermalFitLegacyWidth,thermalPrepareText,thermalLayout,thermalItemHeader,thermalItemRow,getPaperCols,thermalVatHeader,thermalVatRow,receiptSectionsFor,buildSectionedReceiptBytes,claimUsbPrinterEndpoint,sendBytesViaUSB,usbPrinterNameKey,receiptPaymentDetailsList,buildReceiptDoc,renderSharedReceipt,adminServerName,shareReceiptNative,buildCode39RasterBytes,receiptRefBarcodeBytes,poState,poNewRow,poRound3,poFormatDateTime,poStatusMeta,poLineOutstanding,poOrderStats,poIsOpen,poCanEdit,poFindProduct,poSave,poNextOrderNo,poActor,poRefreshFormLists,poOpenForm,poCloseForm,poAddRow,poRemoveRow,poRowLineTotal,poRenderTotals,poRenderRows,poUpdateRowField,poFillRowFromProduct,poEnsureSupplier,poSaveOrder,poSetFilter,poVisibleOrders,poToggleDetails,poActionsHtml,poDetailsHtml,renderOrdersList,renderOrdersTab,renderOrdersIfOpen,poMarkInTransit,poCancelOrder,poRemoveOrder,poCloseShort,poOpenArriveModal,poCloseArriveModal,poRenderArriveModal,poArriveToggleLine,poArriveQtyChange,poArriveRefresh,poApplyArrivedLine,poConfirmArrival,notifySyncTooLarge,sha256HexFallback,slimPayloadForPush,applyPriceSelectTier,attendanceRosterList,buildBillOwedMessage,cellLooksLikeCurrency,closeChangeStaffPinModal,closePinSetConfirmModal,collapseTabsIfNeeded,commitRecipeCaptureReview,confirmBillSettle,copyPinSetConfirmValue,detectCsvColumnsAI,editBillDueDate,etimsLogPeriodRange,genSaleId,generateRandomStaffPin,importInventoryCsv,levenshteinDistance,onBarcodeLinkChange,openBarcodeScanModal,performRestoreBackup,printReceipt,profitReportRange,readImageAsScaledDataUrl,renderAllBranchSwitchers,renderCode39SVG,renderDeliveriesTab,renderEtimsLog,salesTablePeriodRange,saveRecordBillModal,sendPendingExchangeSms,showPinSetConfirmModal,stopCaptureListCamera,submitChangeStaffPin,toggleRecipeBuilder,toggleTabsOverflowMenu,updateCaptureReviewField,preparePulledPayload,pushKeyOf,pushSigOf,ackServerRecords,hydrateOlderHistory,openStaffLoginLink,ackLocalFields,trackPush,hasUnsyncedWork,flushPendingPush,loadKeyAck,saveKeyAck,handleOwnerNotice,dismissOwnerNotice,markSync,probeServer,pullStateOnce,hwKey,hwStatus,hwIsReady,hwSingleFlight,hwUsbReconnect,hwBtFindCharacteristic,hwBtAttach,hwBtWatch,hwBtReconnect,hwEnsureReady,hwLinkLost,hwWrapPrinting,hwKeeperStart,hwKick,hwSchedule,hwTick,claimUsbPrinterEndpointOnce,hwWithTimeout,heldSaleKey,heldSaleGet,heldSalePanel,heldSaleFields,holdCurrentSale,resumeHeldSale,renderHeldSaleBar,heldSaleInstall,pastSalePaymentChanged,pastSalePaymentDetails,pastSaleStore,lowStockItems,lowStockInDraft,renderLowStockStrip,lowStockAdd,lowStockAddAll,lowStockInstall,poSupplierRecord,poOrderTotal,poOrderText,poSendOrder,stockTakeState,stockTakeItems,stockTakeDiff,stockTakeFindByCode,stockTakeResyncParent,stockTakeApplyOne,stockTakeValueOf,stockTakeSet,stockTakeFillDiffCell,stockTakeRenderSummary,renderStockTake,stockTakeMatches,stockTakeClear,stockTakeApply,stockTakeHistoryGet,renderStockTakeHistory,stockTakeInstall,setKitchenPrintPage,pruneClosedBills,authWatchInstall,dayKeyOf,assignCustomerNo,itemSuggestMatches,itemSuggestBox,itemSuggestShow,itemSuggestHide,itemSuggestPick,itemSuggestInstall,markReceiptPrinted,soldTotalsMap,showBusyBanner,hideBusyBanner,nextPaint,reportMoney,reportShort,reportsRange,reportSales,reportSaleTotal,reportSaleCost,reportBarSvg,reportLineSvg,reportTable,reportCards,reportBuildSales,reportBuildInsights,reportBuildStaff,reportBuildStock,reportBuildBillsDebts,reportBuildExpenses,reportsGenerate,reportsRangeChanged,reportsCsv,reportsPrint,reportsInstall,reportsGoto,perfInstall,dedupeStaff,markLocalDirty,ackLocalDirty,cartLineMinimumPrice,cartTotalBelowMinimumMessage,vatRateForCategory,KRA_VAT_CATEGORY_LABELS,recordKraClassificationChange,defaultKraClassification,KRA_REFERENCE_RULES_BUILTIN,kraReferenceRules,addKraReferenceRule,matchKraReferenceRules,runKraClassificationAssistant,submitNewKraReferenceRule,acceptKraAssistantSuggestion,readKraClassificationFromForm,populateKraClassificationForm,validateSaleForEtims,autoDailyReportState,setAutoDailyReportEnabled,setAutoDailyReportTime,setAutoDailyReportMissedBehavior,renderAutoDailyReportStatus,runAutoDailyReport,checkAutoDailyReportSchedule,installAutoDailyReportScheduler,stockLedgerOn,stockLedgerMark,stockRecSig,stockMoveDelta,stockPendingMoves,stockSimulate,stockMovesByKey,reconcileLocalStockChanges,stockApplyPulledLedger,logStockCount,stockTakeRecordCount,stockTakeHistoryFromLog,stockAlignBatches,stockKeyMoves,stockMoveAuditText,stockCellFieldsOf,extraRecSig,printStockTakeReport,stockIntegrityCheck,generateReceiptRef,tillNumber,rememberTillNumber,returnQtyGuard,saleCtxNow,stampLocalContext,syncJournal,syncJournalAuditEvents,syncJournalConflicts,saleCtxText,reportFreshnessHtml,reportRefreshAfterSync,zReportPreflight,requireManagementApproval,stockTakeApprovalLimit,stockTakeSetApprovalLimit,serverDayCheck,serverDayCheckHtml,serverDayCheckInto,todayBounds,pbkdf2Hex,hashSalt,sealHash,hashMatches,sealStoredHashes,hashSealGateOpen,hashSealGateCheck,stockReportTotals,reportRowLimit,reportShowMore,notePushHttp,syncRetryNow,salesDatePickerValue,dailySalesOpenOnToday,bizTzOffsetMin,bizDayKey,bizDayBounds,bizDayKeyCompute,pushBacklogAfter,pushShrinkBatches,pushErrorCode,syncHaveCheck,goToFirstAllowedTab,openSalesCounterIfAllowed,scannerStripFromField,inventoryHasExactCode,netFailReason,netErrText,netErrMsg,devicePaperWidth,receiptPaperMm,receiptPrintableMm,setDevicePaperWidth,syncDevicePaperWidthUI,receiptApplyPaperVars,ensureReceiptGridCss,receiptGridSafe,receiptGridLines,receiptGridHtml,fitReceiptGrids,setPrintBodyText,receiptMoneyRow,printPaperWidthTest,receiptPageRule,schedulePushVerify,verifyPushedRecords,aquaCellKey,tabCanSell,saleStoredLocally,confirmSaleStored,finishSaleReceipt,ensureSaleSaved,unsavedSalesBar */
         /* GENERATED from src/shared/functions.js by tools/sync-shared.mjs - do not edit here; edit the library and run `npm run sync`. */
         function _codeMatches(code, q){
         if(!q) return false;
@@ -10970,6 +10995,7 @@
                         if (!missedSomething) safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
                         else setTimeout(() => { try { if (window.__pullInFlight) window.__pullAgain = true; else pullState(); } catch (e) { /* the poll will */ } }, 50);
                         if (!slim.more) ackLocalDirty(seqAtStart);               // more batches to send: still "unsent work"
+                        schedulePushVerify(slim.body);                            // zip 146: then check the server really kept them
                         snapshotInventorySync();
                         snapshotExtraSyncedFields();
                         window.__pushFails = 0; window.__pushBackoffUntil = 0; window.__pushFailKind = '';
@@ -14864,7 +14890,7 @@ function choosePastSalePriceTier(tier) {
             }
 
             // In System print dialog mode the drawer-kick command rides inside the receipt's own print job.
-            if (printerMode === 'system' && autoOpenDrawerEnabled) {
+            if (printerMode === 'system' && autoOpenDrawerEnabled && sale.paid !== false) {       // zip 147: never for an unpaid bill
                 const kickSpan = document.createElement('span');
                 kickSpan.className = 'drawer-kick-bytes';
                 kickSpan.textContent = buildDrawerKickAsciiString();
@@ -17246,7 +17272,12 @@ function choosePastSalePriceTier(tier) {
                 if (!sent) return;
             }
             markSync('syncing');
-            const localUpdatedAt = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
+            // zip 147b: a FULL fetch asked for (recover missing sales, "fetch from the server", repair sync) must stay full. Those callers
+            // reset the marker, but the push just above (unsent changes go first) set it again, so the "full" fetch asked only for changes
+            // and a sale the server had but this device had lost never came back (intermittent: only when something was waiting to send).
+            const fullFetch = !!window.__pullFullOnce;
+            window.__pullFullOnce = false;
+            const localUpdatedAt = fullFetch ? 0 : parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
             // A poll that finds nothing new is a few bytes, but the first pull (or one that finds changes) can be the whole shop, and a cold
             // server or a slow mobile connection needs more than a few seconds. Each time one runs out of patience while the server IS
             // reachable the next attempt is allowed twice as long, up to 90 s; a success resets it.
@@ -20393,6 +20424,7 @@ async function syncHaveCheck(payload) {
             try {
                 const net = window.PosNet;
                 if (net && net.state === 'offline') return 'this device is offline. Selling still works — this will work again when the internet is back.';
+                if (net && net.state === 'security_check') return 'your internet works, but Cloudflare\'s security check is holding back this browser\'s requests. Tap the sync dot (or reload the page) once to clear it.';
                 const f = window.__apiLastFail;
                 if (f && Date.now() - f.at < 20000) {
                     if (f.kind === 'timeout') return 'the server took too long to answer. Your internet works — try again in a moment.';
@@ -20400,9 +20432,12 @@ async function syncHaveCheck(payload) {
                         if (net) net.check('request failed');
                         if (net && net.state === 'backend_unavailable') return 'your internet works, but the MyDukaPOS server is not answering. Try again in a moment.';
                         if (net && net.state === 'online') return 'the request did not get through (the connection dropped for a moment) — try again.';
-                        return 'could not reach the server — check this device\'s internet connection.';
+                        // zip 147: the check above has only just started — its verdict is not known yet. "Check your internet" is said only when the
+                        // manager has actually found no internet (the first line of this function); until then, never.
+                        return 'the request did not get through — checking the connection now. Try again in a moment (your work is kept).';
                     }
                     if (f.status === 401) return 'this device or your staff sign-in must be confirmed again (sign in with your PIN, or pair the device in Settings ▸ Devices & Security).';
+                    if (f.challenge) return 'your internet works, but Cloudflare\'s security check is holding back this browser\'s requests. Reload the page once to clear it.';
                     if (f.status === 403) return 'not allowed — this shop\'s link is not active, or your account may not do this.';
                     if (f.status === 404) return 'not found on the server — refresh and try again.';
                     if (f.status === 413) return 'too large to send in one go.';
@@ -20657,6 +20692,180 @@ async function syncHaveCheck(payload) {
             }
             h = Math.max(40, Math.min(5000, h));
             return `@page { size: ${w}mm ${h}mm; margin: 0; }`;
+        }
+
+        // zip 146 — "sales disappeared / another till never got them". The server answering OK to a push is not proof the sales are still
+// there a moment later: with several tills saving at once, a later save could land on top of ours. So, a few seconds after a push
+// that carried sales / stock changes / returns / expenses (and again half a minute later), this device ASKS the server (/api/sync-have)
+// whether it holds each one. Anything missing goes back to "waiting to send" and is sent again — whatever the reason it was lost.
+function schedulePushVerify(body) {
+            const FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses'];
+            window.__pushVerify = window.__pushVerify || {};
+            let added = 0;
+            FIELDS.forEach((f) => {
+                const arr = body && Array.isArray(body[f]) ? body[f] : [];
+                const set = window.__pushVerify[f] || (window.__pushVerify[f] = new Set());
+                arr.forEach((r) => { if (r && r.id != null && r._deleted !== true) { set.add(String(r.id)); added++; } });
+            });
+            if (!added || window.__pushVerifyOff) return;
+            const first = window.__pushVerifyMs != null ? window.__pushVerifyMs : 4000;
+            clearTimeout(window.__pushVerifyT1); clearTimeout(window.__pushVerifyT2);
+            window.__pushVerifyT1 = setTimeout(() => { verifyPushedRecords(false); }, first);
+            window.__pushVerifyT2 = setTimeout(() => { verifyPushedRecords(true); }, first + (window.__pushVerifyLateMs != null ? window.__pushVerifyLateMs : 30000));
+        }
+
+        async function verifyPushedRecords(last) {
+            const pend = window.__pushVerify || {};
+            const lost = {};
+            let nLost = 0, unanswered = false;
+            for (const f of Object.keys(pend)) {
+                const ids = Array.from(pend[f]);
+                if (!ids.length) continue;
+                const byId = new Map();
+                try { (collectSyncPayload()[f] || []).forEach((r) => { if (r && r.id != null) byId.set(String(r.id), r); }); } catch (e) { /* none */ }
+                for (let i = 0; i < ids.length; i += 2000) {
+                    const part = ids.slice(i, i + 2000).filter((id) => { const r = byId.get(id); return r && r._deleted !== true; });
+                    if (!part.length) continue;
+                    let have = null;
+                    try {
+                        const res = await fetch(apiUrl('/api/sync-have'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ col: f, ids: part }) });
+                        if (res.status === 404 || res.status === 501) { window.__pushVerify = {}; return; }       // this server can't answer: nothing to do
+                        if (res.ok) have = ((await res.json()) || {}).have || {};
+                    } catch (e) { /* no answer */ }
+                    if (!have) { unanswered = true; continue; }
+                    window.__pushVerifyTries = window.__pushVerifyTries || new Map();
+                    part.forEach((id) => {
+                        if (have[id] != null) return;
+                        // never a loop: a record the server keeps refusing (e.g. older than its archive) is re-sent at most 5 times
+                        const n = (window.__pushVerifyTries.get(f + '|' + id) || 0) + 1;
+                        window.__pushVerifyTries.set(f + '|' + id, n);
+                        if (n > 5) return;
+                        (lost[f] || (lost[f] = [])).push(id); nLost++;
+                    });
+                }
+            }
+            // done with what was answered (kept until the late check, which retries anything unanswered on the next push)
+            if (last || nLost) window.__pushVerify = unanswered ? pend : {};
+            if (!nLost) return;
+            window.__pushAck = window.__pushAck || {};
+            Object.keys(lost).forEach((f) => {
+                const ack = window.__pushAck[f];
+                if (ack) lost[f].forEach((id) => ack.delete('i:' + id));
+                try { if (typeof window.salesJournalUnconfirm === 'function') window.salesJournalUnconfirm(f, lost[f]); } catch (e) { /* bookkeeping */ }
+            });
+            try { markLocalDirty(); } catch (e) { /* none */ }
+            try { markSync('syncing'); } catch (e) { /* none */ }
+            try { if (typeof queuePush === 'function') queuePush(); else if (typeof pushNow === 'function') pushNow(); } catch (e) { /* the poll sends it */ }
+        }
+
+        function aquaCellKey(cell) { return `${cell.c}|${cell.k}|${cell.f}|${cell.s == null ? '' : cell.s}`; }
+
+        // zip 147 — a tab another tab of this app has taken over (see one-tab.html) is stopped: its saves are dropped so it cannot overwrite the
+// working tab. A sale completed there anyway (an M-Pesa confirmation that arrived after the switch, a scanner typing into it) printed a
+// receipt and was then gone. Such a tab never completes a sale.
+function tabCanSell() {
+            if (!window.__tabInactive) return true;
+            try { showToast('This tab is not the working one — the app is open in another tab or window. Nothing was recorded here: tap "Use it here" first.', true); } catch (e) { /* none */ }
+            return false;
+        }
+
+        // Is this sale really in the sales list SAVED on this device (read back from storage, not the copy in memory)? zip 147
+function saleStoredLocally(sale) {
+            try {
+                if (!sale || sale.id == null) return false;
+                const key = (window.__LOG_KEYS && window.__LOG_KEYS.salesLog) || 'pos_sales_log';
+                const raw = localStorage.getItem(key) || '';
+                return raw.indexOf('"id":' + JSON.stringify(String(sale.id))) !== -1 || raw.indexOf('"id":' + JSON.stringify(sale.id)) !== -1;
+            } catch (e) { return false; }
+        }
+
+        // zip 147 — "the receipt printed but the sale is not in Daily Sales". A sale counts as recorded only when it is STORED somewhere that
+// survives closing the app: this device's sales list, this device's journal (IndexedDB), or the server. -> { ok, where }
+async function confirmSaleStored(sale) {
+            if (saleStoredLocally(sale)) return { ok: true, where: 'device' };
+            try {
+                if (typeof window.salesJournalDurable === 'function') {
+                    const d = await window.salesJournalDurable(sale.id);
+                    if (d && (d.journal || d.server || (d.local && d.tracked))) return { ok: true, where: d.server ? 'server' : 'journal' };
+                }
+            } catch (e) { /* next */ }
+            // storage full: make room (oldest synced history goes to the device archive) and save the list again
+            try { if (window.storageAutoArchive) await window.storageAutoArchive('sale-not-saved'); } catch (e) { /* next */ }
+            try { const key = (window.__LOG_KEYS && window.__LOG_KEYS.salesLog) || 'pos_sales_log'; localStorage.setItem(key, JSON.stringify(salesLog)); } catch (e) { /* still full */ }
+            if (saleStoredLocally(sale)) return { ok: true, where: 'device' };
+            // last: the server (only when there is a connection) — a sale the server accepted is recorded
+            try {
+                if (!(window.posNetOffline && window.posNetOffline()) && typeof pushNow === 'function') {
+                    await Promise.race([pushNow(), new Promise((r) => setTimeout(r, window.__saleServerWaitMs || 15000))]);
+                    const ack = window.__pushAck && window.__pushAck.salesLog;
+                    if (ack && ack.has('i:' + sale.id)) return { ok: true, where: 'server' };
+                }
+            } catch (e) { /* not reachable */ }
+            return { ok: false, where: '' };
+        }
+
+        // Shows (and so prints) the receipt of a sale that was just completed — ALWAYS at once, never held back (zip 147b: a queue must never
+// wait on storage). If the sale is not yet stored anywhere that survives closing the app (this device's list, its journal, the server),
+// it is saved and sent again automatically in the background until it is — see ensureSaleSaved. A sale is never lost or hidden: it is
+// in the sales list (and Daily Sales) from the moment it is made.
+function finishSaleReceipt(sale, show) {
+            show();
+            const inList = !!(sale && sale.id != null && typeof salesLog !== 'undefined' && Array.isArray(salesLog) && salesLog.some((s) => s && s.id === sale.id));
+            if (!inList || saleStoredLocally(sale)) return Promise.resolve(true);
+            return ensureSaleSaved(sale);
+        }
+
+        // Keeps trying — automatically, with no one pressing anything — until every sale made in this open app is stored: freeing room and
+// saving the list again, the journal, and sending it to the server. First retry after 2 s, then 5, 10, and every 15 s; at once when the
+// connection comes back. While any sale is still unsaved a small bar says so, and closing the app asks first.
+function ensureSaleSaved(sale) {
+            const S = window.__unsavedSales = window.__unsavedSales || { map: new Map(), running: false, tries: 0, wake: null };
+            if (sale && sale.id != null) S.map.set(String(sale.id), sale);
+            unsavedSalesBar();
+            if (!S.hooked) {
+                S.hooked = true;
+                window.addEventListener('online', () => { S.tries = 0; if (S.wake) S.wake(); });
+                window.addEventListener('beforeunload', (e) => { if (S.map.size) { e.preventDefault(); e.returnValue = ''; } });
+            }
+            if (S.running) { if (S.wake) S.wake(); return Promise.resolve(false); }
+            S.running = true;
+            return (async () => {
+                try {
+                    while (S.map.size) {
+                        for (const [id, s] of Array.from(S.map.entries())) {
+                            let ok = false;
+                            try { ok = (await confirmSaleStored(s)).ok; } catch (e) { ok = false; }
+                            if (ok) S.map.delete(id);
+                        }
+                        unsavedSalesBar();
+                        if (!S.map.size) break;
+                        const waits = window.__unsavedRetryMs || [2000, 5000, 10000, 15000];
+                        const ms = waits[Math.min(S.tries++, waits.length - 1)];
+                        await new Promise((r) => { const t = setTimeout(r, ms); S.wake = () => { clearTimeout(t); r(); }; });
+                        S.wake = null;
+                    }
+                    S.tries = 0;
+                    return true;
+                } finally { S.running = false; unsavedSalesBar(); }
+            })();
+        }
+
+        function unsavedSalesBar() {
+            try {
+                const S = window.__unsavedSales;
+                const n = S ? S.map.size : 0;
+                let el = document.getElementById('unsaved-sales-bar');
+                if (!n) { if (el) el.remove(); return; }
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'unsaved-sales-bar';
+                    el.className = 'no-print';
+                    el.setAttribute('role', 'status');
+                    el.style.cssText = 'position:fixed; left:50%; bottom:12px; transform:translateX(-50%); z-index:99990; background:#c0392b; color:#fff; padding:8px 14px; border-radius:8px; font:13px system-ui,sans-serif; box-shadow:0 4px 14px rgba(0,0,0,.3); max-width:94vw; text-align:center;';
+                    document.body.appendChild(el);
+                }
+                el.textContent = `⚠ ${n} sale${n === 1 ? '' : 's'} not stored yet (device storage full or blocked) — saving and sending again automatically. Keep the app open until this disappears.`;
+            } catch (e) { /* cosmetic */ }
         }
         /* @shared:end */
 
@@ -22435,8 +22644,11 @@ async function syncHaveCheck(payload) {
         // bar ticket if that setting's on, and appends it to the tab's
         // running total. No payment is collected here; that happens once
         // when the whole tab is settled later.
-        function appendOrderToTab(tab) {
-            const entries = Object.values(currentCart);
+        // zip 147: `draftEntries` = the waiter's order from the Orders tab (same shape as cart lines) — the SAME path as the Sales Counter,
+        // so stations, tickets, stock and history are identical; the Sales Counter's cart is left alone.
+        function appendOrderToTab(tab, draftEntries) {
+            const fromDraft = Array.isArray(draftEntries);
+            const entries = fromDraft ? draftEntries : Object.values(currentCart);
             if (entries.length === 0) { showToast('Cart is empty. Add products before sending to the tab.', true); return; }
 
             if (hospTabBilled(tab) && !hospIsManager()) { showToast('The bill for this order is already printed — a manager or the cashier must reopen it first.', true); return; }
@@ -22462,15 +22674,17 @@ async function syncHaveCheck(payload) {
             // This round's tickets: one section per station (kitchen KOT / bar BOT), only this round's items.
             hospPrintRound(tab, order);
 
-            currentCart = {};
-            renderCart();
+            if (!fromDraft) { currentCart = {}; renderCart(); }
             renderInventoryTable();
             renderOpenTabsList();
             renderSalesLocationSelect();
-            const sel = document.getElementById('sales-location-select');
-            if (sel) sel.value = tab.label;
-            onSalesLocationChange();
+            if (!fromDraft) {
+                const sel = document.getElementById('sales-location-select');
+                if (sel) sel.value = tab.label;
+                onSalesLocationChange();
+            }
             showToast(`Order added to ${tab.label}'s tab.`);
+            return order;
         }
 
         // The "🧾 Tab" payment method's action — reuses whatever's picked
@@ -23072,6 +23286,7 @@ async function syncHaveCheck(payload) {
                 out.push(`*** ${label} — ${st === 'bar' ? 'BAR ORDER (BOT)' : 'KITCHEN ORDER (KOT)'} ***`);
                 if (heading) out.push(heading);
                 out.push(tab.label.toUpperCase() + (tab.orderType && tab.orderType !== 'DINE_IN' ? ` · ${(HOSP_ORDER_TYPES[tab.orderType] || tab.orderType).replace(/^[^\p{L}\p{N}]+/u, '')}` : ''));
+                out.push('Order ' + hospOrderNo(tab));                                                     // zip 147
                 out.push(new Date(round.timestamp).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) + (round.servedBy ? `  ·  ${round.servedBy}` : ''));
                 out.push('--------------------------------');
                 byStation[st].forEach((e) => {
@@ -23264,10 +23479,9 @@ async function syncHaveCheck(payload) {
             if (!hospTabLines(tab).length) { showToast('This order has nothing on it.', true); return false; }
             tab.billStatus = 'BILLED'; tab.billedAt = Date.now(); tab.billedBy = activeServerName(); tab.billTotal = hospTabDue(tab); tab.updatedAt = Date.now();
             saveTabs();
-            lastKitchenTicketText = hospBillText(tab);
-            const body = document.getElementById('kitchen-ticket-body');
-            if (body) setPrintBodyText(body, lastKitchenTicketText);
-            if (kitchenTicketEnabled) queuePrintJob(kitchenTicketPrintJob);
+            // zip 147: the customer's bill — prices, total and the shop's payment details — on the RECEIPT printer. It used to be sent as a
+            // kitchen ticket: to the kitchen printer, and not printed at all when kitchen tickets were off.
+            hospPrintCustomerBill(tab);
             showToast(`${tab.label}: bill of ${money(tab.billTotal)} ready — the cashier takes the payment (🧾 Bills).`);
             hospAfterChange(tab);
             return true;
@@ -23287,9 +23501,10 @@ async function syncHaveCheck(payload) {
             try { renderSalesLocationSelect(); } catch (e) { /* cosmetic */ }
             try { renderServiceOrders(); } catch (e) { /* cosmetic */ }
             try { if (tab && hospPanelTabId === tab.id) renderHospPanel(); } catch (e) { /* cosmetic */ }
+            try { if (svcListOpen) renderMyOrders(); } catch (e) { /* cosmetic */ }
             try { renderBillsAwaitingPayment(); } catch (e) { /* cosmetic */ }
         }
-        function hospStartOrder() {
+        function hospStartOrder(opts) {
             const g = (id) => (document.getElementById(id) || {}).value || '';
             let label = g('svc-new-location');
             const guest = g('svc-new-guest').trim();
@@ -23300,14 +23515,213 @@ async function syncHaveCheck(payload) {
             if (guest && !tab.customerName) tab.customerName = guest;
             saveTabs();
             renderServiceOrders();
-            routeOrderToTab(tab.label);          // the fast Sales Counter screen (search, categories, photos, barcode) builds the round
+            // zip 147: a waiter (no Sales Counter) builds the order right here on the Orders tab — never sent to the cashier's screen.
+            // Cashiers / supervisors who start an order from the "New order on the Sales Counter" button still get that screen.
+            if (!(opts && opts.route === false) && !hospSimpleWaiter()) routeOrderToTab(tab.label);
             return tab;
+        }
+
+        /* ---------- WAITER ORDERS, SIMPLE (zip 147) ----------
+           Why: an order could only be BUILT on the Sales Counter ("New order" switched to it), so a waiter had to be given the cashier's
+           screen, or could not take an order at all (the Waiter role has no Sales Counter). The Orders tab now does the whole job:
+           table / room → items → POST ORDER (the same path as the Sales Counter's "Add This Order to Tab": stations, kitchen / bar slips
+           WITHOUT prices, stock, history) → "📋 Orders" (only your own) → update / exchange → SETTLE (the customer's bill with prices,
+           total and this shop's payment details — the cashier takes the payment). Cashiers, supervisors and the Admin keep every tool. */
+        let svcDraft = { tabId: null, lines: [] };            // lines: { code, qty, note }
+        let svcListOpen = false;
+        function hospSimpleWaiter() {
+            try {
+                if (typeof isAdminServing === 'function' && isAdminServing()) return false;
+                const me = hospMe();
+                if (!me || me.isManager) return false;
+                return !(Array.isArray(me.roles) && me.roles.includes('sales-tab'));
+            } catch (e) { return false; }
+        }
+        function svcApplyMode() { try { document.body.classList.toggle('svc-simple', hospSimpleWaiter()); } catch (e) { /* cosmetic */ } }
+        function svcMenuItems(q) {
+            q = String(q || '').trim().toLowerCase();
+            return inventory.filter((p) => isSellableProduct(p) && !p.dualUnit && !p.keg
+                && (!q || String(p.name || '').toLowerCase().includes(q) || _codeMatches(p.code, q)))
+                .map((p) => ({ p, sold: itemTotalSold(p.code) }))
+                .sort((a, b) => b.sold - a.sold || String(a.p.name).localeCompare(String(b.p.name)))
+                .slice(0, 60).map((x) => x.p);
+        }
+        function renderSvcMenu() {
+            const box = document.getElementById('svc-menu');
+            if (!box) return;
+            const q = (document.getElementById('svc-item-search') || {}).value || '';
+            const items = svcMenuItems(q);
+            box.innerHTML = items.length ? items.map((p) => {
+                const out = p.type !== 'service' && !hospServingOf(p) && getAvailableStock(p) <= 0;
+                return `<button type="button" class="svc-menu-btn" ${out ? 'disabled title="Out of stock"' : ''} onclick="svcAdd('${escapeJsAttr(p.code)}')"><strong>${escapeHtml(p.name)}</strong><br><small>${money(Number(p.price) || 0)}${out ? ' · out of stock' : ''}</small></button>`;
+            }).join('') : `<p style="color:#95a5a6; font-size:13px;">${q ? 'Nothing on the menu matches.' : 'The menu is empty — add items in Inventory.'}</p>`;
+        }
+        function svcAdd(code) {
+            const p = inventory.find((x) => x.code === code);
+            if (!p) return;
+            const l = svcDraft.lines.find((x) => x.code === code && !x.note);
+            if (l) l.qty += 1; else svcDraft.lines.push({ code, qty: 1, note: '' });
+            renderSvcDraft();
+        }
+        function svcQty(i, d) {
+            const l = svcDraft.lines[i];
+            if (!l) return;
+            l.qty += d;
+            if (l.qty <= 0) svcDraft.lines.splice(i, 1);
+            renderSvcDraft();
+        }
+        function svcNote(i) {
+            const l = svcDraft.lines[i];
+            if (!l) return;
+            const n = prompt('Note for the kitchen / bar (e.g. no onions, well done):', l.note || '');
+            if (n !== null) { l.note = n.trim(); renderSvcDraft(); }
+        }
+        function svcClearDraft() { svcDraft = { tabId: null, lines: [] }; renderSvcDraft(); }
+        function renderSvcDraft() {
+            svcApplyMode();
+            const box = document.getElementById('svc-draft');
+            const target = document.getElementById('svc-draft-target');
+            const fields = document.getElementById('svc-new-fields');
+            const tab = svcDraft.tabId ? tabs.find((t) => t.id === svcDraft.tabId && t.status === 'OPEN') : null;
+            if (svcDraft.tabId && !tab) svcDraft.tabId = null;
+            if (target) target.innerHTML = tab ? `➕ Adding to <strong>${escapeHtml(tab.label)}</strong> <button class="settings-small-btn" onclick="svcClearDraft()">New order instead</button>` : '';
+            if (fields) fields.style.display = tab ? 'none' : 'flex';
+            const btn = document.getElementById('svc-post-btn');
+            if (btn) btn.textContent = tab ? `📤 POST TO ${tab.label.toUpperCase()}` : '📤 POST ORDER';
+            if (!box) return;
+            let total = 0;
+            const rows = svcDraft.lines.map((l, i) => {
+                const p = inventory.find((x) => x.code === l.code) || { name: l.code, price: 0 };
+                total += (Number(p.price) || 0) * l.qty;
+                return `<div class="svc-draft-row"><span class="svc-draft-name"><strong>${l.qty}×</strong> ${escapeHtml(p.name)}${l.note ? `<br><em style="color:#8e44ad; font-size:12px;">${escapeHtml(l.note)}</em>` : ''}</span>
+                    <button class="settings-small-btn" onclick="svcQty(${i}, -1)" title="One less">－</button><button class="settings-small-btn" onclick="svcQty(${i}, 1)" title="One more">＋</button>
+                    <button class="settings-small-btn" onclick="svcNote(${i})" title="Note for the kitchen / bar">📝</button><button class="settings-small-btn" onclick="svcQty(${i}, -${l.qty})" title="Remove">✕</button></div>`;
+            });
+            box.innerHTML = rows.length ? rows.join('') + `<div style="display:flex; justify-content:space-between; font-weight:bold; margin-top:6px;"><span>Total</span><span>${money(total)}</span></div>`
+                : '<p style="color:#95a5a6; font-size:13px; margin:0;">Tap items on the menu to add them.</p>';
+        }
+        function svcDraftEntries() {
+            return svcDraft.lines.map((l, i) => {
+                const p = inventory.find((x) => x.code === l.code);
+                if (!p) return null;
+                const sv = hospServingOf(p);
+                return { cartKey: l.code + '#' + i, code: p.code, name: p.name, qty: l.qty, price: Number(p.price) || 0,
+                    wholesalePrice: p.type === 'service' ? getServiceUnitCost(p) : (Number(p.wholesalePrice) || 0), unit: p.unit || 'pcs',
+                    isService: p.type === 'service', vatCategory: p.vatCategory || 'A', saleMode: null, ...(l.note ? { note: l.note } : {}),
+                    ...(sv ? { serving: { kind: sv.kind, label: sv.label, ml: sv.ml } } : {}) };
+            }).filter(Boolean);
+        }
+        // POST ORDER: saved on the order (against this waiter, the table / room / customer), the kitchen and bar get their slips (no prices).
+        function svcPostOrder() {
+            if (!svcDraft.lines.length) { showToast('Add items to the order first.', true); return null; }
+            for (const l of svcDraft.lines) {
+                const p = inventory.find((x) => x.code === l.code);
+                const short = p ? hospServingShort(p, l.qty) : 'That item is not on the menu.';
+                if (short) { showToast(short, true); return null; }
+            }
+            let tab = svcDraft.tabId ? tabs.find((t) => t.id === svcDraft.tabId && t.status === 'OPEN') : null;
+            if (!tab) tab = hospStartOrder({ route: false });
+            if (!tab) return null;
+            if (!hospCanEdit(tab)) return null;
+            const order = appendOrderToTab(tab, svcDraftEntries());
+            if (!order) return null;
+            svcDraft = { tabId: null, lines: [] };
+            const g = document.getElementById('svc-new-guest'); if (g) g.value = '';
+            const loc = document.getElementById('svc-new-location'); if (loc) loc.value = '';
+            const q = document.getElementById('svc-item-search'); if (q) q.value = '';
+            hospAfterChange(tab);
+            showToast(`Order posted to ${tab.label} — the kitchen / bar have it.`);
+            return order;
+        }
+        // "📋 Orders": this waiter's own open orders (every order only with the "see every order" permission), each with Update / Settle.
+        function openMyOrders() { hospPanelTabId = null; svcListOpen = true; renderMyOrders(); }
+        function renderMyOrders() {
+            svcApplyMode(); svcInitGrip();
+            const p = document.getElementById('svc-panel');
+            const body = document.getElementById('svc-panel-body');
+            if (!p || !body) return;
+            const list = hospVisibleTabs().sort((a, b) => new Date(b.openedAt) - new Date(a.openedAt));
+            const state = (t) => hospTabBilled(t) ? '<strong style="color:#c0392b;">🧾 Bill printed — with the cashier</strong>'
+                : hospReadyCount(t) ? `<strong style="color:#27ae60;">🔔 ${hospReadyCount(t)} ready to serve</strong>` : 'In progress';
+            body.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px;"><h3 style="margin:0;">📋 ${hospCanSeeAllOrders() ? 'Open orders' : 'My orders'}</h3><button class="settings-small-btn" onclick="closeHospPanel()">✕</button></div>
+                <div style="display:grid; gap:8px; margin-top:10px;">${list.map((t) => `<div class="loc-card loc-status-occupied" style="padding:10px;">
+                    <div><strong>${t.kind === 'room' ? '🛏️' : t.kind === 'table' ? '🍽️' : '🙋'} ${escapeHtml(t.label)}</strong> <span style="font-size:12px; color:#7f8c8d;">${escapeHtml(HOSP_ORDER_TYPES[t.orderType] || '')}${t.customerName ? ' · ' + escapeHtml(t.customerName) : ''}${hospCanSeeAllOrders() && t.waiter ? ' · ' + escapeHtml(t.waiter) : ''}</span></div>
+                    <div style="font-size:12px; color:#7f8c8d; margin:2px 0 6px;">${state(t)} · ${hospTabLines(t).length} item(s) · ${money(hospTabDue(t))} · opened ${new Date(t.openedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;"><button class="settings-small-btn" onclick="openHospPanel('${escapeJsAttr(t.id)}')">✏️ UPDATE ORDER</button>
+                    ${hospTabBilled(t) ? `<button class="settings-small-btn" onclick="hospPrintCustomerBill('${escapeJsAttr(t.id)}')">🧾 Print bill again</button>` : `<button class="settings-small-btn" style="background:#16a085; color:#fff;" onclick="hospSettleForBilling('${escapeJsAttr(t.id)}')">🧾 SETTLE</button>`}</div>
+                </div>`).join('') || '<p style="color:#95a5a6;">No open orders.</p>'}</div>`;
+            p.classList.add('open');
+            const c = document.getElementById('svc-my-orders-count'); if (c) c.textContent = list.length ? `(${list.length})` : '';
+        }
+        function svcAddItemsTo(tabId) {
+            const tab = tabs.find((t) => t.id === tabId && t.status === 'OPEN');
+            if (!tab || !hospCanEdit(tab)) return;
+            svcDraft = { tabId, lines: [] };
+            closeHospPanel();
+            const btn = document.querySelector('.tab-link[data-tab="service-tab"]');
+            if (btn && !document.getElementById('service-tab').classList.contains('active')) btn.click();
+            renderSvcDraft();
+            const q = document.getElementById('svc-item-search'); if (q) q.focus();
+        }
+        // "🖨️ Print order": the whole order again for the kitchen / bar (no prices), e.g. a lost slip.
+        function svcPrintOrderSlip(tabId) {
+            const tab = tabs.find((t) => t.id === tabId);
+            if (!tab) return null;
+            const entries = hospTabLines(tab).filter((l) => l.station !== 'none').map((l) => ({ code: l.code, name: l.name, qty: l.qty, unit: l.unit, station: l.station, modifiers: l.modifiers, note: l.note }));
+            if (!entries.length) { showToast('Nothing on this order to prepare.', true); return null; }
+            const round = { id: 'copy-' + Date.now(), kind: 'add', timestamp: new Date().toISOString(), servedBy: tab.waiter || activeServerName(), entries };
+            if ((hospConfig.stations || []).some((s) => s.print === 'relay')) return hospRouteTickets(tab, round, 'COPY — FULL ORDER');
+            lastKitchenTicketText = hospTicketText(tab, round, 'COPY — FULL ORDER');
+            const body = document.getElementById('kitchen-ticket-body');
+            if (body) setPrintBodyText(body, lastKitchenTicketText);
+            return queuePrintJob(kitchenTicketPrintJob);
+        }
+        // SETTLE: the CUSTOMER's bill (prices, total, this shop's own payment details from Settings ▸ Receipt), on the receipt printer.
+        // Nothing is paid or recorded as a sale here — the cashier takes the payment (🧾 Bills / Take payment).
+        function hospPrintCustomerBill(tabOrId) {
+            const tab = typeof tabOrId === 'string' ? tabs.find((t) => t.id === tabOrId) : tabOrId;
+            if (!tab) return false;
+            const paidSoFar = hospParts(tab).reduce((n, x) => n + (Number(x.amount) || 0), 0);
+            const bill = { id: 'bill-' + tab.id, tabId: tab.id, refNumber: 'ORDER ' + hospOrderNo(tab), timestamp: new Date().toISOString(), paid: false, paymentMethod: 'bill',
+                servedBy: tab.waiter || activeServerName(), customerName: tab.customerName || '', tableOrRoom: tab.label, orderType: tab.orderType, outlet: tab.outlet,
+                items: hospBillItems(tab), amountPaid: paidSoFar };
+            const details = receiptPaymentDetailsList();
+            renderSharedReceipt(bill, { ...hotelReceiptHooks(bill), paymentLines: (sale, ctx) => {
+                const out = [];
+                if (paidSoFar > 0) { out.push(...receiptMoneyRow('PAID', ctx.kes(paidSoFar), ctx.cols)); out.push(...receiptMoneyRow('BALANCE DUE', ctx.kes(Math.max(0, ctx.total - paidSoFar)), ctx.cols)); }
+                out.push('STATUS: NOT PAID — please pay the cashier');
+                out.push(ctx.rule);
+                if (details.length) { out.push('Pay to:'); details.forEach((d) => out.push(d)); } else out.push('Please pay at the counter.');
+                return out;
+            } });
+            return true;
+        }
+        function hospOrderNo(tab) { return tab.orderNo || String(tab.id || '').slice(-5).toUpperCase(); }
+        // the side panel's width: drag its left edge; kept on this device
+        function svcInitGrip() {
+            const p = document.getElementById('svc-panel');
+            const grip = p && p.querySelector('.svc-panel-grip');
+            if (!grip || grip.dataset.ready) return;
+            grip.dataset.ready = '1';
+            try { const w = Number(localStorage.getItem('pos_svc_panel_w')); if (w >= 280) p.style.setProperty('--svc-panel-w', w + 'px'); } catch (e) { /* default */ }
+            grip.addEventListener('pointerdown', (ev) => {
+                const x0 = ev.clientX, w0 = p.getBoundingClientRect().width;
+                try { grip.setPointerCapture(ev.pointerId); } catch (e) { /* ok */ }
+                const move = (e) => { const w = Math.max(280, Math.min(window.innerWidth * 0.95, w0 + (x0 - e.clientX))); p.style.setProperty('--svc-panel-w', Math.round(w) + 'px'); };
+                const up = () => {
+                    grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', up);
+                    try { localStorage.setItem('pos_svc_panel_w', String(Math.round(p.getBoundingClientRect().width))); } catch (e) { /* per session only */ }
+                };
+                grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', up);
+            });
         }
         function hospVisibleTabs() {
             const me = activeServerName();
             return tabs.filter((t) => t.status === 'OPEN' && (hospCanSeeAllOrders() || !t.waiter || t.waiter === me || t.openedBy === me));
         }
         function renderServiceOrders() {
+            try { renderSvcMenu(); renderSvcDraft(); } catch (e) { /* cosmetic */ }
+            try { const c = document.getElementById('svc-my-orders-count'); if (c) { const n = hospVisibleTabs().length; c.textContent = n ? `(${n})` : ''; } } catch (e) { /* cosmetic */ }
             const locSel = document.getElementById('svc-new-location');
             if (locSel && !locSel.dataset.filled) {
                 locSel.innerHTML = '<option value="">— Table / room (optional) —</option>'
@@ -23325,8 +23739,8 @@ async function syncHaveCheck(payload) {
                 <strong>${money(hospTabBalance(t))}</strong></div>`).join('') : `<p style="color:#95a5a6;">No active orders${hospCanSeeAllOrders() ? '' : ' of yours'}.</p>`;
         }
         let hospPanelTabId = null, hospExchangeFor = null;
-        function openHospPanel(tabId) { hospPanelTabId = tabId; hospExchangeFor = null; renderHospPanel(); }
-        function closeHospPanel() { hospPanelTabId = null; const p = document.getElementById('svc-panel'); if (p) p.classList.remove('open'); }
+        function openHospPanel(tabId) { hospPanelTabId = tabId; svcListOpen = false; hospExchangeFor = null; svcApplyMode(); svcInitGrip(); renderHospPanel(); }
+        function closeHospPanel() { hospPanelTabId = null; svcListOpen = false; const p = document.getElementById('svc-panel'); if (p) p.classList.remove('open'); }
         function renderHospPanel() {
             const p = document.getElementById('svc-panel');
             const tab = tabs.find((t) => t.id === hospPanelTabId);
@@ -23334,11 +23748,11 @@ async function syncHaveCheck(payload) {
             if (!tab) { p.classList.remove('open'); return; }
             const lines = hospTabLines(tab), billed = hospTabBilled(tab), a = (s) => escapeJsAttr(s);
             const sc = hospServiceCharge(tab);
-            p.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px;"><h3 style="margin:0;">${tab.kind === 'room' ? '🛏️' : tab.kind === 'table' ? '🍽️' : '🙋'} ${escapeHtml(tab.label)}</h3><button class="settings-small-btn" onclick="closeHospPanel()">✕</button></div>
-                <label style="font-size:13px;"><input type="checkbox" style="width:auto;" ${tab.priority === 'RUSH' ? 'checked' : ''} onchange="hospSetPriority('${a(tab.id)}', this.checked)"> 🔴 Rush this order</label>
+            (document.getElementById('svc-panel-body') || p).innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px;"><h3 style="margin:0;">${tab.kind === 'room' ? '🛏️' : tab.kind === 'table' ? '🍽️' : '🙋'} ${escapeHtml(tab.label)}</h3><span style="display:flex; gap:6px;"><button class="settings-small-btn" onclick="openMyOrders()" title="Back to my orders">← Orders</button><button class="settings-small-btn" onclick="closeHospPanel()">✕</button></span></div>
+                <label class="svc-adv" style="font-size:13px;"><input type="checkbox" style="width:auto;" ${tab.priority === 'RUSH' ? 'checked' : ''} onchange="hospSetPriority('${a(tab.id)}', this.checked)"> 🔴 Rush this order</label>
                 <div style="font-size:12px; color:#7f8c8d; margin:4px 0 8px;">${escapeHtml(HOSP_ORDER_TYPES[tab.orderType] || '')} · ${escapeHtml(tab.waiter || tab.openedBy || '')} · opened ${new Date(tab.openedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}${billed ? ' · <strong style="color:#c0392b;">🧾 bill printed</strong>' : ''}</div>
                 ${lines.map((l) => `<div style="border-bottom:1px solid var(--light); padding:6px 0; font-size:13px;">
-                    <label style="display:flex; gap:6px; align-items:flex-start;"><input type="checkbox" class="svc-line-pick" value="${escapeHtml(l.lineId)}" style="width:auto; margin-top:3px;">
+                    <label style="display:flex; gap:6px; align-items:flex-start;"><input type="checkbox" class="svc-line-pick svc-adv" value="${escapeHtml(l.lineId)}" style="width:auto; margin-top:3px;">
                     <span style="flex:1;"><strong>${formatQtyDisplay(l.qty, l.unit)}× ${escapeHtml(l.name)}</strong> <span style="color:#7f8c8d;">${escapeHtml(hospStationLabel(l.station))} · ${(HOSP_STATUS_META[hospLineStatus(tab, l.lineId)] || [])[0] || ''} ${escapeHtml(((HOSP_STATUS_META[hospLineStatus(tab, l.lineId)] || [])[2]) || '')}</span>${(l.modifiers || []).length ? `<br><span style="color:#8e44ad;">${l.modifiers.map((x) => '+ ' + escapeHtml(x.name)).join(', ')}</span>` : ''}${hospLineStatus(tab, l.lineId) === 'READY' ? ` <button class="settings-small-btn" onclick="event.preventDefault(); hospSetLineStatus('${a(tab.id)}','${a(l.lineId)}','SERVED')">🍽️ Served</button>` : ''}${l.note ? `<br><em style="color:#8e44ad;">${escapeHtml(l.note)}</em>` : ''}</span>
                     <span>${money(l.price * l.qty)}</span></label>
                     <div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;">
@@ -23354,19 +23768,20 @@ async function syncHaveCheck(payload) {
                 <div style="display:flex; justify-content:space-between; font-size:16px; font-weight:bold; margin:8px 0;"><span>Total</span><span>${money(hospTabDue(tab))}</span></div>
                 ${hospParts(tab).length ? `<div style="font-size:13px; color:#16a085;">${hospParts(tab).map((p) => `✔ ${escapeHtml(p.label)}: ${money(p.amount)} (${escapeHtml(p.method)})`).join('<br>')}</div><div style="display:flex; justify-content:space-between; font-weight:bold; margin:4px 0 8px;"><span>Balance</span><span>${money(hospTabBalance(tab))}</span></div>` : ''}
                 <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                    <button class="btn-main" onclick="closeHospPanel(); routeOrderToTab('${a(tab.label)}')">➕ Add items</button>
-                    ${billed ? `<button class="settings-small-btn" onclick="hospReopenBill('${a(tab.id)}')">🔓 Reopen</button>` : `<button class="btn-main" style="background:#16a085;" onclick="hospSettleForBilling('${a(tab.id)}')">🧾 Settle order → bill</button>`}
+                    <button class="btn-main" onclick="svcAddItemsTo('${a(tab.id)}')">➕ Add items</button>
+                    <button class="settings-small-btn" onclick="svcPrintOrderSlip('${a(tab.id)}')" title="Print this order for the kitchen / bar again (no prices)">🖨️ Print order</button>
+                    ${billed ? `<button class="settings-small-btn" onclick="hospPrintCustomerBill('${a(tab.id)}')">🧾 Print bill again</button><button class="settings-small-btn" onclick="hospReopenBill('${a(tab.id)}')">🔓 Reopen</button>` : `<button class="btn-main" style="background:#16a085;" onclick="hospSettleForBilling('${a(tab.id)}')">🧾 SETTLE — print bill</button>`}
                     ${hospCan('payments') ? `<button class="settings-small-btn" style="background:#2980b9; color:#fff;" onclick="closeHospPanel(); settleTabDirect('${a(tab.id)}')">💳 Take payment</button>` : ''}
                     ${tab.kind !== 'room' && rooms.some((r) => roomStayFor(r)) ? `<button class="settings-small-btn" onclick="hospUiChargeToRoom('${a(tab.id)}')">🛏️ Charge to room</button>` : ''}
                 </div>
-                <div style="margin-top:10px; font-size:13px;"><strong>Ticked items:</strong> move / split to
+                <div class="svc-adv" style="margin-top:10px; font-size:13px;"><strong>Ticked items:</strong> move / split to
                     <input type="text" id="svc-move-target" list="svc-move-targets" placeholder="Table, room or a name" style="max-width:180px;">
                     <datalist id="svc-move-targets">${tables.concat(rooms).map((x) => `<option value="${escapeHtml(x)}">`).join('')}</datalist>
                     <button class="settings-small-btn" onclick="hospUiMove('${a(tab.id)}')">🔀 Move</button></div>
-                <div style="margin-top:6px; font-size:13px;">Merge another open order into this one:
+                <div class="svc-adv" style="margin-top:6px; font-size:13px;">Merge another open order into this one:
                     <select id="svc-merge-src"><option value="">—</option>${tabs.filter((t) => t.status === 'OPEN' && t.id !== tab.id).map((t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.label)}</option>`).join('')}</select>
                     <button class="settings-small-btn" onclick="hospUiMerge('${a(tab.id)}')">🔗 Merge</button></div>
-                <details style="margin-top:10px;"><summary style="cursor:pointer; font-size:13px;">🕘 History (${(tab.orders || []).length} round(s))</summary>${(tab.orders || []).map((o) => `<div style="font-size:12px; padding:3px 0; border-bottom:1px dashed #eee;">${new Date(o.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })} · ${escapeHtml(o.servedBy || '')} · ${(o.entries || []).map((e) => `${e.change ? '[' + e.change + '] ' : ''}${e.change === 'note' ? escapeHtml(e.name + ': ' + e.note) : Math.abs(e.qty) + '× ' + escapeHtml(e.name)}`).join(', ')}${o.reason ? ' — ' + escapeHtml(o.reason) : ''}</div>`).join('')}</details>`;
+                <details class="svc-adv" style="margin-top:10px;"><summary style="cursor:pointer; font-size:13px;">🕘 History (${(tab.orders || []).length} round(s))</summary>${(tab.orders || []).map((o) => `<div style="font-size:12px; padding:3px 0; border-bottom:1px dashed #eee;">${new Date(o.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })} · ${escapeHtml(o.servedBy || '')} · ${(o.entries || []).map((e) => `${e.change ? '[' + e.change + '] ' : ''}${e.change === 'note' ? escapeHtml(e.name + ': ' + e.note) : Math.abs(e.qty) + '× ' + escapeHtml(e.name)}`).join(', ')}${o.reason ? ' — ' + escapeHtml(o.reason) : ''}</div>`).join('')}</details>`;
             p.classList.add('open');
         }
         function hospUiReduce(tabId, lineId, n) {
@@ -25207,7 +25622,7 @@ async function syncHaveCheck(payload) {
         // ("perm:payments", "perm:orders.void" …; "hosp-role:waiter" marks a hospitality role). Staff WITHOUT a hospitality role
         // keep exactly today's behaviour. The Admin and managers can do everything.
         const HOSP_ROLE_PRESETS = {
-            waiter: { label: '🧑‍🍳 Waiter', tabs: ['service-tab', 'tabs-tab'], perms: [] },
+            waiter: { label: '🧑‍🍳 Waiter', tabs: ['service-tab'], perms: [] },          // zip 147: the Orders tab is the waiter's whole job
             bartender: { label: '🍸 Bartender / bar attendant', tabs: ['service-tab', 'kds-tab', 'tabs-tab', 'bar-tab'], perms: [] },
             kitchen: { label: '👩‍🍳 Chef / kitchen staff', tabs: ['kds-tab', 'kitchen-tab'], perms: [] },
             cashier: { label: '💳 Cashier', tabs: ['service-tab', 'tabs-tab', 'bills-tab', 'daily-sales-tab'], perms: ['payments', 'orders.viewAll'] },
@@ -29535,6 +29950,7 @@ async function syncHaveCheck(payload) {
             } else {
                 member.roles = member.roles.filter(r => r !== tabId);
             }
+            member.salesTabMigrated = true;   // zip 147: the admin chose this person's tabs — the old Sales Counter migration must never re-add it
             member.updatedAt = Date.now();
             safeSetItem('pos_staff', JSON.stringify(staff));
             // If this staff member is serving right now (rare — same-device edit), refresh
@@ -29749,7 +30165,7 @@ async function syncHaveCheck(payload) {
 
             const pinHash = await sealHash(await hashPassword(pin));
             const newStaffId = 'st-' + token;     // the same invite always gives the same id, so a double tap (or two phones) cannot make two people
-            const newMember = { id: newStaffId, name: invite.name, pinHash, roles: Array.isArray(invite.roles) ? invite.roles : [], lockedDates: [], isManager: !!invite.isManager, updatedAt: Date.now() };
+            const newMember = { id: newStaffId, salesTabMigrated: true /* zip 147: created with exactly the tabs the admin ticked — the one-time Sales Counter migration must never add it */, name: invite.name, pinHash, roles: Array.isArray(invite.roles) ? invite.roles : [], lockedDates: [], isManager: !!invite.isManager, updatedAt: Date.now() };
             if (!staff.some(s => s.id === newStaffId)) staff.push(newMember);
             pendingInvites = pendingInvites.filter(i => i.token !== token);
             safeSetItem('pos_staff', JSON.stringify(staff));
@@ -37472,6 +37888,7 @@ async function syncHaveCheck(payload) {
         // One checkout at a time: the checkout waits on the network (cross-branch stock, payments) before it records the sale and
         // clears the cart, so a second tap in that window used to record the SAME cart twice (two sales, stock taken twice).
         async function checkoutCart() {
+            if (!tabCanSell()) return;                                   // zip 147: a stopped tab never completes a sale
             if (window.__checkoutBusy) return;
             window.__checkoutBusy = true;
             try { return await checkoutCartOnce(); } finally { window.__checkoutBusy = false; }
@@ -37862,7 +38279,7 @@ async function syncHaveCheck(payload) {
             }
             queuePush();
 
-            renderReceipt(saleRecordForReceipt);
+            finishSaleReceipt(saleRecordForReceipt, () => renderReceipt(saleRecordForReceipt));   // zip 147: receipt at once; an unstored sale is saved again automatically
             maybePrintKitchenTicket(saleRecordForReceipt);
 
             // Show "payment received / change due" on the customer display for a
@@ -41936,7 +42353,7 @@ async function syncHaveCheck(payload) {
 
 <!-- @shared-block:guide-data:begin -->
 <!-- GUIDE DATA (hotel) — generated by tools/build-guides.mjs; edit that file, not this one. -->
-<script>window.__GUIDE_DATA = {"key":"hotel","title":"Hotel POS — User Guide","tagline":"Restaurants, bars, hotels and lodges — dishes, kitchen, tabs for tables and rooms, bills and reports.","module":"Hotel POS","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Hotel POS works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"setup","icon":"🧭","title":"Set up your business (first 20 minutes)","intro":"Do these once, in this order, as the Admin:","steps":["**⚙️ Settings ▸ General** — business name, logo, phone and address. They print on every receipt.","**Settings ▸ 🧾 Receipt Settings** — header and footer lines, paper width (58 mm or 80 mm), how many copies, whether to print the reference number and its barcode.","**Settings ▸ 🧾 Tax & Alerts** — VAT rates, and the **low-stock level** (items at or below it are flagged and offered as buttons when you restock).","**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Paystack, or Safaricom Daraja with your Till/Paybill) so you can send payment prompts to customers.","**Settings ▸ 🖨️ Hardware** — connect your receipt printer (see the **Printers & hardware** chapter).","Add your items and dishes (see **📦 Add New Items**), then **Settings ▸ 👥 Staff Accounts** to invite your staff.","**Settings ▸ 🗄️ Backups** — check that backups are on. **Settings ▸ 📥 Data Import** brings in data from another system."],"tips":["Settings ▸ 🔒 Security & Access lets the Admin lock tabs behind the management password.","Settings ▸ 🧾 eTIMS (KRA) is only for businesses registered for KRA eTIMS — leave it off otherwise."]},{"id":"items","icon":"🍽️","title":"Adding your menu, drinks and ingredients","intro":"The Hotel has three kinds of thing. Pick the kind at the top of **📦 Add New Items**:","steps":["**📦 Item** — something you stock and count: a bottle of soda, a packet of sugar. It has a quantity and goes down when sold.","**🧂 Ingredient** — a raw material used in recipes (flour, cooking oil). Counted in kg / litres; it goes down when a dish made from it is sold.","**🍽️ Dish** — a menu item the kitchen makes (Tea, Rice, Beef Stew). A plain dish just has a **price**. Tick **Made from ingredients** to add a recipe so its ingredients are used up as it sells. **Dishes always sell — they are never blocked by stock.**","**Upload a whole menu:** on **📋 Inventory** tap **⬆️ Import from Excel/CSV**. A sheet with names and prices (or a column **Item Type = Dish**) is added as Dishes — the review says \"Add these as: Dishes\". Re-importing a menu updates prices and turns items that were imported by mistake into Dishes.","**Photograph a menu:** **📸 Capture List**, tick **This is a menu / price list — add it as Dishes**, take the photo, check the prices, confirm."],"tips":["Give dishes a category (Hot Beverages, Meals…) — the import keeps it.","The Inventory **Used** column shows how much of each ingredient the sales have consumed."]},{"id":"sale","icon":"🛒","title":"Making a sale — walk-in customers","steps":["Open **🛒 Sales Counter**, search or tap dishes and drinks to build the cart, set quantities.","Choose the **payment method** (cash tendered is optional but recommended) and **Complete**. A **kitchen / bar ticket** prints for the order and the receipt preview opens.","The order ticket prints as a short slip in pure black, the same width as the receipt."]},{"id":"opentabs","icon":"🧾","title":"Tabs: tables, rooms and guests who pay later","steps":["Set up tables and rooms once in **🍽️🛏️ Tables & Rooms** (**Generate Tables**, **Generate Rooms**).","Open **🧾 Tabs** ▸ **➕ Open New Tab**, choose the table, room or guest.","Each time they order, add the items to the tab: **every round prints its own kitchen/bar ticket**. The tab keeps a running total.","When they leave, **settle the tab** (cash, M-Pesa, card, split) — it becomes a normal sale and receipt. A tab can also be put on **Bill (Pay Later)**.","Voiding a tab gives its dishes and ingredients back."]},{"id":"kitchen","icon":"🍳","title":"Kitchen tab: prepared, sold, left","steps":["Open **🍳 Kitchen**. Without logging anything, each dish just shows how many it **sold today**.","To track portions, log **Servings Prepared** when the kitchen cooks a batch (optionally a batch with a **shelf life** in days). The tab then shows **Prepared / Sold / Left**.","Sales use up the prepared portions; a void gives a portion back. Two tills’ sales and preparations add up on both."],"tips":["A finished batch is closed so old sales never eat a new batch."]},{"id":"split","icon":"👥","title":"Splitting a bill","intro":"Guests at one table can pay separately. Open the order, tap **Settle**, then:","steps":["**👥 Split by person** — tick what this person had (e.g. 1 burger, 1 beer). Their share of the service charge is added. Choose cash, M-Pesa or card and **Take this payment**. They get their own receipt.","**➗ Pay a share (amount)** — type what this person pays, or tap **÷ equally** to split the balance between a number of people.","Repeat for each person. The order shows **paid so far** and the **balance**. The last payment closes it, or **Settle** takes the rest — its receipt lists what was not paid yet, less the shares already taken.","Items already paid for can’t be removed or moved to another table. A voided part puts its amount back on the balance."]},{"id":"bar","icon":"🍺","title":"Shots, doubles, bottles and draught kegs","intro":"Everything is in **🍺 Bar & Kegs**. Packaged drinks (a 500 ml Tusker bottle, a can) stay ordinary items: 1 sold = 1 off.","steps":["**A bottle sold by the shot:** in **⚙️ Set up a drink**, pick the bottle (e.g. Johnnie Walker Black), its size (750 ml), and tick the servings with their size and price — **Shot 30 ml KES 350**, **Double 60 ml KES 650** — and the price of the whole **Bottle**. The business default shot size is set once (e.g. 30 ml); a product can use its own (40 ml, 50 ml).","**Selling:** on the **🛒 Sales Counter** the bartender taps **SHOT**, **DOUBLE** or **BOTTLE** under the drink. Nobody types millilitres. A shot takes 30 ml from the open bottle; a new bottle is opened by itself; a whole bottle is always a sealed one. The till never sells more than is there (\"Only 20 ml left\").","**Stock:** each bottle shows **full bottles · 1 open (450 ml) · ml in all**. In **📋 Stock Take** count the full bottles and the ml in the open one — an open bottle is never counted as full.","**A keg:** set up the keg product (e.g. Tusker Lager Keg, **50 L**, low alert at **5 L**) with its servings (**300 ml**, **500 ml**, **1 L**) and prices. Receive kegs in **📥 Restock** (they are the sealed kegs in the store).","**Take a keg from the store** and connect it to a tap. Each keg has its own number, tap, status (Full, Active, Low, Empty, Disconnected, Closed, Spoiled) and history. Selling 500 ml takes 500 ml from the oldest active keg; when it runs dry the next full keg is connected by itself (you can switch that off).","**Replace** a keg (the old one is closed at what is left, written off with its history kept, and the next one goes on the same tap), record **💧 Wastage** (spillage, foam, leakage… — a reason is required), **📏 Measure** what is really in a keg, **Close** or mark **Spoiled**.","**🧮 Keg reconciliation:** opening − sold − wastage = expected; measured − expected = **variance**. **📈 Hospitality Reports** also show beverage sales by serving, shots, and kegs.","Keg and shot drinks work everywhere: tables, bar orders, room service, charge to a room, split bills, QR orders (only when there is stock). Two bartenders on two tills — even offline — always add up.","Only managers, supervisors and storekeepers (**bar.manage**) can set up drinks, change sizes or prices, take / replace / close kegs, record wastage or measure. Bartenders sell and see the kegs. Every action is in the **📜 Bar audit**."]},{"id":"levels","icon":"⭐","title":"Loyalty member levels","steps":["In **⚙️ Settings ▸ Loyalty**, under the spend brackets, add **member levels** (e.g. Silver from KES 20,000, Gold from KES 100,000) with a **token multiplier** and **perks**, and the period that counts (365 days, or 0 for ever).","A customer’s level comes from what they spent in that period — worked out from the sales, so every till agrees. Their sales earn tokens × the multiplier; reaching a level is announced.","When you settle an order for a member, their level and perks are shown. Paying an order (tab) now earns tokens too. Any discount stays your decision."]},{"id":"staffsessions","icon":"👤","title":"Staff sessions (the server checks who is working)","steps":["Staff still sign in with their PIN, even offline. When the device is online, the same PIN also starts a **server session** for that person.","Every new sale is signed with the serving staff member’s session, and the server checks it. **📈 Hospitality Reports ▸ Who made each sale** shows confirmed, waiting, not signed and ⚠ flagged sales (e.g. a waiter who may not take payments, or a sale changed after it was made). No sale is ever refused or hidden.","Signed in offline? The sales are signed once the device is back online (covering up to a day).","**⚙️ Settings ▸ 🔐 Devices & Security ▸ Staff sessions required** (Admin or a manager): the server then refuses QR codes, the online menu, bookings and M-Pesa checks without a confirmed staff member, and QR codes / the menu need a supervisor. Selling is never blocked."]},{"id":"closed","icon":"🧾","title":"Bills for hotels","steps":["Rooms and corporate customers often pay later: use **Bill (Pay Later)** or leave the tab open.","Settle from **🧾 Bills**. Paid bills stay under **Show closed bills** so you can look back."]},{"id":"payments","icon":"💳","title":"Taking payment: cash, M-Pesa, card, split, Pay Later","intro":"Choose the payment method under the cart, then complete the sale.","steps":["**Cash** — type the amount the customer gave and the change shows. In the Hotel the amount is **optional but recommended**: left empty it means the exact total.","**M-Pesa** — enter the customer’s number and tap **Send M-Pesa Prompt** (the customer approves on their phone), or type the M-Pesa code if they paid to your till. The sale completes once it is confirmed.","**Card** — take the card payment on your machine, optionally type the slip reference, and complete.","**Split** — part cash, part M-Pesa: type both amounts. They must add up to the total exactly, or the sale is refused.","**Bill (Pay Later)** — for customers who pay later: type the customer’s name (and phone), optionally an amount paid now. The sale becomes a **bill** that you settle later from the **Bills** tab; it only counts in Daily Sales as money is paid."],"sections":[{"title":"Hold a sale (customer not ready to pay)","steps":["Build the customer’s cart, then tap **⏸️ Hold sale**. The cart clears so you can serve the next person; **one** sale can be held at a time.","When the customer is ready, finish the sale you are on, then tap the **held sale** button that appears where Hold sale was — the held cart comes back exactly as it was."]},{"title":"Record a past sale (forgot to record it)","steps":["On the Sales Counter tap **Record a Past Sale**, pick the item, date and time, quantity, price and payment method (cash, M-Pesa, card, split or Bill).","It is saved on that date and takes the stock off, like a normal sale."]}],"tips":["Nothing is deducted from stock while a sale is only being built or held.","A wrong sale can be **voided** from Daily Sales (stock comes back)."]},{"id":"receipts","icon":"🧾","title":"Receipts: print, share, reprint","steps":["When a sale completes a **receipt preview** opens. Tap **🖨️ Print** — it prints **once**, and the preview closes so it cannot be printed twice by accident.","The sale is **saved before the receipt appears** — the preview says \"✓ Sale saved\". **Cancel / Save** only closes the screen: it never cancels the sale (to reverse one, **void** it in Daily Sales).","Every receipt of the day carries a **Customer number** (Customer 1, 2, 3…) just above the reference number. It starts again at 1 each day, so the last receipt of the day tells you how many customers you served.","To print the same receipt again later, open it from **Daily Sales** and tap Print — the app asks \"already printed at 14:32 — print another copy?\" so copies are always deliberate.","**📤 Share** sends the receipt as a **PDF** (WhatsApp shows it as a document). On a phone it opens your apps. On computers and some browsers that cannot hand a file to another app, the PDF is **saved to Downloads** instead — attach it in WhatsApp or email yourself.","**⬇️ Download** always saves the PDF."],"tips":["If the print fails (printer off, paper out) the preview stays open so you can try again — the sale is already saved.","Settings ▸ 🧾 Receipt Settings controls what appears on the receipt."]},{"id":"bills","icon":"📒","title":"Bills (Pay Later) and Debts","steps":["A **Bill (Pay Later)** sale appears in the **🧾 Bills** tab with what is owed. Tap **Settle** to take a full or part payment (cash, M-Pesa, card or split). A partial payment reduces the balance; the bill stays open.","When a bill is paid in full it becomes **closed** and moves out of the open list. Tick **Show closed bills** to see paid bills too (closed bills are tidied away after 90 days).","**Save (no receipt)** in the settle window records the payment without printing a receipt.","**📒 Debts** is for money customers owe you outside a bill — add a debt with the customer’s name and amount, and settle it in parts or in full.","The Sales Counter has a small **Bills** panel for staff: green = money they collected on bills, red = still owed."],"tips":["Pay-Later sales are not counted as sales until money is paid on them."]},{"id":"stock","icon":"📥","title":"Restock, Orders and Stock Take","sections":[{"title":"📥 Restock: record stock you received","steps":["Open **📥 Restock**. Tap a **⚠️ low-stock button** to add that item to the form (with its last buying price), or start typing a name — a drop-down of your items and dishes appears; pick one to fill the code, unit and buying price, or keep typing a new name.","Enter the quantity and the buying price, then save. Stock goes up and an expense is logged automatically."]},{"title":"🛍️ Orders: order from suppliers","steps":["Open **Orders** ▸ **New Order**. Tap low-stock buttons to add what is running out, or type names (same drop-down). Enter quantities and prices and choose or type the supplier.","Tap **💬 Save & send on WhatsApp** to save the order and open WhatsApp addressed to the supplier with the order written out (their number is asked once and remembered). Or **Save Order** now and press **💬 WhatsApp** on it later.","Mark it **In Transit** when the supplier dispatches, and **Arrived** when the goods come — that adds the stock."]},{"title":"📋 Stock Take: correct the system to the shelf","steps":["Open **Stock Take**, count each item on the shelf and type the number next to it. Only items you type a count for are touched.","The screen shows each difference and its value at cost. Tap **✔ Update stock to my counts** — every change is recorded as a \"Stock take\" adjustment."]}],"tips":["Do a stock take after a stock delivery day or at the end of the month.","↩️ **Returned Goods** puts returned items back on the shelf (or into the faulty register) and can refund the customer."]},{"id":"reports","icon":"📊","title":"Reports and Daily Sales","steps":["**🧾 Daily Sales** lists every sale for Today, a Week, a Month or a Custom range, filtered by payment method. Print the day’s report from there, or void a wrong sale.","**📦 Stock Report** shows stock movement (opening, received, sold, closing) with values at cost and retail.","**💰 Profits & Expenses** — add expenses (rent, fuel, wages…) and see gross and net profit.","**📊 Reports** is the one place to generate everything: pick a **period** (Today … Last 90 days … Custom), then a report."],"sections":[{"title":"The reports in 📊 Reports","points":["**Sales** — total, number of sales, average sale, by payment method and the items sold, best first.","**Business insights** — busiest hour, best-earning hour, best day of the week, best worker; charts of sales by hour and by weekday; and a **trend line** you can switch between **daily, weekly (12 weeks) and monthly (12 months)**.","**Staff performance** — sales, average sale, share and sales per hour worked for each person.","**Stock** — stock value at cost and retail, low stock, out of stock and items that did not sell in the period.","**Bills & debts** — who owes what, oldest first, with ageing.","**Expenses & profit** — sales, cost of goods, gross profit, expenses by category and net profit."]}],"tips":["Every report can be **🖨️ printed / saved as PDF** or **⬇️ downloaded for Excel (CSV)**.","**📊 Dashboard** gives today’s figures the moment you open the app."]},{"id":"people","icon":"👥","title":"Staff, access and security","steps":["Open **⚙️ Settings ▸ 👥 Staff Accounts** (or the **👥 Staff** tab) and add a staff member’s name. Tick the tabs they may use — the Sales Counter too; a staff member sees only the tabs ticked for them. Tap **Generate invite link**.","Send the link to them. They open it, choose a **PIN** (4+ characters) and they are in — no shop password needed. The link then turns into their personal login link: they should bookmark it.","A staff member is listed once: a double tap on \"Create my account\" cannot make two copies.","**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.","**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.","**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.","**⬇️ Sync to this device** (Settings ▸ 🔐 Devices & Security) sends this device's unsent sales first, then fetches everything the shop has on the server — step by step, with nothing deleted or duplicated.","**Settings ▸ 🔐 Devices & security** lists every device that syncs your shop (its till number, app release and last sync). Tap **🔒 Only paired devices may sync** so that knowing your shop link is no longer enough to see or change your data. Your devices pair themselves; a new one needs the shop password once, or a **6-digit pairing code** made here (so staff never need the password). Revoke a lost phone from the same list. Signing in and selling always work offline either way.","**👤 My Customers** keeps your customers and their purchases; **🎟️ Loyalty Tokens** (Settings) rewards repeat customers where enabled."],"tips":["To remove a staff member, remove them under Staff Accounts — their old sales stay in the records.","If someone forgets the Admin password, use **Forgot it? Email me a reset link** on the login screen (needs the recovery email set up)."]},{"id":"hardware","icon":"🖨️","title":"Printers & hardware","intro":"Open **⚙️ Settings ▸ 🖨️ Hardware** (or tap the small printer icon at the top). There are three ways to print:","sections":[{"title":"1. System print dialog (works with any installed printer)","steps":["Set **Printer mode** to **System print dialog**.","Print a receipt: the device’s print window opens — choose your receipt printer once. The receipt prints on a slip only as long as its lines (paper is not wasted).","Browsers never allow silent printing, so this mode always shows that window. Use Bluetooth or USB to avoid it."]},{"title":"2. USB thermal printer (computer or Android)","steps":["Plug the printer in and switch it on.","Set **Printer mode** to **USB**, tap **Connect USB Printer**, choose your printer and allow access.","From then on the app **reconnects by itself** whenever the printer is switched off and on, unplugged and replugged, or the app is reopened — it keeps checking every few seconds and prints the moment the printer is back. You do not go back to Settings."]},{"title":"3. Bluetooth thermal printer (phones and tablets)","steps":["Switch the printer on and pair it in the phone’s Bluetooth settings if it asks.","Set **Printer mode** to **Bluetooth**, tap **Connect Bluetooth Printer** and pick it from the list (once).","After a power cut or the printer going out of range, the app reopens the same printer by itself (no chooser). Some browsers cannot reopen a remembered Bluetooth printer after the page reloads — the screen then says **Tap Connect once**."]},{"title":"Paper, copies and the cash drawer","steps":["**Receipt Settings** sets the paper width (58 or 80 mm) and the number of copies.","Each till can have a different printer: under **THIS device's printer paper** choose 58 mm or 80 mm for the printer on this device (or tap **58 mm / 80 mm** at the top of any receipt). **If words break or numbers jump to the next line, the printer is 58 mm on an 80 mm setting — choose 58 mm.** The receipt preview is exactly what will print.","**📏 Print a width test** (USB / Bluetooth) prints a 32- and a 48-character line: if the 48 one breaks in two, the printer is 58 mm.","The **cash drawer** plugs into the **printer** (RJ11/RJ12 port), not the computer; turn on \"open drawer on print\" in Hardware settings.","To check paper width and the drawer, print a small sale receipt, or reprint one from Daily Sales."]},{"title":"Barcode scanners","steps":["A USB or Bluetooth **scanner** works like a keyboard: click the search box on the Sales Counter and scan.","The 📷 button next to search scans with the phone camera."]}],"tips":["Printing waits up to 4 seconds for a printer that has just been switched on before saying it is not connected.","If a print fails half-way the receipt is **not** sent again automatically (so you never get a doubled half-receipt) — reprint from Daily Sales."]},{"id":"offline","icon":"📶","title":"Offline, sync, backups and importing data","steps":["**Offline:** the app keeps working with no internet. Sales, stock and receipts are saved on the device — and every completed sale is also kept in the device's own backup journal until the server has it, so it survives a restart or a full device.","**Sync:** when the internet returns the dot turns green and every device catches up. Several tills can work at once — stock changes from each add up correctly.","**Daily Sales shows each sale's sync state:** ✓ synced, ⏳ not sent yet, 🔄 sending, ⚠ retrying — unsent sales are always listed, and are sent again automatically until the server has them. **🔎 Check for missing sales** compares this device, its journal, its printed receipts and the server for the day, and puts back anything missing.","**Older sales always show:** Daily Sales and Reports fetch any sale of the chosen days that is not on this device — kept on the server, in the server's archive of old history, or in this device's own archive — and list it with a **📦 history** mark. Reprint or void it as usual.","Days follow **Kenya time** on every device, whatever the device's own time zone; a device whose clock is wrong is told so, and its sales are dated by the correct time.","**If the dot stays black** with internet, wait a few seconds (it checks the server itself and recovers without a refresh). If it stays black, check the device’s connection.","**Backups:** ⚙️ Settings ▸ 🗄️ Backups. Your data is also stored on the server, so a lost phone does not lose your business — log in on another device.","**Importing from Excel/CSV:** on the Inventory tab tap **⬆️ Import from Excel/CSV**. A \"please wait\" bar shows while the file is read. Check the review list, then **Batch Commit**. Tap **⬇️ Download Excel/CSV** to export.","**More than one branch:** Settings ▸ 🏢 Branches links branches so items and cross-branch sales work."],"tips":["Use **Settings ▸ Install App ▸ 🔄 Re-download for Offline Use** after an update if the app ever fails to open offline."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**Printer does not print:** check paper and power, then Settings ▸ Hardware ▸ status. Switch it off and on — the app finds it again by itself. As a fallback use the system print dialog.","**\"Only 0 available\" when selling:** the item has no stock. Record it in Restock, or run a Stock Take.","**A sale is missing from Daily Sales:** tap **🔎 Check for missing sales** under the list. Pay-Later bills only count when paid; check Bills. In Aqua POS check the site selected at the top.","**The login window appears again:** just log in; it will not reappear over a running session.","**Forgot the password:** tap **Forgot the password?** on the login screen and use **Email me a reset link**.","**Something looks out of date on a device:** wait for the green dot, then reload the page once.","**Still stuck:** the Owner sees errors from every shop in the Owner Console ▸ Errors tab — tell your provider what you were doing and roughly when."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Hotel POS, in the order they appear:","tabs":[["Sales Counter","Where every sale is made: search or scan items, build the cart, take payment, print the receipt."],["Kitchen","Dishes prepared and sold today: log portions prepared, see sold and left, shelf life."],["Tabs","Open tabs for a table, room or guest: add rounds of orders over time, settle at the end."],["Service Orders","Waiters: start an order for a table, room or guest (dine-in, takeaway, room service, poolside…), see your active orders, and in the side panel add, remove, exchange, add a note, move / split / merge, and settle the order for billing — only the change prints for the kitchen or bar. New QR orders from customers wait here to be accepted."],["Kitchen & Bar Display","The screen for the kitchen, the bar, the bakery… each sees only its own items: New → Accepted → Preparing → Ready → Served, with the waiting time, late orders in red and rush orders first. Waiters are told when their items are ready."],["Bar & Kegs","Shots, doubles and bottles from open bottles; draught kegs (take from the store, connect, replace, wastage, measure), low-keg alerts, keg reconciliation and the bar audit."],["Facilities","Pool, pool / snooker tables, cabanas, conference rooms…: start, pause and end timed sessions, sell pool passes (with capacity and expiry), and book any facility without double booking. Time and passes go on the customer’s one bill with their food and drinks."],["Hotel","Rooms at a glance for the next 14 days, reservations (never sold twice), arrivals and check-in, housekeeping (dirty → cleaning → clean → inspected), service requests (towels, cot, decorations…) and room types with their nightly rates."],["Custom Orders & Events","Custom cakes, special meals and platters, catering and events: take the details (size, flavour, message, allergies, guests, menu…) and reference pictures, quote, record the customer’s approval, take the deposit (a real payment with a receipt), schedule, produce, quality-check, tell the customer it is ready, and collect the balance. Events can book their venue; packages (e.g. a family pool package) sell food, drinks and pool access as one priced item."],["Hospitality Reports","For a day or a period: sales, payments (cash, M-Pesa — with any not verified — card), what is still outstanding and the estimated profit, kept apart; by outlet, order type, source, waiter and table; top products and drinks; every order change with its reason; hotel occupancy and room revenue; pool passes and busiest hour; pool-table hours and use; custom orders and their balances."],["Dashboard","Today at a glance: sales, money in by payment method, low stock and what needs attention."],["Inventory","Everything you stock: search, edit prices and quantities, import/export Excel, opening stock."],["Add New Items","Add items one by one, many at once (bulk), or from a photo of a list (Capture List)."],["Restock","Record stock you received: quantity and buying price; low-stock buttons add items for you."],["Orders","Purchase orders to suppliers: create, send on WhatsApp, mark in transit, receive (stock goes up on arrival)."],["Stock Take","Count the shelf, type the counts, and correct the system to what is really there."],["Reports","Generate sales, insights (busiest hours, best workers, trends), staff, stock, bills & debts, expenses & profit reports. Includes X/Z Reports and an automatic scheduled Daily Sales Report."],["Audit","A searchable, read-only timeline of who did what and when — sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes."],["Store","A separate warehouse list (not your selling stock); take items from it into inventory."],["Barcode","Save, generate and print barcodes for your items."],["Tables & Rooms","Set up your tables, rooms and utensils (generate Table 01… in one go)."],["Returned Goods","Customer returns and exchanges: refund, swap, faulty items."],["Deliveries","Delivery orders assigned to drivers: picked up, on route, delivered."],["Cross-Branch Sales","Sell an item that another of your branches holds."],["Daily Sales","Every sale for a day / week / month / range, by payment method, with printing."],["Stock Report","Stock movement over a period: opening, received, sold, closing, with values."],["Profits & Expenses","Record expenses and see gross and net profit for any period."],["Demand Trends","What sells most, and when: best sellers and slow movers."],["Bills","Pay-Later sales still owing: settle in full or in part, see closed bills."],["Debts","Money customers owe you outside of bills; record and settle."],["Trade Credits","Money owed between you and another business (I owe them / they owe me)."],["My Customers","Your customer list with purchase history and loyalty."],["Contracts","Wholesale contracts and their outstanding balances."],["Staff","Add staff, choose which tabs each can use, send invite links, see who is serving."],["Attendance","Staff clock in / out and hours worked."],["Settings","Business details, receipts, tax, hardware, security, backups and more."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
+<script>window.__GUIDE_DATA = {"key":"hotel","title":"Hotel POS — User Guide","tagline":"Restaurants, bars, hotels and lodges — dishes, kitchen, tabs for tables and rooms, bills and reports.","module":"Hotel POS","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Hotel POS works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"setup","icon":"🧭","title":"Set up your business (first 20 minutes)","intro":"Do these once, in this order, as the Admin:","steps":["**⚙️ Settings ▸ General** — business name, logo, phone and address. They print on every receipt.","**Settings ▸ 🧾 Receipt Settings** — header and footer lines, paper width (58 mm or 80 mm), how many copies, whether to print the reference number and its barcode.","**Settings ▸ 🧾 Tax & Alerts** — VAT rates, and the **low-stock level** (items at or below it are flagged and offered as buttons when you restock).","**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Paystack, or Safaricom Daraja with your Till/Paybill) so you can send payment prompts to customers.","**Settings ▸ 🖨️ Hardware** — connect your receipt printer (see the **Printers & hardware** chapter).","Add your items and dishes (see **📦 Add New Items**), then **Settings ▸ 👥 Staff Accounts** to invite your staff.","**Settings ▸ 🗄️ Backups** — check that backups are on. **Settings ▸ 📥 Data Import** brings in data from another system."],"tips":["Settings ▸ 🔒 Security & Access lets the Admin lock tabs behind the management password.","Settings ▸ 🧾 eTIMS (KRA) is only for businesses registered for KRA eTIMS — leave it off otherwise."]},{"id":"items","icon":"🍽️","title":"Adding your menu, drinks and ingredients","intro":"The Hotel has three kinds of thing. Pick the kind at the top of **📦 Add New Items**:","steps":["**📦 Item** — something you stock and count: a bottle of soda, a packet of sugar. It has a quantity and goes down when sold.","**🧂 Ingredient** — a raw material used in recipes (flour, cooking oil). Counted in kg / litres; it goes down when a dish made from it is sold.","**🍽️ Dish** — a menu item the kitchen makes (Tea, Rice, Beef Stew). A plain dish just has a **price**. Tick **Made from ingredients** to add a recipe so its ingredients are used up as it sells. **Dishes always sell — they are never blocked by stock.**","**Upload a whole menu:** on **📋 Inventory** tap **⬆️ Import from Excel/CSV**. A sheet with names and prices (or a column **Item Type = Dish**) is added as Dishes — the review says \"Add these as: Dishes\". Re-importing a menu updates prices and turns items that were imported by mistake into Dishes.","**Photograph a menu:** **📸 Capture List**, tick **This is a menu / price list — add it as Dishes**, take the photo, check the prices, confirm."],"tips":["Give dishes a category (Hot Beverages, Meals…) — the import keeps it.","The Inventory **Used** column shows how much of each ingredient the sales have consumed."]},{"id":"sale","icon":"🛒","title":"Making a sale — walk-in customers","steps":["Open **🛒 Sales Counter**, search or tap dishes and drinks to build the cart, set quantities.","Choose the **payment method** (cash tendered is optional but recommended) and **Complete**. A **kitchen / bar ticket** prints for the order and the receipt preview opens.","The order ticket prints as a short slip in pure black, the same width as the receipt."]},{"id":"opentabs","icon":"🧾","title":"Tabs: tables, rooms and guests who pay later","steps":["Set up tables and rooms once in **🍽️🛏️ Tables & Rooms** (**Generate Tables**, **Generate Rooms**).","Open **🧾 Tabs** ▸ **➕ Open New Tab**, choose the table, room or guest.","Each time they order, add the items to the tab: **every round prints its own kitchen/bar ticket**. The tab keeps a running total.","When they leave, **settle the tab** (cash, M-Pesa, card, split) — it becomes a normal sale and receipt. A tab can also be put on **Bill (Pay Later)**.","Voiding a tab gives its dishes and ingredients back."]},{"id":"kitchen","icon":"🍳","title":"Kitchen tab: prepared, sold, left","steps":["Open **🍳 Kitchen**. Without logging anything, each dish just shows how many it **sold today**.","To track portions, log **Servings Prepared** when the kitchen cooks a batch (optionally a batch with a **shelf life** in days). The tab then shows **Prepared / Sold / Left**.","Sales use up the prepared portions; a void gives a portion back. Two tills’ sales and preparations add up on both."],"tips":["A finished batch is closed so old sales never eat a new batch."]},{"id":"split","icon":"👥","title":"Splitting a bill","intro":"Guests at one table can pay separately. Open the order, tap **Settle**, then:","steps":["**👥 Split by person** — tick what this person had (e.g. 1 burger, 1 beer). Their share of the service charge is added. Choose cash, M-Pesa or card and **Take this payment**. They get their own receipt.","**➗ Pay a share (amount)** — type what this person pays, or tap **÷ equally** to split the balance between a number of people.","Repeat for each person. The order shows **paid so far** and the **balance**. The last payment closes it, or **Settle** takes the rest — its receipt lists what was not paid yet, less the shares already taken.","Items already paid for can’t be removed or moved to another table. A voided part puts its amount back on the balance."]},{"id":"bar","icon":"🍺","title":"Shots, doubles, bottles and draught kegs","intro":"Everything is in **🍺 Bar & Kegs**. Packaged drinks (a 500 ml Tusker bottle, a can) stay ordinary items: 1 sold = 1 off.","steps":["**A bottle sold by the shot:** in **⚙️ Set up a drink**, pick the bottle (e.g. Johnnie Walker Black), its size (750 ml), and tick the servings with their size and price — **Shot 30 ml KES 350**, **Double 60 ml KES 650** — and the price of the whole **Bottle**. The business default shot size is set once (e.g. 30 ml); a product can use its own (40 ml, 50 ml).","**Selling:** on the **🛒 Sales Counter** the bartender taps **SHOT**, **DOUBLE** or **BOTTLE** under the drink. Nobody types millilitres. A shot takes 30 ml from the open bottle; a new bottle is opened by itself; a whole bottle is always a sealed one. The till never sells more than is there (\"Only 20 ml left\").","**Stock:** each bottle shows **full bottles · 1 open (450 ml) · ml in all**. In **📋 Stock Take** count the full bottles and the ml in the open one — an open bottle is never counted as full.","**A keg:** set up the keg product (e.g. Tusker Lager Keg, **50 L**, low alert at **5 L**) with its servings (**300 ml**, **500 ml**, **1 L**) and prices. Receive kegs in **📥 Restock** (they are the sealed kegs in the store).","**Take a keg from the store** and connect it to a tap. Each keg has its own number, tap, status (Full, Active, Low, Empty, Disconnected, Closed, Spoiled) and history. Selling 500 ml takes 500 ml from the oldest active keg; when it runs dry the next full keg is connected by itself (you can switch that off).","**Replace** a keg (the old one is closed at what is left, written off with its history kept, and the next one goes on the same tap), record **💧 Wastage** (spillage, foam, leakage… — a reason is required), **📏 Measure** what is really in a keg, **Close** or mark **Spoiled**.","**🧮 Keg reconciliation:** opening − sold − wastage = expected; measured − expected = **variance**. **📈 Hospitality Reports** also show beverage sales by serving, shots, and kegs.","Keg and shot drinks work everywhere: tables, bar orders, room service, charge to a room, split bills, QR orders (only when there is stock). Two bartenders on two tills — even offline — always add up.","Only managers, supervisors and storekeepers (**bar.manage**) can set up drinks, change sizes or prices, take / replace / close kegs, record wastage or measure. Bartenders sell and see the kegs. Every action is in the **📜 Bar audit**."]},{"id":"levels","icon":"⭐","title":"Loyalty member levels","steps":["In **⚙️ Settings ▸ Loyalty**, under the spend brackets, add **member levels** (e.g. Silver from KES 20,000, Gold from KES 100,000) with a **token multiplier** and **perks**, and the period that counts (365 days, or 0 for ever).","A customer’s level comes from what they spent in that period — worked out from the sales, so every till agrees. Their sales earn tokens × the multiplier; reaching a level is announced.","When you settle an order for a member, their level and perks are shown. Paying an order (tab) now earns tokens too. Any discount stays your decision."]},{"id":"staffsessions","icon":"👤","title":"Staff sessions (the server checks who is working)","steps":["Staff still sign in with their PIN, even offline. When the device is online, the same PIN also starts a **server session** for that person.","Every new sale is signed with the serving staff member’s session, and the server checks it. **📈 Hospitality Reports ▸ Who made each sale** shows confirmed, waiting, not signed and ⚠ flagged sales (e.g. a waiter who may not take payments, or a sale changed after it was made). No sale is ever refused or hidden.","Signed in offline? The sales are signed once the device is back online (covering up to a day).","**⚙️ Settings ▸ 🔐 Devices & Security ▸ Staff sessions required** (Admin or a manager): the server then refuses QR codes, the online menu, bookings and M-Pesa checks without a confirmed staff member, and QR codes / the menu need a supervisor. Selling is never blocked."]},{"id":"closed","icon":"🧾","title":"Bills for hotels","steps":["Rooms and corporate customers often pay later: use **Bill (Pay Later)** or leave the tab open.","Settle from **🧾 Bills**. Paid bills stay under **Show closed bills** so you can look back."]},{"id":"payments","icon":"💳","title":"Taking payment: cash, M-Pesa, card, split, Pay Later","intro":"Choose the payment method under the cart, then complete the sale.","steps":["**Cash** — type the amount the customer gave and the change shows. In the Hotel the amount is **optional but recommended**: left empty it means the exact total.","**M-Pesa** — enter the customer’s number and tap **Send M-Pesa Prompt** (the customer approves on their phone), or type the M-Pesa code if they paid to your till. The sale completes once it is confirmed.","**Card** — take the card payment on your machine, optionally type the slip reference, and complete.","**Split** — part cash, part M-Pesa: type both amounts. They must add up to the total exactly, or the sale is refused.","**Bill (Pay Later)** — for customers who pay later: type the customer’s name (and phone), optionally an amount paid now. The sale becomes a **bill** that you settle later from the **Bills** tab; it only counts in Daily Sales as money is paid."],"sections":[{"title":"Hold a sale (customer not ready to pay)","steps":["Build the customer’s cart, then tap **⏸️ Hold sale**. The cart clears so you can serve the next person; **one** sale can be held at a time.","When the customer is ready, finish the sale you are on, then tap the **held sale** button that appears where Hold sale was — the held cart comes back exactly as it was."]},{"title":"Record a past sale (forgot to record it)","steps":["On the Sales Counter tap **Record a Past Sale**, pick the item, date and time, quantity, price and payment method (cash, M-Pesa, card, split or Bill).","It is saved on that date and takes the stock off, like a normal sale."]}],"tips":["Nothing is deducted from stock while a sale is only being built or held.","A wrong sale can be **voided** from Daily Sales (stock comes back)."]},{"id":"receipts","icon":"🧾","title":"Receipts: print, share, reprint","steps":["When a sale completes a **receipt preview** opens. Tap **🖨️ Print** — it prints **once**, and the preview closes so it cannot be printed twice by accident.","The sale is **saved before the receipt appears** — the preview says \"✓ Sale saved\". **Cancel / Save** only closes the screen: it never cancels the sale (to reverse one, **void** it in Daily Sales).","Every receipt of the day carries a **Customer number** (Customer 1, 2, 3…) just above the reference number. It starts again at 1 each day, so the last receipt of the day tells you how many customers you served.","To print the same receipt again later, open it from **Daily Sales** and tap Print — the app asks \"already printed at 14:32 — print another copy?\" so copies are always deliberate.","**📤 Share** sends the receipt as a **PDF** (WhatsApp shows it as a document). On a phone it opens your apps. On computers and some browsers that cannot hand a file to another app, the PDF is **saved to Downloads** instead — attach it in WhatsApp or email yourself.","**⬇️ Download** always saves the PDF."],"tips":["If the print fails (printer off, paper out) the preview stays open so you can try again — the sale is already saved.","Settings ▸ 🧾 Receipt Settings controls what appears on the receipt."]},{"id":"bills","icon":"📒","title":"Bills (Pay Later) and Debts","steps":["A **Bill (Pay Later)** sale appears in the **🧾 Bills** tab with what is owed. Tap **Settle** to take a full or part payment (cash, M-Pesa, card or split). A partial payment reduces the balance; the bill stays open.","When a bill is paid in full it becomes **closed** and moves out of the open list. Tick **Show closed bills** to see paid bills too (closed bills are tidied away after 90 days).","**Save (no receipt)** in the settle window records the payment without printing a receipt.","**📒 Debts** is for money customers owe you outside a bill — add a debt with the customer’s name and amount, and settle it in parts or in full.","The Sales Counter has a small **Bills** panel for staff: green = money they collected on bills, red = still owed."],"tips":["Pay-Later sales are not counted as sales until money is paid on them."]},{"id":"stock","icon":"📥","title":"Restock, Orders and Stock Take","sections":[{"title":"📥 Restock: record stock you received","steps":["Open **📥 Restock**. Tap a **⚠️ low-stock button** to add that item to the form (with its last buying price), or start typing a name — a drop-down of your items and dishes appears; pick one to fill the code, unit and buying price, or keep typing a new name.","Enter the quantity and the buying price, then save. Stock goes up and an expense is logged automatically."]},{"title":"🛍️ Orders: order from suppliers","steps":["Open **Orders** ▸ **New Order**. Tap low-stock buttons to add what is running out, or type names (same drop-down). Enter quantities and prices and choose or type the supplier.","Tap **💬 Save & send on WhatsApp** to save the order and open WhatsApp addressed to the supplier with the order written out (their number is asked once and remembered). Or **Save Order** now and press **💬 WhatsApp** on it later.","Mark it **In Transit** when the supplier dispatches, and **Arrived** when the goods come — that adds the stock."]},{"title":"📋 Stock Take: correct the system to the shelf","steps":["Open **Stock Take**, count each item on the shelf and type the number next to it. Only items you type a count for are touched.","The screen shows each difference and its value at cost. Tap **✔ Update stock to my counts** — every change is recorded as a \"Stock take\" adjustment."]}],"tips":["Do a stock take after a stock delivery day or at the end of the month.","↩️ **Returned Goods** puts returned items back on the shelf (or into the faulty register) and can refund the customer."]},{"id":"reports","icon":"📊","title":"Reports and Daily Sales","steps":["**🧾 Daily Sales** lists every sale for Today, a Week, a Month or a Custom range, filtered by payment method. Print the day’s report from there, or void a wrong sale.","**📦 Stock Report** shows stock movement (opening, received, sold, closing) with values at cost and retail.","**💰 Profits & Expenses** — add expenses (rent, fuel, wages…) and see gross and net profit.","**📊 Reports** is the one place to generate everything: pick a **period** (Today … Last 90 days … Custom), then a report."],"sections":[{"title":"The reports in 📊 Reports","points":["**Sales** — total, number of sales, average sale, by payment method and the items sold, best first.","**Business insights** — busiest hour, best-earning hour, best day of the week, best worker; charts of sales by hour and by weekday; and a **trend line** you can switch between **daily, weekly (12 weeks) and monthly (12 months)**.","**Staff performance** — sales, average sale, share and sales per hour worked for each person.","**Stock** — stock value at cost and retail, low stock, out of stock and items that did not sell in the period.","**Bills & debts** — who owes what, oldest first, with ageing.","**Expenses & profit** — sales, cost of goods, gross profit, expenses by category and net profit."]}],"tips":["Every report can be **🖨️ printed / saved as PDF** or **⬇️ downloaded for Excel (CSV)**.","**📊 Dashboard** gives today’s figures the moment you open the app."]},{"id":"people","icon":"👥","title":"Staff, access and security","steps":["Open **⚙️ Settings ▸ 👥 Staff Accounts** (or the **👥 Staff** tab) and add a staff member’s name. Tick the tabs they may use — the Sales Counter too; a staff member sees only the tabs ticked for them. Tap **Generate invite link**.","Send the link to them. They open it, choose a **PIN** (4+ characters) and they are in — no shop password needed. The link then turns into their personal login link: they should bookmark it.","A staff member is listed once: a double tap on \"Create my account\" cannot make two copies.","**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.","**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.","**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.","**⬇️ Sync to this device** (Settings ▸ 🔐 Devices & Security) sends this device's unsent sales first, then fetches everything the shop has on the server — step by step, with nothing deleted or duplicated.","**Settings ▸ 🔐 Devices & security** lists every device that syncs your shop (its till number, app release and last sync). Tap **🔒 Only paired devices may sync** so that knowing your shop link is no longer enough to see or change your data. Your devices pair themselves; a new one needs the shop password once, or a **6-digit pairing code** made here (so staff never need the password). Revoke a lost phone from the same list. Signing in and selling always work offline either way.","**👤 My Customers** keeps your customers and their purchases; **🎟️ Loyalty Tokens** (Settings) rewards repeat customers where enabled."],"tips":["To remove a staff member, remove them under Staff Accounts — their old sales stay in the records.","If someone forgets the Admin password, use **Forgot it? Email me a reset link** on the login screen (needs the recovery email set up)."]},{"id":"hardware","icon":"🖨️","title":"Printers & hardware","intro":"Open **⚙️ Settings ▸ 🖨️ Hardware** (or tap the small printer icon at the top). There are three ways to print:","sections":[{"title":"1. System print dialog (works with any installed printer)","steps":["Set **Printer mode** to **System print dialog**.","Print a receipt: the device’s print window opens — choose your receipt printer once. The receipt prints on a slip only as long as its lines (paper is not wasted).","Browsers never allow silent printing, so this mode always shows that window. Use Bluetooth or USB to avoid it."]},{"title":"2. USB thermal printer (computer or Android)","steps":["Plug the printer in and switch it on.","Set **Printer mode** to **USB**, tap **Connect USB Printer**, choose your printer and allow access.","From then on the app **reconnects by itself** whenever the printer is switched off and on, unplugged and replugged, or the app is reopened — it keeps checking every few seconds and prints the moment the printer is back. You do not go back to Settings."]},{"title":"3. Bluetooth thermal printer (phones and tablets)","steps":["Switch the printer on and pair it in the phone’s Bluetooth settings if it asks.","Set **Printer mode** to **Bluetooth**, tap **Connect Bluetooth Printer** and pick it from the list (once).","After a power cut or the printer going out of range, the app reopens the same printer by itself (no chooser). Some browsers cannot reopen a remembered Bluetooth printer after the page reloads — the screen then says **Tap Connect once**."]},{"title":"Paper, copies and the cash drawer","steps":["**Receipt Settings** sets the paper width (58 or 80 mm) and the number of copies.","Each till can have a different printer: under **THIS device's printer paper** choose 58 mm or 80 mm for the printer on this device (or tap **58 mm / 80 mm** at the top of any receipt). **If words break or numbers jump to the next line, the printer is 58 mm on an 80 mm setting — choose 58 mm.** The receipt preview is exactly what will print.","**📏 Print a width test** (USB / Bluetooth) prints a 32- and a 48-character line: if the 48 one breaks in two, the printer is 58 mm.","The **cash drawer** plugs into the **printer** (RJ11/RJ12 port), not the computer; turn on \"open drawer on print\" in Hardware settings.","To check paper width and the drawer, print a small sale receipt, or reprint one from Daily Sales."]},{"title":"Barcode scanners","steps":["A USB or Bluetooth **scanner** works like a keyboard: click the search box on the Sales Counter and scan.","The 📷 button next to search scans with the phone camera."]}],"tips":["Printing waits up to 4 seconds for a printer that has just been switched on before saying it is not connected.","If a print fails half-way the receipt is **not** sent again automatically (so you never get a doubled half-receipt) — reprint from Daily Sales."]},{"id":"offline","icon":"📶","title":"Offline, sync, backups and importing data","steps":["**Offline:** the app keeps working with no internet. Sales, stock and receipts are saved on the device — and every completed sale is also kept in the device's own backup journal until the server has it, so it survives a restart or a full device.","**Sync:** when the internet returns the dot turns green and every device catches up. Several tills can work at once — stock changes from each add up correctly.","**Daily Sales shows each sale's sync state:** ✓ synced, ⏳ not sent yet, 🔄 sending, ⚠ retrying — unsent sales are always listed, and are sent again automatically until the server has them. **🔎 Check for missing sales** compares this device, its journal, its printed receipts and the server for the day, and puts back anything missing.","**Older sales always show:** Daily Sales and Reports fetch any sale of the chosen days that is not on this device — kept on the server, in the server's archive of old history, or in this device's own archive — and list it with a **📦 history** mark. Reprint or void it as usual.","Days follow **Kenya time** on every device, whatever the device's own time zone; a device whose clock is wrong is told so, and its sales are dated by the correct time.","**If the dot stays black** with internet, wait a few seconds (it checks the server itself and recovers without a refresh). If it stays black, check the device’s connection.","**Backups:** ⚙️ Settings ▸ 🗄️ Backups. Your data is also stored on the server, so a lost phone does not lose your business — log in on another device.","**Importing from Excel/CSV:** on the Inventory tab tap **⬆️ Import from Excel/CSV**. A \"please wait\" bar shows while the file is read. Check the review list, then **Batch Commit**. Tap **⬇️ Download Excel/CSV** to export.","**More than one branch:** Settings ▸ 🏢 Branches links branches so items and cross-branch sales work."],"tips":["Use **Settings ▸ Install App ▸ 🔄 Re-download for Offline Use** after an update if the app ever fails to open offline."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**Printer does not print:** check paper and power, then Settings ▸ Hardware ▸ status. Switch it off and on — the app finds it again by itself. As a fallback use the system print dialog.","**\"Only 0 available\" when selling:** the item has no stock. Record it in Restock, or run a Stock Take.","**A sale is missing from Daily Sales:** tap **🔎 Check for missing sales** under the list. Pay-Later bills only count when paid; check Bills. In Aqua POS check the site selected at the top.","**The login window appears again:** just log in; it will not reappear over a running session.","**Forgot the password:** tap **Forgot the password?** on the login screen and use **Email me a reset link**.","**Something looks out of date on a device:** wait for the green dot, then reload the page once.","**Still stuck:** the Owner sees errors from every shop in the Owner Console ▸ Errors tab — tell your provider what you were doing and roughly when."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Hotel POS, in the order they appear:","tabs":[["Sales Counter","Where every sale is made: search or scan items, build the cart, take payment, print the receipt."],["Kitchen","Dishes prepared and sold today: log portions prepared, see sold and left, shelf life."],["Tabs","Open tabs for a table, room or guest: add rounds of orders over time, settle at the end."],["Service Orders","Waiters take orders here — no Sales Counter needed: pick the table or room (and a customer name if you like), tap the items, then POST ORDER: the kitchen and the bar each get their slip (no prices). Tap 📋 Orders to see your own orders: UPDATE ORDER to add, remove or exchange items (only the change prints), SETTLE to print the customer's bill with prices, the total and the shop's payment details — the cashier takes the payment. Cashiers and supervisors also see QR orders, move / split / merge and the station settings here."],["Kitchen & Bar Display","The screen for the kitchen, the bar, the bakery… each sees only its own items: New → Accepted → Preparing → Ready → Served, with the waiting time, late orders in red and rush orders first. Waiters are told when their items are ready."],["Bar & Kegs","Shots, doubles and bottles from open bottles; draught kegs (take from the store, connect, replace, wastage, measure), low-keg alerts, keg reconciliation and the bar audit."],["Facilities","Pool, pool / snooker tables, cabanas, conference rooms…: start, pause and end timed sessions, sell pool passes (with capacity and expiry), and book any facility without double booking. Time and passes go on the customer’s one bill with their food and drinks."],["Hotel","Rooms at a glance for the next 14 days, reservations (never sold twice), arrivals and check-in, housekeeping (dirty → cleaning → clean → inspected), service requests (towels, cot, decorations…) and room types with their nightly rates."],["Custom Orders & Events","Custom cakes, special meals and platters, catering and events: take the details (size, flavour, message, allergies, guests, menu…) and reference pictures, quote, record the customer’s approval, take the deposit (a real payment with a receipt), schedule, produce, quality-check, tell the customer it is ready, and collect the balance. Events can book their venue; packages (e.g. a family pool package) sell food, drinks and pool access as one priced item."],["Hospitality Reports","For a day or a period: sales, payments (cash, M-Pesa — with any not verified — card), what is still outstanding and the estimated profit, kept apart; by outlet, order type, source, waiter and table; top products and drinks; every order change with its reason; hotel occupancy and room revenue; pool passes and busiest hour; pool-table hours and use; custom orders and their balances."],["Dashboard","Today at a glance: sales, money in by payment method, low stock and what needs attention."],["Inventory","Everything you stock: search, edit prices and quantities, import/export Excel, opening stock."],["Add New Items","Add items one by one, many at once (bulk), or from a photo of a list (Capture List)."],["Restock","Record stock you received: quantity and buying price; low-stock buttons add items for you."],["Orders","Purchase orders to suppliers: create, send on WhatsApp, mark in transit, receive (stock goes up on arrival)."],["Stock Take","Count the shelf, type the counts, and correct the system to what is really there."],["Reports","Generate sales, insights (busiest hours, best workers, trends), staff, stock, bills & debts, expenses & profit reports. Includes X/Z Reports and an automatic scheduled Daily Sales Report."],["Audit","A searchable, read-only timeline of who did what and when — sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes."],["Store","A separate warehouse list (not your selling stock); take items from it into inventory."],["Barcode","Save, generate and print barcodes for your items."],["Tables & Rooms","Set up your tables, rooms and utensils (generate Table 01… in one go)."],["Returned Goods","Customer returns and exchanges: refund, swap, faulty items."],["Deliveries","Delivery orders assigned to drivers: picked up, on route, delivered."],["Cross-Branch Sales","Sell an item that another of your branches holds."],["Daily Sales","Every sale for a day / week / month / range, by payment method, with printing."],["Stock Report","Stock movement over a period: opening, received, sold, closing, with values."],["Profits & Expenses","Record expenses and see gross and net profit for any period."],["Demand Trends","What sells most, and when: best sellers and slow movers."],["Bills","Pay-Later sales still owing: settle in full or in part, see closed bills."],["Debts","Money customers owe you outside of bills; record and settle."],["Trade Credits","Money owed between you and another business (I owe them / they owe me)."],["My Customers","Your customer list with purchase history and loyalty."],["Contracts","Wholesale contracts and their outstanding balances."],["Staff","Add staff, choose which tabs each can use, send invite links, see who is serving."],["Attendance","Staff clock in / out and hours worked."],["Settings","Business details, receipts, tax, hardware, security, backups and more."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
 <!-- @shared-block:guide-data:end -->
 
 <!-- @shared-block:hardware-quick-access:begin -->
@@ -42694,7 +43111,7 @@ async function syncHaveCheck(payload) {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-145';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-147';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -42727,7 +43144,9 @@ async function syncHaveCheck(payload) {
                 var args = typeof input === 'string' ? [input, Object.assign({}, init, { headers: headers })] : [new Request(input, Object.assign({}, init, { headers: headers }))];
                 return realFetch.apply(this, args).then(function (res) {
                     // zip 143: remember how the last API call failed, so a message can say what really happened (see netErrText)
-                    try { if (res && !res.ok) window.__apiLastFail = { kind: 'http', status: res.status, at: Date.now() }; } catch (e) { /* cosmetic */ }
+                    try { if (res && !res.ok) window.__apiLastFail = { kind: 'http', status: res.status, at: Date.now(), challenge: String(res.headers.get('cf-mitigated') || '').toLowerCase() === 'challenge' }; } catch (e) { /* cosmetic */ }
+                    // zip 147: Cloudflare's security check answered instead of the POS server — that is not "refused" nor "offline"
+                    try { if (res && window.__apiLastFail && window.__apiLastFail.challenge && window.__apiLastFail.at === Date.now() && window.PosNet) window.PosNet.report('challenge', 'Cloudflare security check (' + res.status + ')'); } catch (e) { /* cosmetic */ }
                     if (res && res.status === 401) {
                         res.clone().json().then(function (b) { if (b && b.code === 'device_not_paired') notPaired(); }).catch(function () {});
                     }
@@ -43335,6 +43754,16 @@ async function syncHaveCheck(payload) {
                 logSynced(byField);
             } catch (e) { /* housekeeping */ }
         };
+        // zip 146: the server was asked afterwards and does NOT hold these (another till's save landed on top of ours): back to
+        // "waiting to send", so the next push carries them again and the dot does not show "all sent".
+        window.salesJournalUnconfirm = function (f, ids) {
+            try {
+                var m = meta[f]; if (!m || !ids || !ids.length) return;
+                var back = [];
+                ids.forEach(function (id) { var e = m.get(String(id)); if (e && e.st === 'synced') { e.st = 'pending'; delete e.syncedAt; back.push(String(id)); } });
+                if (back.length) patchRecords(f, back, { status: 'pending', syncedAt: null });
+            } catch (e) { /* bookkeeping */ }
+        };
         window.salesJournalSeenRecords = function (f, records) { var o = {}; o[f] = records; window.salesJournalSeen(o); };
         window.salesJournalPushStarted = function () {
             var now = Date.now();
@@ -43394,7 +43823,9 @@ async function syncHaveCheck(payload) {
         window.salesJournalDurable = function (id) {
             var sid = String(id || ''), e = meta.salesLog && meta.salesLog.get(sid);
             var res = function (j) { return { local: !!(e && e.ls !== false), journal: !!j, server: !!(e && e.st === 'synced'), tracked: !!e }; };
-            if (!e) return Promise.resolve({ local: true, journal: false, server: false, tracked: false });
+            // zip 147: a sale the journal never saw (a stopped tab, a skipped capture) was answered "saved on this device" WITHOUT
+            // looking — and the receipt said "✓ Sale saved". Now it is read back from storage.
+            if (!e) return Promise.resolve({ local: typeof window.saleStoredLocally === 'function' ? window.saleStoredLocally({ id: sid }) : false, journal: false, server: false, tracked: false });
             var p = writes[kOf('salesLog', sid)];
             if (!p) return Promise.resolve(res(e.idb !== false && !dbBroken && e.st !== 'unconfirmed'));
             return Promise.race([p, new Promise(function (r) { setTimeout(function () { r(false); }, 2500); })]).then(res);
@@ -43785,7 +44216,7 @@ async function syncHaveCheck(payload) {
             var repaired = repairRecords();
             if (window.posNetOffline && window.posNetOffline()) return { repaired: repaired, online: false };
             // a full fetch (not "changes since"): sales this device lost, that the server still has, come back into its list
-            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ }
+            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ } window.__pullFullOnce = true;   // zip 147b: stays full even if unsent changes are pushed first
             var ok = false;
             try {
                 if (typeof flushPendingPush === 'function') await flushPendingPush();
@@ -43857,7 +44288,7 @@ async function syncHaveCheck(payload) {
         };
         window.salesJournalFetchFromServer = async function (ids) {
             // Sales the server holds for the day but this device does not (another till, or lost here): fetched with the normal pull.
-            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* the next pull is a full one anyway */ }
+            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* the next pull is a full one anyway */ } window.__pullFullOnce = true;   // zip 147b: stays full even if unsent changes are pushed first
             if (typeof pullStateOnce === 'function') await pullStateOnce();
             else if (typeof pullFromServerOnce === 'function') await pullFromServerOnce();
             else if (typeof pullState === 'function') await pullState();
@@ -43948,7 +44379,7 @@ async function syncHaveCheck(payload) {
                 if (!sent) throw new Error('The server did not accept this device\'s unsent changes (they are kept here). It tries again by itself.');
                 say(1, 'ok', 'Everything on this device is on the server.');
                 say(2, 'run', 'Fetching the shop from the server…');
-                try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ }
+                try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ } window.__pullFullOnce = true;   // zip 147b: stays full even if unsent changes are pushed first
                 await tries(async function () {
                     window.__pullInFlight = false;
                     if (typeof pullStateOnce === 'function') await pullStateOnce();
@@ -44314,6 +44745,11 @@ async function syncHaveCheck(payload) {
         if (window.PosNet) return;
         var HEALTH = '/api/health';
         var PROBES = ['https://www.gstatic.com/generate_204', 'https://1.1.1.1/cdn-cgi/trace'];
+        // zip 147 — THIS SITE ITSELF is asked first. "No internet" was decided by two OUTSIDE sites: on a network that blocks or
+        // intercepts them (some ISPs, office firewalls, DNS filters), one slow or blocked health check made the app say "no internet"
+        // while the POS site itself was reachable. Any answer from our own site (even a 404) proves the device is online. /favicon.ico
+        // is never served by the service worker (only the page, the manifest and the icons are), so this is a real network answer.
+        var OWN_PROBE = '/favicon.ico';
         var BACKOFF = [2000, 4000, 8000, 15000, 30000];
         var S = { state: 'checking', detail: '', since: Date.now(), lastOk: 0, lastCheck: 0, fails: 0, nextAt: 0, checking: null, checkStarted: 0, lastTick: Date.now(), authIssue: '', lastSync: null, history: [] };
         var listeners = [];
@@ -44323,8 +44759,12 @@ async function syncHaveCheck(payload) {
             offline: 'Offline — this device has no internet. Selling works; everything is sent automatically when the connection is back.',
             backend_unavailable: 'Your internet works, but the POS server is not answering right now. Retrying automatically — selling works and nothing is lost.',
             auth_required: 'Connected — but this device must be paired or signed in again before it can sync.',
+            security_check: 'Connected — but Cloudflare\'s security check is holding back this browser\'s requests to the POS server. Tap the dot to clear it (the page reloads once; nothing is lost).',
             config_error: 'Connected — but the server refused the sync. Nothing is lost; support has been told.',
         };
+        // What the last check actually saw (zip 147): shown when the dot is tapped, and sent to the Owner Console's Errors tab when this
+        // device is shown anything but Online (see reportEpisode) — so a wrong "offline" on a real phone can be traced to its cause.
+        S.diag = null;
         function note(kind, detail) { S.history.unshift({ at: Date.now(), kind: kind, detail: String(detail || '').slice(0, 120) }); if (S.history.length > 40) S.history.length = 40; }
 
         function set(state, detail) {
@@ -44358,10 +44798,29 @@ async function syncHaveCheck(payload) {
         // -> { kind: 'ok' | 'http' | 'timeout' | 'neterr', status }
         function probeHealth(ms) {
             // (no ?deep=1: "is the server reachable?" must not wait on a storage read — a storage problem answers 503 on sync anyway)
+            var t0 = Date.now();
             return timed(HEALTH + '?t=' + Date.now(), { method: 'GET' }, ms).then(function (r) {
-                if (r.res) return { kind: r.res.ok ? 'ok' : 'http', status: r.res.status };
-                return { kind: r.timedOut ? 'timeout' : 'neterr', status: 0 };
+                var out;
+                if (r.res) {
+                    var hd = r.res.headers;
+                    out = { kind: r.res.ok ? 'ok' : 'http', status: r.res.status, ct: String(hd.get('content-type') || '').slice(0, 40), ray: hd.get('cf-ray') || '' };
+                    // Cloudflare answered with a security challenge instead of the POS server (Bot Fight Mode / WAF / Security Level):
+                    // a script cannot solve it — only loading the page can (see sw.js, which lets that page through). zip 147
+                    if (isChallenge(r.res)) out.kind = 'challenge';
+                } else {
+                    out = { kind: r.timedOut ? 'timeout' : 'neterr', status: 0, err: r.err ? String(r.err.name || '') + ': ' + String(r.err.message || '').slice(0, 80) : '' };
+                }
+                out.ms = Date.now() - t0;
+                return out;
             });
+        }
+        function isChallenge(res) {
+            try { return String(res.headers.get('cf-mitigated') || '').toLowerCase() === 'challenge'; } catch (e) { return false; }
+        }
+        // Does THIS SITE answer at all (any status)? -> true / false. zip 147
+        function probeOwnSite(ms) {
+            if (window.__posNetOwnProbe) return window.__posNetOwnProbe();                    // (tests)
+            return timed(OWN_PROBE + '?posnet=' + Date.now(), { method: 'GET' }, ms).then(function (r) { return !!r.res; });
         }
         // Does this device have internet at all? Opaque (no-cors) requests to two independent sites: any answer = yes.
         function probeInternet(ms) {
@@ -44398,7 +44857,11 @@ async function syncHaveCheck(payload) {
                     // with working internet; the shorter limits used then (4 s / 3 s) timed out on every check on a slow line, and the app
                     // stayed "Offline" for good. A phone that is REALLY offline fails at once anyway, so waiting longer costs it nothing.
                     var h = await probeHealth(12000);
-                    if (h.kind === 'ok') {
+                    S.diag = { at: Date.now(), reason: String(reason || ''), health: h, navOnLine: navigator.onLine, pwa: isStandalone(), sw: swState() };
+                    if (h.kind === 'challenge') {
+                        S.lastOk = Date.now();                                          // the network works: Cloudflare answered
+                        set('security_check', 'Cloudflare security check (' + h.status + ')');
+                    } else if (h.kind === 'ok') {
                         S.lastOk = Date.now();
                         set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
                     } else if (stale()) {
@@ -44407,11 +44870,16 @@ async function syncHaveCheck(payload) {
                         // the server ANSWERED: this device has internet; the POS side is failing (5xx, overloaded, maintenance)
                         set('backend_unavailable', 'the server answered ' + h.status);
                     } else {
-                        var net = await probeInternet(9000);
+                        // no answer from the health check: is it this device's internet, or only the POS server? Our own site first.
+                        var own = await probeOwnSite(9000);
+                        var net = own || await probeInternet(9000);
+                        S.diag.ownSite = own; S.diag.internet = net;
                         if (stale()) set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
+                        else if (own) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time (the site itself did)' : 'the POS server could not be reached (the site itself answered)');
                         else if (net) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time' : 'the POS server could not be reached');
                         else set('offline', hinted ? 'the device reports no network' : 'no answer from the internet');
                     }
+                    reportEpisode();
                 } catch (e) {
                     set('backend_unavailable', 'check failed');
                 } finally {
@@ -44434,6 +44902,7 @@ async function syncHaveCheck(payload) {
                 return;
             }
             if (kind === 'auth') { S.authIssue = info || 'auth'; S.lastOk = Date.now(); set('auth_required', S.authIssue); return; }
+            if (kind === 'challenge') { S.lastOk = Date.now(); set('security_check', info || 'Cloudflare security check'); reportEpisode(); return; }
             if (kind === 'config') { S.lastOk = Date.now(); set('config_error', info || ''); return; }
             if (kind === 'busy') {
                 // one "busy, try again in 2 s" is normal traffic; only a server that stays failing is "unavailable"
@@ -44448,6 +44917,7 @@ async function syncHaveCheck(payload) {
             if (status >= 200 && status < 400) return report('ok');
             if (status === 401 || status === 403) return report('auth', code || (status === 401 ? 'device_not_paired' : 'licence'));
             if (status === 413) return code === 'push_too_large' ? report('busy') : report('config', code || 'too large');
+            if (code === 'shop_db_unavailable') return report('config', code);      // zip 147: not "busy" — the shop's database is down (see pos-sync)
             if (status === 408 || status === 425 || status === 429 || status >= 500) return report('busy', status);
             return report('config', 'http ' + status);
         }
@@ -44456,7 +44926,7 @@ async function syncHaveCheck(payload) {
         function effective(sync) {
             var net = S.state;
             if (net === 'offline') return 'offline';
-            if (net === 'backend_unavailable' || net === 'auth_required' || net === 'config_error') return 'error';
+            if (net === 'backend_unavailable' || net === 'auth_required' || net === 'config_error' || net === 'security_check') return 'error';
             if (sync === 'offline') return 'syncing';                        // a failed request is being checked, not "offline"
             if (net === 'checking' && sync !== 'synced') return 'syncing';
             return sync || 'syncing';
@@ -44469,6 +44939,7 @@ async function syncHaveCheck(payload) {
                 return 'Online — Syncing… (tap to sync now)';
             }
             if (net === 'auth_required') return S.authIssue === 'device_not_paired' ? 'Connected — this device must be paired (Settings ▸ Devices & Security) before it can sync.' : (S.authIssue === 'licence' ? 'Connected — the shop\'s link is not active. Selling works; contact support.' : MSG.auth_required);
+            if (net === 'config_error' && /^shop_db/.test(S.detail || '')) return 'Connected — the server\'s shop database is not responding, so this shop cannot sync yet. Selling works and every sale is kept on this device; it is sent by itself once the server is fixed.';
             return MSG[net] || MSG.checking;
         }
         var origSet = null;
@@ -44499,6 +44970,31 @@ async function syncHaveCheck(payload) {
             w.__posNet = true;
             window.setSyncStatus = w;
         }
+
+        function isStandalone() { try { return !!((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone); } catch (e) { return false; } }
+        function swState() { try { return navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'; } catch (e) { return 'n/a'; } }
+        // DIAGNOSTICS (zip 147): anything but Online is reported ONCE per cause and per page session to the Owner Console's 🐞 Errors tab,
+        // with the evidence (what the health check got, whether our own site and the outside sites answered, what the browser said).
+        // Grouped by cause, so 50 phones with the same problem are one line with a count. A report made while offline is queued and
+        // sent when the connection is back (see error-reporting.html).
+        var reported = {};
+        function reportEpisode() {
+            try {
+                if (S.state === 'online' || S.state === 'checking' || typeof window.__reportClientError !== 'function') return;
+                var d = S.diag || {}, h = d.health || {};
+                var cause = S.state + ' | health ' + (h.kind || '?') + (h.status ? ' ' + h.status : '') + (d.ownSite === undefined ? '' : ' | own site ' + (d.ownSite ? 'answered' : 'silent')) + (d.internet === undefined ? '' : ' | internet ' + (d.internet ? 'yes' : 'no'));
+                if (reported[cause]) return;
+                reported[cause] = 1;
+                window.__reportClientError('Connectivity shown as ' + S.state.replace('_', ' ') + ' — ' + cause, JSON.stringify({ detail: S.detail, diag: d, ua: navigator.userAgent, release: window.__APP_RELEASE || '', history: S.history.slice(0, 8) }).slice(0, 1400));
+            } catch (e) { /* diagnostics never break the app */ }
+        }
+        // Tap the dot while Cloudflare's check is holding requests: load the page once so the check can run (sw.js lets it through).
+        document.addEventListener('click', function (ev) {
+            try {
+                var dot = ev.target && ev.target.closest && ev.target.closest('#sync-status');
+                if (dot && S.state === 'security_check') { location.reload(); }
+            } catch (e) { /* optional */ }
+        });
 
         /* ---- when to check ---- */
         function tick() {
@@ -44531,6 +45027,7 @@ async function syncHaveCheck(payload) {
             offline: function () { return S.state === 'offline'; },
             subscribe: function (fn) { listeners.push(fn); return function () { listeners = listeners.filter(function (f) { return f !== fn; }); }; },
             history: function () { return S.history.slice(); },
+            diagnostics: function () { return S.diag ? JSON.parse(JSON.stringify(S.diag)) : null; },
             _state: S,
         };
         // For feature code that only needs "is it worth trying the network?" — false only when the manager has CHECKED there is none.

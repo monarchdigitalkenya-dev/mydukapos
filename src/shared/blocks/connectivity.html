@@ -20,6 +20,11 @@
         if (window.PosNet) return;
         var HEALTH = '/api/health';
         var PROBES = ['https://www.gstatic.com/generate_204', 'https://1.1.1.1/cdn-cgi/trace'];
+        // zip 147 — THIS SITE ITSELF is asked first. "No internet" was decided by two OUTSIDE sites: on a network that blocks or
+        // intercepts them (some ISPs, office firewalls, DNS filters), one slow or blocked health check made the app say "no internet"
+        // while the POS site itself was reachable. Any answer from our own site (even a 404) proves the device is online. /favicon.ico
+        // is never served by the service worker (only the page, the manifest and the icons are), so this is a real network answer.
+        var OWN_PROBE = '/favicon.ico';
         var BACKOFF = [2000, 4000, 8000, 15000, 30000];
         var S = { state: 'checking', detail: '', since: Date.now(), lastOk: 0, lastCheck: 0, fails: 0, nextAt: 0, checking: null, checkStarted: 0, lastTick: Date.now(), authIssue: '', lastSync: null, history: [] };
         var listeners = [];
@@ -29,8 +34,12 @@
             offline: 'Offline — this device has no internet. Selling works; everything is sent automatically when the connection is back.',
             backend_unavailable: 'Your internet works, but the POS server is not answering right now. Retrying automatically — selling works and nothing is lost.',
             auth_required: 'Connected — but this device must be paired or signed in again before it can sync.',
+            security_check: 'Connected — but Cloudflare\'s security check is holding back this browser\'s requests to the POS server. Tap the dot to clear it (the page reloads once; nothing is lost).',
             config_error: 'Connected — but the server refused the sync. Nothing is lost; support has been told.',
         };
+        // What the last check actually saw (zip 147): shown when the dot is tapped, and sent to the Owner Console's Errors tab when this
+        // device is shown anything but Online (see reportEpisode) — so a wrong "offline" on a real phone can be traced to its cause.
+        S.diag = null;
         function note(kind, detail) { S.history.unshift({ at: Date.now(), kind: kind, detail: String(detail || '').slice(0, 120) }); if (S.history.length > 40) S.history.length = 40; }
 
         function set(state, detail) {
@@ -64,10 +73,29 @@
         // -> { kind: 'ok' | 'http' | 'timeout' | 'neterr', status }
         function probeHealth(ms) {
             // (no ?deep=1: "is the server reachable?" must not wait on a storage read — a storage problem answers 503 on sync anyway)
+            var t0 = Date.now();
             return timed(HEALTH + '?t=' + Date.now(), { method: 'GET' }, ms).then(function (r) {
-                if (r.res) return { kind: r.res.ok ? 'ok' : 'http', status: r.res.status };
-                return { kind: r.timedOut ? 'timeout' : 'neterr', status: 0 };
+                var out;
+                if (r.res) {
+                    var hd = r.res.headers;
+                    out = { kind: r.res.ok ? 'ok' : 'http', status: r.res.status, ct: String(hd.get('content-type') || '').slice(0, 40), ray: hd.get('cf-ray') || '' };
+                    // Cloudflare answered with a security challenge instead of the POS server (Bot Fight Mode / WAF / Security Level):
+                    // a script cannot solve it — only loading the page can (see sw.js, which lets that page through). zip 147
+                    if (isChallenge(r.res)) out.kind = 'challenge';
+                } else {
+                    out = { kind: r.timedOut ? 'timeout' : 'neterr', status: 0, err: r.err ? String(r.err.name || '') + ': ' + String(r.err.message || '').slice(0, 80) : '' };
+                }
+                out.ms = Date.now() - t0;
+                return out;
             });
+        }
+        function isChallenge(res) {
+            try { return String(res.headers.get('cf-mitigated') || '').toLowerCase() === 'challenge'; } catch (e) { return false; }
+        }
+        // Does THIS SITE answer at all (any status)? -> true / false. zip 147
+        function probeOwnSite(ms) {
+            if (window.__posNetOwnProbe) return window.__posNetOwnProbe();                    // (tests)
+            return timed(OWN_PROBE + '?posnet=' + Date.now(), { method: 'GET' }, ms).then(function (r) { return !!r.res; });
         }
         // Does this device have internet at all? Opaque (no-cors) requests to two independent sites: any answer = yes.
         function probeInternet(ms) {
@@ -104,7 +132,11 @@
                     // with working internet; the shorter limits used then (4 s / 3 s) timed out on every check on a slow line, and the app
                     // stayed "Offline" for good. A phone that is REALLY offline fails at once anyway, so waiting longer costs it nothing.
                     var h = await probeHealth(12000);
-                    if (h.kind === 'ok') {
+                    S.diag = { at: Date.now(), reason: String(reason || ''), health: h, navOnLine: navigator.onLine, pwa: isStandalone(), sw: swState() };
+                    if (h.kind === 'challenge') {
+                        S.lastOk = Date.now();                                          // the network works: Cloudflare answered
+                        set('security_check', 'Cloudflare security check (' + h.status + ')');
+                    } else if (h.kind === 'ok') {
                         S.lastOk = Date.now();
                         set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
                     } else if (stale()) {
@@ -113,11 +145,16 @@
                         // the server ANSWERED: this device has internet; the POS side is failing (5xx, overloaded, maintenance)
                         set('backend_unavailable', 'the server answered ' + h.status);
                     } else {
-                        var net = await probeInternet(9000);
+                        // no answer from the health check: is it this device's internet, or only the POS server? Our own site first.
+                        var own = await probeOwnSite(9000);
+                        var net = own || await probeInternet(9000);
+                        S.diag.ownSite = own; S.diag.internet = net;
                         if (stale()) set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
+                        else if (own) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time (the site itself did)' : 'the POS server could not be reached (the site itself answered)');
                         else if (net) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time' : 'the POS server could not be reached');
                         else set('offline', hinted ? 'the device reports no network' : 'no answer from the internet');
                     }
+                    reportEpisode();
                 } catch (e) {
                     set('backend_unavailable', 'check failed');
                 } finally {
@@ -140,6 +177,7 @@
                 return;
             }
             if (kind === 'auth') { S.authIssue = info || 'auth'; S.lastOk = Date.now(); set('auth_required', S.authIssue); return; }
+            if (kind === 'challenge') { S.lastOk = Date.now(); set('security_check', info || 'Cloudflare security check'); reportEpisode(); return; }
             if (kind === 'config') { S.lastOk = Date.now(); set('config_error', info || ''); return; }
             if (kind === 'busy') {
                 // one "busy, try again in 2 s" is normal traffic; only a server that stays failing is "unavailable"
@@ -154,6 +192,7 @@
             if (status >= 200 && status < 400) return report('ok');
             if (status === 401 || status === 403) return report('auth', code || (status === 401 ? 'device_not_paired' : 'licence'));
             if (status === 413) return code === 'push_too_large' ? report('busy') : report('config', code || 'too large');
+            if (code === 'shop_db_unavailable') return report('config', code);      // zip 147: not "busy" — the shop's database is down (see pos-sync)
             if (status === 408 || status === 425 || status === 429 || status >= 500) return report('busy', status);
             return report('config', 'http ' + status);
         }
@@ -162,7 +201,7 @@
         function effective(sync) {
             var net = S.state;
             if (net === 'offline') return 'offline';
-            if (net === 'backend_unavailable' || net === 'auth_required' || net === 'config_error') return 'error';
+            if (net === 'backend_unavailable' || net === 'auth_required' || net === 'config_error' || net === 'security_check') return 'error';
             if (sync === 'offline') return 'syncing';                        // a failed request is being checked, not "offline"
             if (net === 'checking' && sync !== 'synced') return 'syncing';
             return sync || 'syncing';
@@ -175,6 +214,7 @@
                 return 'Online — Syncing… (tap to sync now)';
             }
             if (net === 'auth_required') return S.authIssue === 'device_not_paired' ? 'Connected — this device must be paired (Settings ▸ Devices & Security) before it can sync.' : (S.authIssue === 'licence' ? 'Connected — the shop\'s link is not active. Selling works; contact support.' : MSG.auth_required);
+            if (net === 'config_error' && /^shop_db/.test(S.detail || '')) return 'Connected — the server\'s shop database is not responding, so this shop cannot sync yet. Selling works and every sale is kept on this device; it is sent by itself once the server is fixed.';
             return MSG[net] || MSG.checking;
         }
         var origSet = null;
@@ -205,6 +245,31 @@
             w.__posNet = true;
             window.setSyncStatus = w;
         }
+
+        function isStandalone() { try { return !!((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone); } catch (e) { return false; } }
+        function swState() { try { return navigator.serviceWorker && navigator.serviceWorker.controller ? 'controlled' : 'none'; } catch (e) { return 'n/a'; } }
+        // DIAGNOSTICS (zip 147): anything but Online is reported ONCE per cause and per page session to the Owner Console's 🐞 Errors tab,
+        // with the evidence (what the health check got, whether our own site and the outside sites answered, what the browser said).
+        // Grouped by cause, so 50 phones with the same problem are one line with a count. A report made while offline is queued and
+        // sent when the connection is back (see error-reporting.html).
+        var reported = {};
+        function reportEpisode() {
+            try {
+                if (S.state === 'online' || S.state === 'checking' || typeof window.__reportClientError !== 'function') return;
+                var d = S.diag || {}, h = d.health || {};
+                var cause = S.state + ' | health ' + (h.kind || '?') + (h.status ? ' ' + h.status : '') + (d.ownSite === undefined ? '' : ' | own site ' + (d.ownSite ? 'answered' : 'silent')) + (d.internet === undefined ? '' : ' | internet ' + (d.internet ? 'yes' : 'no'));
+                if (reported[cause]) return;
+                reported[cause] = 1;
+                window.__reportClientError('Connectivity shown as ' + S.state.replace('_', ' ') + ' — ' + cause, JSON.stringify({ detail: S.detail, diag: d, ua: navigator.userAgent, release: window.__APP_RELEASE || '', history: S.history.slice(0, 8) }).slice(0, 1400));
+            } catch (e) { /* diagnostics never break the app */ }
+        }
+        // Tap the dot while Cloudflare's check is holding requests: load the page once so the check can run (sw.js lets it through).
+        document.addEventListener('click', function (ev) {
+            try {
+                var dot = ev.target && ev.target.closest && ev.target.closest('#sync-status');
+                if (dot && S.state === 'security_check') { location.reload(); }
+            } catch (e) { /* optional */ }
+        });
 
         /* ---- when to check ---- */
         function tick() {
@@ -237,6 +302,7 @@
             offline: function () { return S.state === 'offline'; },
             subscribe: function (fn) { listeners.push(fn); return function () { listeners = listeners.filter(function (f) { return f !== fn; }); }; },
             history: function () { return S.history.slice(); },
+            diagnostics: function () { return S.diag ? JSON.parse(JSON.stringify(S.diag)) : null; },
             _state: S,
         };
         // For feature code that only needs "is it worth trying the network?" — false only when the manager has CHECKED there is none.

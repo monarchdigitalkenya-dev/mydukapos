@@ -348,6 +348,16 @@
                 logSynced(byField);
             } catch (e) { /* housekeeping */ }
         };
+        // zip 146: the server was asked afterwards and does NOT hold these (another till's save landed on top of ours): back to
+        // "waiting to send", so the next push carries them again and the dot does not show "all sent".
+        window.salesJournalUnconfirm = function (f, ids) {
+            try {
+                var m = meta[f]; if (!m || !ids || !ids.length) return;
+                var back = [];
+                ids.forEach(function (id) { var e = m.get(String(id)); if (e && e.st === 'synced') { e.st = 'pending'; delete e.syncedAt; back.push(String(id)); } });
+                if (back.length) patchRecords(f, back, { status: 'pending', syncedAt: null });
+            } catch (e) { /* bookkeeping */ }
+        };
         window.salesJournalSeenRecords = function (f, records) { var o = {}; o[f] = records; window.salesJournalSeen(o); };
         window.salesJournalPushStarted = function () {
             var now = Date.now();
@@ -407,7 +417,9 @@
         window.salesJournalDurable = function (id) {
             var sid = String(id || ''), e = meta.salesLog && meta.salesLog.get(sid);
             var res = function (j) { return { local: !!(e && e.ls !== false), journal: !!j, server: !!(e && e.st === 'synced'), tracked: !!e }; };
-            if (!e) return Promise.resolve({ local: true, journal: false, server: false, tracked: false });
+            // zip 147: a sale the journal never saw (a stopped tab, a skipped capture) was answered "saved on this device" WITHOUT
+            // looking — and the receipt said "✓ Sale saved". Now it is read back from storage.
+            if (!e) return Promise.resolve({ local: typeof window.saleStoredLocally === 'function' ? window.saleStoredLocally({ id: sid }) : false, journal: false, server: false, tracked: false });
             var p = writes[kOf('salesLog', sid)];
             if (!p) return Promise.resolve(res(e.idb !== false && !dbBroken && e.st !== 'unconfirmed'));
             return Promise.race([p, new Promise(function (r) { setTimeout(function () { r(false); }, 2500); })]).then(res);
@@ -798,7 +810,7 @@
             var repaired = repairRecords();
             if (window.posNetOffline && window.posNetOffline()) return { repaired: repaired, online: false };
             // a full fetch (not "changes since"): sales this device lost, that the server still has, come back into its list
-            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ }
+            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ } window.__pullFullOnce = true;   // zip 147b: stays full even if unsent changes are pushed first
             var ok = false;
             try {
                 if (typeof flushPendingPush === 'function') await flushPendingPush();
@@ -870,7 +882,7 @@
         };
         window.salesJournalFetchFromServer = async function (ids) {
             // Sales the server holds for the day but this device does not (another till, or lost here): fetched with the normal pull.
-            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* the next pull is a full one anyway */ }
+            try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* the next pull is a full one anyway */ } window.__pullFullOnce = true;   // zip 147b: stays full even if unsent changes are pushed first
             if (typeof pullStateOnce === 'function') await pullStateOnce();
             else if (typeof pullFromServerOnce === 'function') await pullFromServerOnce();
             else if (typeof pullState === 'function') await pullState();
@@ -961,7 +973,7 @@
                 if (!sent) throw new Error('The server did not accept this device\'s unsent changes (they are kept here). It tries again by itself.');
                 say(1, 'ok', 'Everything on this device is on the server.');
                 say(2, 'run', 'Fetching the shop from the server…');
-                try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ }
+                try { localStorage.setItem('pos_last_synced_at', '0'); } catch (e) { /* full pull anyway */ } window.__pullFullOnce = true;   // zip 147b: stays full even if unsent changes are pushed first
                 await tries(async function () {
                     window.__pullInFlight = false;
                     if (typeof pullStateOnce === 'function') await pullStateOnce();

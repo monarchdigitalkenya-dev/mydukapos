@@ -12,6 +12,12 @@ export function makeServer() {
   const handler = async (url, opts = {}) => {
     const u = new URL(String(url), 'https://shop.mydukapos.store');
     if (state.down) throw new Error('offline');
+    // zip 146: the connectivity manager's own check (it decides the green / black dot); `state.healthDelay` simulates a slow line
+    if (u.pathname.endsWith('/api/health')) {
+      if (state.healthDelay) await new Promise((r) => setTimeout(r, state.healthDelay));
+      if (state.down) throw new Error('offline');
+      return new Response(JSON.stringify({ ok: true, t: Date.now() }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     const fwd = (() => { const h = new Headers(opts.headers || {}); h.set('content-type', 'application/json'); return h; })();
     if (u.pathname.endsWith('/api/device-pair')) {
       const dp = await import(pathToFileURL(path.join(ROOT, 'functions/api/device-pair.js')).href);
@@ -25,6 +31,10 @@ export function makeServer() {
     if (u.pathname.endsWith('/api/stock-integrity')) {
       const integ = await import(pathToFileURL(path.join(ROOT, 'functions/api/stock-integrity.js')).href);
       return integ.onRequestGet({ request: new Request('https://x.pages.dev/api/stock-integrity?c=C1'), env });
+    }
+    if (u.pathname.endsWith('/api/sync-have')) {
+      const sh = await import(pathToFileURL(path.join(ROOT, 'functions/api/sync-have.js')).href);
+      return sh.onRequestPost({ request: new Request('https://x.pages.dev/api/sync-have?c=C1', { method: 'POST', body: opts.body, headers: fwd }), env });
     }
     if (!u.pathname.endsWith('/api/pos-sync')) return new Response('{}', { status: 404 });
     const m = await import(pathToFileURL(path.join(ROOT, 'functions/api/pos-sync.js')).href);
@@ -45,3 +55,16 @@ export async function openDevice(app, server, storage = {}, wait = 900, extra = 
   return boot(app, { storage, fetch: server.fetch, wait, ...extra });
 }
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Close a device the way a person does — not in the middle of its own sync. (jsdom tears the page down under an unfinished fetch, and
+// the app's code that runs when that fetch answers then finds no document — something a real phone never does.)
+export async function closeWhenIdle(dev, ms = 15000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    let busy = false;
+    try { busy = !!(dev.w.__pushInFlight || dev.w.__pullInFlight || dev.w.__haveCheckBusy); } catch (e) { busy = false; }
+    if (!busy) break;
+    await sleep(50);
+  }
+  dev.close();
+}

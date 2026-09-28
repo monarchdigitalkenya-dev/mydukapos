@@ -41,11 +41,36 @@ import { stampSales } from './_staff-auth.js';
 // CORS is decided per request (see _cors.js): the apps call this on their own origin, so only the shop's own
 // domain family is ever answered — no more `Access-Control-Allow-Origin: *`.
 function busyResponse(cors, e) {
+  try { console.error('pos-sync failed:', e && e.stack ? e.stack : e); } catch (x) { /* logging only */ }   // the real error, in the Worker logs (zip 147)
   return new Response(JSON.stringify({ error: 'The server is busy — this device keeps its changes and sends them again in a moment.', code: 'busy', retryAfter: 2, detail: String((e && e.message) || e || '').slice(0, 160) }), {
     status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '2', ...cors },
   });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// zip 147 — THE SHOP'S OWN DATABASE DID NOT ANSWER. Permanent shops keep their data in a per-shop database (the ShopStore Durable Object,
+// defined in the separate router Worker). When that Worker is not deployed, is out of date, or cannot be reached, every call failed and
+// was answered "the server is busy — sending again in a moment" (503 busy): the till retried for ever, showed "Syncing…" with working
+// internet, and nothing anywhere said why (reproduced: every sync of a permanent shop 503 "busy" with an empty detail). It now answers
+// with its own code, logs the real error, and leaves a note the Owner Console shows — the device keeps every sale and says what is wrong.
+async function shopDbCall(env, clientId, op, payload) {
+  try {
+    const res = await shopCall(env, clientId, op, payload);
+    const ct = String(res.headers.get('content-type') || '');
+    if (res.status >= 500 && !ct.includes('application/json')) return { unavailable: true, why: `the shop database answered ${res.status}: ${(await res.text().catch(() => '')).slice(0, 120)}` };
+    return { res };
+  } catch (e) {
+    return { unavailable: true, why: String((e && e.message) || e || 'no answer').slice(0, 160) };
+  }
+}
+async function shopDbUnavailable(env, clientId, why, cors) {
+  try { console.error('pos-sync: shop database unavailable for', clientId, '-', why); } catch (x) { /* logging only */ }
+  try { await env.mydukapos_kv.put('shopdb-fail:' + clientId, JSON.stringify({ at: Date.now(), why }), { expirationTtl: 2 * 86400 }); } catch (e) { /* the answer below is what matters */ }
+  return new Response(JSON.stringify({
+    error: 'This shop\'s database on the server is not responding, so it cannot sync yet. Nothing is lost — every sale stays on this device and is sent by itself once the server is fixed.',
+    code: 'shop_db_unavailable', retryAfter: 30, detail: why,
+  }), { status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '30', ...cors } });
+}
 
 // Devices that synced this shop in the last day (from the device list the server keeps — see noteDevice in _merge.js).
 function activeDevices(reg, now) {
@@ -70,6 +95,24 @@ async function autoMoveToDatabase(env, clientId, why) {
   } catch (e) {
     try { await env.mydukapos_kv.put(key, JSON.stringify({ at: Date.now(), why, error: String(e && e.message || e).slice(0, 200) }), { expirationTtl: 6 * 3600 }); } catch (e2) { /* ignore */ }
   }
+}
+
+// How many of the log records (sales, stock changes, returns, expenses) a push carried are NOT in the stored shop — a later write
+// from another till overwrote them. (zip 146)
+const VERIFY_FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses'];
+function pushLostRecords(pushBody, storedState) {
+  let lost = 0;
+  for (const f of VERIFY_FIELDS) {
+    const sent = Array.isArray(pushBody && pushBody[f]) ? pushBody[f] : [];
+    if (!sent.length) continue;
+    const have = new Set((Array.isArray(storedState && storedState[f]) ? storedState[f] : []).map((r) => r && r.id != null ? String(r.id) : null));
+    for (const r of sent) if (r && r.id != null && r._deleted !== true && !have.has(String(r.id))) lost++;
+  }
+  return lost;
+}
+
+function carriesLogRecords(pushBody) {
+  return VERIFY_FIELDS.some((f) => Array.isArray(pushBody && pushBody[f]) && pushBody[f].some((r) => r && r.id != null && r._deleted !== true));
 }
 
 function jsonResponse(body, status = 200, cors = {}) {
@@ -133,10 +176,12 @@ async function handleGet(context) {
   if (mode === 'do') {
     const u = new URL(request.url);
     const hot = u.searchParams.get('hot');
-    const res = await shopCall(env, clientId, 'state', {
+    const got = await shopDbCall(env, clientId, 'state', {
       since: Number(u.searchParams.get('since')) || 0,
       hotDays: hot === 'all' ? 'all' : (Number(hot) || undefined),
     });
+    if (got.unavailable) return shopDbUnavailable(env, clientId, got.why, cors);
+    const res = got.res;
     return new Response(await res.text(), { status: res.status, headers: { 'Content-Type': 'application/json', ...cors } });
   }
 
@@ -209,8 +254,10 @@ async function handlePost(context) {
     if (Number(request.headers.get('content-length')) > maxPush) {
       return jsonResponse({ error: 'This push is too large to accept in one go.', code: 'push_too_large' }, 413, cors);
     }
-    let res = await shopCall(env, clientId, 'push', { body, serverNow: Date.now() });
-    if (res.status >= 500) { await sleep(400 + Math.floor(Math.random() * 400)); res = await shopCall(env, clientId, 'push', { body, serverNow: Date.now() }); }   // one quick retry (zip 123)
+    let got = await shopDbCall(env, clientId, 'push', { body, serverNow: Date.now() });
+    if (got.unavailable || got.res.status >= 500) { await sleep(400 + Math.floor(Math.random() * 400)); got = await shopDbCall(env, clientId, 'push', { body, serverNow: Date.now() }); }   // one quick retry (zip 123)
+    if (got.unavailable) return shopDbUnavailable(env, clientId, got.why, cors);
+    const res = got.res;
     const out = await res.json().catch(() => ({}));
     if (!res.ok) return res.status >= 500 ? busyResponse(cors, out && out.error) : jsonResponse(out, res.status, cors);
     // Tell the shop's other devices to pull right now. A bare poke, NOT the data: a device that doesn't understand it (an older
@@ -298,6 +345,16 @@ async function handlePost(context) {
       await writeStateText(env, stateKey(clientId), jsonText, {
         bytes, keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, writer, updatedAt: record.updatedAt,
       });
+      // zip 146 — VERIFY THE WRITE. Storage has no "write only if unchanged": two or three tills saving at the same moment each read the
+      // shop, added their own sales and wrote it back — the LAST write won and the others' sales were silently gone from the server,
+      // while those tills had been told "OK" and never sent them again (reproduced: 3 tills back online, only the last one's sales
+      // kept). Read it back: if a sale this push carried is missing, another till's write landed on top — merge again and write again.
+      if (attempt < 5 && env.SYNC_VERIFY_WRITE !== '0' && carriesLogRecords(body)) {      // a push without sales etc. has nothing to lose
+        await sleep(120 + Math.floor(Math.random() * 180));
+        const after = await readStateRaw(env, stateKey(clientId));
+        const lost = after ? pushLostRecords(body, JSON.parse(after.text)) : 0;   // body: after archived history was dropped
+        if (lost > 0) { contended = true; attempt++; continue; }
+      }
       break;
     } catch (e) {
       // Storage accepts about one write a second per shop: another device's save just landed. Wait a moment, then RE-READ and

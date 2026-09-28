@@ -373,10 +373,24 @@ export async function createClient(env, type, label, product, extra = {}) {
   await upsertIndexSummary(env, record);
   // A brand-new PERMANENT shop starts in its own database (no size ceiling, nothing archived away). Nothing is stored yet, so there is nothing to
   // import — just the flag. Skipped when the database is not set up on this project. Demo links stay single records until they are made permanent.
-  if (record.type === 'permanent' && env.SHOP_STORE) {
+  // zip 147: ...and only when that database ANSWERS. The binding existing proves nothing: with the router Worker not deployed (or out of
+  // date) every new permanent shop — the Owner Console's own included — was put on a database that could not be reached, and never synced.
+  if (record.type === 'permanent' && env.SHOP_STORE && (await shopDbAnswers(env, record.id))) {
     try { await env.mydukapos_kv.put(MODE_PREFIX + record.id, 'do', { metadata: { at: Date.now(), records: 0, bytes: 0, auto: true } }); } catch (e) { /* stays a normal shop */ }
   }
   return record;
+}
+
+// Does this shop's database (the ShopStore Durable Object) really answer, with current code? (zip 147)
+export async function shopDbAnswers(env, clientId) {
+  try {
+    const stub = env.SHOP_STORE.get(env.SHOP_STORE.idFromName(clientId));
+    const res = await Promise.race([
+      stub.fetch('https://shop-store/registry', { method: 'POST', body: '{}' }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000)),
+    ]);
+    return res.ok && String(res.headers.get('content-type') || '').includes('application/json');
+  } catch (e) { return false; }
 }
 
 // ---------- BRANCH GROUPS ----------

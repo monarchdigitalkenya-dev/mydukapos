@@ -30,6 +30,20 @@ for (const m of BLOCK_TARGETS) {
     const missing = names.filter((n) => !lib.has(n));
     if (missing.length) { console.error(`${m}: shared functions not in the library: ${missing.join(', ')}`); process.exit(2); }
     html = html.replace(REGION_RE, () => regionText(names, lib));
+    // zip 146: a shared function that calls ANOTHER shared function this app does not include (and does not define itself) is a
+    // ReferenceError waiting to happen — one inside a try { } is invisible to the lint, and silently broke every push once.
+    const have = new Set(names);
+    const unmet = [];
+    for (const n of names) {
+      const src = String(lib.get(n)).replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1');           // not in comments
+      for (const other of lib.keys()) {
+        if (have.has(other) || !new RegExp('(?<![\\w.$])' + other + '\\s*\\(').test(src)) continue;
+        if (new RegExp('typeof\\s+' + other + '\\b').test(src)) continue;                      // guarded: optional on purpose
+        if (new RegExp('function\\s+' + other + '\\b|\\b(const|let|var)\\s+' + other + '\\b|window\\.' + other + '\\s*=').test(html)) continue;
+        unmet.push(`${n} -> ${other}`);
+      }
+    }
+    if (unmet.length) { console.error(`${m}: shared functions call shared functions this app does not include (add them to its names list):\n  ${unmet.join('\n  ')}`); process.exit(2); }
   }
 
   for (const name of Object.keys(SHARED_BLOCKS)) {

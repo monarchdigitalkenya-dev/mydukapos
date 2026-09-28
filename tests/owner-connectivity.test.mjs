@@ -48,6 +48,7 @@ test('a rate-limited request says so; a request with no answer at all is the one
   assert.match(t.d.getElementById('demo-links-list').textContent, /too many requests/i);
   mode = 'down';
   t.w.__posNetInternetProbe = () => Promise.resolve(false);           // and the internet itself does not answer either
+  t.w.__posNetOwnProbe = () => Promise.resolve(false);                // ...nor this site (zip 147 asks it before saying "offline")
   await t.w.eval("renderGroupedClientsList('demo', true)");
   await t.w.eval('PosNet.check("test")');
   assert.equal(t.w.eval('ownerFailReason()').startsWith('this device is offline'), true, 'truly offline -> offline');

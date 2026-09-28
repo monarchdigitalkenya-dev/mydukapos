@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { ROOT, until } from './helpers.mjs';
 import { makeKV, seedShop } from './kv-fake.mjs';
 import { makeBinding, hasSqlite } from './do-fake.mjs';
-import { openDevice } from './e2e-harness.mjs';
+import { openDevice, closeWhenIdle } from './e2e-harness.mjs';
 
 // Zip 123: "Sync: send failed — the server refused or was busy" with several devices (phone + computer). Real Cloudflare KV accepts
 // about ONE write a second to the same record; a second device saving in that second got an error (and the server crashed on it).
@@ -94,7 +94,7 @@ test('the app: a "busy" answer is sent again by itself within seconds, logged on
   const journal = d.w.localStorage.getItem('pos_sync_journal_v1') || '[]';
   const failed = JSON.parse(journal).filter((e) => e.kind === 'failed');
   assert.ok(failed.length <= 1, 'at most one "failed" line for the whole episode');
-  d.close();
+  await closeWhenIdle(d);
 });
 
 test('phone + computer selling at the same time on real apps: every sale reaches the server, both end up agreeing', async () => {
@@ -119,5 +119,5 @@ test('phone + computer selling at the same time on real apps: every sale reaches
   assert.ok(refused >= 1, 'the storage really refused writes along the way');
   assert.ok(await until(async () => { await phone.w.eval('pullState()'); await computer.w.eval('pullState()'); return phone.w.eval('salesLog.length') === 6 && computer.w.eval('salesLog.length') === 6; }, 20000), 'both devices show all 6');
   assert.equal(s.serverState().inventory.find((i) => i.code === 'A').qty, 44, 'stock 50 - 6, each sale once');
-  phone.close(); computer.close();
+  await closeWhenIdle(phone); await closeWhenIdle(computer);   // not in the middle of their own sync
 });

@@ -87,7 +87,10 @@ export async function onRequestGet(context) {
     const bytes = meta && Number.isFinite(meta.bytes) ? meta.bytes : null;
     const dbShop = modes.has(id) && env.SHOP_STORE;
     let db = null;
-    if (dbShop) { try { db = await (await shopCall(env, id, 'stats', {})).json(); } catch (e) { db = null; } }
+    if (dbShop) { try { const r = await shopCall(env, id, 'stats', {}); db = r.ok ? await r.json() : null; } catch (e) { db = null; } }
+    // zip 147: its database did not answer — this shop cannot sync at all (see shopDbUnavailable in pos-sync.js)
+    let dbDown = null;
+    if (dbShop && !db) { try { dbDown = JSON.parse((await env.mydukapos_kv.get('shopdb-fail:' + id)) || 'null') || { at: Date.now(), why: 'the database did not answer' }; } catch (e) { dbDown = { at: Date.now(), why: 'the database did not answer' }; } }
     shops.push({
       mode: dbShop ? 'db' : 'kv',
       db: db ? { bytes: db.bytes, records: (db.collections || []).reduce((n, c) => n + c.n, 0), collections: (db.collections || []).map((c) => ({ col: c.col, n: c.n })) } : null,
@@ -100,8 +103,9 @@ export async function onRequestGet(context) {
       gz: !!(meta && meta.gz),
       at: meta && meta.at ? meta.at : null,
       writers: meta && Array.isArray(meta.writers) ? meta.writers : [],
-      level: dbShop ? 'ok' : (rejected ? 'refused' : sizeLevel(bytes == null ? NaN : bytes, policy)),
+      level: dbDown ? 'refused' : dbShop ? 'ok' : (rejected ? 'refused' : sizeLevel(bytes == null ? NaN : bytes, policy)),
       rejected,
+      dbDown,
     });
   }
   const rank = { refused: 0, critical: 1, warn: 2, ok: 3, unknown: 4 };

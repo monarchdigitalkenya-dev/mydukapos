@@ -117,6 +117,6 @@ test('every app carries the M-Pesa check; the role presets exist for the hospita
   const b = await app(); const { w } = b;
   assert.deepEqual(J(w, 'Object.keys(HOSP_ROLE_PRESETS)'), ['waiter', 'bartender', 'kitchen', 'cashier', 'receptionist', 'housekeeping', 'pool_attendant', 'event_manager', 'storekeeper', 'supervisor', 'accountant']);
   w.eval("newStaffSelectedRoles = []; hospApplyRolePreset('waiter')");
-  assert.deepEqual(J(w, 'newStaffSelectedRoles'), ['service-tab', 'tabs-tab', 'hosp-role:waiter']);
+  assert.deepEqual(J(w, 'newStaffSelectedRoles'), ['service-tab', 'hosp-role:waiter'], 'zip 147: a waiter gets the Orders tab only');
   b.close();
 });

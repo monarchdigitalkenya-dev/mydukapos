@@ -27,7 +27,7 @@ const NAVIGATION_NETWORK_TIMEOUT_MS = 3500;
 // zip 145 — BUMP THIS WITH EVERY RELEASE. A service worker only updates when THIS file changes; it had not changed for many releases,
 // so installed apps kept the service worker (and the old cached page) they were installed with. A new version here makes every
 // installed app install this worker, which re-downloads the whole shell (refreshShell) — the stuck phones catch up by themselves.
-const SW_VERSION = 'zip-145';
+const SW_VERSION = 'zip-147';
 
 // Paths are relative to the service worker's own location, not the site root.
 // Using absolute '/index.html' style paths silently breaks on any deployment
@@ -270,6 +270,10 @@ self.addEventListener('fetch', (event) => {
         let res = null, failed = false;
         try { res = await Promise.race([network, timedOut]); } catch (e) { failed = true; }
         if (res && res !== 'timeout' && res.ok) return res;
+        // zip 147 — Cloudflare's security check answered instead of the app. It must be SHOWN so the browser can complete it (it sets the
+        // clearance cookie and returns to the app); serving the cached app instead meant an installed app could never pass it, and every
+        // request to the POS server stayed blocked ("offline" / "server refused") with working internet.
+        if (res && res !== 'timeout' && String(res.headers.get('cf-mitigated') || '').toLowerCase() === 'challenge') return res;
         const fallback = await cachedPage();
         if (fallback) return fallback;                                 // offline, slow, or an error answer: the cached app
         if (res && res !== 'timeout') return res;                      // an error answer and nothing cached

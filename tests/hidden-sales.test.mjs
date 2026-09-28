@@ -118,7 +118,7 @@ test('device, once: sales with a broken date / item list are repaired and appear
   assert.ok(server.serverState().salesLog.some((s) => s.id === 'lostHere'), 'the server has it');
   const st = deviceStorage(a.w); a.close();
   // this device then lost one of them (before zip 127), and holds an old record with no date and no item list
-  const ts = Date.now() - 3600000;
+  const ts = Math.max(new Date().setHours(0, 0, 1, 0), Date.now() - 3600000);   // earlier TODAY (an hour ago was yesterday just after midnight)
   const list = JSON.parse(st.pos_sales_log ? st.pos_sales_log : '[]');
   const t = await openDevice('index.html', server, { ...st, pos_hidden_sales_recovery_v1: '', pos_sales_log: JSON.stringify([sale('keep', 0), { id: ts + '-brk', refNumber: 'R-brk', paymentMethod: 'cash', items: null }]) }, 900, { indexedDB: new IDBFactory() });
   t.w.eval(PRINTER);

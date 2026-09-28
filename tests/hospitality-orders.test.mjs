@@ -34,12 +34,11 @@ test('RESTAURANT end to end: waiter opens Table 05 → kitchen gets food, bar ge
   as(w, 'w1');
   w.eval(`document.querySelector('.tab-link[data-tab="service-tab"]').click()`);
   d.getElementById('svc-new-location').value = 'Table 05'; d.getElementById('svc-new-type').value = 'DINE_IN';
-  w.eval('hospStartOrder()');
+  // zip 147: the waiter builds the order ON THE ORDERS TAB (a waiter has no Sales Counter) — round 1: 2 burgers, 1 chips, 1 fanta, 2 beers
+  w.eval("svcAdd('BRG'); svcAdd('BRG'); svcAdd('CHP'); svcAdd('FNT'); svcAdd('TSK'); svcAdd('TSK'); svcPostOrder()");
   let tab = tabOf(w, 'Table 05');
   assert.deepEqual([tab.waiter, tab.orderType, tab.source], ['Wanjiru', 'DINE_IN', 'WAITER']);
-  assert.ok(d.getElementById('sales-tab').classList.contains('active'), 'the fast order screen opens');
-  // round 1: 2 burgers, 1 chips, 1 fanta, 2 beers
-  w.eval("addToCart('BRG'); addToCart('BRG'); addToCart('CHP'); addToCart('FNT'); addToCart('TSK'); addToCart('TSK'); addCurrentCartToTab()");
+  assert.ok(d.getElementById('service-tab').classList.contains('active'), 'the waiter stays on the Orders tab');
   const t1 = lastTicket(w);
   const [kitchen, bar] = [t1.slice(t1.indexOf('KITCHEN'), t1.indexOf('BAR')), t1.slice(t1.indexOf('BAR'))];
   assert.match(kitchen, /KOT[\s\S]*2x\s+Beef Burger[\s\S]*1x\s+Chips/);
@@ -72,7 +71,8 @@ test('RESTAURANT end to end: waiter opens Table 05 → kitchen gets food, bar ge
   assert.equal(Number(w.eval(`hospTabDue(tabs.find(t => t.id === '${tab.id}'))`)), 2827);
   // settle for billing: bill printed, the order is locked for the waiter, it waits in Bills for the cashier
   w.eval(`hospSettleForBilling('${tab.id}')`);
-  assert.match(lastTicket(w), /BILL — NOT A RECEIPT[\s\S]*Service charge 10%[\s\S]*TOTAL DUE: KES 2,?827\.00/);
+  // zip 147: the customer's bill is printed on the RECEIPT printer (it went to the kitchen printer before)
+  assert.match(d.getElementById('receipt-body').textContent, /RESTAURANT BILL[\s\S]*Service charge 10%[\s\S]*TOTAL[\s\S]*2,?827\.00[\s\S]*NOT PAID/);
   assert.equal(w.eval(`hospAddProduct('${tab.id}', 'CHP', 1)`), null, 'the waiter cannot add to a printed bill');
   assert.equal(J(w, `salesLog.length`), 0, 'settling for billing is NOT payment');
   w.eval(`document.querySelector('.tab-link[data-tab="bills-tab"]').click()`);

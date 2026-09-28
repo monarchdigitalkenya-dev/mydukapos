@@ -40,6 +40,8 @@ test('ROOT CAUSE: storage full — a completed, printed sale survives a restart 
   const d = JSON.parse(await t.w.eval(`salesJournalDurable('${id}').then(JSON.stringify)`));
   assert.equal(d.local, false);
   assert.equal(d.journal, true, 'but the journal holds it');
+  // (zip 147: the receipt is shown once the journal has confirmed it holds the sale, so its "saved" line follows a moment later)
+  for (let i = 0; i < 100 && !/Sale saved/.test((t.d.getElementById('receipt-save-status') || {}).textContent || ''); i++) await sleep(50);
   assert.match(t.d.getElementById('receipt-save-status').textContent, /Sale saved/);
   await t.print();
   const st = deviceStorage(t.w); t.close();

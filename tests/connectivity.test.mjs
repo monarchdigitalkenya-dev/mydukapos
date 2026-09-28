@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { IDBFactory } from 'fake-indexeddb';
 import { ROOT, boot } from './helpers.mjs';
 import { makeKV, seedShop } from './kv-fake.mjs';
-import { makeServer, openDevice, sleep } from './e2e-harness.mjs';
+import { makeServer, openDevice, sleep, closeWhenIdle } from './e2e-harness.mjs';
 
 // Zip 129: "the POS says OFFLINE although the internet works" and "retrying… sending… no transaction ever succeeds".
 const load = (f) => import(pathToFileURL(path.join(ROOT, 'functions/api', f)).href);
@@ -53,6 +53,8 @@ function netFetch(ctl) {
   return async (url, opts = {}) => {
     const u = String(url);
     ctl.calls.push(u);
+    // no internet at all: NOTHING answers — the POS, this site itself (zip 147 asks it before saying "offline"), anything
+    if (ctl.internet === false) throw new TypeError('Failed to fetch');
     if (u.includes('/api/health')) {
       if (ctl.health === 'down') throw new TypeError('Failed to fetch');
       if (typeof ctl.health === 'number') return json({ ok: false }, ctl.health);
@@ -231,7 +233,7 @@ test('ROOT CAUSE: a device reopened on a slow line with a long history syncs a n
   assert.equal(t.w.eval('PosNet.state'), 'online');
   const posts = server.state.log.filter((l) => l.startsWith('POST')).length;
   assert.ok(posts <= 3, 'no re-upload of the history (' + posts + ' pushes)');
-  t.close();
+  await closeWhenIdle(t);
 });
 
 test('a device that must upload a large backlog (the server never had it) sends it in batches that each succeed, until done', async () => {
@@ -241,6 +243,7 @@ test('a device that must upload a large backlog (the server never had it) sends 
   t.w.eval("showToast = function () {}; window.__pushBatchGapMs = 10");
   assert.ok(await until(() => (server.serverState().salesLog || []).length === 700, 20000), 'all 700 arrived');
   assert.ok(server.state.log.filter((l) => l.startsWith('POST')).length >= 5, 'in batches');
-  assert.equal(t.w.eval('hasUnsyncedWork()'), false, 'and the device knows it is done');
+  // (the server confirms its write before answering — zip 146 — so the last OK lands a moment after the data)
+  assert.ok(await until(() => t.w.eval('hasUnsyncedWork()') === false, 10000), 'and the device knows it is done');
   t.close();
 });

@@ -4858,7 +4858,12 @@ async function pullStateOnce() {
                 if (!sent) return;
             }
             markSync('syncing');
-            const localUpdatedAt = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
+            // zip 147b: a FULL fetch asked for (recover missing sales, "fetch from the server", repair sync) must stay full. Those callers
+            // reset the marker, but the push just above (unsent changes go first) set it again, so the "full" fetch asked only for changes
+            // and a sale the server had but this device had lost never came back (intermittent: only when something was waiting to send).
+            const fullFetch = !!window.__pullFullOnce;
+            window.__pullFullOnce = false;
+            const localUpdatedAt = fullFetch ? 0 : parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
             // A poll that finds nothing new is a few bytes, but the first pull (or one that finds changes) can be the whole shop, and a cold
             // server or a slow mobile connection needs more than a few seconds. Each time one runs out of patience while the server IS
             // reachable the next attempt is allowed twice as long, up to 90 s; a success resets it.
@@ -5052,6 +5057,7 @@ async function pushNow() {
                         if (!missedSomething) safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
                         else setTimeout(() => { try { if (window.__pullInFlight) window.__pullAgain = true; else pullState(); } catch (e) { /* the poll will */ } }, 50);
                         if (!slim.more) ackLocalDirty(seqAtStart);               // more batches to send: still "unsent work"
+                        schedulePushVerify(slim.body);                            // zip 146: then check the server really kept them
                         snapshotInventorySync();
                         snapshotExtraSyncedFields();
                         window.__pushFails = 0; window.__pushBackoffUntil = 0; window.__pushFailKind = '';
@@ -8125,6 +8131,186 @@ async function pushErrorCode(res) {
             try { const b = await res.clone().json(); return (b && b.code) || ''; } catch (e) { return ''; }
         }
 
+//@fn schedulePushVerify
+// zip 146 — "sales disappeared / another till never got them". The server answering OK to a push is not proof the sales are still
+// there a moment later: with several tills saving at once, a later save could land on top of ours. So, a few seconds after a push
+// that carried sales / stock changes / returns / expenses (and again half a minute later), this device ASKS the server (/api/sync-have)
+// whether it holds each one. Anything missing goes back to "waiting to send" and is sent again — whatever the reason it was lost.
+function schedulePushVerify(body) {
+            const FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses'];
+            window.__pushVerify = window.__pushVerify || {};
+            let added = 0;
+            FIELDS.forEach((f) => {
+                const arr = body && Array.isArray(body[f]) ? body[f] : [];
+                const set = window.__pushVerify[f] || (window.__pushVerify[f] = new Set());
+                arr.forEach((r) => { if (r && r.id != null && r._deleted !== true) { set.add(String(r.id)); added++; } });
+            });
+            if (!added || window.__pushVerifyOff) return;
+            const first = window.__pushVerifyMs != null ? window.__pushVerifyMs : 4000;
+            clearTimeout(window.__pushVerifyT1); clearTimeout(window.__pushVerifyT2);
+            window.__pushVerifyT1 = setTimeout(() => { verifyPushedRecords(false); }, first);
+            window.__pushVerifyT2 = setTimeout(() => { verifyPushedRecords(true); }, first + (window.__pushVerifyLateMs != null ? window.__pushVerifyLateMs : 30000));
+        }
+
+//@fn verifyPushedRecords
+async function verifyPushedRecords(last) {
+            const pend = window.__pushVerify || {};
+            const lost = {};
+            let nLost = 0, unanswered = false;
+            for (const f of Object.keys(pend)) {
+                const ids = Array.from(pend[f]);
+                if (!ids.length) continue;
+                const byId = new Map();
+                try { (collectSyncPayload()[f] || []).forEach((r) => { if (r && r.id != null) byId.set(String(r.id), r); }); } catch (e) { /* none */ }
+                for (let i = 0; i < ids.length; i += 2000) {
+                    const part = ids.slice(i, i + 2000).filter((id) => { const r = byId.get(id); return r && r._deleted !== true; });
+                    if (!part.length) continue;
+                    let have = null;
+                    try {
+                        const res = await fetch(apiUrl('/api/sync-have'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ col: f, ids: part }) });
+                        if (res.status === 404 || res.status === 501) { window.__pushVerify = {}; return; }       // this server can't answer: nothing to do
+                        if (res.ok) have = ((await res.json()) || {}).have || {};
+                    } catch (e) { /* no answer */ }
+                    if (!have) { unanswered = true; continue; }
+                    window.__pushVerifyTries = window.__pushVerifyTries || new Map();
+                    part.forEach((id) => {
+                        if (have[id] != null) return;
+                        // never a loop: a record the server keeps refusing (e.g. older than its archive) is re-sent at most 5 times
+                        const n = (window.__pushVerifyTries.get(f + '|' + id) || 0) + 1;
+                        window.__pushVerifyTries.set(f + '|' + id, n);
+                        if (n > 5) return;
+                        (lost[f] || (lost[f] = [])).push(id); nLost++;
+                    });
+                }
+            }
+            // done with what was answered (kept until the late check, which retries anything unanswered on the next push)
+            if (last || nLost) window.__pushVerify = unanswered ? pend : {};
+            if (!nLost) return;
+            window.__pushAck = window.__pushAck || {};
+            Object.keys(lost).forEach((f) => {
+                const ack = window.__pushAck[f];
+                if (ack) lost[f].forEach((id) => ack.delete('i:' + id));
+                try { if (typeof window.salesJournalUnconfirm === 'function') window.salesJournalUnconfirm(f, lost[f]); } catch (e) { /* bookkeeping */ }
+            });
+            try { markLocalDirty(); } catch (e) { /* none */ }
+            try { markSync('syncing'); } catch (e) { /* none */ }
+            try { if (typeof queuePush === 'function') queuePush(); else if (typeof pushNow === 'function') pushNow(); } catch (e) { /* the poll sends it */ }
+        }
+
+//@fn tabCanSell
+// zip 147 — a tab another tab of this app has taken over (see one-tab.html) is stopped: its saves are dropped so it cannot overwrite the
+// working tab. A sale completed there anyway (an M-Pesa confirmation that arrived after the switch, a scanner typing into it) printed a
+// receipt and was then gone. Such a tab never completes a sale.
+function tabCanSell() {
+            if (!window.__tabInactive) return true;
+            try { showToast('This tab is not the working one — the app is open in another tab or window. Nothing was recorded here: tap "Use it here" first.', true); } catch (e) { /* none */ }
+            return false;
+        }
+
+//@fn saleStoredLocally
+// Is this sale really in the sales list SAVED on this device (read back from storage, not the copy in memory)? zip 147
+function saleStoredLocally(sale) {
+            try {
+                if (!sale || sale.id == null) return false;
+                const key = (window.__LOG_KEYS && window.__LOG_KEYS.salesLog) || 'pos_sales_log';
+                const raw = localStorage.getItem(key) || '';
+                return raw.indexOf('"id":' + JSON.stringify(String(sale.id))) !== -1 || raw.indexOf('"id":' + JSON.stringify(sale.id)) !== -1;
+            } catch (e) { return false; }
+        }
+
+//@fn confirmSaleStored
+// zip 147 — "the receipt printed but the sale is not in Daily Sales". A sale counts as recorded only when it is STORED somewhere that
+// survives closing the app: this device's sales list, this device's journal (IndexedDB), or the server. -> { ok, where }
+async function confirmSaleStored(sale) {
+            if (saleStoredLocally(sale)) return { ok: true, where: 'device' };
+            try {
+                if (typeof window.salesJournalDurable === 'function') {
+                    const d = await window.salesJournalDurable(sale.id);
+                    if (d && (d.journal || d.server || (d.local && d.tracked))) return { ok: true, where: d.server ? 'server' : 'journal' };
+                }
+            } catch (e) { /* next */ }
+            // storage full: make room (oldest synced history goes to the device archive) and save the list again
+            try { if (window.storageAutoArchive) await window.storageAutoArchive('sale-not-saved'); } catch (e) { /* next */ }
+            try { const key = (window.__LOG_KEYS && window.__LOG_KEYS.salesLog) || 'pos_sales_log'; localStorage.setItem(key, JSON.stringify(salesLog)); } catch (e) { /* still full */ }
+            if (saleStoredLocally(sale)) return { ok: true, where: 'device' };
+            // last: the server (only when there is a connection) — a sale the server accepted is recorded
+            try {
+                if (!(window.posNetOffline && window.posNetOffline()) && typeof pushNow === 'function') {
+                    await Promise.race([pushNow(), new Promise((r) => setTimeout(r, window.__saleServerWaitMs || 15000))]);
+                    const ack = window.__pushAck && window.__pushAck.salesLog;
+                    if (ack && ack.has('i:' + sale.id)) return { ok: true, where: 'server' };
+                }
+            } catch (e) { /* not reachable */ }
+            return { ok: false, where: '' };
+        }
+
+//@fn finishSaleReceipt
+// Shows (and so prints) the receipt of a sale that was just completed — ALWAYS at once, never held back (zip 147b: a queue must never
+// wait on storage). If the sale is not yet stored anywhere that survives closing the app (this device's list, its journal, the server),
+// it is saved and sent again automatically in the background until it is — see ensureSaleSaved. A sale is never lost or hidden: it is
+// in the sales list (and Daily Sales) from the moment it is made.
+function finishSaleReceipt(sale, show) {
+            show();
+            const inList = !!(sale && sale.id != null && typeof salesLog !== 'undefined' && Array.isArray(salesLog) && salesLog.some((s) => s && s.id === sale.id));
+            if (!inList || saleStoredLocally(sale)) return Promise.resolve(true);
+            return ensureSaleSaved(sale);
+        }
+
+//@fn ensureSaleSaved
+// Keeps trying — automatically, with no one pressing anything — until every sale made in this open app is stored: freeing room and
+// saving the list again, the journal, and sending it to the server. First retry after 2 s, then 5, 10, and every 15 s; at once when the
+// connection comes back. While any sale is still unsaved a small bar says so, and closing the app asks first.
+function ensureSaleSaved(sale) {
+            const S = window.__unsavedSales = window.__unsavedSales || { map: new Map(), running: false, tries: 0, wake: null };
+            if (sale && sale.id != null) S.map.set(String(sale.id), sale);
+            unsavedSalesBar();
+            if (!S.hooked) {
+                S.hooked = true;
+                window.addEventListener('online', () => { S.tries = 0; if (S.wake) S.wake(); });
+                window.addEventListener('beforeunload', (e) => { if (S.map.size) { e.preventDefault(); e.returnValue = ''; } });
+            }
+            if (S.running) { if (S.wake) S.wake(); return Promise.resolve(false); }
+            S.running = true;
+            return (async () => {
+                try {
+                    while (S.map.size) {
+                        for (const [id, s] of Array.from(S.map.entries())) {
+                            let ok = false;
+                            try { ok = (await confirmSaleStored(s)).ok; } catch (e) { ok = false; }
+                            if (ok) S.map.delete(id);
+                        }
+                        unsavedSalesBar();
+                        if (!S.map.size) break;
+                        const waits = window.__unsavedRetryMs || [2000, 5000, 10000, 15000];
+                        const ms = waits[Math.min(S.tries++, waits.length - 1)];
+                        await new Promise((r) => { const t = setTimeout(r, ms); S.wake = () => { clearTimeout(t); r(); }; });
+                        S.wake = null;
+                    }
+                    S.tries = 0;
+                    return true;
+                } finally { S.running = false; unsavedSalesBar(); }
+            })();
+        }
+
+//@fn unsavedSalesBar
+function unsavedSalesBar() {
+            try {
+                const S = window.__unsavedSales;
+                const n = S ? S.map.size : 0;
+                let el = document.getElementById('unsaved-sales-bar');
+                if (!n) { if (el) el.remove(); return; }
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'unsaved-sales-bar';
+                    el.className = 'no-print';
+                    el.setAttribute('role', 'status');
+                    el.style.cssText = 'position:fixed; left:50%; bottom:12px; transform:translateX(-50%); z-index:99990; background:#c0392b; color:#fff; padding:8px 14px; border-radius:8px; font:13px system-ui,sans-serif; box-shadow:0 4px 14px rgba(0,0,0,.3); max-width:94vw; text-align:center;';
+                    document.body.appendChild(el);
+                }
+                el.textContent = `⚠ ${n} sale${n === 1 ? '' : 's'} not stored yet (device storage full or blocked) — saving and sending again automatically. Keep the app open until this disappears.`;
+            } catch (e) { /* cosmetic */ }
+        }
+
 //@fn syncHaveCheck
 // Before this session's first push (zip 129): ask the server which of this device's sales / stock changes / returns / expenses it
 // ALREADY holds, in the same version (pushed earlier by this device, or by another one) — /api/sync-have. Those are marked
@@ -10680,7 +10866,7 @@ function renderSharedReceipt(sale, hooks) {
             }
 
             // In System print dialog mode the drawer-kick command rides inside the receipt's own print job.
-            if (printerMode === 'system' && autoOpenDrawerEnabled) {
+            if (printerMode === 'system' && autoOpenDrawerEnabled && sale.paid !== false) {       // zip 147: never for an unpaid bill
                 const kickSpan = document.createElement('span');
                 kickSpan.className = 'drawer-kick-bytes';
                 kickSpan.textContent = buildDrawerKickAsciiString();
@@ -15280,6 +15466,7 @@ function netFailReason() {
             try {
                 const net = window.PosNet;
                 if (net && net.state === 'offline') return 'this device is offline. Selling still works — this will work again when the internet is back.';
+                if (net && net.state === 'security_check') return 'your internet works, but Cloudflare\'s security check is holding back this browser\'s requests. Tap the sync dot (or reload the page) once to clear it.';
                 const f = window.__apiLastFail;
                 if (f && Date.now() - f.at < 20000) {
                     if (f.kind === 'timeout') return 'the server took too long to answer. Your internet works — try again in a moment.';
@@ -15287,9 +15474,12 @@ function netFailReason() {
                         if (net) net.check('request failed');
                         if (net && net.state === 'backend_unavailable') return 'your internet works, but the MyDukaPOS server is not answering. Try again in a moment.';
                         if (net && net.state === 'online') return 'the request did not get through (the connection dropped for a moment) — try again.';
-                        return 'could not reach the server — check this device\'s internet connection.';
+                        // zip 147: the check above has only just started — its verdict is not known yet. "Check your internet" is said only when the
+                        // manager has actually found no internet (the first line of this function); until then, never.
+                        return 'the request did not get through — checking the connection now. Try again in a moment (your work is kept).';
                     }
                     if (f.status === 401) return 'this device or your staff sign-in must be confirmed again (sign in with your PIN, or pair the device in Settings ▸ Devices & Security).';
+                    if (f.challenge) return 'your internet works, but Cloudflare\'s security check is holding back this browser\'s requests. Reload the page once to clear it.';
                     if (f.status === 403) return 'not allowed — this shop\'s link is not active, or your account may not do this.';
                     if (f.status === 404) return 'not found on the server — refresh and try again.';
                     if (f.status === 413) return 'too large to send in one go.';

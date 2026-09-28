@@ -1128,7 +1128,7 @@ test('a patient with no SHA number or national ID triggers a confirmation before
 async function navSession() {
   const b = await boot(APP, { storage: {
     pos_patients: JSON.stringify([PATIENT]),
-    pos_appointments: JSON.stringify([{ id: 'A1', patientId: 'PT-1', patientName: 'Jane Mwangi', scheduledFor: now + 3600000, status: 'scheduled' }]),
+    pos_appointments: JSON.stringify([{ id: 'A1', patientId: 'PT-1', patientName: 'Jane Mwangi', scheduledFor: Math.min(now + 3600000, new Date(new Date().setHours(23, 59, 0, 0)).getTime()), status: 'scheduled' }]),   // later TODAY (now + 1 h was tomorrow after 23:00)
   }, wait: 1200 });
   b.w.eval("showToast = function () {}; window.confirm = () => true");
   return b;

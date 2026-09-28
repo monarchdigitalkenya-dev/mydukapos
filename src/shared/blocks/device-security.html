@@ -13,7 +13,7 @@
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-145';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-147';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -46,7 +46,9 @@
                 var args = typeof input === 'string' ? [input, Object.assign({}, init, { headers: headers })] : [new Request(input, Object.assign({}, init, { headers: headers }))];
                 return realFetch.apply(this, args).then(function (res) {
                     // zip 143: remember how the last API call failed, so a message can say what really happened (see netErrText)
-                    try { if (res && !res.ok) window.__apiLastFail = { kind: 'http', status: res.status, at: Date.now() }; } catch (e) { /* cosmetic */ }
+                    try { if (res && !res.ok) window.__apiLastFail = { kind: 'http', status: res.status, at: Date.now(), challenge: String(res.headers.get('cf-mitigated') || '').toLowerCase() === 'challenge' }; } catch (e) { /* cosmetic */ }
+                    // zip 147: Cloudflare's security check answered instead of the POS server — that is not "refused" nor "offline"
+                    try { if (res && window.__apiLastFail && window.__apiLastFail.challenge && window.__apiLastFail.at === Date.now() && window.PosNet) window.PosNet.report('challenge', 'Cloudflare security check (' + res.status + ')'); } catch (e) { /* cosmetic */ }
                     if (res && res.status === 401) {
                         res.clone().json().then(function (b) { if (b && b.code === 'device_not_paired') notPaired(); }).catch(function () {});
                     }
