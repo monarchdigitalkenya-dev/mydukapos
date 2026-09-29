@@ -41,12 +41,22 @@ export async function onRequestGet(context) {
   if (afterRaw) { const i = afterRaw.indexOf(':'); after = { ts: Number(afterRaw.slice(0, i)), rk: afterRaw.slice(i + 1) }; }
 
   // Records in the shop's archives (zip 128) join the live ones; the live copy of a record wins. Same ordering and cursor as before.
-  const archived = (await archivedLogRecords(env, clientId, col, from, to)).map((r) => ({ r, t: recordTime(r), k: String(recordKey(r) || '') }));
+  // (zip 156: deleted-record tombstones are never returned — every other read strips them. A record archived twice, because a later edit
+  // brought it back into the live shop and it was archived again, is listed once: its newest copy.)
+  const isLive = (r) => !(r && r._deleted === true);
+  const newest = new Map();
+  (await archivedLogRecords(env, clientId, col, from, to)).forEach((r) => {
+    const k = String(recordKey(r) || '');
+    const prev = newest.get(k);
+    if (!k || !prev || (Number(r && r.updatedAt) || 0) >= (Number(prev && prev.updatedAt) || 0)) newest.set(k || Symbol(), r);
+  });
+  const archived = [...newest.values()].filter(isLive).map((r) => ({ r, t: recordTime(r), k: String(recordKey(r) || '') }));
   const byOrder = (a, b) => a.t - b.t || (a.k < b.k ? -1 : a.k > b.k ? 1 : 0);
   const afterCursor = (x) => !after || x.t > after.ts || (x.t === after.ts && x.k > after.rk);
   if ((await shopMode(env, clientId)) === 'do') {
     const res = await shopCall(env, clientId, 'history', { col, from, to, limit, after });
     const out = await res.json();
+    if (res.ok && Array.isArray(out.records)) out.records = out.records.filter(isLive);   // (a shop database from before this fix still returns them)
     if (!res.ok || !archived.length) return reply({ records: out.records, next: out.next ? `${out.next.ts}:${out.next.rk}` : null }, res.status);
     const live = (out.records || []).map((r) => ({ r, t: recordTime(r), k: String(recordKey(r) || '') }));
     const liveKeys = new Set(live.map((x) => x.k));
@@ -62,8 +72,8 @@ export async function onRequestGet(context) {
     return reply({ records: page.map((x) => x.r), next: hasMore && page.length ? `${page[page.length - 1].t}:${page[page.length - 1].k}` : null });
   }
   const state = (await readState(env, 'pos-data:state:' + clientId, {})) || {};
-  const liveRows = (state[col] || []).map((r) => ({ r, t: recordTime(r), k: String(recordKey(r) || '') }));
-  const have = new Set(liveRows.map((x) => x.k));
+  const liveRows = (state[col] || []).filter(isLive).map((r) => ({ r, t: recordTime(r), k: String(recordKey(r) || '') }));
+  const have = new Set((state[col] || []).map((r) => String(recordKey(r) || '')));      // a deleted record's tombstone also keeps its archived copy out
   const rows = liveRows.concat(archived.filter((x) => !have.has(x.k)))
     .filter((x) => Number.isFinite(x.t) && x.t >= from && x.t < to)
     .sort(byOrder)

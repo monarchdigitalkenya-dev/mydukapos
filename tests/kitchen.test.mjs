@@ -205,6 +205,8 @@ test('two tills: dish sales and prepared portions from both tills add up on both
   b.w.eval("deductEntriesForHotelBill([{ code: 'D001', name: 'Bread', qty: 3, price: 100, isService: true }])");
   await a.w.eval('pushNow()'); await b.w.eval('pushNow()');
   await a.w.eval('flushThenPull()'); await b.w.eval('flushThenPull()');
+  await sleep(2500);   // zip 156: a pull that lands while a device still has unsent work is applied after that work is sent
+  await a.w.eval('flushThenPull()'); await b.w.eval('flushThenPull()');
   for (const dev of [a, b]) {
     const st = state(dev.w, 'D001');
     assert.deepEqual([st.prepared, st.sold, st.left], [10, 5, 5], 'both tills agree: 2 + 3 sold, 10 prepared');

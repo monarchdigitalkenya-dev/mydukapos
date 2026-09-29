@@ -23,6 +23,8 @@
 // KV storage and the KV cap, NOT that memory ceiling; only shrinking the shop (archiving old history) does.
 // These defaults are conservative; measure on staging (STAGING_SETUP.md, step 4) and raise them if you can.
 
+import { mergeIncomingState, CLOCK_DRIFT_MIN_MS } from './_merge.js';
+
 export const GZ_PREFIX = 'gz1:';
 export const MIB = 1024 * 1024;
 
@@ -93,6 +95,19 @@ async function getWithMeta(env, key) {
   return { raw: await kv.get(key), meta: null };
 }
 
+// zip 156 — WHAT VERSION OF THE SHOP IS STORED. KV has no "write only if unchanged", so a writer that wants to know whether another save landed
+// since it read the shop compares this stamp (the record's updatedAt, the time it was written and a per-write counter, all in the KV metadata)
+// between its read and just before its write. It narrows the race to the moment of the write itself; it cannot close it (that needs the shop
+// database — see autoMoveToDatabase in pos-sync.js).
+export function stateStamp(meta) {
+  return meta ? [meta.ua || 0, meta.at || 0, meta.ver || 0].join('|') : '0';
+}
+// Reads the shop's current stamp again (one more read of the record; the value itself is not parsed).
+export async function readStateStamp(env, key) {
+  const { raw, meta } = await getWithMeta(env, key);
+  return raw == null ? '0' : stateStamp(meta);
+}
+
 // The stored value exactly as it sits in KV (NOT decoded) plus its metadata -> { raw, gz, meta } | null.
 // The conditional GET uses this: metadata carries `ua` (the record's updatedAt), so "unchanged since you last
 // asked" is answered without decompressing or parsing a large shop at all.
@@ -156,7 +171,7 @@ export async function writeStateText(env, key, jsonText, opts = {}) {
 
   const value = gz ? await gzipText(jsonText) : jsonText;
   const now = Date.now();
-  const meta = { bytes, stored: value.length, gz, at: now };
+  const meta = { bytes, stored: value.length, gz, at: now, ver: (Number(opts.prevMeta && opts.prevMeta.ver) || 0) + 1 };
   if (opts.updatedAt) meta.ua = opts.updatedAt;
   if (opts.writer && (opts.writer.ip || opts.writer.cc)) {
     const prev = (opts.prevMeta && Array.isArray(opts.prevMeta.writers)) ? opts.prevMeta.writers : [];
@@ -183,6 +198,38 @@ export async function writeState(env, key, obj, opts = {}) {
   return writeStateText(env, key, JSON.stringify(obj), {
     keepCompressed: isCompressed(cur.raw), prevMeta: cur.meta, updatedAt: obj && obj.updatedAt, ...opts,
   });
+}
+
+// zip 156 — A SERVER-SIDE CHANGE TO A SINGLE-RECORD SHOP THAT GOES THROUGH THE SAME MERGE AS A DEVICE'S PUSH (cross-branch sales).
+// Reads the shop, lets `build(existing)` say what to add — { body } (merged exactly like a push, so stock movements are applied once by the
+// ledger) or { abort: value } to stop without writing — re-checks that no other save landed meanwhile (retrying from a fresh read if one
+// did), writes, and reads the shop back to confirm `body`'s log records are there (retrying if another write landed on top of them).
+// Bounded: after `maxAttempts` it writes what it has (as pos-sync does). Returns { aborted } | { record, attempts, contended }.
+export async function kvMergeUpdate(env, key, build, { maxAttempts = 5, verifyFields = ['salesLog', 'stockMovementLog'] } = {}) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let contended = false;
+  for (let attempt = 0; ; attempt++) {
+    const stored = await readStateRaw(env, key);
+    const existing = stored ? JSON.parse(stored.text) : {};
+    const built = await build(stored ? existing : null);
+    if (built && built.abort !== undefined) return { aborted: built.abort };
+    const body = built.body;
+    const now = Date.now();
+    const record = { ...mergeIncomingState(existing, structuredClone(body)), updatedAt: now };
+    if (attempt < maxAttempts - 1 && (await readStateStamp(env, key)) !== stateStamp(stored && stored.meta)) {
+      contended = true; await sleep(20 + Math.floor(Math.random() * 80)); continue;             // another save landed since the read: merge again
+    }
+    await writeStateText(env, key, JSON.stringify(record), { keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, updatedAt: now });
+    if (attempt < maxAttempts - 1 && env.SYNC_VERIFY_WRITE !== '0') {
+      await sleep(120 + Math.floor(Math.random() * 180));
+      const after = await readStateRaw(env, key);
+      const cur = after ? JSON.parse(after.text) : {};
+      const missing = verifyFields.some((f) => (Array.isArray(body[f]) ? body[f] : []).some((r) => r && r.id != null && r._deleted !== true
+        && !(Array.isArray(cur[f]) ? cur[f] : []).some((x) => x && String(x.id) === String(r.id))));
+      if (missing) { contended = true; continue; }
+    }
+    return { record, attempts: attempt + 1, contended };
+  }
 }
 
 // Sizes for every shop in one pass (KV list metadata, no value reads). -> Map(clientId -> meta|null)
@@ -280,12 +327,15 @@ async function readIndexRaw(env, clientId) {
 async function writeIndexRaw(env, clientId, idx) {
   await env.mydukapos_kv.put(ARCHIVE_INDEX_PREFIX + clientId, await gzipText(JSON.stringify(idx)));
 }
-export async function addToArchiveIndex(env, clientId, fields) {
+// `_at[field][key]` = when that record was archived (zip 156): an edit made AFTER that time is a real change, not a re-sent old copy.
+export async function addToArchiveIndex(env, clientId, fields, at = Date.now()) {
   const idx = await readIndexRaw(env, clientId);
   for (const [f, records] of Object.entries(fields)) {
     const set = new Set(idx[f] || []);
-    for (const r of records) { const k = recordKeyOf(r); if (k) set.add(k); }
+    const times = { ...((idx._at && idx._at[f]) || {}) };
+    for (const r of records) { const k = recordKeyOf(r); if (k) { set.add(k); times[k] = at; } }
     idx[f] = [...set];
+    idx._at = { ...(idx._at || {}), [f]: times };
   }
   await writeIndexRaw(env, clientId, idx);
 }
@@ -294,6 +344,7 @@ export async function removeFromArchiveIndex(env, clientId, fields) {
   for (const [f, records] of Object.entries(fields)) {
     const drop = new Set(records.map(recordKeyOf).filter(Boolean));
     if (idx[f]) idx[f] = idx[f].filter((k) => !drop.has(k));
+    if (idx._at && idx._at[f]) drop.forEach((k) => { delete idx._at[f][k]; });
   }
   await writeIndexRaw(env, clientId, idx);
 }
@@ -330,17 +381,32 @@ export async function writeArchive(env, clientId, { old, keepDays, cutoff, auto 
 }
 
 // Drops incoming log records that were already archived (see above). Reads the index only when there is something old to check.
-export async function dropArchivedIncoming(env, clientId, body, cutoff) {
+// zip 156: a record that IS in the archive but carries an edit made AFTER it was archived (an old credit sale being paid, say) is a real
+// change: it goes through (and lives in the shop again; the next archive moves it out again). Only copies that are as old as the archive are
+// dropped. `updatedAt` is the device's own clock, so it is moved onto the server's clock first when the device is clearly off (the same
+// offset correctClockDrift would use) — but the record's own time (`timestamp`) is compared as sent: call this BEFORE correctClockDrift.
+//   opts.serverNow      the server's time of receipt (to work out the device's clock offset)
+//   opts.lastArchiveAt  when the shop last archived (used for records whose own archive time was not written down: older archives)
+export async function dropArchivedIncoming(env, clientId, body, cutoff, opts = {}) {
   if (!cutoff) return body;
   let idx = null;
   let out = body;
+  const claimed = Number(body.updatedAt);
+  let offset = 0;
+  if (Number.isFinite(claimed) && claimed > 0 && opts.serverNow) { const o = opts.serverNow - claimed; if (Math.abs(o) >= CLOCK_DRIFT_MIN_MS) offset = o; }
   for (const f of ARCHIVE_LOG_FIELDS) {
     const arr = body[f];
     if (!Array.isArray(arr) || arr.length === 0) continue;
     if (!arr.some((r) => { const t = recordTime(r); return Number.isFinite(t) && t < cutoff && recordKeyOf(r); })) continue;
     if (idx === null) idx = await readIndexRaw(env, clientId);
     const known = new Set(idx[f] || []);
-    const kept = arr.filter((r) => { const t = recordTime(r); const k = recordKeyOf(r); return !(Number.isFinite(t) && t < cutoff && k && known.has(k)); });
+    const times = (idx._at && idx._at[f]) || {};
+    const kept = arr.filter((r) => {
+      const t = recordTime(r), k = recordKeyOf(r);
+      if (!(Number.isFinite(t) && t < cutoff && k && known.has(k))) return true;
+      const archivedAt = Number(times[k]) || Number(opts.lastArchiveAt) || 0;
+      return !!archivedAt && typeof r.updatedAt === 'number' && r.updatedAt + offset >= archivedAt;     // edited after it was archived: keep
+    });
     if (kept.length !== arr.length) out = { ...out, [f]: kept };
   }
   return out;

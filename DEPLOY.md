@@ -25,3 +25,11 @@ If you ever lose it: `npx wrangler kv namespace list` shows your namespace ids (
 1. Create the tables once (safe to repeat):  `npx wrangler d1 migrations apply mydukapos-ledger --remote`
 2. Deploy as usual (`npm run deploy`, or `npm run deploy:fast` if `npm test` already passed), then open `https://<your-domain>/api/health?deep=1` — it must say `"d1":true`.
 3. Pages dashboard users (no wrangler.toml deploy): also add the binding under Settings -> Functions -> D1 database bindings, variable name `LEDGER_DB`.
+
+## Zip 155 — no new migration
+Nothing new to apply on D1 or KV. Use the usual steps above (`npm run deploy`). Then rebuild the Android APK / Windows EXE (GitHub Actions) to get the offline screen; the web changes are live as soon as you deploy.
+
+## Zip 156 — deploy the ROUTER first
+`wildcard-router/shop-store.js` changed, so in `C:\dev\mydukapos` run **`npm run deploy:router`** BEFORE `npm run deploy`. No new D1/KV migration.
+Every permanent shop now moves to the database store on its first push (about 1.5 s extra, once). Demo links stay on KV.
+Rebuild the APK and EXE via GitHub Actions: the Windows build is now a parallel matrix (8 apps, 16 installers).

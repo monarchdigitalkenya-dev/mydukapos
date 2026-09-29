@@ -33,7 +33,7 @@ import { corsHeadersFor } from './_cors.js';
 import { mergeIncomingState, correctClockDrift, MERGE_BY_ID_FIELDS, stripTombstones } from './_merge.js';
 import {
   readStateRaw, readStateStored, decodeStateText, writeStateText, byteLength, sizePolicy, noteOversize, MIB,
-  chooseAutoCutoff, writeArchive, dropArchivedIncoming, AUTO_ARCHIVE_AT, shopMode, shopCall, migratingResponse,
+  chooseAutoCutoff, writeArchive, dropArchivedIncoming, AUTO_ARCHIVE_AT, shopMode, shopCall, migratingResponse, stateStamp, readStateStamp,
 } from './_state-store.js';
 import { deviceGuard } from './_device-auth.js';
 import { stampSales } from './_staff-auth.js';
@@ -79,6 +79,10 @@ function activeDevices(reg, now) {
   return Object.values(reg).filter((d) => d && Number(d.lastSeen) > now - 86400000).length;
 }
 
+// zip 156 — A PERMANENT SHOP MOVES TO ITS OWN DATABASE FROM ITS FIRST PUSH when the database is bound (see handlePost). Storage has no "write only if
+// unchanged", so a shop kept as one record can lose a save whenever two devices write within a few hundred ms of each other, and nothing
+// on the server can see it happen. The database takes saves one after the other, so from the first push there is nothing to lose.
+// A shop that cannot be moved (the database does not answer) simply stays a single record, as before, and is tried again after 6 hours.
 // MULTI-DEVICE SHOPS MOVE TO THEIR OWN DATABASE BY THEMSELVES (zip 123). A shop kept as one storage record can only be written
 // about once a second, and two devices saving at the same moment used to get "the server refused or was busy" (and could even
 // overwrite each other). Its own database (wildcard-router/shop-store.js) takes every device's save one after the other, with no
@@ -89,6 +93,7 @@ async function autoMoveToDatabase(env, clientId, why) {
   const key = 'auto-db:' + clientId;
   try {
     if (await env.mydukapos_kv.get(key)) return;
+    if (await env.mydukapos_kv.get('auto-db-off:' + clientId)) return;     // the owner moved this shop back to a single record on purpose (Owner Console > Storage)
     await env.mydukapos_kv.put(key, JSON.stringify({ at: Date.now(), why }), { expirationTtl: 6 * 3600 });
     const { migrateShopToDatabase } = await import('./_migrate.js');
     const r = await migrateShopToDatabase(env, clientId);
@@ -114,6 +119,11 @@ function pushLostRecords(pushBody, storedState) {
 
 function carriesLogRecords(pushBody) {
   return VERIFY_FIELDS.some((f) => Array.isArray(pushBody && pushBody[f]) && pushBody[f].some((r) => r && r.id != null && r._deleted !== true));
+}
+
+// Does the push carry any record of the merged lists (sales, stock, customers, bills ...)? Those are what a lost race erases.
+function carriesRecords(pushBody) {
+  return MERGE_BY_ID_FIELDS.some((f) => Array.isArray(pushBody && pushBody[f]) && pushBody[f].length > 0);
 }
 
 function jsonResponse(body, status = 200, cors = {}) {
@@ -250,7 +260,8 @@ async function handlePost(context) {
   // batch per record, idempotent on the record's id. If D1 does not accept it the push is NOT acknowledged (503, "busy"): the till keeps the
   // sale and sends it again, so a failed transaction never looks successful and nothing is lost. Without a D1 binding the push carries on
   // as before and the shop is flagged for the Owner Console (see health.js) — a missing binding must not stop a till trading.
-  const led = await recordPush(env, clientId, body, { source: 'pos-sync' });
+  // zip 156: with the device's clock corrected (as the shop's own copy is), so a void made on a slow-clock till is not older than the sale it voids
+  const led = await recordPush(env, clientId, correctClockDrift(body, Date.now()), { source: 'pos-sync' });
   if (!led.ok) {
     return new Response(JSON.stringify({ error: 'The transaction database did not answer — this device keeps every sale and sends it again in a moment.', code: 'busy', ledger: 'unavailable', retryAfter: 2, detail: led.error }), {
       status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '2', ...cors },
@@ -268,7 +279,13 @@ async function handlePost(context) {
 
   // DATABASE MODE: hand the push to the shop's own database. Its cost follows the size of THIS push, not of the shop, so there is
   // no size ceiling to guard (only a cap on one request, so a single push can't exhaust the Durable Object's memory).
-  const pushMode = await shopMode(env, clientId);
+  let pushMode = await shopMode(env, clientId);
+  // (Permanent shops only: a demo / trial link stays a single record until it is made permanent — see owner-confirm.js — unless it shows the
+  // signs of a multi-device shop below.)
+  if (pushMode === 'kv' && env.SHOP_STORE && license.record && license.record.type === 'permanent') {
+    await autoMoveToDatabase(env, clientId, 'first push');         // no-op inside the 6-hour guard; if it cannot be done the shop stays a single record
+    pushMode = await shopMode(env, clientId);
+  }
   if (pushMode === 'migrating') return migratingResponse(cors);
   if (pushMode === 'do') {
     const maxPush = Number(env.SYNC_MAX_PUSH_BYTES) || 24 * 1048576;
@@ -313,9 +330,12 @@ async function handlePost(context) {
     // Correct for this device's clock drift BEFORE any merge comparison uses
     // its timestamps — see correctClockDrift() above.
     serverNow = Date.now();
-    body = correctClockDrift(incomingBody, serverNow);
-    // A device that still holds (and re-sends) history the server already archived must not bring it back — see _state-store.js.
-    body = await dropArchivedIncoming(env, clientId, body, Number(existing._archiveCutoff) || 0);
+    // A device that still holds (and re-sends) history the server already archived must not bring it back — see _state-store.js. Checked on the
+    // push as SENT (zip 156): correcting a slow clock first moved an archived record's time past the archive cutoff and it slipped through.
+    const fresh = await dropArchivedIncoming(env, clientId, incomingBody, Number(existing._archiveCutoff) || 0, {
+      serverNow, lastArchiveAt: Number(existing._lastAutoArchive && existing._lastAutoArchive.at) || 0,
+    });
+    body = correctClockDrift(fresh, serverNow);
 
     // Always stamp with the server's clock so all devices agree on ordering,
     // regardless of each device's local clock drift.
@@ -362,6 +382,12 @@ async function handlePost(context) {
       ip: request.headers.get('CF-Connecting-IP') || '',
       cc: (request.cf && request.cf.country) || request.headers.get('CF-IPCountry') || '',
     };
+    // zip 156: has another device's save landed since this one read the shop? Then merge again from what is stored now, instead of writing
+    // over it. (Narrows the window to the write itself; only the shop database closes it — see autoMoveToDatabase.)
+    if (attempt < 4 && env.SYNC_RECHECK_WRITE !== '0' && carriesRecords(body)) {      // a push with no records (a heartbeat, a setting) has little to lose: no extra read
+      const nowStamp = await readStateStamp(env, stateKey(clientId));
+      if (nowStamp !== stateStamp(stored && stored.meta)) { contended = true; attempt++; await sleep(20 + Math.floor(Math.random() * 80)); continue; }
+    }
     try {
       await writeStateText(env, stateKey(clientId), jsonText, {
         bytes, keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, writer, updatedAt: record.updatedAt,

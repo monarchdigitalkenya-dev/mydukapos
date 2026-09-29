@@ -120,7 +120,7 @@ test('loading refuses a busy cart, and payment refuses when the stock is not the
   assert.match(w.__toasts.join(' | '), /Not enough stock for: Amoxicillin/);
   const s = await pay(b);
   assert.equal(w.eval('salesLog.length'), 0, 'refused: no sale');
-  assert.match(w.__toasts.slice(-1)[0], /Not enough Amoxicillin 500mg in stock \(5 available\)/);
+  assert.match(w.__toasts.slice(-1)[0], /Not enough "?Amoxicillin 500mg"? in stock.*5 available/);
   assert.equal(w.eval("patientCharges.filter(c => c.status === 'unpaid').length"), 5, 'everything is still unpaid');
   b.close();
 });

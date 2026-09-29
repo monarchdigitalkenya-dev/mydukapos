@@ -40,6 +40,13 @@ public class LauncherBridge {
         } catch (Exception e) { return "{}"; }
     }
 
+    /** "Use a different shop link" on the no-connection screen (assets/offline.html): forget the link and ask for one again. */
+    @JavascriptInterface
+    public void forget() {
+        if (!onLauncher()) return;
+        act.forgetShop();
+    }
+
     @JavascriptInterface
     public void open(String raw, String cbId) {
         if (!onLauncher()) return;

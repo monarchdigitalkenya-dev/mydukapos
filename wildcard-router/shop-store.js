@@ -21,7 +21,7 @@
 
 import {
   businessSig, bookingConflict, MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
-  allocateTill, noteDevice, NESTED_MERGE, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
+  allocateTill, noteDevice, NESTED_MERGE, mergeBillRecords, mergeDebtRecords, mergeInventoryRecord, SETTINGS_NEED_STAMP_FIELDS, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
 
@@ -97,6 +97,15 @@ export class ShopStore {
     // Bills only move forward (see billProgress in _merge.js): the more advanced record wins whatever the times say.
     let forceReplace = false;
     let forceNested = false;
+    // Inventory (same rule as mergeRecordsById): the newest record decides what it states, but a photo / pour setup it leaves EMPTY is kept.
+    if (col === 'inventory' && row.del !== 1 && !(rec && rec._deleted === true)) {
+      let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
+      if (stored) {
+        rec = mergeInventoryRecord(stored, rec);
+        upd = Number(rec && rec.updatedAt) || 0;
+        json = JSON.stringify(rec);
+      }
+    }
     // Aqua POS products: each site's stock is merged by its own change time, not by the whole record (see mergeProductRecords).
     if (col === 'products' && row.del !== 1 && !(rec && rec._deleted === true)) {
       let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
@@ -130,12 +139,16 @@ export class ShopStore {
         forceNested = true;
       }
     }
-    if (col === 'bills' && row.del !== 1 && !(rec && rec._deleted === true)) {
+    // Bills and debts (same rules as mergeRecordsById): the payments of BOTH copies are kept, a bill only moves forward (see mergeBillRecords).
+    if ((col === 'bills' || col === 'debts') && row.del !== 1 && !(rec && rec._deleted === true)) {
       let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
       if (stored) {
-        const c = compareBillProgress(stored, rec);
-        if (c > 0) return false;
-        if (c < 0) forceReplace = true;
+        const m = col === 'bills' ? mergeBillRecords(stored, rec) : mergeDebtRecords(stored, rec);
+        if (m === stored) return false;                    // the stored copy is the winner and the incoming one adds nothing
+        rec = m;
+        upd = Number(rec && rec.updatedAt) || 0;
+        json = JSON.stringify(rec);
+        forceReplace = true;
       }
     }
     if ((forceReplace || forceNested || upd >= (row.upd || 0)) && row.json !== json) {
@@ -169,7 +182,13 @@ export class ShopStore {
       for (const [k, v] of Object.entries(body)) {
         if (k === 'updatedAt' || k === '_fieldTimes' || k === '_cells' || k === '_till' || k === 'tillNumbers' || k === '_dev' || k === 'deviceRegistry') continue;
         if (MERGE_BY_ID_FIELDS.includes(k) && Array.isArray(v)) continue;
+        // a null / {} / '' where a list belongs never replaces the stored list (same as the single-record backend)
+        if (MERGE_BY_ID_FIELDS.includes(k) && this.q('SELECT 1 AS x FROM records WHERE col = ? LIMIT 1', k).length > 0) continue;
         if (NEVER_BLANK_FIELDS.includes(k) && isBlank(v) && !isBlank(existingCore[k])) continue;
+        // receipt / branding / payment settings: a BLANK value that carries no change stamp is a fresh device's default and never replaces a
+        // stored value (same rule as mergeIncomingState in _merge.js). A filled-in value, or a stamped one, is a real change.
+        if (SETTINGS_NEED_STAMP_FIELDS.includes(k) && k in existingCore && !isBlank(existingCore[k]) && !(Array.isArray(existingCore[k]) && existingCore[k].length === 0)
+            && typeof sentTimes[k] !== 'number' && (v === '' || v == null || (Array.isArray(v) && v.length === 0))) continue;
         const stored = storedTimes[k], sent = sentTimes[k];
         if (typeof stored === 'number' && !(typeof sent === 'number' && sent >= stored)) continue;
         if (typeof sent === 'number') times[k] = sent;
@@ -334,7 +353,7 @@ export class ShopStore {
     limit = Math.min(Math.max(1, Number(limit) || 500), 2000);
     const a = after ? [Number(after.ts), String(after.rk)] : [-1, ''];
     const rows = this.q(
-      'SELECT rk, ts, json FROM records WHERE col = ? AND ts >= ? AND ts < ? AND (ts > ? OR (ts = ? AND rk > ?)) ORDER BY ts, rk LIMIT ?',
+      'SELECT rk, ts, json FROM records WHERE col = ? AND del = 0 AND ts >= ? AND ts < ? AND (ts > ? OR (ts = ? AND rk > ?)) ORDER BY ts, rk LIMIT ?',
       col, Number(from) || 0, Number(to) || Number.MAX_SAFE_INTEGER, a[0], a[0], a[1], limit + 1);
     const more = rows.length > limit;
     const page = more ? rows.slice(0, limit) : rows;

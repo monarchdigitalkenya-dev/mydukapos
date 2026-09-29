@@ -12,7 +12,9 @@ const load = (f) => import(pathToFileURL(path.join(ROOT, 'functions/api', f)).hr
 const DAY = 86400000;
 
 async function setup(opts = {}) {
-  const kv = makeKV(); seedShop(kv, 'C1');
+  // zip 156: a PERMANENT shop moves into the database at its first push (see zip156-server-write-race). These tests are about the manual move of a
+  // single-record shop, so the shop here is a demo link (which keeps the single-record start).
+  const kv = makeKV(); seedShop(kv, 'C1', { type: 'demo', expiresAt: Date.now() + 30 * 86400000, createdAt: Date.now() });
   kv.data.set('owner-session:tok', { value: '1' });
   const env = { mydukapos_kv: kv, SHOP_STORE: await makeBinding(opts) };
   const call = async (mod, fn, url, method = 'GET', body, headers = {}) => {

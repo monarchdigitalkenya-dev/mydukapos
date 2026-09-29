@@ -24,13 +24,18 @@ function writeConfig(c) { fs.mkdirSync(path.dirname(CONFIG()), { recursive: true
 function isOurs(u) {
   try { const x = new URL(u); const h = x.hostname.toLowerCase(); return x.protocol === 'https:' && (h === APP.rootDomain || h.endsWith('.' + APP.rootDomain)); } catch (e) { return false; }
 }
-function isLauncher(u) { return typeof u === 'string' && u.startsWith('file:') && u.includes('launcher.html'); }
+function isLauncher(u) { return typeof u === 'string' && u.startsWith('file:') && (u.includes('launcher.html') || u.includes('offline.html')); }
 
 let win = null;
 
 function launcherPath() {
   const packed = path.join(process.resourcesPath || '', 'launcher', 'launcher.html');
   return fs.existsSync(packed) ? packed : path.join(__dirname, '..', 'launcher', 'launcher.html');
+}
+
+function offlinePath() {
+  const packed = path.join(process.resourcesPath || '', 'launcher', 'offline.html');
+  return fs.existsSync(packed) ? packed : path.join(__dirname, '..', 'launcher', 'offline.html');
 }
 
 function createWindow() {
@@ -62,6 +67,23 @@ function createWindow() {
     if (isOurs(url) || isLauncher(url)) return;
     e.preventDefault();
     if (/^(https?|mailto|tel):/i.test(url)) shell.openExternal(url);
+  });
+
+  // The shop's page could not be loaded at all (no internet on the very first open, DNS, server down): show the app's own
+  // "Can't reach your shop" screen, which keeps trying and opens the shop by itself, instead of a blank error page.
+  win.webContents.on('did-fail-load', (e, code, desc, url, isMainFrame) => {
+    if (!isMainFrame || code === -3 || !isOurs(url)) return;               // -3 = the load was replaced by another one
+    win.loadFile(offlinePath(), { query: { u: url } });
+  });
+
+  // the server answered with a failure page (Cloudflare 5xx while the shop's server restarts): same screen, same automatic retry
+  win.webContents.on('did-navigate', (e, url, httpResponseCode) => {
+    if (httpResponseCode >= 500 && isOurs(url)) win.loadFile(offlinePath(), { query: { u: url } });
+  });
+  // the page's process crashed or was killed: without this the window stays blank. Reload it (its data is on this PC and on the server).
+  win.webContents.on('render-process-gone', (e, details) => {
+    if (details && details.reason === 'clean-exit') return;
+    setTimeout(() => { try { if (!win.isDestroyed()) win.reload(); } catch (err) { /* window closing */ } }, 500);
   });
 
   // Owner Console app: always the one fixed address (https://<root domain>/owner/) — no shop link, no licence check; the console has its own login
@@ -98,6 +120,13 @@ ipcMain.handle('launcher:open', async (e, raw) => {
     win.loadURL(link);
     return { ok: true, link };
   } catch (err) { return { ok: false, error: 'The link could not be checked: ' + err.message }; }
+});
+
+ipcMain.handle('launcher:forget', async (e) => {
+  if (!fromLauncher(e)) return { ok: false };
+  const c = readConfig(); delete c.link; writeConfig(c);
+  win.loadFile(launcherPath());
+  return { ok: true };
 });
 
 ipcMain.on('native:info', (e) => {

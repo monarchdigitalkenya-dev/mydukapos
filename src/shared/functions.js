@@ -496,14 +496,16 @@ function buildSystemPrintCopies() {
 
             // The original is copy 1 — it needs a page break after it too, unless
             // it's the only one.
-            paper.classList.toggle('receipt-copy-break', receiptCopies > 1);
+            const copies = (typeof receiptCopiesFor === 'function') ? receiptCopiesFor() : receiptCopies;   // zip 155: a delivery order prints at least 2
+            paper.classList.toggle('receipt-copy-break', copies > 1);
 
-            for (let i = 1; i < receiptCopies; i++) {
+            for (let i = 1; i < copies; i++) {
                 const clone = paper.cloneNode(true);
                 clone.removeAttribute('id');
                 clone.classList.add('receipt-copy-extra');
                 // Every copy but the very last breaks to a new page.
-                clone.classList.toggle('receipt-copy-break', i < receiptCopies - 1);
+                clone.classList.toggle('receipt-copy-break', i < copies - 1);
+                try { if (typeof receiptRelabelCopy === 'function') receiptRelabelCopy(clone, i); } catch (e) { /* the label is cosmetic */ }
                 // Strip duplicate ids from inside the clone so getElementById keeps
                 // resolving to the original receipt, not a copy of it.
                 clone.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
@@ -2245,10 +2247,21 @@ function getAllDeliveryAgents() {
             return [...internal, ...external];
         }
 
+//@fn billTotalOf
+function billTotalOf(bill) {
+            // zip 156: bills carry no .total (only their items), so Pay-on-Delivery showed KES 0 due and recorded 0. Items plus the delivery fee.
+            if (!bill) return 0;
+            const t = Number(bill.total);
+            if (t > 0) return round2(t);
+            const items = (bill.items || []).reduce((sum, l) => sum + (Number(l.price) || 0) * (Number(l.qty) || 0), 0);
+            const fee = Number(bill.deliveryDetails && bill.deliveryDetails.fee) || 0;
+            return round2(items + fee);
+        }
+
 //@fn getAssignedDeliveryOrders
 function getAssignedDeliveryOrders() {
             const fromSales = salesLog.filter(s => s.orderType === 'delivery' && s.deliveryAgentId).map(s => ({ record: s, source: 'salesLog' }));
-            const fromBills = bills.filter(b => b.orderType === 'delivery' && b.deliveryAgentId).map(b => ({ record: b, source: 'bills' }));
+            const fromBills = bills.filter(b => b.orderType === 'delivery' && b.deliveryAgentId && !b.podSettled).map(b => ({ record: b, source: 'bills' }));
             return [...fromSales, ...fromBills].sort((a, b) => new Date(b.record.timestamp) - new Date(a.record.timestamp));
         }
 
@@ -2360,6 +2373,157 @@ function returnQtyGuard(item, qty, errEl) {
             const left = Math.round((sold - returned) * 1000) / 1000;
             if (qty > left + 1e-9) return say(left > 0 ? `Only ${left} of "${item.name}" can still be returned on ${ref} (${returned} already returned).` : `"${item.name}" on ${ref} has already been fully returned.`);
             return true;
+        }
+
+//@fn returnSelectionFromSaleItem
+// zip 156 (audit 2): what was SOLD on a receipt line decides what comes back - the unit (whole / loose piece) and the variant. The picker used to
+// keep only code, name and unit, so a return always went back as whole units on the parent item.
+function returnSelectionFromSaleItem(item, sale) {
+            return {
+                code: item.code, name: item.name, unit: item.unit || 'pcs',
+                isCrossBranch: !!item.isCrossBranch, crossBranchLabel: item.crossBranchLabel || null,
+                sourceRefNumber: sale ? sale.refNumber : null,
+                saleMode: item.saleMode || null, variantId: item.variantId || null, variantSaleMode: item.variantSaleMode || null,
+            };
+        }
+
+//@fn restockReturnedItem
+// Puts `qty` of a returned / exchanged item back on the shelf in the SAME unit it was sold in (whole box or loose piece, and the same
+// variant), with a stock movement saying so. `sel` is the selected return item (saleMode / variantId / variantSaleMode); without them it is
+// the plain whole-unit restock it always was. Returns true when a product was found.
+function restockReturnedItem(product, qty, sel, reason) {
+            if (!product || !(qty > 0)) return false;
+            sel = sel || {};
+            const saved = () => { try { if (typeof stockMovementLog !== 'undefined') safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog)); } catch (e) { /* the ledger is saved by the next stock change at the latest */ } return true; };
+            if (sel.variantId && Array.isArray(product.variants)) {
+                const variant = product.variants.find(v => v && v.id === sel.variantId);
+                if (variant) {
+                    const piece = sel.variantSaleMode === 'piece';
+                    if (piece) variant.pieceQty = (variant.pieceQty || 0) + qty; else variant.qty = (variant.qty || 0) + qty;
+                    product.qty = product.variants.reduce((sum, v) => sum + (Number(v && v.qty) || 0), 0);
+                    logStockMovement(product.code, `${product.name} (${variant.name})`, qty, reason, piece ? 'pieceQty' : 'qty');
+                    return saved();
+                }
+            }
+            if (product.dualUnit && sel.saleMode === 'piece') {
+                product.pieceQty = (product.pieceQty || 0) + qty;
+                logStockMovement(product.code, product.name, qty, reason, 'pieceQty');
+            } else {
+                product.qty = (product.qty || 0) + qty;
+                logStockMovement(product.code, product.name, qty, reason, 'qty');
+            }
+            return saved();
+        }
+
+//@fn cartStockShortfall
+// zip 156 (audit 2): the cart's stock check used to be per LINE, so a retail line and a wholesale line of the same code (each within stock on its
+// own) could together sell more than there is - and stock was quietly floored at 0. This adds the lines up PER PRODUCT (per variant for variant
+// lines; boxes and loose pieces of a dual-unit item together) and returns a message for the first product that is short, or '' when all is well.
+// Services, cross-branch lines and items that keep no stock count are not checked here.
+function cartStockShortfall(entries) {
+            if (typeof inventory === 'undefined' || !Array.isArray(inventory)) return '';
+            const groups = {};
+            (entries || []).forEach(l => {
+                if (!l || l.isService || l.isCrossBranch || l.isAdhoc || !l.code) return;
+                const key = l.variantId ? l.code + '::v::' + l.variantId : String(l.code);
+                const g = groups[key] || (groups[key] = { code: l.code, variantId: l.variantId || null, box: 0, piece: 0, name: l.name });
+                const isPiece = l.variantId ? l.variantSaleMode === 'piece' : l.saleMode === 'piece';
+                if (isPiece) g.piece += Number(l.qty) || 0; else g.box += Number(l.qty) || 0;
+            });
+            for (const g of Object.values(groups)) {
+                const p = inventory.find(x => x && x.code === g.code);
+                if (!p || p.type === 'service' || p.pourOf || p.kegServe || (Array.isArray(p.recipe) && p.recipe.length) || (Array.isArray(p.comboItems) && p.comboItems.length)) continue;   // made-to-order / poured items keep their stock elsewhere
+                const label = p.name || g.name;
+                if (g.variantId) {
+                    const v = (p.variants || []).find(x => x && x.id === g.variantId);
+                    if (!v) continue;
+                    if (v.qty !== undefined && v.qty !== null && g.box > (Number(v.qty) || 0) + 1e-9) return `Not enough "${label} (${v.name})" in stock: the cart has ${g.box}, only ${Math.max(0, Number(v.qty) || 0)} available.`;
+                    if (g.piece > 0 && v.pieceQty !== undefined && v.pieceQty !== null && g.piece > (Number(v.pieceQty) || 0) + 1e-9) return `Not enough loose "${label} (${v.name})": the cart has ${g.piece}, only ${Math.max(0, Number(v.pieceQty) || 0)} available.`;
+                    continue;
+                }
+                if (p.qty === undefined || p.qty === null || !isFinite(Number(p.qty))) continue;   // no stock count kept for it: nothing to protect
+                const whole = Number(p.qty) || 0;
+                if (p.dualUnit) {
+                    if (g.box > whole + 1e-9) return `Not enough "${label}" in stock: the cart has ${g.box}, only ${Math.max(0, whole)} available.`;
+                    const loose = (Number(p.pieceQty) || 0) + Math.max(0, whole - g.box) * (Number(p.unitsPerBox) || 1);
+                    if (g.piece > loose + 1e-9) return `Not enough loose "${label}": the cart has ${g.piece}, only ${Math.max(0, loose)} available.`;
+                } else if (g.box + g.piece > whole + 1e-9) {
+                    return `Not enough "${label}" in stock: the cart has ${g.box + g.piece} (all lines together), only ${Math.max(0, whole)} available.`;
+                }
+            }
+            return '';
+        }
+
+//@fn bakeItemShares
+// zip 156 (audit 2): takes shares[i] (KES) off item line i, so that the item lines add up to what the customer really pays - reports, bills,
+// eTIMS and returns all read the item lines. A line whose new total does not divide into whole cents (3 x 33.33...) is split in two so every
+// line stays an exact 2-decimal price. Returns a NEW items array; the input lines are not changed.
+function bakeItemShares(items, shares) {
+            const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+            const out = [];
+            (items || []).forEach((src, i) => {
+                const it = { ...src };
+                const qty = Number(it.qty) || 0;
+                const share = Math.min(r2(shares && shares[i]), r2((Number(it.price) || 0) * qty));
+                if (!(share > 0) || !(qty > 0)) { out.push(it); return; }
+                const newTotal = r2((Number(it.price) || 0) * qty - share);
+                if (it.originalPrice === undefined) it.originalPrice = it.price;
+                it.bakedDiscount = r2((Number(it.bakedDiscount) || 0) + share);
+                const unit = r2(newTotal / qty);
+                if (Math.abs(unit * qty - newTotal) < 0.004) { it.price = unit; out.push(it); }
+                else if (Number.isInteger(qty) && qty > 1) {
+                    const last = { ...it, qty: 1, price: r2(newTotal - unit * (qty - 1)) };
+                    delete last.offerApplied;                       // one line carries the offer label, so the receipt shows it once
+                    delete last.bakedDiscount;
+                    out.push({ ...it, qty: qty - 1, price: unit }, last);
+                } else { it.price = newTotal / qty; out.push(it); }
+            });
+            return out;
+        }
+
+//@fn spreadDiscountOverItems
+// The share of `amount` each item line carries, in proportion to what the line is worth (only the lines in `idxs`, or all of them).
+function spreadDiscountOverItems(items, amount, idxs) {
+            const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+            const shares = (items || []).map(() => 0);
+            const worth = (i) => (Number(items[i].price) || 0) * (Number(items[i].qty) || 0);
+            const targets = (idxs && idxs.length ? idxs : shares.map((x, i) => i)).filter(i => items[i] && worth(i) > 0);
+            const base = targets.reduce((s, i) => s + worth(i), 0);
+            const total = Math.min(r2(amount), r2(base));
+            if (!targets.length || !(total > 0)) return shares;
+            let given = 0;
+            targets.forEach((i, n) => {
+                shares[i] = n === targets.length - 1 ? r2(total - given) : Math.min(r2(worth(i)), r2(total * worth(i) / base));
+                given = r2(given + shares[i]);
+            });
+            return shares;
+        }
+
+//@fn bakeDiscountIntoItems
+// Takes `amount` off the sale's item lines (spread over the lines in `idxs`, or all of them) - see bakeItemShares. Returns a new items array.
+function bakeDiscountIntoItems(items, amount, idxs) {
+            return bakeItemShares(items, spreadDiscountOverItems(items, amount, idxs));
+        }
+
+//@fn bakeFlatOffersIntoItems
+// zip 156 (audit 2): a FLAT offer ("KES 50 off when you buy 2") comes off the cart TOTAL only, so the sale's item lines added up to 300 while the
+// customer paid 250. This puts each flat offer's amount into the item lines it applies to. `entries` are the cart lines that `items` were made
+// from (same order); `allEntries` is the whole cart when `entries` is only the local part of it (cross-branch lines belong to another branch).
+function bakeFlatOffersIntoItems(entries, items, flatResults, allEntries) {
+            if (!Array.isArray(flatResults) || !flatResults.length || typeof offers === 'undefined' || typeof lineMatchesOffer !== 'function') return items;
+            const whole = allEntries || entries;
+            const shares = items.map(() => 0);
+            flatResults.forEach(r => {
+                const offer = offers.find(o => o && o.id === r.offerId);
+                if (!offer) return;
+                const sub = (arr) => arr.filter(l => lineMatchesOffer(l, offer)).reduce((s, l) => s + (Number(l.price) || 0) * (Number(l.qty) || 0), 0);
+                const allSub = sub(whole), mySub = sub(entries);
+                if (!(allSub > 0) || !(mySub > 0)) return;
+                const idxs = []; entries.forEach((l, i) => { if (lineMatchesOffer(l, offer)) idxs.push(i); });
+                const one = spreadDiscountOverItems(items, Math.round(r.amount * (mySub / allSub) * 100) / 100, idxs);
+                one.forEach((v, i) => { shares[i] = Math.round((shares[i] + v) * 100) / 100; });
+            });
+            return bakeItemShares(items, shares);
         }
 
 //@fn saleCtxNow
@@ -2730,7 +2894,7 @@ function handleCaptureListUpload(event) {
 function handleDeliveryPaymentSplitChange(source) {
             const bill = bills.find(b => b.id === pendingDeliveryPaymentSaleId);
             if (!bill) return;
-            const outstanding = Math.max(0, (bill.total || 0) - (bill.amountPaid || 0));
+            const outstanding = Math.max(0, billTotalOf(bill) - (bill.amountPaid || 0));
             const cashInput = document.getElementById('delivery-payment-split-cash-input');
             const mpesaInput = document.getElementById('delivery-payment-split-mpesa-input');
             const cash = parseFloat(cashInput.value);
@@ -4040,7 +4204,7 @@ function openDeliveryPaymentModal(saleId) {
             const bill = bills.find(b => b.id === saleId);
             if (!bill) { showToast('Could not find that order — it may already be settled.', true); renderDeliveriesTab(); return; }
             pendingDeliveryPaymentSaleId = saleId;
-            const outstanding = Math.max(0, (bill.total || 0) - (bill.amountPaid || 0));
+            const outstanding = Math.max(0, billTotalOf(bill) - (bill.amountPaid || 0));
             document.getElementById('delivery-payment-summary').textContent = `${(bill.deliveryDetails && bill.deliveryDetails.clientName) || bill.customerName || 'Customer'} — ${money(outstanding)} due`;
             document.getElementById('delivery-payment-mpesa-code-input').value = '';
             document.getElementById('delivery-payment-split-cash-input').value = '';
@@ -4723,7 +4887,20 @@ function printSystemDrawerKickTest() {
 async function printViaSystemDialog() {
             const relayAvailable = await checkPrintRelayAvailable();
             if (relayAvailable) {
-                const sent = await submitPrintRelayJob('receipt', lastReceiptText);
+                let sent = false;
+                const relayCopies = (typeof receiptIsDelivery === 'function' && receiptIsDelivery(currentReceiptSale) && typeof receiptCopiesFor === 'function') ? receiptCopiesFor() : 1;
+                for (let i = 0; i < relayCopies; i++) {                                  // zip 155: a delivery order sends one job per signed copy
+                    try { if (typeof receiptCopyPrep === 'function') receiptCopyPrep(i); } catch (e) { /* label only */ }
+                    let relayBytes = null;
+                    try {                                                       // zip 156: the printer device gets the finished bytes, so it prints the logo and the stamp too
+                        if (typeof buildSectionedReceiptBytes === 'function' && typeof lastReceiptHeader === 'string' && typeof lastReceiptItemSection === 'string') {
+                            relayBytes = buildSectionedReceiptBytes(lastReceiptHeader, lastReceiptItemSection, lastReceiptFooter || '');
+                        }
+                    } catch (e) { relayBytes = null; }
+                    sent = await submitPrintRelayJob('receipt', lastReceiptText, relayBytes);
+                    if (!sent) break;
+                }
+                try { if (typeof receiptCopyPrep === 'function') receiptCopyPrep(0); } catch (e) { /* label only */ }
                 if (sent) {
                     showToast('🖨️ Sent to the printer at this shop.');
                     closeReceiptAfterPrint();
@@ -4903,8 +5080,20 @@ async function pullStateOnce() {
                 }
                 const data = await res.json();
                 window.__pullPatienceMs = 0;
-                if (data && data.unchanged) { markSync('synced'); return; }
+                if (data && data.unchanged) {
+                    // zip 155: a device that has never had a baseline for its settings (it booted with an up-to-date copy, so no pull was ever applied) takes
+                    // one now - otherwise its first real edit of a setting goes out unstamped. Never when it holds unsent edits: those must stay changes.
+                    try { if (!(window.__fieldAck && window.__fieldAck.size) && typeof hasUnsyncedWork === 'function' && !hasUnsyncedWork()) ackLocalFields(); } catch (e) { /* baseline only */ }
+                    markSync('synced'); return;
+                }
                 if (data && data.updatedAt && data.updatedAt > localUpdatedAt) {
+                    // zip 156: something was saved on this device WHILE the reply was on its way (a bill, a void, a settlement). Applying the server's copy now
+                    // would replace it in memory and in storage. Send it first, then pull again.
+                    if (hasUnsyncedWork()) {
+                        markSync('syncing');
+                        setTimeout(() => { try { Promise.resolve(flushThenPull()).catch(() => {}); } catch (e2) { /* the poll will */ } }, 300);
+                        return;
+                    }
                     applyRemotePayload(preparePulledPayload(data));
                 }
                 markSync('synced');
@@ -4986,6 +5175,7 @@ function preparePulledPayload(data) {
             try {
                 if (!data || typeof data !== 'object') return data;
                 try { if (typeof window.salesJournalSeen === 'function') window.salesJournalSeen(data); } catch (e) { /* housekeeping */ }
+                try { if (Array.isArray(data.salesLog)) repairInstallmentSales(data.salesLog); } catch (e) { /* the sale keeps its old shape */ }   // zip 156
                 if (data._hotFrom) window.__lastHotFrom = data._hotFrom;
                 // what the server just sent, it has: those records are not sent back (zip 129)
                 ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'].forEach((f) => { if (Array.isArray(data[f]) && data[f].length) ackServerRecords(f, data[f]); });
@@ -6548,6 +6738,10 @@ function safeJSONParse(key, fallback) {
 
 //@fn safeSetItem
 function safeSetItem(key, value) {
+            // zip 156: every write that fails (storage full / blocked) is remembered with its LATEST value, retried after the device archives its
+            // oldest history and every few seconds after that, and while it is still failing a red bar says so. Before, a failed write of the bills
+            // list (or the stock figures) was retried once with a value that could already be stale, and nothing told the cashier.
+            const P = window.__ssPending = window.__ssPending || { pend: {}, tries: 0, timer: null };
             try {
                 // Keep one generation of local backup for this key, best-effort, so
                 // a corrupted write can self-heal from the last-known-good value
@@ -6562,20 +6756,61 @@ function safeSetItem(key, value) {
                 }
 
                 localStorage.setItem(key, value);
+                if (P.pend[key] !== undefined) { delete P.pend[key]; try { storageFullBar(); } catch (e2) { /* cosmetic */ } }
                 return true;
             } catch (e) {
                 console.error('localStorage write failed for', key, e);
-                // No message for the cashier: the device archives its oldest history by itself and the change is saved again
-                // straight afterwards (the arrays are always written whole). Only an ADMIN is told, and only if that fails too.
+                P.pend[key] = value;                                      // the newest value wins: a later write of the same key replaces it
                 try {
                     if (window.storageAutoArchive) {
-                        window.storageAutoArchive('write-failed').then(function () {
-                            try { localStorage.setItem(key, value); } catch (e2) { /* still no room: the admin has been told */ }
-                        });
+                        window.storageAutoArchive('write-failed').then(function () { try { storageRetryPending(); } catch (e2) { /* the timer retries */ } });
                     }
                 } catch (e3) { /* never let housekeeping break a sale */ }
+                try { storageRetryLater(); } catch (e4) { /* housekeeping */ }
                 return false;
             }
+        }
+
+//@fn storageRetryLater
+function storageRetryLater() {
+            const P = window.__ssPending;
+            if (!P || P.timer) return;
+            P.timer = setTimeout(() => { P.timer = null; storageRetryPending(true); }, 4000);
+        }
+
+//@fn storageRetryPending
+function storageRetryPending(fromTimer) {
+            const P = window.__ssPending;
+            if (!P) return;
+            Object.keys(P.pend).forEach((k) => {
+                try { localStorage.setItem(k, P.pend[k]); delete P.pend[k]; } catch (e) { /* still no room */ }
+            });
+            if (Object.keys(P.pend).length) {
+                if (fromTimer) P.tries++;
+                if (P.tries < 200) storageRetryLater();
+            } else P.tries = 0;
+            storageFullBar();
+        }
+
+//@fn storageFullBar
+function storageFullBar() {
+            try {
+                const P = window.__ssPending;
+                if (!P) return;
+                const keys = Object.keys(P.pend).filter((k) => !/:prev$/.test(k));
+                let el = document.getElementById('storage-full-bar');
+                if (!keys.length) { if (el) el.remove(); return; }
+                if (!P.tries) return;                                     // the first retry (right after the archive) usually fixes it: warn only if it did not
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'storage-full-bar';
+                    el.className = 'no-print';
+                    el.setAttribute('role', 'status');
+                    el.style.cssText = 'position:fixed; left:50%; bottom:52px; transform:translateX(-50%); z-index:99990; background:#c0392b; color:#fff; padding:8px 14px; border-radius:8px; font:13px system-ui,sans-serif; box-shadow:0 2px 10px rgba(0,0,0,.3); max-width:92vw; text-align:center;';
+                    document.body.appendChild(el);
+                }
+                el.textContent = '\u26a0 This device\'s storage is full: your latest changes are on screen and are being sent to the server, but are not stored on this device yet. Keep the app open and free up space (Settings \u2192 Storage).';
+            } catch (e) { /* cosmetic */ }
         }
 
 //@fn saleHasServices
@@ -8050,7 +8285,9 @@ function slimPayloadForPush(payload) {
                     if (k == null) return;                    // unmatched records: leave this log whole (the server can't match them)
                     const sg = sigOf(r);
                     if (ack.get(k) === sg) continue;
-                    if (known && known(field, r)) { ack.set(k, sg); continue; }
+                    // zip 156: the journal's "already on the server" answer covers only a handful of fields. It is trusted for a record this session has
+                    // never sent or seen acknowledged - not after that, or a later edit (a delivery status, a customer name) would be marked as sent unsent.
+                    if (known && ack.get(k) === undefined && known(field, r)) { ack.set(k, sg); continue; }
                     changed.push(r);
                 }
                 const cap = Math.max(10, Math.floor((CAP[field] || 200) * scale));
@@ -8831,6 +9068,46 @@ function stockApplyPulledLedger(data) {
             return data;
         }
 
+//@fn voidBillPayments
+function voidBillPayments(bill, voiding) {
+            // A bill's payments are their own sales in Daily Sales ("Partial payment - Bill", the instalments). Voiding the bill left them counting as
+            // revenue although the goods went back on the shelf (zip 156). Payments made from now on carry `billId`, so voiding the bill voids them
+            // with it, and restoring the bill restores exactly those. Returns how many it changed. (Payments recorded before this update have no link.)
+            if (!bill || bill.id == null || typeof salesLog === 'undefined' || !Array.isArray(salesLog)) return 0;
+            let n = 0;
+            const at = Date.now();
+            salesLog.forEach((x) => {
+                if (!x || x.billId == null || String(x.billId) !== String(bill.id)) return;
+                if (voiding && !x.voided) { x.voided = true; x.voidedWithBill = true; x.voidReason = 'Bill voided'; x.voidedBy = (typeof activeServerName === 'function' ? activeServerName() : ''); x.voidedAt = at; x.updatedAt = at; n++; }
+                else if (!voiding && x.voided && x.voidedWithBill) { x.voided = false; delete x.voidedWithBill; x.unvoidedAt = at; x.updatedAt = at; n++; }
+            });
+            if (n) safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+            return n;
+        }
+
+//@fn voidRestoreItems
+function voidRestoreItems(sale) {
+            // The lines a VOID should put back on the shelf: what the sale took out MINUS what was already returned on the same receipt (each return
+            // restocked, or wrote off, its own units - voiding the whole sale used to give them back a second time: sell 3, return 2, void = 52 from 50).
+            const items = (Array.isArray(sale && sale.items) ? sale.items : []).map((l) => ({ ...l }));
+            if (!sale || !sale.refNumber || typeof returns === 'undefined' || !Array.isArray(returns)) return items;
+            const back = {};
+            returns.forEach((r) => {
+                if (!r || r._deleted || r.refNumber !== sale.refNumber || r.isCrossBranchItem || r.itemCode == null) return;
+                back[r.itemCode] = (back[r.itemCode] || 0) + (Number(r.qty) || 0);
+            });
+            Object.keys(back).forEach((code) => {
+                let left = back[code];
+                for (let i = items.length - 1; i >= 0 && left > 1e-9; i--) {
+                    if (String(items[i].code) !== String(code)) continue;
+                    const take = Math.min(Number(items[i].qty) || 0, left);
+                    items[i].qty = Math.round(((Number(items[i].qty) || 0) - take) * 1000) / 1000;
+                    left -= take;
+                }
+            });
+            return items.filter((l) => (Number(l.qty) || 0) > 0);
+        }
+
 //@fn stockKeyMoves
 // Gives the stock movements logged since `fromLen` a DETERMINISTIC id built from the business event they belong to (e.g. the sale
 // being voided). The same event done again — a double tap, or a second till that had not seen the first one yet — then produces the
@@ -9354,13 +9631,15 @@ function submitDemoPurgeConfirm() {
         }
 
 //@fn submitPrintRelayJob
-async function submitPrintRelayJob(jobType, text) {
+async function submitPrintRelayJob(jobType, text, bytes) {
             try {
+                let bytesB64;
+                try { if (bytes && bytes.length && bytes.length <= 150000) bytesB64 = receiptBytesToB64(bytes); } catch (e) { bytesB64 = undefined; }
                 const res = await fetch(apiUrl('/api/print-relay'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        action: 'submit', jobType, text,
+                        action: 'submit', jobType, text, bytesB64,
                         sourceDeviceId: thisDeviceId,
                         sourceStation: thisDeviceStation,
                     }),
@@ -9838,6 +10117,7 @@ function checkoutGuardStart() {
                 const inv = (typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : [];
                 const codes = new Set();
                 const add = (c) => { if (c != null && c !== '') codes.add(String(c)); };
+                const add2 = (set, c) => { if (c != null && c !== '') set.add(String(c)); };
                 cart.forEach((l) => { add(l.code); add(l.gasReturnEmptyCode); });
                 inv.forEach((p) => {
                     if (!p || !codes.has(String(p.code))) return;
@@ -9851,6 +10131,22 @@ function checkoutGuardStart() {
                     g.rows[String(p.code)] = JSON.stringify({ qty: p.qty, pieceQty: p.pieceQty, variants: Array.isArray(p.variants) ? p.variants.map((v) => ({ id: v && v.id, qty: v && v.qty, pieceQty: v && v.pieceQty })) : null, batches: p.batches === undefined ? undefined : p.batches });
                 });
                 if (typeof kegs !== 'undefined' && Array.isArray(kegs)) g.kegs = JSON.stringify(kegs);
+                // zip 156 (audit 2): Aqua POS keeps its stock in products (per-site figures, bottle counts), tanks (litres) and rawMaterials
+                // (BOM materials) - none of which this guard used to remember, so a failed refill / bottle sale kept its tank litres and
+                // materials taken off with no sale saved.
+                if (typeof products !== 'undefined' && Array.isArray(products) && typeof tanks !== 'undefined' && Array.isArray(tanks) && typeof rawMaterials !== 'undefined' && Array.isArray(rawMaterials)) {
+                    const pcodes = new Set();
+                    cart.forEach((l) => { add2(pcodes, l.code); (Array.isArray(l.chargeableMaterials) ? l.chargeableMaterials : []).forEach((cm) => add2(pcodes, cm && cm.code)); });
+                    products.forEach((p) => { if (p && pcodes.has(String(p.code)) && p.linkedBottleCode) add2(pcodes, p.linkedBottleCode); });
+                    const aq = { products: {}, tanks: {}, mats: {} };
+                    products.forEach((p) => {
+                        if (!p || !pcodes.has(String(p.code))) return;
+                        aq.products[String(p.code)] = JSON.stringify({ qty: p.qty, stock: p.stock, siteTimes: p.siteTimes, bottleStock: p.bottleStock, bottleStockBySite: p.bottleStockBySite });
+                    });
+                    tanks.forEach((t) => { if (t && t.id != null) aq.tanks[String(t.id)] = t.currentVolumeLiters; });
+                    rawMaterials.forEach((m) => { if (m && m.id != null) aq.mats[String(m.id)] = m.stockQty; });
+                    g.aqua = aq;
+                }
             } catch (e) { /* the guard is best effort: a snapshot problem must never stop a sale */ }
             return g;
         }
@@ -9883,6 +10179,18 @@ function checkoutGuardFailed(g, e) {
                         });
                     }
                     if (g.kegs && typeof kegs !== 'undefined' && Array.isArray(kegs)) { const k = JSON.parse(g.kegs); kegs.length = 0; k.forEach((x) => kegs.push(x)); }
+                    if (g.aqua && typeof products !== 'undefined' && Array.isArray(products)) {
+                        products.forEach((p) => {
+                            const snap = p && g.aqua.products[String(p.code)];
+                            if (!snap) return;
+                            const o = JSON.parse(snap);
+                            ['qty', 'stock', 'siteTimes', 'bottleStock', 'bottleStockBySite'].forEach((k) => { if (o[k] !== undefined) p[k] = o[k]; });
+                            if (p.trackBottles && typeof syncBaleTrackingFields === 'function') { try { syncBaleTrackingFields(p); } catch (x) { /* derived fields only */ } }
+                        });
+                        if (typeof tanks !== 'undefined' && Array.isArray(tanks)) tanks.forEach((t) => { if (t && g.aqua.tanks[String(t.id)] !== undefined) t.currentVolumeLiters = g.aqua.tanks[String(t.id)]; });
+                        if (typeof rawMaterials !== 'undefined' && Array.isArray(rawMaterials)) rawMaterials.forEach((m) => { if (m && g.aqua.mats[String(m.id)] !== undefined) m.stockQty = g.aqua.mats[String(m.id)]; });
+                        try { safeSetItem('aqua_products', JSON.stringify(products)); safeSetItem('aqua_tanks', JSON.stringify(tanks)); safeSetItem('aqua_raw_materials', JSON.stringify(rawMaterials)); } catch (x) { /* saved by the next change */ }
+                    }
                     if (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) {
                         const made = stockMovementLog.slice(g.mv).filter((m) => m && m.delta && !m._deleted);
                         made.forEach((m) => {
@@ -9899,6 +10207,14 @@ function checkoutGuardFailed(g, e) {
                     try { if (typeof renderAllViews === 'function') renderAllViews(); } catch (x) { /* cosmetic */ }
                 }
             } catch (x) { try { console.error('checkout rollback problem:', x); } catch (y) { /* nothing more to do */ } }
+            // zip 156: the sale IS saved, so its cart must not stay full - a second tap on Complete Sale would sell it again (stock 48 -> 46, two sales).
+            if (saved) {
+                try {
+                    if (typeof currentCart !== 'undefined') currentCart = {};
+                    ['cash-tendered-input', 'split-cash-input', 'split-mpesa-input', 'split-cash-tendered-input', 'bill-customer-name-input', 'bill-upfront-amount-input'].forEach((id) => { const el = document.getElementById(id); if (el) el.value = ''; });
+                    if (typeof renderCart === 'function') renderCart();
+                } catch (x) { /* the cart is cleared by the next sale at the latest */ }
+            }
             try {
                 if (saved) showToast('This sale is saved, but a step after it failed (' + msg + '). The sale and the stock are correct - please tell support.', true);
                 else showToast('This sale was NOT completed and nothing was recorded or taken from stock (' + msg + '). Please try again - if it repeats, tell support.', true);
@@ -9914,7 +10230,10 @@ function runGuardedCheckout(fn) {
             // a dropped connection sends the SAME key to the server (cross-branch sales use it: a repeat is the same sale, never a second one).
             if (!window.__checkoutKey) window.__checkoutKey = genSaleId();
             const salesBefore = Array.isArray(typeof salesLog === 'undefined' ? null : salesLog) ? salesLog.length : 0;
-            const done = () => { try { if ((Array.isArray(salesLog) ? salesLog.length : 0) > salesBefore) window.__checkoutKey = null; } catch (e) { /* keep the key */ } };
+            const billsBefore = Array.isArray(typeof bills === 'undefined' ? null : bills) ? bills.length : 0;
+            // zip 156: cleared when the sale or bill was saved, AND when the cart was consumed even if the logs did not grow (an all-cross-branch cart)
+            //  - otherwise the next cross-branch sale to the same branch reused this key and the branch skipped it as a repeat.
+            const done = () => { try { if ((Array.isArray(salesLog) ? salesLog.length : 0) > salesBefore || (Array.isArray(bills) ? bills.length : 0) > billsBefore || (typeof currentCart !== 'undefined' && currentCart && Object.keys(currentCart).length === 0)) window.__checkoutKey = null; } catch (e) { /* keep the key */ } };
             const fail = (e) => { checkoutGuardFailed(g, e); return false; };
             try {
                 const r = fn();
@@ -10635,10 +10954,12 @@ function buildSectionedReceiptBytes(headerText, itemsText, footerText, cutBytes)
             const itemAlign = receiptItemAlign === 'center' ? 1 : receiptItemAlign === 'right' ? 2 : 0;
             const refBarcode = receiptRefBarcodeBytes(footerText);
             const logoRaster = receiptLogoRasterBytes();                             // zip 152: the shop logo, when "Print logo" is on
+            const stampRaster = (typeof receiptStampRasterBytes === 'function') ? receiptStampRasterBytes() : null;   // zip 155: the stamp, above the item lines
             return concat([
                 b([0x1B, 0x40, 0x1B, 0x4D, 0x00]),                                   // initialise + font A
                 ...(logoRaster ? [logoRaster] : []),
                 just(1), ...String(headerText).split('\n').map((l, i) => (i === 0 ? boldLine(l) : line(l))),
+                ...(stampRaster ? [stampRaster] : []),
                 just(itemAlign), ...String(itemsText).split('\n').map((l) => (/^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(l) ? boldLine(l) : line(l))),
                 just(1), line(footerText),
                 ...(refBarcode ? [line(''), refBarcode] : []),                        // scannable reference barcode (image)
@@ -10788,6 +11109,9 @@ function buildReceiptDoc(sale, hooks) {
             if (etimsPin) headerLines.push(`KRA PIN: ${etimsPin}`);
             const docLabel = hooks.docLabel ? hooks.docLabel(sale, ctx) : (isBill ? 'BILL / INVOICE' : 'Sales Receipt');
             headerLines.push(docLabel);
+            // zip 155: a delivery order prints TWO signed receipts - this line says whose copy it is (the second copy is relabelled when it prints)
+            const deliverySale = (typeof receiptIsDelivery === 'function') && receiptIsDelivery(sale);
+            if (deliverySale) headerLines.push('CLIENT COPY');
             headerLines.push(rule);
             // One line when it fits (80 mm), otherwise Date and Time on lines of their own — never wrapped mid-way (zip 144)
             const dateTime = `Date: ${date.toLocaleDateString('en-GB')}   Time: ${date.toLocaleTimeString('en-GB')}`;
@@ -10836,6 +11160,10 @@ function buildReceiptDoc(sale, hooks) {
             });
             const afterItemLines = hooks.afterItems ? (hooks.afterItems(sale, ctx) || []) : [];
             afterItemLines.forEach(l => lines.push(l));
+            // zip 155: where the goods go and who they are for (every app - only Aqua POS used to print this); ID number and directions are optional
+            if (deliverySale) receiptDeliveryLines(sale, ctx).forEach(l => lines.push(l));
+            // zip 156: a bill instalment shows where the bill stands (these three figures are NOT sale lines, so no report adds them up as revenue)
+            if (sale.installment && typeof receiptInstallmentLines === 'function') receiptInstallmentLines(sale, ctx).forEach(l => lines.push(l));
 
             lines.push(rule);
             const totalLineIndex = lines.length;
@@ -10904,6 +11232,9 @@ function buildReceiptDoc(sale, hooks) {
                 }
             }
 
+            // zip 155: the delivery confirmation: the client and the delivery person both sign (two copies print, one for each)
+            if (deliverySale) receiptDeliverySignLines(sale, ctx).forEach(l => lines.push(l));
+
             // ---- KRA eTIMS (two data shapes exist across the apps) ----
             if (sale.etimsData) {
                 const e = sale.etimsData;
@@ -10955,8 +11286,12 @@ function buildReceiptDoc(sale, hooks) {
                 const narrow = Math.max(0.6, Math.min(1.5, fitPx / (14.5 * n + 20)));
                 barcodeHtml = `<div class="receipt-grid-barcode">${renderCode39SVG(sale.refNumber, { height: 40, narrow })}</div>`;
             }
+            // zip 155: the receipt STAMP sits between the header and the item lines (thermal printers get the same picture as dots)
+            let stampHtml = '';
+            try { if (typeof receiptStampBlockHtml === 'function') stampHtml = receiptStampBlockHtml(); } catch (e) { /* the stamp is an extra */ }
             const html = receiptGridHtml([
                 { lines: headerLines, align: 'center', bold: headBold },
+                stampHtml ? { html: stampHtml } : null,
                 { lines, align: itemAlign, bold: boldItem },
                 { lines: footerLines, align: 'center' },
             ], { cols }) + barcodeHtml;
@@ -12060,10 +12395,12 @@ function buildReceiptEscPosBytes(headerText, itemsText, footerText) {
             const itemChunks = itemLines.map(line => /^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(line) ? ESCPOS.boldLine(line) : ESCPOS.text(line));
 
             const logoRaster = receiptLogoRasterBytes();                             // zip 152: the shop logo, when "Print logo" is on
+            const stampRaster = (typeof receiptStampRasterBytes === 'function') ? receiptStampRasterBytes() : null;   // zip 155: the stamp, above the item lines
             return ESCPOS.concat([
                 ESCPOS.INIT,
                 ...(logoRaster ? [logoRaster] : []),
                 ESCPOS.justify(1), ...headerChunks,
+                ...(stampRaster ? [stampRaster] : []),
                 ESCPOS.justify(itemAlignByte), ...itemChunks,
                 ESCPOS.justify(1), ESCPOS.text(footerText),
                 ...(receiptRefBarcodeBytes(footerText) ? [ESCPOS.text(''), receiptRefBarcodeBytes(footerText)] : []),   // scannable Ref barcode
@@ -12684,6 +13021,7 @@ async function printReceipt() {
                 if (sale && sale.id != null && !saleStoredLocally(sale) && typeof ensureSaleSaved === 'function'
                     && typeof salesLog !== 'undefined' && salesLog.some((x) => x && x.id === sale.id)) ensureSaleSaved(sale);
                 try { await prepareReceiptLogoRaster(); } catch (e) { /* never held up by the logo: it prints without it (and says so) */ }   // zip 152
+                try { if (typeof prepareReceiptStampRaster === 'function') await prepareReceiptStampRaster(); } catch (e) { /* the stamp is an extra: it prints without it */ }   // zip 155
                 await queuePrintJob(printReceiptJob);
                 if (window.__lastPrintOk === false) return;                // failed: the printer already said so; the preview stays for another try
                 markReceiptPrinted(sale);
@@ -13130,6 +13468,7 @@ function saveRecordBillModal() {
             if (upfront > 0) {
                 const upfrontRecord = {
                     id: genSaleId(),
+                    billId: bill.id,                      // zip 156: voiding the bill voids this payment with it
                     timestamp: now,
                     paid: true,
                     paymentMethod: upfrontMethod,
@@ -13798,6 +14137,7 @@ function pastSaleStore(saleRecord, payment) {
                 const m = payment.upfrontMethod;
                 saleRecord.paymentHistory.push({ id: genSaleId(), timestamp: saleRecord.timestamp, amount: saleRecord.amountPaid, method: m, reference: '', balanceAfter: Math.round((total - saleRecord.amountPaid) * 100) / 100 });
                 salesLog.push({
+                    billId: saleRecord.id,
                     id: genSaleId(), timestamp: saleRecord.timestamp, paid: true, paymentMethod: m, servedBy: saleRecord.servedBy, recordedLate: true,
                     customerName: payment.billName,
                     items: [{ name: `Partial payment — Bill (${payment.billName})`, price: saleRecord.amountPaid, qty: 1, unit: 'payment', wholesalePrice: 0, vatCategory: 'A' }],
@@ -15917,6 +16257,7 @@ function receiptGridHtml(blocks, opts) {
             let html = `<div class="receipt-grid" data-cols="${cols}" style="--rg-cols:${cols}; --rg-font:${fontPx.toFixed(2)}px;">`;
             (blocks || []).forEach((b) => {
                 if (!b) return;
+                if (typeof b.html === 'string') { html += b.html; return; }                       // zip 155: a picture (the receipt stamp) between the text blocks
                 receiptGridLines(b.lines || [], b.align || 'left', cols).forEach((l, i) => {
                     const bold = typeof b.bold === 'function' ? !!b.bold(l, i) : false;
                     html += `<div class="rg-l${bold ? ' rg-b' : ''}">${escapeHtml(l)}</div>`;
@@ -16009,4 +16350,158 @@ function receiptPageRule(widthMm, contentEl, fixedLengthMm) {
             }
             h = Math.max(40, Math.min(5000, h));
             return `@page { size: ${w}mm ${h}mm; margin: 0; }`;
+        }
+
+//@fn receiptBytesToB64
+function receiptBytesToB64(bytes) {
+            // raw printer bytes -> base64 text, for the print relay (zip 156: the relay used to carry text only, so the logo and the stamp were lost)
+            let bin = '';
+            for (let i = 0; i < bytes.length; i += 8192) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+            return btoa(bin);
+        }
+
+//@fn receiptBytesFromB64
+function receiptBytesFromB64(b64) {
+            const bin = atob(String(b64 || ''));
+            const out = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+            return out;
+        }
+
+//@fn receiptIsDelivery
+function receiptIsDelivery(sale) {
+            // zip 155: a delivery order (it has where-to details) prints TWO signed receipts - one for the client, one for the delivery person.
+            return !!(sale && sale.orderType === 'delivery' && sale.deliveryDetails && typeof sale.deliveryDetails === 'object');
+        }
+
+//@fn receiptCopiesFor
+function receiptCopiesFor() {
+            // How many copies a print makes: the shop's setting, but never fewer than 2 for a delivery order.
+            const n = (typeof receiptCopies === 'number' && receiptCopies > 0) ? receiptCopies : 1;
+            let sale = null;
+            try { sale = currentReceiptSale; } catch (e) { /* no receipt open */ }
+            return receiptIsDelivery(sale) ? Math.max(2, n) : n;
+        }
+
+//@fn receiptCopyLabel
+function receiptCopyLabel(i) {
+            return i === 0 ? 'CLIENT COPY' : i === 1 ? 'DELIVERY PERSON COPY' : 'COPY ' + (i + 1);
+        }
+
+//@fn receiptCopyPrep
+function receiptCopyPrep(i) {
+            // Puts copy number i's label into the receipt text the printers read (lastReceiptText / lastReceiptHeader). Only delivery orders have a label.
+            try { if (!receiptIsDelivery(currentReceiptSale)) return; } catch (e) { return; }
+            const label = receiptCopyLabel(i);
+            const re = /^(CLIENT COPY|DELIVERY PERSON COPY|COPY \d+)$/m;
+            try {
+                if (typeof lastReceiptHeader === 'string' && re.test(lastReceiptHeader)) lastReceiptHeader = lastReceiptHeader.replace(re, label);
+                if (typeof lastReceiptText === 'string' && re.test(lastReceiptText)) lastReceiptText = lastReceiptText.replace(re, label);
+            } catch (e) { /* label only */ }
+        }
+
+//@fn receiptRelabelCopy
+function receiptRelabelCopy(cloneEl, i) {
+            // The printed-on-screen copies (system print dialog) are clones of the receipt: give each its own label, centred where the first one was.
+            try { if (!receiptIsDelivery(currentReceiptSale)) return; } catch (e) { return; }
+            const label = receiptCopyLabel(i);
+            cloneEl.querySelectorAll('.rg-l').forEach((el) => {
+                const t = el.textContent || '';
+                if (t.trim() !== 'CLIENT COPY') return;
+                el.textContent = ' '.repeat(Math.max(0, Math.floor((t.length - label.length) / 2))) + label;
+            });
+        }
+
+//@fn receiptInstallmentLines
+function receiptInstallmentLines(sale, ctx) {
+            const inst = (sale && sale.installment) || {};
+            const cols = (ctx && ctx.cols) || getPaperCols();
+            const kes = (ctx && ctx.kes) || ((n) => 'KES ' + Number(n || 0).toFixed(2));
+            const out = [(ctx && ctx.rule) || '-'.repeat(cols)];
+            out.push(...receiptMoneyRow('Original bill', kes(inst.original), cols));
+            out.push(...receiptMoneyRow('Total paid to date', kes(inst.paidToDate), cols));
+            out.push(...receiptMoneyRow('Remaining balance', kes(inst.remaining), cols));
+            return out;
+        }
+
+//@fn repairInstallmentSales
+function repairInstallmentSales(list) {
+            // Instalment sales saved before zip 156 carry FOUR money lines (original bill, paid to date, this instalment, remaining), so revenue and profit
+            // reports counted the bill up to three extra times. Reshape them once: the instalment stays as the one money line, the other figures move onto
+            // the sale as `installment`. Safe to repeat (a sale already reshaped no longer matches). Returns how many it changed.
+            const target = Array.isArray(list) ? list : (typeof salesLog !== 'undefined' ? salesLog : null);
+            if (!Array.isArray(target)) return 0;
+            let n = 0;
+            const at = Date.now();
+            target.forEach((s) => {
+                const it = s && s.items;
+                if (!Array.isArray(it) || it.length !== 4) return;
+                if (!(it[0] && it[0].name === 'Original Bill Amount' && it[1] && it[1].name === 'Total Paid To Date' && it[2] && it[2].name === 'This Installment' && it[3] && it[3].name === 'Remaining Outstanding Balance')) return;
+                if (!it.every((x) => x.unit === 'payment')) return;
+                s.installment = { original: Number(it[0].price) || 0, paidToDate: Number(it[1].price) || 0, thisInstallment: Number(it[2].price) || 0, remaining: Number(it[3].price) || 0 };
+                s.items = [{ ...it[2], name: 'Bill Payment — This Installment' }];
+                s.updatedAt = at;
+                n++;
+            });
+            if (n && !Array.isArray(list)) {
+                try { safeSetItem('pos_sales_log', JSON.stringify(salesLog)); } catch (e) { /* stays in memory; the next save writes it */ }
+                try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll sends it */ }
+            }
+            return n;
+        }
+
+//@fn receiptDeliveryLines
+function receiptDeliveryLines(sale, ctx) {
+            // Who the goods are for and where they go. Every field but the address is optional (ID number, directions).
+            const dd = (sale && sale.deliveryDetails) || {};
+            const cols = (ctx && ctx.cols) || getPaperCols();
+            const out = [(ctx && ctx.rule) || '-'.repeat(cols), 'DELIVERY DETAILS'];
+            const put = (label, v) => {
+                const t = String(v == null ? '' : v).trim();
+                if (!t) return;
+                thermalWrapLine(label + ': ' + t, cols).forEach((l) => out.push(l));
+            };
+            put('Client', dd.clientName || sale.customerName);
+            put('Deliver to', dd.address);
+            put('Phone', dd.phone || sale.customerPhone);
+            put('ID No', dd.idNumber);
+            put('Directions', dd.notes);
+            if (Number(dd.fee) > 0) out.push('Delivery Fee: ' + ((ctx && ctx.kes) ? ctx.kes(dd.fee) : 'KES ' + Number(dd.fee).toFixed(2)));
+            else if (dd.freeDelivery) out.push('Delivery: FREE');
+            let agent = null;
+            try { agent = sale.deliveryAgentId ? findDeliveryAgentById(sale.deliveryAgentId) : null; } catch (e) { /* no agent list */ }
+            if (agent && agent.name) out.push('Delivery Agent: ' + agent.name);
+            if (dd.pod) out.push('*** UNPAID — PAY ON DELIVERY ***');
+            return out;
+        }
+
+//@fn receiptDeliverySignLines
+function receiptDeliverySignLines(sale, ctx) {
+            // The delivery confirmation both people sign. Full-width blank lines, so it reads the same however the item list is aligned.
+            const cols = (ctx && ctx.cols) || getPaperCols();
+            const dd = (sale && sale.deliveryDetails) || {};
+            const blank = '_'.repeat(Math.max(12, cols - 2));
+            const out = [(ctx && ctx.rule) || '-'.repeat(cols), 'DELIVERY CONFIRMATION'];
+            thermalWrapLine('I confirm the goods above were delivered and received in good order.', cols).forEach((l) => out.push(l));
+            out.push('');
+            out.push('Client name:');
+            out.push(String(dd.clientName || (sale && sale.customerName) || '').trim() ? String(dd.clientName || sale.customerName).trim() : '');
+            out.push(blank);
+            out.push('ID No:' + (dd.idNumber ? ' ' + String(dd.idNumber).trim() : ''));
+            if (!dd.idNumber) out.push(blank);
+            out.push('Client signature:');
+            out.push('');
+            out.push(blank);
+            out.push('Date / time received:');
+            out.push('');
+            out.push(blank);
+            out.push('');
+            let agent = null;
+            try { agent = sale && sale.deliveryAgentId ? findDeliveryAgentById(sale.deliveryAgentId) : null; } catch (e) { /* no agent list */ }
+            out.push('Delivered by:' + (agent && agent.name ? ' ' + agent.name : ''));
+            if (!(agent && agent.name)) out.push(blank);
+            out.push('Delivery person signature:');
+            out.push('');
+            out.push(blank);
+            return out;
         }

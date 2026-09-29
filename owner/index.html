@@ -7542,11 +7542,36 @@
             ownerSaveKeyAck();
         }
 
+        // zip 155: SETTINGS ARE ONLY REPLACED BY A CHANGE SOMEONE MADE. The Owner Console used to send every setting with every push, and it
+        // pushes BEFORE it pulls: a new phone / the Android app started with empty defaults, sent them first, and the logo, receipt notes,
+        // payment details and tab locks the owner had set were overwritten with blanks on the server. Now a setting is stamped (`_fieldTimes`)
+        // only when THIS device changed it since it last agreed with the server (after a pull or a push); the server ignores an unstamped
+        // blank / default for these fields (functions/api/_merge.js SETTINGS_NEED_STAMP_FIELDS).
+        const OWNER_STAMPED = ['receiptLogo', 'receiptQr', 'receiptQrCaption', 'receiptShowLogo', 'receiptShowQr', 'receiptAlign', 'paymentDetails', 'receiptFooterNotes',
+            'lockedTabs', 'vatRateA', 'vatRateB', 'requireCartRemovePw', 'lowStockThreshold', 'expiryWarningDays', 'qtyDisplayFormat'];
+        function ownerFieldSigs(p) {
+            const out = {};
+            OWNER_STAMPED.forEach((f) => { if (p[f] !== undefined) { try { out[f] = JSON.stringify(p[f]); } catch (e) { /* skip */ } } });
+            return out;
+        }
+        function ownerAckFields(sigs) {
+            window.__ownerFieldAck = sigs || ownerFieldSigs(collectSyncPayload());
+        }
+
         async function pushNow() {
             markSync('syncing');
             if (pushTimer) { clearTimeout(pushTimer); pushTimer = null; }
             const pushGen = ++ownerLocalGen;   // zip 143: what this push carries (see ownerHasUnsentChanges)
             const payload = collectSyncPayload();
+            const fieldSigs = ownerFieldSigs(payload);
+            if (window.__ownerFieldAck) {
+                const times = {};
+                Object.keys(fieldSigs).forEach((f) => { if (f in window.__ownerFieldAck && window.__ownerFieldAck[f] !== fieldSigs[f]) times[f] = Date.now(); });
+                if (Object.keys(times).length) payload._fieldTimes = times;
+            }
+            // zip 155: until this device has applied a pull it does not know the shop's real settings, so a setting it has NOT itself changed is left out
+            // of the push altogether (the server keeps its own value) instead of being sent as an empty default.
+            if (!window.__ownerPulled) OWNER_STAMPED.forEach((f) => { if (!(payload._fieldTimes && typeof payload._fieldTimes[f] === 'number')) delete payload[f]; });
             if (!window.__keyAck) window.__keyAck = ownerLoadKeyAck();
             const keysNow = {};
             OWNER_TRACKED.forEach((col) => {
@@ -7577,12 +7602,14 @@
                 if (res.ok) {
                     const data = await res.json();
                     ownerPushedGen = Math.max(ownerPushedGen, pushGen);
+                    ownerAckFields(fieldSigs);                                   // what this push carried is now what the server has
                     Object.keys(keysNow).forEach((c) => { window.__keyAck[c] = keysNow[c]; });
                     ownerSaveKeyAck();
                     // "Synced up to <server time>" is only true if the server had nothing newer than what this device held when the push arrived.
                     // If another device changed something in between, don't move the marker: the next pull fetches that change.
                     const heldUpTo = parseInt(localStorage.getItem('pos_last_synced_at') || '0', 10);
-                    const missedSomething = typeof data.prev === 'number' && data.prev > heldUpTo && heldUpTo > 0;
+                    // zip 155: a device that has NEVER pulled (heldUpTo 0) must not mark itself up to date just because it pushed first: it holds none of the shop's data yet
+                    const missedSomething = typeof data.prev === 'number' && data.prev > heldUpTo;
                     if (!missedSomething) safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
                     else setTimeout(() => { try { pullState(); } catch (e) { /* the poll will */ } }, 50);
                     markSync('synced');
@@ -7659,6 +7686,8 @@
                         return;
                     }
                     applyRemotePayload(data);
+                    ownerAckFields();                                            // this device now agrees with the server on its settings
+                    window.__ownerPulled = true;
                 }
                 markSync('synced');
             } catch (e) {
@@ -7723,6 +7752,8 @@
                     if (data && data.updatedAt && data.updatedAt > localUpdatedAt) {
                         if (ownerHasUnsentChanges()) { flushThenPull(); return; }   // zip 143: never over an unsent change
                         applyRemotePayload(data);
+                        ownerAckFields();
+                        window.__ownerPulled = true;
                         safeSetItem('pos_last_synced_at', String(data.updatedAt));
                         markSync('synced');
                     }
@@ -8156,6 +8187,7 @@
             // (because `staff` hadn't loaded yet) often ended up on the admin password
             // box instead of the staff picker. Everything needed to show the picker is
             // stored locally, so there's no reason to wait for the network.
+            try { if (!window.__ownerFieldAck) ownerAckFields(); } catch (e) { /* zip 155: what this device holds NOW is the baseline a later change is measured against */ }
             const hasInviteFlow = checkForInviteToken();
             const hasStaffLinkFlow = !hasInviteFlow && checkForStaffLoginToken();
             if (!hasInviteFlow && !hasStaffLinkFlow) {

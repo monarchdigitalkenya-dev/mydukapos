@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src https:">
+<title>MyDukaPOS</title>
+<style>
+  body { margin:0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background:#f4f6f8; color:#2c3e50; }
+  .wrap { max-width:460px; margin:0 auto; padding:9vh 20px 20px; text-align:center; }
+  .icon { font-size:54px; line-height:1; margin-bottom:10px; }
+  h1 { font-size:22px; margin:0 0 8px; } p { color:#5f6b76; font-size:15px; line-height:1.5; margin:0 0 14px; }
+  .host { display:inline-block; background:#e8edf1; border-radius:6px; padding:3px 9px; font-size:13px; color:#34495e; word-break:break-all; }
+  button { width:100%; padding:14px; border:0; border-radius:8px; background:#27ae60; color:#fff; font-size:16px; font-weight:700; margin-top:6px; }
+  button.alt { background:transparent; color:#2c3e50; border:1px solid #cfd8dc; font-weight:600; font-size:14px; padding:11px; }
+  .status { font-size:13px; color:#7f8c8d; min-height:20px; margin:12px 0 4px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:#e67e22; margin-right:6px; animation:p 1.2s infinite; } @keyframes p { 50% { opacity:.25 } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="icon">📡</div>
+  <h1>Can't reach your shop</h1>
+  <p>MyDukaPOS could not connect to <span class="host" id="host"></span>. Check the internet (Wi-Fi or mobile data). This screen keeps trying by itself and opens your shop as soon as the connection is back.</p>
+  <div class="status" id="st"><span class="dot"></span>Trying again…</div>
+  <button id="retry" type="button">Try again now</button>
+  <button id="change" class="alt" type="button">Use a different shop link</button>
+  <p style="margin-top:16px; font-size:13px;">Once your shop has opened with internet one time, it also works with no internet at all.</p>
+</div>
+<script>
+  // Shown by the Android / Windows app when the shop's page could not be loaded at all (no internet on the very first open, DNS or server down).
+  // The target address arrives as ?u=<the shop link>. It only ever leads back to https:// addresses.
+  var target = '';
+  try { target = new URLSearchParams(location.search).get('u') || ''; } catch (e) {}
+  var ok = /^https:\/\/[^\s]+$/i.test(target);
+  var host = ''; try { host = new URL(target).host; } catch (e) {}
+  document.getElementById('host').textContent = host || 'the server';
+  var busy = false, tries = 0;
+  function probe(manual) {
+    if (!ok || busy) return; busy = true; tries++;
+    var st = document.getElementById('st');
+    if (manual) st.innerHTML = '<span class="dot"></span>Checking…';
+    var origin = target.replace(/^(https:\/\/[^\/]+).*$/i, '$1');
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var t = setTimeout(function () { if (ctl) ctl.abort(); }, 8000);
+    fetch(origin + '/api/health?t=' + Date.now(), { mode: 'no-cors', cache: 'no-store', signal: ctl ? ctl.signal : undefined }).then(function () {
+      clearTimeout(t); location.replace(target);                    // reachable: go back to the shop (its own service worker takes over from here)
+    }).catch(function () {
+      clearTimeout(t); busy = false;
+      st.innerHTML = '<span class="dot"></span>Still no connection (tried ' + tries + (tries === 1 ? ' time' : ' times') + ') — trying again…';
+    });
+  }
+  document.getElementById('retry').onclick = function () { busy = false; probe(true); };
+  document.getElementById('change').onclick = function () { try { window.MyDukaLauncher.forget(); } catch (e) { location.replace(target); } };
+  probe(false);
+  setInterval(function () { probe(false); }, 6000);
+  window.addEventListener('online', function () { busy = false; probe(false); });
+</script>
+</body>
+</html>

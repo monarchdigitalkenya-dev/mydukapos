@@ -78,8 +78,12 @@ export async function onRequestGet(context) {
     }
   } catch (e) { /* best-effort */ }
 
+  // zip 156: a shop that lives in its database from its first push has NO single record (its KV size entry never exists), so list the
+  // database shops too (with no record metadata) — they were missing from this list.
+  const everyShop = new Map(sizes);
+  for (const id of modes.keys()) if (!everyShop.has(id)) everyShop.set(id, null);
   const shops = [];
-  for (const [id, meta] of sizes) {
+  for (const [id, meta] of everyShop) {
     const s = byId.get(id);
     if (!listed(id)) continue;
     const alert = alerts.get(id);
@@ -272,6 +276,7 @@ export async function onRequestPost(context) {
       if (to === 'do') {
         // (the mode flag is already 'migrating'; the helper works from 'kv', so hand it back first)
         await env.mydukapos_kv.delete(modeKey);
+        await env.mydukapos_kv.delete('auto-db-off:' + clientId);       // zip 156: moving in again lifts the "keep this shop as a single record" choice
         const r = await migrateShopToDatabase(env, clientId);
         return json({ clientId, changed: r.changed, mode: 'db', records: r.records, bytes: r.bytes });
       }
@@ -282,6 +287,8 @@ export async function onRequestPost(context) {
       if (byteLength(text) > policy.max) throw new Error(`the shop (${(byteLength(text) / 1048576).toFixed(1)} MB) is too big to go back to a single record`);
       await writeStateText(env, key, text, { keepCompressed: !!(cur && cur.gz), prevMeta: cur && cur.meta, updatedAt: JSON.parse(text).updatedAt });
       await env.mydukapos_kv.delete(modeKey);
+      // zip 156: shops now move into the database by themselves from their first push; an owner who moves one BACK means it to stay
+      await env.mydukapos_kv.put('auto-db-off:' + clientId, String(Date.now()));
       return json({ clientId, changed: true, mode: 'kv', bytes: byteLength(text) });
     } catch (e) {
       // leave the shop exactly as it was

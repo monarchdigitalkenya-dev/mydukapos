@@ -17,6 +17,7 @@ import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -76,6 +77,33 @@ public class MainActivity extends Activity {
                 Uri u = req.getUrl();
                 if (isOurs(u) || "file".equals(u.getScheme())) return false;          // the shop stays in the app
                 openOutside(u);                                                       // WhatsApp, tel:, mailto:, other sites
+                return true;
+            }
+            /** The shop's page could not be loaded at all (no internet on the very first open, DNS, server down): show the app's own
+             *  "Can't reach your shop" screen, which keeps trying and opens the shop by itself, instead of the browser's error page. */
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError err) {
+                if (req != null && req.isForMainFrame() && isOurs(req.getUrl())) showOffline(req.getUrl().toString());
+            }
+            /** The server answered with a failure page (Cloudflare 5xx while the shop's server restarts): same friendly screen, same automatic retry. */
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest req, android.webkit.WebResourceResponse res) {
+                if (req != null && req.isForMainFrame() && isOurs(req.getUrl()) && res != null && res.getStatusCode() >= 500) showOffline(req.getUrl().toString());
+            }
+            /** A certificate problem (most often the phone's date / time is wrong): never load the page, say so and keep retrying. */
+            @Override
+            public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler handler, android.net.http.SslError error) {
+                handler.cancel();
+                String u = error == null ? null : error.getUrl();
+                if (u != null && isOurs(Uri.parse(u))) showOffline(u);
+            }
+            /** The page's process was killed (low memory) or crashed: without this the whole app dies. Reload the shop; its data is on the device and server. */
+            @Override
+            public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+                runOnUiThread(() -> {
+                    try { ((android.view.ViewGroup) web.getParent()).removeView(web); web.destroy(); } catch (Exception e) { /* already gone */ }
+                    recreate();
+                });
                 return true;
             }
             @Override
@@ -149,6 +177,13 @@ public class MainActivity extends Activity {
         });
     }
 
+    void showOffline(String failedUrl) {
+        String cur = web == null ? null : web.getUrl();
+        if (cur != null && cur.startsWith("file:///android_asset/offline.html")) return;      // already showing it
+        final String to = "file:///android_asset/offline.html?u=" + Uri.encode(failedUrl);
+        runOnUiThread(() -> web.loadUrl(to));
+    }
+
     void openShop(String link) {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_LINK, link).apply();
         runOnUiThread(() -> { web.clearHistory(); web.loadUrl(link); });
@@ -180,6 +215,12 @@ public class MainActivity extends Activity {
             return;
         }
         super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        try { CookieManager.getInstance().flush(); } catch (Exception e) { /* housekeeping */ }   // the sign-in cookies reach disk before Android may kill the app
     }
 
     @Override

@@ -51,7 +51,7 @@ test('server: sales in the shop\'s ARCHIVE are returned by /api/history and coun
 });
 
 test('server: a shop moved to its own database still reaches the archive it had before the move', { skip: !hasSqlite && 'node:sqlite missing' }, async () => {
-  const kv = makeKV(); seedShop(kv, 'C1');
+  const kv = makeKV(); seedShop(kv, 'C1', { type: 'demo', expiresAt: Date.now() + 30 * 86400000, createdAt: Date.now() });      // (zip 156: a permanent shop already starts in its database; this test moves a single-record shop)
   kv.data.set('owner-session:tok', { value: '1' });
   const env = { mydukapos_kv: kv, SHOP_STORE: await makeBinding() };
   const sync = await load('pos-sync.js');

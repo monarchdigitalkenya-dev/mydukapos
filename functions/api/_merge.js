@@ -69,6 +69,78 @@ export function compareBillProgress(a, b) {
   return 0;
 }
 
+// PAYMENTS ARE NEVER LOST (zip 156). Two tills each taking a payment on the SAME bill (or debt) at the same moment: the "more advanced" bill (or the
+// newer debt) replaced the other WHOLE, so one of the two payments — real money handed over — was gone, and the amount paid was short. Now the
+// payments of both copies are UNIONED: by the payment's id (every payment gets a unique one), and by its content when a legacy payment has none.
+// A payment is never removed (there is no "delete a payment"), so a union cannot bring anything back that was deliberately taken away.
+const money2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+export function paymentKey(p) {
+  if (p && typeof p === 'object') return p.id != null ? 'id:' + p.id : 'sig:' + [p.timestamp || p.at || '', money2(p.amount), p.method || '', p.reference || ''].join('|');
+  return 'raw:' + JSON.stringify(p);
+}
+export function unionPayments(base, other) {
+  const a = Array.isArray(base) ? base : [], b = Array.isArray(other) ? other : [];
+  if (!b.length) return { list: a, added: false };
+  const seen = new Set(a.map(paymentKey));
+  const extra = [];
+  for (const p of b) { const k = paymentKey(p); if (!seen.has(k)) { seen.add(k); extra.push(p); } }
+  if (!extra.length) return { list: a, added: false };
+  let list = a.concat(extra);
+  const times = list.map((p) => Date.parse(p && (p.timestamp || p.at)));
+  if (times.every(Number.isFinite)) list = list.map((p, i) => ({ p, i, t: times[i] })).sort((x, y) => (x.t - y.t) || (x.i - y.i)).map((x) => x.p);   // oldest first, as recorded
+  return { list, added: true };
+}
+// Bill lines: a line on one copy and not on the other is kept (lines are only ever added, never edited in place). Lines have no id, so the
+// same line on both copies is recognised by its content, and repeats of one line (two identical lines) are counted.
+const lineSig = (l) => (l && typeof l === 'object' ? [l.code, l.name, Number(l.price) || 0, Number(l.qty) || 0, l.unit || '', l.saleMode || ''].join('|') : 'raw:' + JSON.stringify(l));
+export function unionLines(base, other) {
+  if (!Array.isArray(base) || !Array.isArray(other) || !other.length) return { list: base, added: false };
+  const have = new Map();
+  base.forEach((l) => { const k = lineSig(l); have.set(k, (have.get(k) || 0) + 1); });
+  const seen = new Map(), extra = [];
+  other.forEach((l) => { const k = lineSig(l); seen.set(k, (seen.get(k) || 0) + 1); if (seen.get(k) > (have.get(k) || 0)) extra.push(l); });
+  return extra.length ? { list: base.concat(extra), added: true } : { list: base, added: false };
+}
+const paymentsTotal = (h) => money2((Array.isArray(h) ? h : []).reduce((n, p) => n + (Number(p && p.amount) || 0), 0));
+
+// Two copies of one bill -> the bill. The winner of the rest of the record is decided exactly as before (more advanced wins whatever the times
+// say; two equally advanced: newest wins). On top of that: payments and lines of both are kept, the amount paid is recomputed from them (never
+// less than either copy said), and the bill is closed when that pays it off — a closed bill stays closed, a voided bill stays voided.
+export function mergeBillRecords(stored, incoming) {
+  const c = compareBillProgress(stored, incoming);
+  const exTs = Number(stored.updatedAt) || 0, inTs = Number(incoming.updatedAt) || 0;
+  const base = c > 0 ? stored : c < 0 ? incoming : (inTs >= exTs ? incoming : stored);
+  const other = base === stored ? incoming : stored;
+  const pay = unionPayments(base.paymentHistory, other.paymentHistory);
+  const lines = unionLines(base.items, other.items);
+  if (!pay.added && !lines.added) return base;
+  const out = { ...base, updatedAt: Math.max(exTs, inTs) };
+  if (pay.added) out.paymentHistory = pay.list;
+  if (lines.added) out.items = lines.list;
+  // paid = the payments of both copies + any paid amount that has no payment record behind it (legacy bills), never less than either copy
+  const untracked = (r) => Math.max(0, money2((Number(r.amountPaid) || 0) - paymentsTotal(r.paymentHistory)));
+  out.amountPaid = money2(Math.max(paymentsTotal(out.paymentHistory) + Math.max(untracked(base), untracked(other)), Number(base.amountPaid) || 0, Number(other.amountPaid) || 0));
+  if (!out.voided) {
+    const total = money2((Array.isArray(out.items) ? out.items : []).reduce((n, l) => n + (Number(l && l.price) || 0) * (Number(l && l.qty) || 0), 0));
+    const outstanding = money2(Math.max(0, total - out.amountPaid));
+    const paidOff = outstanding <= 0.005 && total > 0;
+    const pendingPickup = out.fulfillmentType === 'held_in_shop' && !out.inventoryDeducted;
+    out.closed = !!(base.closed || other.closed || (paidOff && !pendingPickup));      // a settled bill never re-opens
+    out.status = out.closed || paidOff ? 'fully_paid' : (out.amountPaid > 0 ? 'partially_paid' : 'unpaid');
+    if (out.closed && !out.closedAt) out.closedAt = base.closedAt || other.closedAt || new Date(out.updatedAt).toISOString();
+  }
+  return out;
+}
+// Two copies of one debt -> the debt: newest wins the rest of the record, the payments of both are kept.
+export function mergeDebtRecords(stored, incoming) {
+  const exTs = Number(stored.updatedAt) || 0, inTs = Number(incoming.updatedAt) || 0;
+  const base = inTs >= exTs ? incoming : stored;
+  const other = base === stored ? incoming : stored;
+  const pay = unionPayments(base.payments, other.payments);
+  if (!pay.added) return base;
+  return { ...base, payments: pay.list, updatedAt: Math.max(exTs, inTs) };
+}
+
 // Aqua POS products are ONE shared catalogue whose stock is held per site inside the record
 // (`stock` = { siteId: qty }, `bottleStockBySite` for bottle-tracked bales). Merging the whole record
 // last-write-wins let a stale push from one site (a Shop till selling one bottle) wipe out what another
@@ -206,11 +278,11 @@ export function mergeRecordsById(existingArr, incomingArr, finalTombstones = fal
     // A stock movement is an immutable event: once the server has it (and has stamped what it did with it, `_srv`), no later
     // copy — a retry, a refresh re-sending everything, a device that never pulled the stamp — may replace it.
     if (field === 'stockMovementLog' && existing._deleted !== true) continue;
+    // Bills only move forward, and the payments / lines of both copies are kept (see mergeBillRecords); debts keep the payments of both copies.
     if (field === 'bills' && existing._deleted !== true && incoming._deleted !== true) {
-      const c = compareBillProgress(existing, incoming);
-      if (c > 0) continue;                                  // the stored bill is further along: keep it
-      if (c < 0) { merged.set(key, incoming); continue; }   // the incoming one is: take it, even if its time is older
+      merged.set(key, mergeBillRecords(existing, incoming)); continue;
     }
+    if (field === 'debts' && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeDebtRecords(existing, incoming)); continue; }
     if (NESTED_MERGE[field] && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeNestedRecord(field, existing, incoming)); continue; }
     const existingTs = existing.updatedAt || 0;
     const incomingTs = incoming.updatedAt || 0;
@@ -776,6 +848,15 @@ export function newLedgerMoves(incomingLog, isStored) {
 // in the apps, so devices still running an older cached build are covered.
 export const NEVER_BLANK_FIELDS = ['pwHash', 'adminPwHash', 'businessName'];
 
+// Whole-value settings that only a stamped change may replace (see mergeIncomingState). The list is the receipt / branding / payment
+// details of a shop - the things a new device starts empty on and that a person notices missing at once.
+export const SETTINGS_NEED_STAMP_FIELDS = [
+  'receiptLogo', 'receiptQr', 'receiptQrCaption', 'receiptShowLogo', 'receiptShowQr', 'receiptItemAlign', 'receiptEmail', 'receiptContact',
+  'receiptExtraInfo', 'receiptFooterNotes', 'receiptWidth', 'receiptCustomWidth', 'receiptLengthMode', 'receiptFixedLength', 'receiptScale',
+  'receiptShowRefNumber', 'receiptShowBarcode', 'receiptFooterNotesHire', 'receiptLogoData', 'receiptQrData', 'paymentDetails', 'receiptStampSrc', 'receiptStampAngle', 'receiptStampSize', 'receiptShowStamp', 'billsLocked',
+  'receiptAlign', 'lockedTabs', 'vatRateA', 'vatRateB', 'requireCartRemovePw', 'requireCartPricePw', 'lowStockThreshold', 'expiryWarningDays', 'qtyDisplayFormat',
+];
+
 export function isBlank(v) {
   return v === '' || v === null || v === undefined;
 }
@@ -822,6 +903,22 @@ export function mergeIncomingState(existing, incoming) {
       merged[field] = existing[field];
     }
   }
+  // RECEIPT / BRANDING SETTINGS NEVER COME FROM A DEVICE THAT DID NOT CHANGE THEM (zip 155). A device that has just been installed (the
+  // Android / Windows app, a new phone, a cleared browser) starts with EMPTY defaults - no logo, no footer, "print logo" off. If its very
+  // first push lands before (or without) its first successful pull - a bad connection on the first open is enough - those defaults were
+  // saved over the shop's real settings, and the logo / receipt settings vanished on EVERY device. A whole-value setting of this list is
+  // now only replaced by a value that carries a change stamp (`_fieldTimes`: the person changed it on that device). An unstamped copy is
+  // a default or an old copy and never replaces a value the shop already has. When the shop has no value yet, the incoming one is taken.
+  const sentStamps = (incoming && incoming._fieldTimes) || {};
+  for (const field of SETTINGS_NEED_STAMP_FIELDS) {
+    if (!(field in incoming) || !(field in existing) || isBlank(existing[field]) || (Array.isArray(existing[field]) && existing[field].length === 0)) continue;
+    if (typeof sentStamps[field] === 'number') continue;                    // a real change made on that device
+    // only a BLANK unstamped value is treated as a fresh-device default. A filled-in value without a stamp is a real edit from a device that had no
+    // baseline yet (it never applied a pull); dropping it would silently undo the person's change.
+    const inc = incoming[field];
+    if (!(inc === '' || inc == null || (Array.isArray(inc) && inc.length === 0))) continue;
+    merged[field] = existing[field];
+  }
   // PER-FIELD TIMESTAMPS for the settings-type fields that are one whole value (receipt text, VAT rates, tab locks, loyalty tiers,
   // tables/rooms ...). Until now the LAST PUSH to arrive won: a till that had simply not refreshed yet pushed its old copy of
   // every setting at its next sale and silently put back what somebody else had just changed. Now a device stamps the fields IT
@@ -844,6 +941,8 @@ export function mergeIncomingState(existing, incoming) {
   for (const field of MERGE_BY_ID_FIELDS) {
     if (Array.isArray(incoming[field])) {
       merged[field] = mergeRecordsById(existing[field], incoming[field], FINAL_TOMBSTONE_FIELDS.includes(field), field);
+    } else if (field in incoming && Array.isArray(existing[field])) {
+      merged[field] = existing[field];       // zip 156: a null / {} / '' where a list belongs never replaces the stored list
     }
   }
   // Quantity reconciliation runs AFTER the ordinary per-record merge above
@@ -917,13 +1016,16 @@ export function mergeIncomingState(existing, incoming) {
 // timestamp in the push by the difference, expressing all of it in
 // server-clock terms before any comparison happens. A device that's off by
 // ten minutes no longer has any advantage (or disadvantage) in a merge.
+export const CLOCK_DRIFT_MIN_MS = 120000;
 export function correctClockDrift(body, serverNow) {
   const clientClaimedNow = Number(body.updatedAt);
   if (!Number.isFinite(clientClaimedNow) || clientClaimedNow <= 0) return body;
   const offset = serverNow - clientClaimedNow;
-  // Ignore trivial drift — anything under 2s is well within normal network
-  // latency and not worth rewriting every array in the payload for.
-  if (Math.abs(offset) < 2000) return body;
+  // zip 156: ignore anything under CLOCK_DRIFT_MIN_MS. A gap of a few seconds to a minute or two is not a wrong clock — it is the push having been
+  // built a moment before it arrived (a slow line, a retry after a lost answer, a queue). "Correcting" it shifted every record's time FORWARD by
+  // that delay, so an edit made 30 s earlier on a slow line looked NEWER than one made 0.5 s ago on the other till, and a stock count could jump
+  // over a sale made after it. A clock that is really minutes or hours off is still corrected.
+  if (Math.abs(offset) < CLOCK_DRIFT_MIN_MS) return body;
 
   const shifted = { ...body };
   if (shifted._fieldTimes && typeof shifted._fieldTimes === 'object') {

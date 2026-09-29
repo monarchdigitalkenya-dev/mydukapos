@@ -317,6 +317,8 @@ export async function onRequestPost(context) {
       id: randomToken(12),
       jobType: body.jobType,
       text: body.text,
+      // zip 156: the finished printer bytes (logo + stamp as images), when the sender could build them; the printing device uses them instead of the text
+      ...(typeof body.bytesB64 === 'string' && body.bytesB64.length <= 262144 && /^[A-Za-z0-9+/=]+$/.test(body.bytesB64) ? { bytesB64: body.bytesB64 } : {}),
       meta: body.meta || {},
       createdAt: Date.now(),
       claimedAt: null,

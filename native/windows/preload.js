@@ -5,6 +5,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('MyDukaLauncher', {
   info: () => ipcRenderer.sendSync('launcher:info'),
+  forget: () => ipcRenderer.invoke('launcher:forget'),
   open: (raw, id) => { ipcRenderer.invoke('launcher:open', raw).then((r) => window.postMessage({ type: 'launcherCb', id, r }, '*')); },
 });
 
