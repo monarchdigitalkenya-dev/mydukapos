@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { boot, ROOT } from './helpers.mjs';
 import { makeKV, seedShop } from './kv-fake.mjs';
 import { makeBinding, hasSqlite } from './do-fake.mjs';
+import { makeD1 } from './d1-fake.mjs';
 
 // Zip 141 — per-staff server sessions: the server checks WHO is working (their PIN, against the staff record it holds), signs a
 // session with their permissions, checks every sale's staff signature on sync (never dropping a sale), and — when the shop requires
@@ -96,6 +97,7 @@ test('sales: the server checks each sale\'s staff signature and stamps it — ne
 
 test('"staff sessions required": QR codes need a supervisor, bookings a signed-in staff member; only a manager can switch it; off = unchanged', async () => {
   const { env } = await shop();
+  env.LEDGER_DB = makeD1();   // zip 153: QR orders live in the transaction database
   const qr = await imp('qr-order.js');
   const call = async (body, tok) => (await qr.onRequestPost({ request: new Request('https://x.pages.dev/api/qr-order?c=C1', { method: 'POST', body: JSON.stringify(body), headers: tok ? { 'X-Staff-Token': tok } : {} }), env })).status;
   assert.equal(await call({ action: 'create', kind: 'table', label: 'Table 1' }), 200, 'off: exactly as before');

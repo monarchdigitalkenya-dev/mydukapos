@@ -1,4 +1,4 @@
-// Builds the Windows installers of one or all MyDukaPOS apps:   node build.mjs [appKey ...]      (default: all 7)
+// Builds the Windows installers of one or all MyDukaPOS apps:   node build.mjs [appKey ...]      (default: all 8, incl. the Owner Console)
 // Output: dist/<appKey>/<Name>-<version>-Setup.exe (NSIS) and <Name>-<version>.msi — x64. Needs Windows (or CI's windows runner).
 // Code signing (optional — Windows SmartScreen warns about unsigned installers): set CSC_LINK (the .pfx, path or base64) and
 // CSC_KEY_PASSWORD; electron-builder then signs. Nothing is signed with an invented certificate.
@@ -27,7 +27,7 @@ for (const a of apps) {
       directories: { output: `dist/${a.key}`, buildResources: 'build' },
       files: ['main.js', 'preload.js', 'package.json', `build/${a.key}.png`],
       extraResources: [{ from: '../launcher', to: 'launcher' }],
-      extraMetadata: { version: cfg.version.name, mydukaApp: { key: a.key, name: a.name, product: a.product, path: a.path, rootDomain: cfg.rootDomain } },
+      extraMetadata: { version: cfg.version.name, mydukaApp: { key: a.key, name: a.name, product: a.product, path: a.path, rootDomain: cfg.rootDomain, fixed: !!a.fixed } },
       win: { icon: `build/${a.key}.png`, target: ['nsis', 'msi'], artifactName: `${slug}-${cfg.version.name}-Setup.\${ext}` },
       nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, createStartMenuShortcut: true, shortcutName: a.name, artifactName: `${slug}-${cfg.version.name}-Setup.\${ext}` },
       msi: { oneClick: false, perMachine: false, createDesktopShortcut: true, shortcutName: a.name, artifactName: `${slug}-${cfg.version.name}.\${ext}` },

@@ -23,6 +23,7 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { checkCallback } from './_callback-key.js';
+import { recordGatewayTxn } from './_ledger.js';
 
 function tillPaymentKey(clientId, transId) {
   return `till-payment:${clientId}:${transId}`;
@@ -92,6 +93,8 @@ export async function onRequestPost(context) {
     return ack();
   }
   if (!isRepeat) await env.mydukapos_kv.put(tillPaymentKey(clientId, transId), JSON.stringify(record));
+  // zip 153: recorded in the D1 ledger too (idempotent on the transaction id) — money received, awaiting a sale to be attached to
+  await recordGatewayTxn(env, clientId, { provider: 'kcb-till', txnId: transId, code: transId, amount: record.amount, phone: record.phone, status: 'RECEIVED', trusted: true });
 
   try {
     const idxRaw = await env.mydukapos_kv.get(tillPaymentIndexKey(clientId));

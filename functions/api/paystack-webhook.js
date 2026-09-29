@@ -12,6 +12,7 @@
 // Gateway. Requires a KV namespace bound as `mydukapos_kv`.
 
 import { loadGatewayConfig } from './_gateway-config.js';
+import { recordGatewayTxn } from './_ledger.js';
 
 function txKey(clientId, id) {
   return `mpesa-tx:${clientId}:${id}`;
@@ -88,6 +89,8 @@ export async function onRequestPost(context) {
       transactionDate: data.paid_at,
       completedAt: Date.now(),
     }));
+    await recordGatewayTxn(env, clientId, { provider: 'paystack', txnId: data.reference, code: data.receipt_number || data.reference,
+      amount: typeof data.amount === 'number' ? Math.round(data.amount / 100) : existing.amount, phone: (data.customer && data.customer.phone) || existing.phone, status: 'RECEIVED' });
   }
 
   // Paystack only sends charge.success for mobile money — a failed/abandoned

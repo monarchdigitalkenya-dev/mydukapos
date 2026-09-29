@@ -66,8 +66,8 @@ test('the last part closes the order; a voided part puts its amount back on the 
   const b = await app(); const { w } = b;
   const tab = await order(w, 'Table 06', ['TSK', 'TSK']);
   const tsk = lineOf(w, tab.id, 'TSK');
-  const p1 = J(w, `hospPayPart('${tab.id}', { lines: { '${tsk.lineId}': 1 }, method: 'card', label: 'A' })`);
-  assert.equal(p1.cardAmount, 330);
+  const p1 = J(w, `hospPayPart('${tab.id}', { lines: { '${tsk.lineId}': 1 }, method: 'cash', label: 'A' })`);
+  assert.equal(p1.cashAmount, 330);
   assert.match(w.eval(`hospBillText(tabs.find(x => x.id === '${tab.id}'))`), /PAID \(A\): -KES 330\.00[\s\S]*BALANCE DUE: KES 330\.00/);
   // void A's sale: the balance is the whole bill again
   w.eval(`salesLog.find(s => s.id === '${p1.id}').voided = true`);

@@ -64,6 +64,8 @@ function createWindow() {
     if (/^(https?|mailto|tel):/i.test(url)) shell.openExternal(url);
   });
 
+  // Owner Console app: always the one fixed address (https://<root domain>/owner/) — no shop link, no licence check; the console has its own login
+  if (APP.fixed) { win.loadURL('https://' + APP.rootDomain + APP.path); return; }
   const link = readConfig().link;
   if (link && isOurs(link)) win.loadURL(link); else win.loadFile(launcherPath());
 }

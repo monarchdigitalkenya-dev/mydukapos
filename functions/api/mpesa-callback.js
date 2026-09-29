@@ -18,6 +18,7 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { checkCallback } from './_callback-key.js';
+import { recordGatewayTxn } from './_ledger.js';
 
 function txKey(clientId, id) {
   return `mpesa-tx:${clientId}:${id}`;
@@ -80,6 +81,9 @@ export async function onRequestPost(context) {
       transactionDate: extractMetadataValue(items, 'TransactionDate'),
       completedAt: Date.now(),
     }));
+    // zip 153: the same fact goes to the D1 ledger (idempotent on the CheckoutRequestID; a repeat changes nothing)
+    await recordGatewayTxn(env, clientId, { provider: 'stk', txnId: callback.CheckoutRequestID, code: receipt, amount: Number(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0,
+      phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone, status: 'RECEIVED' });
   } else {
     // Common causes: customer entered wrong PIN too many times, cancelled the
     // prompt, or it timed out on their phone (ResultCode 1032 = cancelled by user).
@@ -89,6 +93,7 @@ export async function onRequestPost(context) {
       resultDesc: callback.ResultDesc || 'Payment was not completed.',
       completedAt: Date.now(),
     }));
+    await recordGatewayTxn(env, clientId, { provider: 'stk', txnId: callback.CheckoutRequestID, amount: Number(existing.amount) || 0, phone: existing.phone, status: 'FAILED' });
   }
 
   return ack();

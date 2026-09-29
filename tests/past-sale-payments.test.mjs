@@ -28,7 +28,8 @@ for (const app of APPS) {
   test(`${app}: a past sale can be recorded as cash, M-Pesa, card and split`, async () => {
     const b = await session(app);
     const { w, d, errors } = b;
-    assert.equal(d.getElementById('past-sale-payment-select').options.length, 5, 'cash, M-Pesa, card, split, bill');
+    const noCard = app === 'hotel/index.html';   // zip 153: the hotel takes cash and M-Pesa only
+    assert.equal(d.getElementById('past-sale-payment-select').options.length, noCard ? 4 : 5, noCard ? 'cash, M-Pesa, split, bill (no card)' : 'cash, M-Pesa, card, split, bill');
     assert.equal(fill(b, 'cash'), '');
     let s = last(w);
     assert.deepEqual([s.paymentMethod, s.paid, s.cashAmount, s.mpesaAmount, s.cardAmount], ['cash', true, 100, 0, 0]);
@@ -37,9 +38,11 @@ for (const app of APPS) {
     assert.equal(fill(b, 'mpesa', { 'past-sale-mpesa-code-input': 'qgh7abc123', 'past-sale-mpesa-name-input': 'Jane W' }), '');
     s = last(w);
     assert.deepEqual([s.paymentMethod, s.mpesaAmount, s.cashAmount, s.mpesaReceiptNumber, s.mpesaPayerName], ['mpesa', 100, 0, 'QGH7ABC123', 'Jane W']);
-    assert.equal(fill(b, 'card', { 'past-sale-card-ref-input': '4421' }), '');
-    s = last(w);
-    assert.deepEqual([s.paymentMethod, s.cardAmount, s.cardReference, s.cashAmount], ['card', 100, '4421', 0]);
+    if (!noCard) {
+      assert.equal(fill(b, 'card', { 'past-sale-card-ref-input': '4421' }), '');
+      s = last(w);
+      assert.deepEqual([s.paymentMethod, s.cardAmount, s.cardReference, s.cashAmount], ['card', 100, '4421', 0]);
+    }
     // split must add up
     const before = w.eval('salesLog.length');
     assert.match(fill(b, 'split', { 'past-sale-split-cash-input': 60, 'past-sale-split-mpesa-input': 30 }), /must add up to the sale total \(KES 100\.00\); you have KES 90\.00/);
@@ -47,7 +50,7 @@ for (const app of APPS) {
     assert.equal(fill(b, 'split', { 'past-sale-split-cash-input': 60, 'past-sale-split-mpesa-input': 40 }), '');
     s = last(w);
     assert.deepEqual([s.paymentMethod, s.cashAmount, s.mpesaAmount, s.paid], ['split', 60, 40, true]);
-    assert.equal(w.eval('inventory.find(p => p.code === "A1").qty'), 12, 'stock came off for each of the 4 recorded sales (4 x 2)');
+    assert.equal(w.eval('inventory.find(p => p.code === "A1").qty'), noCard ? 14 : 12, 'stock came off for each recorded sale (2 each)');
     assert.deepEqual(errors, []);
     b.close();
   });

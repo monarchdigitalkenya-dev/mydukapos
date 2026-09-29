@@ -31,6 +31,10 @@ export async function onRequest(context) {
       out.ok = false; out.kv = false; out.error = 'storage unavailable';
     }
     out.kvMs = Date.now() - t0;
+    // zip 153: the transaction database (D1). Not bound = the till still trades, but money is NOT yet in the authoritative ledger: say so.
+    const db = env && (env.LEDGER_DB || env.DB);
+    out.d1 = false;
+    if (db) { try { await db.prepare('SELECT 1 AS ok').first(); out.d1 = true; } catch (e) { out.d1 = false; out.d1Error = 'transaction database not answering'; } }
   }
   return new Response(request.method === 'HEAD' ? null : JSON.stringify(out), { status: out.ok ? 200 : 503, headers });
 }

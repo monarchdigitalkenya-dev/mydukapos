@@ -99,6 +99,7 @@ test('§41 KEG: 50 L keg, 500 ml serving → 49.5 L, ten more → 44.5 L; store 
   assert.equal(keg(w, k1.id).left, 5000);
   assert.ok(toasts(w).some((t) => /LOW KEG LEVEL — Tusker Lager Keg #001: 5 L left/.test(t)));
   w.eval("document.querySelector('.tab-link[data-tab=\"bar-tab\"]').click()");
+  await new Promise((r) => setTimeout(r, 120));   // the old Bar tab now opens Inventory ▸ Bar & Kegs (zip 153)
   assert.match(d.getElementById('bar-body').textContent, /LOW KEG LEVEL/);
   assert.equal(d.getElementById('bar-keg-badge').textContent, '1');
   // replace: #001 closed at what's left (written off, history kept), #002 on the same tap
@@ -171,7 +172,8 @@ test('QR ordering: keg and shot servings are on the published menu (only when th
       const body = JSON.parse(opts.body || '{}');
       if (body.action === 'publishMenu') return new Response(JSON.stringify({ ok: true, items: body.menu.items.length }));
       if (body.action === 'pending') return new Response(JSON.stringify({ orders: pending }));
-      if (body.action === 'decide') return new Response(JSON.stringify({ ok: true, order: { ...pending[0], status: 'ACCEPTED' } }));
+      if (body.action === 'claim') return new Response(JSON.stringify({ ok: true, order: { ...pending[0], status: 'CLAIMED', owner: 'Test' } }));
+      if (body.action === 'link') return new Response(JSON.stringify({ ok: true }));
     }
     return new Response('{}', { status: 404 });
   };
@@ -186,7 +188,7 @@ test('QR ordering: keg and shot servings are on the published menu (only when th
   assert.deepEqual([menu.items.find((i) => i.code === 'TSKK-k500').available, menu.items.find((i) => i.code === 'TSKK-k500').price], [true, 300]);
   pending = [{ id: 'qo-1', label: 'Table 12', kind: 'table', items: [{ code: 'TSKK-k500', name: 'Tusker Lager Keg — 500ml', qty: 2, price: 300 }], total: 600, createdAt: Date.now() }];
   w.eval(`hospQrPending = ${JSON.stringify(pending)}`);
-  const tabId = await w.eval("hospAcceptQrOrder('qo-1')");
+  const tabId = await w.eval("hospClaimQrOrder('qo-1')");   // zip 153: a waiter CLAIMS the order (atomic on the server) and it goes onto the bill
   assert.ok(tabId);
   assert.equal(keg(w, k.id).left, 49000);
   b.close();
@@ -205,7 +207,13 @@ test('permissions: a bartender sells shots and keg servings but cannot set up dr
   assert.equal(w.eval(`hospKegWaste('${k.id}', 500, 'Foam')`), false);
   assert.equal(w.eval(`hospSetKegStatus('${k.id}', 'CLOSED', 'x')`), false);
   assert.equal(w.eval("hospSetDefaultShot(40)"), false);
+  w.eval('applyServerVisibility()');
+  assert.equal(w.eval('hospBarOnly()'), true, 'a bartender was given Bar & Kegs, not Inventory');
+  assert.notEqual(d.querySelector('.tabs .tab-link[data-tab="inventory-list-tab"]').style.display, 'none', 'so the Inventory tab is reachable — for the Bar & Kegs part only');
+  assert.equal(w.eval("isTabLocked('inventory-list-tab')"), false);
+  assert.equal(w.eval("isTabLocked('restock-tab')"), true, 'and nothing else opens up');
   w.eval("document.querySelector('.tab-link[data-tab=\"bar-tab\"]').click()");
+  await new Promise((r) => setTimeout(r, 120));   // the old Bar tab now opens Inventory ▸ Bar & Kegs (zip 153)
   assert.doesNotMatch(d.getElementById('bar-body').textContent, /Set up a drink|💧 Wastage|Take a keg from the store|🔁 Replace/);
   assert.match(d.getElementById('bar-body').textContent, /🛢️ Kegs[\s\S]*Tusker Lager Keg[\s\S]*ready to serve/, 'the bartender sees the kegs');
   w.eval("currentServer = staff.find(s => s.id === 's1')");

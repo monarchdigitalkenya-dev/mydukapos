@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { JSDOM } from 'jsdom';
 import { boot, ROOT } from './helpers.mjs';
 import { makeKV, seedShop } from './kv-fake.mjs';
+import { makeD1 } from './d1-fake.mjs';
 
 // Zip 136 — secure QR / barcode ordering (master prompt §18–21, §36, §64, §74–75, §94 QR tests).
 const mod = await import(pathToFileURL(path.join(ROOT, 'functions/api/qr-order.js')).href);
@@ -19,7 +20,7 @@ const MENU = { business: 'Lake View Hotel', items: [
 ], modifierGroups: [{ id: 'mg1', name: 'Cooking', required: true, max: 1, options: [{ name: 'Medium', price: 0 }, { name: 'Well done', price: 0 }, { name: 'Extra cheese', price: 50 }] }] };
 async function shop() {
   const kv = makeKV(); seedShop(kv, 'C1'); seedShop(kv, 'C2');
-  const env = { mydukapos_kv: kv };
+  const env = { mydukapos_kv: kv, LEDGER_DB: makeD1() };
   await call(env, 'C1', { action: 'publishMenu', menu: MENU });
   const t12 = (await call(env, 'C1', { action: 'create', kind: 'table', label: 'Table 12' })).d.code.token;
   const r205 = (await call(env, 'C1', { action: 'create', kind: 'room', label: 'Room 205' })).d.code.token;
@@ -45,7 +46,9 @@ test('QR security: invalid, manipulated, revoked, expired and other-business tok
   assert.equal((await get(env, 'C2', `t=${t12}`)).status, 404, 'business A\'s code on business B\'s link');
   assert.equal((await call(env, 'C2', { action: 'order', t: t12, key: 'k-cross-tenant', items: [{ code: 'TSK', qty: 1 }] })).status, 404, 'no ordering across businesses');
   // regenerate: the old code stops at once, the new one works
-  const n = (await call(env, 'C1', { action: 'regenerate', token: t12 })).d.code.token;
+  const regen = (await call(env, 'C1', { action: 'regenerate', token: t12 })).d.code;
+  const n = regen.token;
+  assert.equal(regen.locId, (await call(env, 'C1', { action: 'list' })).d.codes.find((c) => c.label === 'Table 12').locId, 'the place keeps its permanent id; only the code changed');
   assert.equal((await get(env, 'C1', `t=${t12}`)).status, 404, 'revoked by regeneration');
   assert.equal((await get(env, 'C1', `t=${n}`)).status, 200);
   await call(env, 'C1', { action: 'revoke', token: n });
@@ -53,11 +56,11 @@ test('QR security: invalid, manipulated, revoked, expired and other-business tok
   // expired
   const e = (await call(env, 'C1', { action: 'create', kind: 'pool', label: 'Pool Cabana 2', expiresAt: Date.now() + 60000 })).d.code.token;
   assert.equal((await get(env, 'C1', `t=${e}`)).status, 200);
-  const rec = JSON.parse(kv.data.get(`qr:tok:${e}`).value); rec.expiresAt = Date.now() - 1; kv.data.set(`qr:tok:${e}`, { value: JSON.stringify(rec) });
+  env.LEDGER_DB._db.exec(`update qr_locations set expires_at = ${Date.now() - 1} where token = '${e}'`);
   assert.equal((await get(env, 'C1', `t=${e}`)).status, 404, 'expired');
   // the list the admin sees records who switched what off
   const list = (await call(env, 'C1', { action: 'list' })).d.codes;
-  assert.ok(list.some((c) => c.label === 'Table 12' && !c.active && c.revokedAt));
+  assert.ok(list.some((c) => c.label === 'Table 12' && !c.active && c.revokedAt));   // switched off: the list records when and by whom
 });
 
 test('ordering: prices come from the server (never the phone), required choices enforced, unavailable refused, a double tap is ONE order', async () => {
@@ -87,10 +90,10 @@ test('rate limit: one code cannot flood the kitchen', async () => {
 });
 
 test('staff actions need a paired device when the shop requires it; customers still order', async () => {
-  const { kv: kv0, t12 } = await shop();
+  const { kv: kv0, t12, env: env0 } = await shop();
   const kv = makeKV(); for (const [k, v] of kv0.data) kv.data.set(k, v);      // a fresh store (the pairing setting is cached per store)
   kv.data.set('device-auth:C1', { value: JSON.stringify({ mode: 'paired', devices: {} }) });
-  const env = { mydukapos_kv: kv };
+  const env = { mydukapos_kv: kv, LEDGER_DB: env0.LEDGER_DB };
   assert.equal((await call(env, 'C1', { action: 'list' })).status, 401);
   assert.equal((await call(env, 'C1', { action: 'create', kind: 'table', label: 'Table 99' })).status, 401);
   assert.equal((await call(env, 'C1', { action: 'publishMenu', menu: { items: [{ code: 'X', name: 'Free', price: 0 }] } })).status, 401, 'nobody can rewrite prices from outside');
@@ -137,17 +140,17 @@ test('QR RESTAURANT end to end: scan → menu → order → staff accept → kit
   await w.eval("hospQrCodes = [{ token: 'x', active: true }]; hospQrPoll()");
   assert.equal(Number(w.eval('hospQrPending.length')), 1);
   assert.match(w.document.getElementById('qr-orders-badge').textContent, /1/);
-  const tabId = await w.eval(`hospAcceptQrOrder('${ord.d.orderId}')`);
+  const tabId = await w.eval(`hospClaimQrOrder('${ord.d.orderId}')`);
   const tab = JSON.parse(w.eval(`JSON.stringify(tabs.find(t => t.id === '${tabId}'))`));
   assert.deepEqual([tab.label, tab.source, tab.customerName], ['Table 12', 'TABLE_QR', 'Mary']);
   const ticket = w.eval('window.__tickets[window.__tickets.length - 1]');
   assert.match(ticket, /KITCHEN[\s\S]*QR ORDER — Mary[\s\S]*2x\s+Beef Burger/); assert.match(ticket, /BAR[\s\S]*2x\s+Tusker/);
-  assert.equal(Number(w.eval("inventory.find(p => p.code === 'TSK').qty")), 46, 'stock moves only when staff accept');
+  assert.equal(Number(w.eval("inventory.find(p => p.code === 'TSK').qty")), 46, 'stock moves only when staff claim');
   assert.equal(Number(w.eval(`hospNetTotal(tabs.find(t => t.id === '${tabId}'))`)), 1900);
-  // a second till accepting the same order does nothing
-  await w.eval(`hospQrPending = [${JSON.stringify((await call(env, 'C1', { action: 'list' })).d && { id: ord.d.orderId, label: 'Table 12', kind: 'table', items: [{ code: 'TSK', qty: 2, name: 'Tusker Lager', price: 300 }] })}]`);
-  assert.equal(await w.eval(`hospAcceptQrOrder('${ord.d.orderId}')`), false);
-  assert.equal(Number(w.eval("inventory.find(p => p.code === 'TSK').qty")), 46, 'accepted once');
+  // a second till claiming the same order is told it is already claimed, and nothing moves
+  await w.eval(`hospQrPending = [${JSON.stringify((await call(env, 'C1', { action: 'list' })).d && { id: ord.d.orderId, label: 'Table 12', kind: 'table', status: 'SUBMITTED', items: [{ line: 0, code: 'TSK', qty: 2, name: 'Tusker Lager', price: 300 }] })}]`);
+  assert.equal(await w.eval(`hospClaimQrOrder('${ord.d.orderId}')`), false);
+  assert.equal(Number(w.eval("inventory.find(p => p.code === 'TSK').qty")), 46, 'claimed once');
   // the kitchen marks it ready: the customer's page shows it
   w.eval(`(function () { const t = tabs.find(x => x.id === '${tabId}'); hospSetLineStatus(t.id, hospTabLines(t).map(l => l.lineId), 'READY'); })()`);
   await new Promise((r) => setTimeout(r, 30));

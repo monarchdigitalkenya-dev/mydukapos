@@ -21,6 +21,7 @@ import { loadGatewayConfig } from './_gateway-config.js';
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { recordGatewayTxn } from './_ledger.js';
 
 const FALLBACK_QUERY_AFTER_MS = 15000; // only bother querying the gateway directly after this long
 
@@ -245,6 +246,7 @@ export async function onRequestGet(context) {
       if (updated) {
         record = updated;
         await env.mydukapos_kv.put(kvKey, JSON.stringify(record));
+        if (record.status === 'success') await recordGatewayTxn(env, clientId, { provider: record.provider || 'daraja', txnId: checkoutRequestId, code: record.receiptNumber, amount: record.amount, phone: record.phone, status: 'RECEIVED' });
       }
     } catch (e) {
       // Fallback query failed (e.g. credentials not set) — just keep reporting "pending"

@@ -158,6 +158,23 @@ export function mergeNestedRecord(field, stored, incoming) {
   return out;
 }
 
+// INVENTORY RECORD MERGE (zip 152). Whole-record newest-wins lost data that lives ON the record but was not what the newer
+// edit was about: a till that only changed stock (or was a stale copy loaded before the photo / pour setup was added) carries
+// `image: null` and no pour fields, and its newer updatedAt then erased the photo and the shot/tot setup saved on another
+// device. The newest record still decides everything it actually states; but a field it leaves EMPTY (absent, null, '')
+// keeps the older record's value. There is no "remove photo" action on an item, so an empty photo is never a deliberate clear.
+export const INVENTORY_STICKY_FIELDS = ['image', 'imageUrl', 'imageKey', 'pourOf', 'bottleMl', 'shotMl', 'totMl', 'shotPrice', 'totPrice', 'pours', 'pourSizes', 'servings', 'keg'];
+const emptyVal = (v) => v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0);
+export function mergeInventoryRecord(existing, incoming) {
+  const st = Number(existing.updatedAt) || 0, it = Number(incoming.updatedAt) || 0;
+  const win = it >= st ? incoming : existing, lose = win === incoming ? existing : incoming;
+  let out = win;
+  for (const f of INVENTORY_STICKY_FIELDS) {
+    if (emptyVal(win[f]) && !emptyVal(lose[f])) { if (out === win) out = { ...win }; out[f] = lose[f]; }
+  }
+  return out;
+}
+
 export function mergeRecordsById(existingArr, incomingArr, finalTombstones = false, field = '') {
   if (!Array.isArray(incomingArr)) return existingArr;
   if (!Array.isArray(existingArr) || existingArr.length === 0) return incomingArr;
@@ -197,6 +214,7 @@ export function mergeRecordsById(existingArr, incomingArr, finalTombstones = fal
     if (NESTED_MERGE[field] && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeNestedRecord(field, existing, incoming)); continue; }
     const existingTs = existing.updatedAt || 0;
     const incomingTs = incoming.updatedAt || 0;
+    if (field === 'inventory' && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeInventoryRecord(existing, incoming)); continue; }
     merged.set(key, field === 'products' ? mergeProductRecords(existing, incoming) : (incomingTs >= existingTs ? incoming : existing));
   }
   // Keyed records in their merged-map order (existing order, with

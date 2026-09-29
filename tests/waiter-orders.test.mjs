@@ -78,7 +78,7 @@ test('WAITER: Orders tab only → create → POST (slips without prices) → own
   const panel = d.getElementById('svc-panel');
   assert.ok(panel.classList.contains('open'));
   assert.match(panel.textContent, /Table 05/); assert.doesNotMatch(panel.textContent, /Table 06/, 'only their own orders');
-  assert.match(panel.textContent, /UPDATE ORDER[\s\S]*SETTLE/);
+  assert.match(panel.textContent, /UPDATE ORDER[\s\S]*VIEW ORDER[\s\S]*PRINT BILL/);
   // UPDATE: exchange the beer for a soda — the bar gets only the change; no duplicate lines, no double charge
   w.eval(`openHospPanel('${tab.id}')`);
   const beer = J(w, `hospTabLines(tabs.find(t => t.id === '${tab.id}')).find(l => l.code === 'TSK')`);

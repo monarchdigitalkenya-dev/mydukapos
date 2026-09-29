@@ -1,3 +1,4 @@
+import { recordGatewayTxn } from './_ledger.js';
 // functions/api/paywave-webhook.js — Cloudflare Pages Function
 //
 // Receives Paywave Express's payment notifications, scoped to one client
@@ -76,6 +77,8 @@ export async function onRequestPost(context) {
     transactionDate: data.TransactionDate,
     completedAt: succeeded ? Date.now() : existing.completedAt,
   }));
+  await recordGatewayTxn(env, clientId, { provider: 'paywave', txnId: checkoutId, code: succeeded ? (data.TransactionReceipt || data.TransactionID) : null,
+    amount: typeof data.TransactionAmount === 'number' ? data.TransactionAmount : existing.amount, phone: data.Msisdn || existing.phone, status: succeeded ? 'RECEIVED' : 'FAILED' });
 
   return ack();
 }

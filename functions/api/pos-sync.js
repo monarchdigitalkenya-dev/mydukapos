@@ -37,6 +37,7 @@ import {
 } from './_state-store.js';
 import { deviceGuard } from './_device-auth.js';
 import { stampSales } from './_staff-auth.js';
+import { recordPush } from './_ledger.js';
 
 // CORS is decided per request (see _cors.js): the apps call this on their own origin, so only the shop's own
 // domain family is ever answered — no more `Access-Control-Allow-Origin: *`.
@@ -245,6 +246,26 @@ async function handlePost(context) {
   // drops a sale; if the check itself fails the push goes ahead unstamped (shown as "not checked").
   try { await stampSales(env, clientId, body); } catch (e) { /* never block a sale */ }
 
+  // THE D1 LEDGER (zip 153): every sale / payment / bill / expense / return ... in this push is written to Cloudflare D1 FIRST, one atomic
+  // batch per record, idempotent on the record's id. If D1 does not accept it the push is NOT acknowledged (503, "busy"): the till keeps the
+  // sale and sends it again, so a failed transaction never looks successful and nothing is lost. Without a D1 binding the push carries on
+  // as before and the shop is flagged for the Owner Console (see health.js) — a missing binding must not stop a till trading.
+  const led = await recordPush(env, clientId, body, { source: 'pos-sync' });
+  if (!led.ok) {
+    return new Response(JSON.stringify({ error: 'The transaction database did not answer — this device keeps every sale and sends it again in a moment.', code: 'busy', ledger: 'unavailable', retryAfter: 2, detail: led.error }), {
+      status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '2', ...cors },
+    });
+  }
+  // Best-effort marker "this shop has no transaction database yet" (read by the health check). Written at most once every 6 hours per
+  // worker instance, never awaited and never allowed to fail a push.
+  if (led.skipped === 'no_db') {
+    const now = Date.now();
+    if (!(globalThis.__ledgerOffAt || (globalThis.__ledgerOffAt = new Map())).has(clientId) || now - globalThis.__ledgerOffAt.get(clientId) > 6 * 3600 * 1000) {
+      globalThis.__ledgerOffAt.set(clientId, now);
+      try { Promise.resolve(env.mydukapos_kv.put('ledger-off:' + clientId, String(now), { expirationTtl: 2 * 86400 })).catch(() => {}); } catch (e) { /* flag only */ }
+    }
+  }
+
   // DATABASE MODE: hand the push to the shop's own database. Its cost follows the size of THIS push, not of the shop, so there is
   // no size ceiling to guard (only a cap on one request, so a single push can't exhaust the Durable Object's memory).
   const pushMode = await shopMode(env, clientId);
@@ -268,7 +289,7 @@ async function handlePost(context) {
         context.waitUntil(room.fetch('https://sync-room/broadcast', { method: 'POST', body: JSON.stringify({ poke: true }) }).catch(() => {}));
       } catch (e) { /* the poll is the fallback */ }
     }
-    return jsonResponse({ ok: true, updatedAt: out.updatedAt, prev: out.prev, ...(out.ledger ? { ledger: out.ledger } : {}), ...(out.till ? { till: out.till } : {}) }, 200, cors);
+    return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), updatedAt: out.updatedAt, prev: out.prev, ...(out.ledger ? { ledger: out.ledger } : {}), ...(out.till ? { till: out.till } : {}) }, 200, cors);
   }
 
   // Snapshot whatever's currently live (about to be overwritten) into today's
@@ -412,5 +433,5 @@ async function handlePost(context) {
   // The apps only ever read `updatedAt` from this reply, so don't send the whole shop back on every save.
   // (The full record still goes to other devices via the WebSocket broadcast and their next pull.)
   const till = typeof body._till === 'string' && record.tillNumbers ? record.tillNumbers[body._till] || 0 : 0;
-  return jsonResponse({ ok: true, updatedAt: record.updatedAt, bytes, prev: existing.updatedAt || 0, ledger: 1, ...(till ? { till } : {}) }, 200, cors);
+  return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), updatedAt: record.updatedAt, bytes, prev: existing.updatedAt || 0, ledger: 1, ...(till ? { till } : {}) }, 200, cors);
 }

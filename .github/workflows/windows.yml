@@ -1,4 +1,4 @@
-# MyDukaPOS for Windows — builds the installers of the 7 apps (NSIS .exe and .msi, x64) on a real Windows machine, records size and
+# MyDukaPOS for Windows — builds the installers of the 8 apps (7 shop apps + the Owner Console) (NSIS .exe and .msi, x64) on a real Windows machine, records size and
 # SHA-256 of each, then INSTALLS the Shop app silently, starts it, checks it is running, and uninstalls it.
 # Code signing (optional, recommended — SmartScreen warns about unsigned installers): repository secrets CSC_LINK (base64 of the .pfx)
 # and CSC_KEY_PASSWORD. Without them the installers are unsigned (they install; Windows shows "Unknown publisher").
@@ -20,7 +20,7 @@ jobs:
       - name: Install build tools
         working-directory: native/windows
         run: npm install --no-audit --no-fund
-      - name: Build the installers (all 7 apps)
+      - name: Build the installers (all 8 apps)
         working-directory: native/windows
         env:
           CSC_LINK: '${{ secrets.CSC_LINK }}'
@@ -39,7 +39,7 @@ jobs:
             $rows += [pscustomobject]@{ file = $_.Name; size = $_.Length; sha256 = $h; signature = "$($sig.Status)"; signer = "$($sig.SignerCertificate.Subject)"; arch = 'x64' }
             Write-Host "$($_.Name)  size=$($_.Length)  sha256=$h  signature=$($sig.Status)"
           }
-          if ($rows.Count -lt 14) { throw "expected 14 installers (7 apps x .exe/.msi), got $($rows.Count)" }
+          if ($rows.Count -lt 16) { throw "expected 16 installers (8 apps x .exe/.msi), got $($rows.Count)" }
           $rows | ConvertTo-Json | Set-Content release/windows/manifest.json
       - uses: actions/upload-artifact@v4
         with: { name: mydukapos-windows, path: release/windows, if-no-files-found: error, retention-days: 30 }

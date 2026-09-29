@@ -109,6 +109,8 @@ public class MainActivity extends Activity {
         });
 
         String link = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_LINK, null);
+        // Owner Console app: always the one fixed address (https://<root domain>/owner/) — no shop link, no licence check; the console has its own login
+        if (BuildConfig.FIXED) link = "https://" + BuildConfig.ROOT_DOMAIN + BuildConfig.MODULE_PATH;
         if (savedInstanceState != null) web.restoreState(savedInstanceState);
         else if (link != null) web.loadUrl(link);
         else web.loadUrl("file:///android_asset/launcher.html");

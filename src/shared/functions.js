@@ -2647,6 +2647,20 @@ function generateReceiptRef() {
             return ref;
         }
 
+//@fn generateBillNo
+function generateBillNo() {
+            // zip 153 - EVERY BILL HAS ITS OWN UNIQUE NUMBER, the same on every device and on the printed bill. Built exactly like the receipt
+            // reference: this till's own running number x 100 + the till number the server gave this device, so two tills can never issue
+            // the same one (no clash to resolve, no server round trip, works offline). The cashier can search by it.
+            let seq = 0;
+            try { seq = parseInt(localStorage.getItem('pos_till_bill_seq') || '0', 10) || 0; } catch (e) { /* start from the floor */ }
+            seq += 1;
+            safeSetItem('pos_till_bill_seq', String(seq));
+            const till = tillNumber();
+            const dev = String(getOrCreateDeviceId()).replace(/[^a-z0-9]/gi, '').slice(-5).toUpperCase();
+            return till ? `BILL-${String(seq * 100 + till).padStart(8, '0')}` : `BILL-D${dev}-${seq}`;
+        }
+
 //@fn getPaperCols
 function getPaperCols() {
             // Characters per line = what the print head holds in the printer's standard font (Font A: 12 dots = 1.5 mm a character):
@@ -5044,6 +5058,8 @@ async function pushNow() {
                         pushBacklogAfter(slim);
                         const data = await res.json();
                         if (data && data.till) rememberTillNumber(data.till);
+                        // zip 153: the transaction database says a bill this till settled had ALREADY been settled by another till
+                        if (data && Array.isArray(data.duplicates) && data.duplicates.length && typeof window.__onDuplicateSettlement === 'function') { try { window.__onDuplicateSettlement(data.duplicates); } catch (e) { /* the report still flags it */ } }
                         const ledgerJustOn = !!(data && data.ledger) && stockLedgerMark(true);
                         // "Synced up to <the server's time>" is only true if the server had NOTHING newer than what this device already held when
                         // the push arrived. If another device changed something in between (data.prev is the server's time before our push), our
@@ -9804,6 +9820,113 @@ function toggleVariantsBuilder() {
             }
         }
 
+//@fn checkoutGuardStart
+function checkoutGuardStart() {
+            // zip 152 - CHECKOUT IS ALL-OR-NOTHING. Checkout takes the stock off (and queues that for the server) BEFORE it builds and saves the
+            // sale, so any error in between left a half-finished sale: stock down, no sale in Daily Sales, nothing on the receipt - and, because
+            // checkout is async, no message either (zip 149's undeclared `cardAmount` did exactly this in four apps). This remembers what the
+            // sale is about to touch, so checkoutGuardFailed can put it back.
+            const lenOf = (v) => (Array.isArray(v) ? v.length : 0);
+            const g = {
+                mv: lenOf(typeof stockMovementLog === 'undefined' ? null : stockMovementLog),
+                sales: lenOf(typeof salesLog === 'undefined' ? null : salesLog),
+                bills: lenOf(typeof bills === 'undefined' ? null : bills),
+                rows: {}, kegs: null,
+            };
+            try {
+                const cart = (typeof currentCart !== 'undefined' && currentCart) ? Object.values(currentCart) : [];
+                const inv = (typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : [];
+                const codes = new Set();
+                const add = (c) => { if (c != null && c !== '') codes.add(String(c)); };
+                cart.forEach((l) => { add(l.code); add(l.gasReturnEmptyCode); });
+                inv.forEach((p) => {
+                    if (!p || !codes.has(String(p.code))) return;
+                    (Array.isArray(p.comboItems) ? p.comboItems : []).forEach((c) => add(c && c.code));
+                    (Array.isArray(p.recipe) ? p.recipe : []).forEach((i) => add(i && i.code));
+                    if (p.pourOf) add(p.pourOf.code);
+                    if (p.kegServe) add(p.kegServe.code);
+                });
+                inv.forEach((p) => {
+                    if (!p || !codes.has(String(p.code))) return;
+                    g.rows[String(p.code)] = JSON.stringify({ qty: p.qty, pieceQty: p.pieceQty, variants: Array.isArray(p.variants) ? p.variants.map((v) => ({ id: v && v.id, qty: v && v.qty, pieceQty: v && v.pieceQty })) : null, batches: p.batches === undefined ? undefined : p.batches });
+                });
+                if (typeof kegs !== 'undefined' && Array.isArray(kegs)) g.kegs = JSON.stringify(kegs);
+            } catch (e) { /* the guard is best effort: a snapshot problem must never stop a sale */ }
+            return g;
+        }
+
+//@fn checkoutGuardFailed
+function checkoutGuardFailed(g, e) {
+            // Called when checkout threw. Two very different situations:
+            //  - the sale was NOT saved (no new sale / bill): everything the failed attempt touched is put back - the stock figures exactly, and
+            //    every stock movement it logged is cancelled by an opposite movement (the ledger is append-only and may already be on its way to
+            //    the server, so it is countered, never deleted). The cart is left as it was, so the cashier can simply try again.
+            //  - the sale WAS saved (the error came from a later step - receipt, SMS, tax submission): it is kept, never undone.
+            // Either way it is never silent: the cashier is told, and the error goes to the Owner Console's Errors tab.
+            const msg = String((e && e.message) || e || 'unknown error');
+            try { window.__lastCheckoutError = { message: msg, stack: String((e && e.stack) || '').slice(0, 1200), at: Date.now() }; } catch (x) { /* diagnostics only */ }
+            try { console.error('checkout failed:', e); } catch (x) { /* logging only */ }
+            const lenOf = (v) => (Array.isArray(v) ? v.length : 0);
+            let saved = false, restored = 0;
+            try {
+                saved = lenOf(typeof salesLog === 'undefined' ? null : salesLog) > g.sales || lenOf(typeof bills === 'undefined' ? null : bills) > g.bills;
+                if (!saved) {
+                    if (typeof inventory !== 'undefined' && Array.isArray(inventory)) {
+                        inventory.forEach((p) => {
+                            const snap = p && g.rows[String(p.code)];
+                            if (!snap) return;
+                            const o = JSON.parse(snap);
+                            if (o.qty !== undefined) p.qty = o.qty;
+                            if (o.pieceQty !== undefined) p.pieceQty = o.pieceQty;
+                            if (o.batches !== undefined) p.batches = o.batches;
+                            if (Array.isArray(o.variants) && Array.isArray(p.variants)) o.variants.forEach((sv) => { const v = p.variants.find((x) => x && x.id === sv.id); if (v) { if (sv.qty !== undefined) v.qty = sv.qty; if (sv.pieceQty !== undefined) v.pieceQty = sv.pieceQty; } });
+                        });
+                    }
+                    if (g.kegs && typeof kegs !== 'undefined' && Array.isArray(kegs)) { const k = JSON.parse(g.kegs); kegs.length = 0; k.forEach((x) => kegs.push(x)); }
+                    if (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) {
+                        const made = stockMovementLog.slice(g.mv).filter((m) => m && m.delta && !m._deleted);
+                        made.forEach((m) => {
+                            stockMovementLog.push({
+                                id: genSaleId(), lg: m.lg, timestamp: new Date().toISOString(), code: m.code, name: m.name, delta: -m.delta,
+                                type: -m.delta > 0 ? 'added' : 'removed', reason: 'Sale did not complete - stock put back', unit: m.unit, by: m.by, reverses: m.id,
+                            });
+                            restored++;
+                        });
+                        safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+                    }
+                    if (typeof inventory !== 'undefined') safeSetItem('pos_inventory', JSON.stringify(inventory));
+                    try { queuePush(); } catch (x) { /* the poll sends it */ }
+                    try { if (typeof renderAllViews === 'function') renderAllViews(); } catch (x) { /* cosmetic */ }
+                }
+            } catch (x) { try { console.error('checkout rollback problem:', x); } catch (y) { /* nothing more to do */ } }
+            try {
+                if (saved) showToast('This sale is saved, but a step after it failed (' + msg + '). The sale and the stock are correct - please tell support.', true);
+                else showToast('This sale was NOT completed and nothing was recorded or taken from stock (' + msg + '). Please try again - if it repeats, tell support.', true);
+            } catch (x) { /* the error is in the log below */ }
+            try { if (typeof window.__reportClientError === 'function') window.__reportClientError('checkout failed' + (saved ? ' AFTER the sale was saved' : ' (nothing saved, stock restored: ' + restored + ' movement' + (restored === 1 ? '' : 's') + ')') + ': ' + msg, e && e.stack); } catch (x) { /* reporting only */ }
+        }
+
+//@fn runGuardedCheckout
+function runGuardedCheckout(fn) {
+            // Runs a checkout function (sync or async) under the guard above. Resolves to false when it failed; the failure is handled, not thrown.
+            const g = checkoutGuardStart();
+            // zip 153: ONE key for this sale, kept across failed attempts and cleared only when a sale was actually saved — so a retry after
+            // a dropped connection sends the SAME key to the server (cross-branch sales use it: a repeat is the same sale, never a second one).
+            if (!window.__checkoutKey) window.__checkoutKey = genSaleId();
+            const salesBefore = Array.isArray(typeof salesLog === 'undefined' ? null : salesLog) ? salesLog.length : 0;
+            const done = () => { try { if ((Array.isArray(salesLog) ? salesLog.length : 0) > salesBefore) window.__checkoutKey = null; } catch (e) { /* keep the key */ } };
+            const fail = (e) => { checkoutGuardFailed(g, e); return false; };
+            try {
+                const r = fn();
+                return (r && typeof r.then === 'function') ? r.then((v) => { done(); return v; }, fail) : (done(), r);
+            } catch (e) { return fail(e); }
+        }
+
+//@fn checkoutAttemptKey
+function checkoutAttemptKey() {
+            return window.__checkoutKey || (window.__checkoutKey = genSaleId());
+        }
+
 //@fn triggerAutoPrintReceipt
 function triggerAutoPrintReceipt() {
             if (window.__receiptRelayoutOnly) return;   // zip 144: re-laid out for another paper width — not a new print
@@ -10511,10 +10634,12 @@ function buildSectionedReceiptBytes(headerText, itemsText, footerText, cutBytes)
             const just = (n) => b([0x1B, 0x61, n]);
             const itemAlign = receiptItemAlign === 'center' ? 1 : receiptItemAlign === 'right' ? 2 : 0;
             const refBarcode = receiptRefBarcodeBytes(footerText);
+            const logoRaster = receiptLogoRasterBytes();                             // zip 152: the shop logo, when "Print logo" is on
             return concat([
                 b([0x1B, 0x40, 0x1B, 0x4D, 0x00]),                                   // initialise + font A
+                ...(logoRaster ? [logoRaster] : []),
                 just(1), ...String(headerText).split('\n').map((l, i) => (i === 0 ? boldLine(l) : line(l))),
-                just(itemAlign), ...String(itemsText).split('\n').map((l) => (/^\s*(TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b/.test(l) ? boldLine(l) : line(l))),
+                just(itemAlign), ...String(itemsText).split('\n').map((l) => (/^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(l) ? boldLine(l) : line(l))),
                 just(1), line(footerText),
                 ...(refBarcode ? [line(''), refBarcode] : []),                        // scannable reference barcode (image)
                 b([0x1B, 0x64, 0x03]),                                                // feed
@@ -10742,8 +10867,11 @@ function buildReceiptDoc(sale, hooks) {
                 if (details.length) { lines.push('Please settle via:'); details.forEach(d => lines.push(d)); }
                 else lines.push('Please contact us to arrange payment.');
             } else if (method === 'split') {
+                // zip 152: the method is printed bold, and a split names EVERY method that took part with its own amount (cash, M-Pesa, card)
+                lines.push('Payment Method: SPLIT');
                 lines.push(...receiptMoneyRow('Paid by Cash', kes(sale.cashAmount), cols));
                 lines.push(...receiptMoneyRow('Paid by M-Pesa', kes(sale.mpesaAmount), cols));
+                if (Number(sale.cardAmount) > 0) lines.push(...receiptMoneyRow('Paid by Card', kes(sale.cardAmount), cols));
                 if (mpesaRef) lines.push(`M-Pesa Receipt: ${mpesaRef}`);
                 if (sale.cashAmount > 0) {
                     lines.push(...receiptMoneyRow('Cash Tendered', kes(sale.amountTendered), cols));
@@ -10758,6 +10886,7 @@ function buildReceiptDoc(sale, hooks) {
             } else if (method !== 'cash') {
                 lines.push(`Payment Method: ${String(method).toUpperCase()}`);
             } else {
+                lines.push('Payment Method: CASH');
                 lines.push(...receiptMoneyRow('CASH', kes(sale.amountTendered), cols));
                 lines.push(...receiptMoneyRow('CHANGE', kes(Math.max(0, sale.change || 0)), cols));
             }
@@ -10816,7 +10945,7 @@ function buildReceiptDoc(sale, hooks) {
             // for text laid out for 32 or 48: the browser re-wrapped it — words and numbers split, columns out of line, and the preview
             // (always drawn 80 mm wide) looked fine while the paper did not.
             const itemAlign = receiptItemAlign === 'center' ? 'center' : receiptItemAlign === 'right' ? 'right' : 'left';
-            const boldItem = (l) => /^\s*(TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b/.test(l);
+            const boldItem = (l) => /^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(l);
             const headBold = (l, i) => i === 0 || l.trim() === String(docLabel).trim();
             let barcodeHtml = '';
             if (showBarcode) {
@@ -10995,6 +11124,111 @@ function buildCode39RasterBytes(value, maxDots) {
             out.set([0x1D, 0x76, 0x30, 0x00, bytesPerRow & 0xFF, bytesPerRow >> 8, height & 0xFF, height >> 8], 0);   // GS v 0 m xL xH yL yH
             for (let r = 0; r < height; r++) out.set(row, 8 + r * bytesPerRow);
             return out;
+        }
+
+//@fn receiptLogoDots
+function receiptLogoDots() {
+            // Printable width of THIS device's roll in printer dots (58 mm head = 384, 80 mm = 576) - the same figure the reference barcode uses.
+            return Math.floor(Math.min(Math.max(getPaperCols() * 12, 192), 576) / 8) * 8;
+        }
+
+//@fn receiptLogoRasterKey
+function receiptLogoRasterKey() {
+            // Identifies "this logo, at this paper width, dithered this way" so the prepared bytes are reused until one of them changes.
+            const d = String(receiptLogoData || '');
+            return 'v1:' + receiptLogoDots() + ':' + d.length + ':' + d.slice(-48);
+        }
+
+//@fn receiptLogoRasterFromRgba
+function receiptLogoRasterFromRgba(rgba, w, h, dots) {
+            // zip 152 - THE LOGO ON A RAW (USB / Bluetooth) RECEIPT. The logo only ever appeared in the on-screen preview and the browser print
+            // dialog; the ESC/POS bytes carried none, so "Print logo: on" printed no logo on a thermal printer. This turns the picture (already
+            // scaled to w x h, RGBA) into printer bytes: transparency flattened onto white, Floyd-Steinberg dithered to black/white, centred
+            // inside a full-width strip (so it does not depend on the printer honouring ESC a for images), sent as GS v 0 raster bands of at most
+            // 128 rows (some printers reject one very tall image). Pure function: no canvas, testable without a printer.
+            const W = Math.floor(Math.min(Math.max(dots || 384, 192), 576) / 8) * 8;
+            if (!(w > 0 && h > 0) || w > W) return null;
+            const lum = new Float32Array(w * h);
+            for (let i = 0; i < w * h; i++) {
+                const a = (rgba[i * 4 + 3] == null ? 255 : rgba[i * 4 + 3]) / 255;
+                const r = rgba[i * 4] * a + 255 * (1 - a), g = rgba[i * 4 + 1] * a + 255 * (1 - a), b = rgba[i * 4 + 2] * a + 255 * (1 - a);
+                lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+            }
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const i = y * w + x, old = lum[i], nw = old < 128 ? 0 : 255, err = old - nw;
+                    lum[i] = nw;
+                    if (x + 1 < w) lum[i + 1] += err * 7 / 16;
+                    if (y + 1 < h) {
+                        if (x > 0) lum[i + w - 1] += err * 3 / 16;
+                        lum[i + w] += err * 5 / 16;
+                        if (x + 1 < w) lum[i + w + 1] += err * 1 / 16;
+                    }
+                }
+            }
+            const bytesPerRow = W / 8, xOff = Math.floor((W - w) / 2);
+            const rows = new Uint8Array(bytesPerRow * h);
+            for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (lum[y * w + x] === 0) { const px = xOff + x; rows[y * bytesPerRow + (px >> 3)] |= 0x80 >> (px & 7); }
+            const bands = [];
+            for (let y0 = 0; y0 < h; y0 += 128) {
+                const bh = Math.min(128, h - y0);
+                const head = new Uint8Array([0x1D, 0x76, 0x30, 0x00, bytesPerRow & 0xFF, bytesPerRow >> 8, bh & 0xFF, bh >> 8]);   // GS v 0 m xL xH yL yH
+                const band = new Uint8Array(8 + bytesPerRow * bh);
+                band.set(head, 0); band.set(rows.subarray(y0 * bytesPerRow, (y0 + bh) * bytesPerRow), 8);
+                bands.push(band);
+            }
+            bands.push(new Uint8Array([0x0A]));   // one blank line under the logo
+            const out = new Uint8Array(bands.reduce((n, c) => n + c.length, 0));
+            let o = 0; bands.forEach((c) => { out.set(c, o); o += c.length; });
+            return out;
+        }
+
+//@fn prepareReceiptLogoRaster
+async function prepareReceiptLogoRaster() {
+            // Image decoding is asynchronous but the receipt builders are not, so the logo is turned into printer bytes AHEAD of the print
+            // (printReceipt awaits this) and the builders only pick the ready result up (receiptLogoRasterBytes). Resolves to the bytes, or null
+            // when the logo is off / missing / cannot be read - in which case it says so instead of quietly printing without it.
+            try {
+                if (!(receiptShowLogo && receiptLogoData)) { window.__logoRaster = null; window.__logoRasterError = ''; return null; }
+                const key = receiptLogoRasterKey();
+                if (window.__logoRaster && window.__logoRaster.key === key) return window.__logoRaster.bytes;
+                const img = await new Promise((resolve, reject) => {
+                    const im = new Image();
+                    const t = setTimeout(() => reject(new Error('the logo took too long to load')), 6000);
+                    im.onload = () => { clearTimeout(t); resolve(im); };
+                    im.onerror = () => { clearTimeout(t); reject(new Error('the saved logo is not a readable picture')); };
+                    im.src = receiptLogoData;
+                });
+                const dots = receiptLogoDots();
+                const nw = img.naturalWidth || img.width, nh = img.naturalHeight || img.height;
+                if (!(nw > 0 && nh > 0)) throw new Error('the logo has no size');
+                const maxW = Math.floor(dots * 0.75 / 8) * 8, maxH = 192;                    // up to 3/4 of the paper wide, about 24 mm tall
+                const scale = Math.min(maxW / nw, maxH / nh);
+                const w = Math.max(8, Math.round(nw * scale)), h = Math.max(8, Math.round(nh * scale));
+                const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) throw new Error('this browser cannot draw the logo');
+                ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h);
+                const bytes = receiptLogoRasterFromRgba(ctx.getImageData(0, 0, w, h).data, w, h, dots);
+                if (!bytes) throw new Error('the logo does not fit the paper');
+                window.__logoRaster = { key, bytes }; window.__logoRasterError = '';
+                return bytes;
+            } catch (e) {
+                window.__logoRaster = null;
+                const msg = String((e && e.message) || e || 'unknown');
+                if (window.__logoRasterError !== msg) { window.__logoRasterError = msg; try { showToast('The receipt logo could not be prepared for the printer (' + msg + ') - it prints without the logo.', true); } catch (e2) { /* the print goes on */ } }
+                return null;
+            }
+        }
+
+//@fn receiptLogoRasterBytes
+function receiptLogoRasterBytes() {
+            // What the raw receipt builders put at the top: the prepared logo, or null (logo switched off, not prepared yet, or unreadable).
+            try {
+                if (!(receiptShowLogo && receiptLogoData)) return null;
+                const r = window.__logoRaster;
+                return r && r.bytes && r.key === receiptLogoRasterKey() ? r.bytes : null;
+            } catch (e) { return null; }
         }
 
 //@fn receiptRefBarcodeBytes
@@ -11823,10 +12057,12 @@ function buildReceiptEscPosBytes(headerText, itemsText, footerText) {
             const headerChunks = headerLines.map((line, i) => i === 0 ? ESCPOS.boldLine(line) : ESCPOS.text(line));
 
             const itemLines = itemsText.replace(/\r/g, '').split('\n');
-            const itemChunks = itemLines.map(line => /^\s*(TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b/.test(line) ? ESCPOS.boldLine(line) : ESCPOS.text(line));
+            const itemChunks = itemLines.map(line => /^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(line) ? ESCPOS.boldLine(line) : ESCPOS.text(line));
 
+            const logoRaster = receiptLogoRasterBytes();                             // zip 152: the shop logo, when "Print logo" is on
             return ESCPOS.concat([
                 ESCPOS.INIT,
+                ...(logoRaster ? [logoRaster] : []),
                 ESCPOS.justify(1), ...headerChunks,
                 ESCPOS.justify(itemAlignByte), ...itemChunks,
                 ESCPOS.justify(1), ESCPOS.text(footerText),
@@ -12447,6 +12683,7 @@ async function printReceipt() {
                 // zip 147b: never held back or asked — a sale not yet stored is saved / sent again automatically (ensureSaleSaved).
                 if (sale && sale.id != null && !saleStoredLocally(sale) && typeof ensureSaleSaved === 'function'
                     && typeof salesLog !== 'undefined' && salesLog.some((x) => x && x.id === sale.id)) ensureSaleSaved(sale);
+                try { await prepareReceiptLogoRaster(); } catch (e) { /* never held up by the logo: it prints without it (and says so) */ }   // zip 152
                 await queuePrintJob(printReceiptJob);
                 if (window.__lastPrintOk === false) return;                // failed: the printer already said so; the preview stays for another try
                 markReceiptPrinted(sale);

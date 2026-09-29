@@ -75,7 +75,7 @@ test('REPORTS reconcile with the transactions: sales vs payments vs outstanding 
   assert.equal(r.byWaiter[0][0], 'Supervisor Sam');
   assert.ok(r.changes.some((c) => /reduced 1× Tusker/.test(c[2]) && c[4] === 'spilt'));
   assert.equal(r.unverified.length, 1, 'the typed M-Pesa code is not counted as verified');
-  w.eval(`document.querySelector('.tab-link[data-tab="hosp-reports-tab"]').click()`);
+  w.eval('renderHospReports()');   // zip 153: the hospitality reports live inside the one Reports screen; this draws them
   assert.match(d.getElementById('hosp-reports-body').textContent, /Sales, payments, outstanding and profit[\s\S]*M-Pesa payments not verified[\s\S]*QWE1234567/);
   as(w, 'w1'); w.eval('renderHospReports()');
   assert.match(d.getElementById('hosp-reports-body').textContent, /for supervisors/, 'a waiter cannot see the reports');

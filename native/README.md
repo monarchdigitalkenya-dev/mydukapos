@@ -1,6 +1,6 @@
 # MyDukaPOS native apps — Android and Windows
 
-The seven apps (MyDukaPOS, Hotel, HMIS, Production, Pharmacy, Services, AquaPOS) are defined once in **`native/apps.json`**:
+The eight apps (MyDukaPOS, Hotel, HMIS, Production, Pharmacy, Services, AquaPOS, and the **Owner Console**) are defined once in **`native/apps.json`**:
 name, application id, licence product, colour, icon and version.
 
 Each native app is a **real app around the shop's own MyDukaPOS web app**. It opens the shop's own link, with its durable offline
@@ -76,3 +76,10 @@ as the secrets `CSC_LINK` (base64 of the `.pfx`) and `CSC_KEY_PASSWORD`.
    Don't Show Again".
 
 Installing is always optional. The Web App keeps working, including on iPhone and iPad (there is no iPhone app).
+
+
+## The Owner Console app (zip 153)
+`com.mydukapos.owner` (Android) and `MyDukaPOS-Owner-Console-<version>-Setup.exe / .msi` (Windows). It is marked `"fixed": true` in
+`native/apps.json`: it has no shop link and no licence check — it always opens `https://<rootDomain>/owner/` and the console asks for the
+owner's own login. It is for YOU only: do not publish it under Apps & Versions and do not send it to shops. Install it from the GitHub
+artifact (`mydukapos-android` / `mydukapos-windows`). It is signed with the same keys as the other apps.

@@ -22,6 +22,7 @@ import { requireValidLicense, getLicense, getBranchGroupMembers, randomToken } f
 import { readState, writeState } from './_state-store.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { recordPush } from './_ledger.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -151,6 +152,13 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: 'That branch has no inventory recorded yet.' }, 400);
     }
 
+    // zip 153: a retry (network drop after the server answered, a double tap) must not sell — and deduct stock — twice: the till sends one
+    // `saleId` per attempt; a sale already recorded under it is returned as it is.
+    const askedId = /^[A-Za-z0-9_-]{8,96}$/.test(String(body.saleId || '')) ? 'xb-' + String(body.saleId) : null;
+    if (askedId) {
+      const prior = (Array.isArray(targetState.salesLog) ? targetState.salesLog : []).find((x) => x && x.id === askedId);
+      if (prior) return jsonResponse({ sale: prior, repeated: true });
+    }
     // Resolve and validate every item BEFORE deducting any stock, so a
     // shortfall partway through a multi-item cart never leaves stock
     // half-deducted for that branch.
@@ -182,7 +190,7 @@ export async function onRequestPost(context) {
     const mpesaAmount = typeof body.mpesaAmount === 'number' ? body.mpesaAmount : (body.paymentMethod === 'mpesa' ? total : 0);
 
     const saleRecord = {
-      id: randomToken(12),
+      id: askedId || randomToken(12),
       timestamp: new Date().toISOString(),
       paymentMethod: body.paymentMethod || 'cash',
       paid: true,
@@ -215,6 +223,10 @@ export async function onRequestPost(context) {
 
     targetState.salesLog = Array.isArray(targetState.salesLog) ? targetState.salesLog : [];
     targetState.salesLog.push(saleRecord);
+    // zip 153: the sale belongs to the TARGET branch's books — written to its D1 ledger in the same request (idempotent on the sale id), and
+    // the request fails (nothing acknowledged) if D1 does not take it.
+    const led = await recordPush(env, targetClientId, { salesLog: [saleRecord] }, { source: 'cross-branch-sale' });
+    if (!led.ok) return jsonResponse({ error: 'The transaction database did not answer — nothing was sold. Try again in a moment.', code: 'busy' }, 503);
     await saveState(env, targetClientId, targetState);
 
     return jsonResponse({ sale: saleRecord });

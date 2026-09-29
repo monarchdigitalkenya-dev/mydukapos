@@ -57,6 +57,8 @@
 import { requireValidLicense, getLicense, randomToken } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { ledgerDb } from './_ledger.js';
+import { handleStoreD1 } from './_store-d1.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -172,6 +174,16 @@ export async function onRequestPost(context) {
   // group). A standalone shop with no branches still gets a store of its
   // own, keyed to itself, so this never requires setting up branches first.
   const groupId = record.branchGroupId || record.id;
+
+  // Zip 153: with the D1 database bound, the store lives there (atomic transfers, zero stock kept, full history). KV below is the legacy fallback.
+  const db = ledgerDb(env);
+  if (db) {
+    try {
+      return await handleStoreD1(env, db, { body, groupId, record, getLicense, json: jsonResponse });
+    } catch (e) {
+      return jsonResponse({ error: 'The store database is unavailable right now \u2014 nothing was changed. Try again.', detail: String(e && e.message || e).slice(0, 160) }, 503);
+    }
+  }
 
   if (body.action === 'get') {
     const items = await getStoreItems(env, groupId);
@@ -292,7 +304,7 @@ export async function onRequestPost(context) {
       storeItem.qty -= qty;
       withdrawn.push({ code: storeItem.code, name: storeItem.name, unit: storeItem.unit, price: storeItem.price, wholesaleSellingPrice: storeItem.wholesaleSellingPrice, wholesalePrice: storeItem.wholesalePrice, qty });
     }
-    const remaining = items.filter((s) => s.qty > 0.0001);
+    const remaining = items; // zero stock stays listed (zip 153)
     await saveStoreItems(env, groupId, remaining);
     for (const w of withdrawn) {
       await appendStoreLog(env, groupId, {

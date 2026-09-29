@@ -74,7 +74,7 @@ test('Inventory tab has a Used column beside the stock level, and a below-zero s
   assert.deepEqual(heads.slice(3, 7), ['Price (KES)', 'Qty Remaining', 'Used', 'Status']);
   const rows = [...d.querySelectorAll('#inventory-table tbody tr')];
   const flour = rows.find((r) => r.textContent.includes('Flour'));
-  assert.equal(flour.querySelectorAll('td').length, 8, 'as many cells as headers');
+  assert.equal(flour.querySelectorAll('td').length, 9, 'as many cells as headers (zip 153 added the Bar / Kitchen column)');
   assert.match(flour.querySelector('.inv-used-cell').textContent, /1/);
   assert.match(flour.textContent, /short by/);
   assert.match(flour.textContent, /dishes still sell/);
