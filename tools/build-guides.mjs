@@ -361,6 +361,18 @@ MODS.hotel = {
       ],
       tips: ['Give dishes a category (Hot Beverages, Meals…) — the import keeps it.', 'The Inventory **Used** column shows how much of each ingredient the sales have consumed.'],
     }),
+    ch('categories', '🏷️', 'Categories and importing a list', {
+      intro: 'Every kind of stock (Items, Ingredients, Dishes, Services, Utensils, Bar) has its own categories. "Drinks" under Dishes and "Drinks" under Items are two separate categories, and stock with no category is just **Uncategorized** — nothing is ever lost.',
+      steps: [
+        'On **📋 Inventory** tap **🗂️ Categories & assign**, choose the kind, then create, rename, switch on/off, reorder or delete categories. Deleting asks where the stock goes (another category of the same kind, or Uncategorized) — the stock itself is never deleted.',
+        'To change many at once, tick the records and choose a category under **Assign selected**. A category can only be given to stock of its own kind.',
+        'On the **🛒 Sales Counter** and in **🍽️ Service Orders**, the categories are chips above the pictures: tap one to filter, **All** to clear. Search works inside the chosen category and **Show more** loads the next page.',
+        'Tap **⬆️ Import** for an Excel or CSV list: pick the file, check the columns, read the preview, then confirm. In **All** mode each row needs a type (a Type column, your choice, or the built-in suggestion).',
+        'New categories in a file are created only when you agree. Similar names (Beverage / Beverages) are never merged automatically — you decide. For records that already exist choose **Skip**, **Update** or **Create new**; quantities and pictures are only changed if you tick that box.',
+        'Rows with a problem are listed (you can download them) and the rest are imported.',
+      ],
+      tips: ['Only staff with Inventory or Add New Items access can manage categories or import.', 'A category you turn off disappears from the chips, but its stock is still sold under All.'],
+    }),
     ch('sale', '🛒', 'Making a sale — walk-in customers', {
       steps: [
         'Open **🛒 Sales Counter**, search or tap dishes and drinks to build the cart, set quantities.',

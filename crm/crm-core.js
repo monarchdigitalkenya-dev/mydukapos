@@ -114,16 +114,33 @@
   class ApiError extends Error { constructor(msg, status, code, data) { super(msg); this.status = status; this.code = code; this.data = data; } }
   function sessionToken() { return safeLS('get', 'crm_mode') === 'owner' ? (safeLS('get', 'pos_owner_session_token') || '') : (safeLS('get', 'crm_token') || ''); }
   function qs(o) { const p = []; for (const k of Object.keys(o || {})) { const v = o[k]; if (v == null || v === '' || v === false) continue; p.push(encodeURIComponent(k) + '=' + encodeURIComponent(v === true ? '1' : v)); } return p.length ? '?' + p.join('&') : ''; }
-  async function api(path, opts) {
+  // zip 161: (1) two identical GETs that are in flight at once share ONE request (a re-render or a double click no longer doubles the load);
+  // (2) every navigation-bound GET is cancelled when the user moves to another screen (`bg: true` opts out: the polls); a cancelled request never settles, so a
+  // half-finished screen cannot toast an error or draw over the new one.
+  const inflight = new Map(); let navCtl = new AbortController();
+  CRM.newNav = function () { inflight.clear(); try { navCtl.abort(); } catch (e) { /* old browser */ } navCtl = new AbortController(); };
+  CRM.stats = { requests: 0, deduped: 0, aborted: 0 };
+  const NEVER = new Promise(() => {});
+  function api(path, opts) {
     opts = opts || {};
+    const isGet = !(opts.method && opts.method !== 'GET') && opts.body === undefined && !opts.blob;
+    if (!isGet) return apiCall(path, opts);
+    const key = path + qs(opts.query) + '|' + (opts.token !== undefined ? opts.token : '') + (opts.bg ? '|bg' : '');
+    const hit = inflight.get(key); if (hit) { CRM.stats.deduped++; return hit; }
+    const nav = navCtl, sig = opts.signal || (opts.bg ? undefined : nav.signal);
+    const p = apiCall(path, Object.assign({}, opts, { signal: sig })).catch((e) => { if (e && e.code === 'aborted') { CRM.stats.aborted++; return NEVER; } throw e; });
+    inflight.set(key, p); const done = () => { if (inflight.get(key) === p) inflight.delete(key); }; p.then(done, done);
+    return p;
+  }
+  async function apiCall(path, opts) {
     const headers = { Accept: 'application/json' };
     const tok = opts.token !== undefined ? opts.token : sessionToken();
     if (tok) headers.Authorization = 'Bearer ' + tok;
     let body;
     if (opts.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(opts.body); }
     let res;
-    try { res = await fetch('/api/crm' + path + qs(opts.query), { method: opts.method || (body !== undefined ? 'POST' : 'GET'), headers, body, cache: 'no-store' }); }
-    catch (e) { throw new ApiError('Network problem - check your connection and try again.', 0, 'network'); }
+    try { res = await fetch('/api/crm' + path + qs(opts.query), { method: opts.method || (body !== undefined ? 'POST' : 'GET'), headers, body, cache: 'no-store', signal: opts.signal }); CRM.stats.requests++; }
+    catch (e) { if (e && e.name === 'AbortError') throw new ApiError('Cancelled', 0, 'aborted'); throw new ApiError('Network problem - check your connection and try again.', 0, 'network'); }
     if (opts.blob) { if (!res.ok) throw new ApiError('Download failed (' + res.status + ')', res.status, 'download'); return res.blob(); }
     let data = null; const txt = await res.text();
     if (txt) { try { data = JSON.parse(txt); } catch (e) { data = { raw: txt }; } }
@@ -277,7 +294,7 @@
   const canAny = (...ks) => ks.some(can);
   CRM.signOut = function (expired) {
     safeLS('del', 'crm_token'); safeLS('del', 'crm_mode');
-    CRM.state.me = null; CRM.state.perms = new Set(); CRM.state.staff = null;
+    CRM.state.me = null; CRM.state.perms = new Set(); CRM.state.staff = null; CRM.state.bell = null; CRM.state.meta = null; window.__crmBoot = null;
     CRM.timers.forEach((t) => clearInterval(t)); CRM.timers = [];
     CRM.go('#/signin');
   };
@@ -311,7 +328,7 @@
   const PUBLIC = new Set(['signin', 'invite', 'reset']);
 
   CRM.render = async function () {
-    const app = document.getElementById('app'); const r = parseHash(); const seq = ++renderSeq;
+    const app = document.getElementById('app'); const r = parseHash(); const seq = ++renderSeq; CRM.newNav();
     document.querySelectorAll('.menu.pop').forEach((m) => m.remove());
     if (PUBLIC.has(r.name)) { CRM.shell = null; mount(app); await CRM.authScreens[r.name](app, r); return; }
     if (!sessionToken()) { location.hash = '#/signin'; return; }
@@ -334,11 +351,15 @@
   CRM.defaultRoute = () => 'dashboard';
 
   async function loadMe() {
-    const d = await api('/me');
+    // zip 161: ONE request (/boot) carries the profile + the config lists + the staff names + the first notifications and unread counts (it replaces /me, /staff twice, /notifications
+    // and /inbox/conversations at start-up). An older server without /boot answers 404 and the classic requests are used.
+    let d = null;
+    try { const b = await (window.__crmBoot || api('/boot')); window.__crmBoot = null; if (b && b.me) { d = b.me; if (b.staff && b.staff.items) CRM.state.staff = b.staff.items; if (b.notifications) applyBell(b.notifications, b.inboxUnread); } } catch (e) { window.__crmBoot = null; if (e && e.status === 401) throw e; d = null; }
+    if (!d) d = await api('/me');
     const me = d.user || d; CRM.state.me = me; CRM.state.perms = new Set(listOf(me.perms || d.perms));
     CRM.state.config = d.config || CRM.state.config;
     if (!CRM.state.config) { try { CRM.state.config = await api('/config'); } catch (e) { CRM.state.config = {}; } }
-    staffList();
+    if (!CRM.state.staff) staffList();
   }
   CRM.reloadConfig = async function () { CRM.state.config = await api('/config'); return CRM.state.config; };
 
@@ -392,18 +413,34 @@
   }
 
   /* ---------- notifications ---------- */
-  async function pollNotifications() {
-    try {
-      const d = await api('/notifications'); const items = listOf(d, 'notifications');
-      const unread = d.unread != null ? d.unread : items.filter((n) => !n.read && !n.readAt).length;
-      CRM.state.notifications = items; if (!document || !document.getElementById) return;
-      const dot = document.getElementById('bell-dot'); if (dot) { dot.textContent = unread > 9 ? '9+' : String(unread); dot.classList.toggle('hidden', !unread); }
-      let ib = null;
-      if (can('inbox.view')) { try { const c = await api('/inbox/conversations', { query: { unread: 1 } }); const cl = listOf(c, 'conversations'); ib = c.unread != null ? c.unread : (c.total != null ? c.total : cl.filter((x) => Number(pick(x, 'unread', 'unreadCount', 'unread_count') || 0) > 0).length); } catch (e) { ib = null; } }
-      if (!document || !document.getElementById) return; const badge = document.getElementById('inbox-badge'); if (badge && ib != null) { badge.textContent = String(ib); badge.classList.toggle('hidden', !ib); }
-    } catch (e) { /* silent: polling */ }
+  function applyBell(d, inboxUnread) {
+    const items = listOf(d, 'notifications');
+    const unread = d.unread != null ? d.unread : items.filter((n) => !n.read && !n.readAt).length;
+    CRM.state.notifications = items;
+    const dot = document.getElementById('bell-dot'); if (dot) { dot.textContent = unread > 9 ? '9+' : String(unread); dot.classList.toggle('hidden', !unread); }
+    if (inboxUnread != null) { const badge = document.getElementById('inbox-badge'); if (badge) { badge.textContent = String(inboxUnread); badge.classList.toggle('hidden', !inboxUnread); } }
+    CRM.state.bell = { unread, inboxUnread };
   }
-  function startPolling() { CRM.timers.forEach((t) => clearInterval(t)); CRM.timers = []; pollNotifications(); CRM.timers.push(setInterval(() => { if (!document.hidden) pollNotifications(); }, 45000)); }
+  // zip 161: the bell and the Inbox badge come from ONE small request (the server now adds `inboxUnread` to /notifications; before, the app also fetched up to 200 conversations
+  // (~78 KB) every 45 s just to count them). `bg` = not cancelled by navigation. Older servers do not send inboxUnread: the old second request is the fallback.
+  let polling = false;
+  async function pollNotifications() {
+    if (polling) return; polling = true;
+    try {
+      const d = await api('/notifications', { query: { pageSize: 20 }, bg: true });
+      let ib = d.inboxUnread != null ? d.inboxUnread : null;
+      if (ib == null && can('inbox.view')) { try { const c = await api('/inbox/conversations', { query: { unread: 1 }, bg: true }); const cl = listOf(c, 'conversations'); ib = c.unread != null ? c.unread : (c.total != null ? c.total : cl.filter((x) => Number(pick(x, 'unread', 'unreadCount', 'unread_count') || 0) > 0).length); } catch (e) { ib = null; } }
+      applyBell(d, ib);
+    } catch (e) { /* silent: polling */ } finally { polling = false; }
+  }
+  // visibility-aware: nothing is fetched while the tab is hidden, and coming back refreshes at once (if the last look is older than 20 s)
+  let lastPoll = 0;
+  function startPolling() {
+    CRM.timers.forEach((t) => clearInterval(t)); CRM.timers = [];
+    if (!CRM.state.bell) { lastPoll = Date.now(); pollNotifications(); }
+    CRM.timers.push(setInterval(() => { if (!document.hidden) { lastPoll = Date.now(); pollNotifications(); } }, 45000));
+    if (!CRM._vis) { CRM._vis = true; document.addEventListener('visibilitychange', () => { if (!document.hidden && CRM.shell && Date.now() - lastPoll > 20000) { lastPoll = Date.now(); pollNotifications(); } }); }
+  }
   CRM.pollNotifications = pollNotifications;
   async function showNotifications() {
     const body = h('div', null, loading());

@@ -1,11 +1,12 @@
 // functions/api/_crm/leads.js — leads: create / duplicate detection / list / detail / edit / claim / assign / status / classification / notes / contact /
 // products / merge / bulk / export (NOT a route). Every state change is ONE db.batch (one transaction) that also writes the activity, the audit
 // (previous + new value) and the notifications.
-import { E, json, all, first, st, now, newId, text, email as normEmail, phoneNorm, phoneDisplay, auditSt, activitySt, touchLeadSt, notifySt, emitSt, idStr, moneyLoose, dayLoose, jstr, jparse, like, placeholders, arr, oneOf, optRange, dayStart, nairobiDay, DAY, toCsv, csvResponse, changes } from './core.js';
+import { E, json, all, first, st, many, now, newId, text, email as normEmail, phoneNorm, phoneDisplay, auditSt, activitySt, touchLeadSt, notifySt, emitSt, idStr, moneyLoose, dayLoose, jstr, jparse, like, placeholders, arr, oneOf, optRange, dayStart, nairobiDay, DAY, toCsv, csvResponse, changes } from './core.js';
 import { leadScope, canWriteLead, salesScope } from './scope.js';
 import { notifyMany, managers, poolWatchers } from './notify.js';
 import { attrFromInput, hasAttr, resolveEntities, eventSt, firstTouchCols } from './attribution.js';
 import { usersWith } from './auth.js';
+import { crmFeatures } from './schema.js';
 
 const CONTACT_METHODS = ['call', 'whatsapp', 'sms', 'email', 'visit', 'other'];
 const CONTACT_OUTCOMES = ['answered', 'no_answer', 'busy', 'voicemail', 'replied', 'reached', 'wrong_number', 'interested', 'not_interested', 'callback', 'other'];
@@ -49,9 +50,10 @@ function listSelect(actor) {
 }
 
 // ---------- config keys ----------
-async function activeKeys(db) {
-  const k = async (t) => new Set((await all(db, `SELECT key FROM ${t} WHERE active = 1`)).map((r) => r.key));
-  return { statuses: await k('crm_statuses'), classes: await k('crm_classifications'), sources: await k('crm_sources'), lost: await k('crm_lost_reasons') };
+async function activeKeys(db) {                       // zip 161: the four lookups in one round trip (fresh, never from the memory: this validates a write)
+  const [a, b, c, d] = await many(db, ['crm_statuses', 'crm_classifications', 'crm_sources', 'crm_lost_reasons'].map((t) => st(db, `SELECT key FROM ${t} WHERE active = 1`)));
+  const k = (rows) => new Set(rows.map((r) => r.key));
+  return { statuses: k(a), classes: k(b), sources: k(c), lost: k(d) };
 }
 export const statusRow = (db, key) => first(db, `SELECT * FROM crm_statuses WHERE key = ?`, key);
 
@@ -307,6 +309,7 @@ export async function getLeadFor(ctx, id, { write = false } = {}) {
 
 function leadFilter(ctx, q) {
   const { actor } = ctx;
+  const fts = crmFeatures(ctx.db).fts && String(ctx.env && ctx.env.CRM_FTS != null ? ctx.env.CRM_FTS : '') !== '0';       // the optional full-text table exists and is not switched off
   const sc = leadScope(actor);
   const where = [sc.sql], args = [...sc.args];
   const list = (v) => String(v).split(',').map((x) => x.trim()).filter(Boolean).slice(0, 20);
@@ -314,10 +317,19 @@ function leadFilter(ctx, q) {
   const term = text(q.get('q'), 100);
   if (term) {
     const digits = term.replace(/\D/g, '').replace(/^0+/, '');
-    const c = ["l.name LIKE ? ESCAPE '\\'", "l.business_name LIKE ? ESCAPE '\\'", "l.email LIKE ? ESCAPE '\\'", "l.location LIKE ? ESCAPE '\\'"];
-    const a = [like(term), like(term), like(term), like(term)];
-    if (digits.length >= 3 && digits.length >= term.replace(/[\s+\-()]/g, '').replace(/^0+/, '').length - 1) { c.push('l.phone_norm LIKE ?', 'l.whatsapp_norm LIKE ?'); a.push('%' + digits + '%', '%' + digits + '%'); }
-    where.push('(' + c.join(' OR ') + ')'); args.push(...a);
+    const phoneToo = digits.length >= 3 && digits.length >= term.replace(/[\s+\-()]/g, '').replace(/^0+/, '').length - 1;
+    if (fts && term.length >= 3) {
+      // zip 161: the optional trigram FTS table (schema.js CRM_FTS_SCHEMA) answers the same question as the LIKE below: "does the text appear inside name / business / e-mail /
+      // location, or do the digits appear inside a phone / WhatsApp number" — without reading every row. A term of 1-2 characters cannot use trigrams and uses LIKE.
+      const qq = (x) => '"' + String(x).replace(/"/g, '""') + '"';
+      where.push('l.rowid IN (SELECT rowid FROM crm_leads_fts WHERE crm_leads_fts MATCH ?)');
+      args.push(qq(term) + (phoneToo ? ' OR phones : ' + qq(digits) : ''));
+    } else {
+      const c = ["l.name LIKE ? ESCAPE '\\'", "l.business_name LIKE ? ESCAPE '\\'", "l.email LIKE ? ESCAPE '\\'", "l.location LIKE ? ESCAPE '\\'"];
+      const a = [like(term), like(term), like(term), like(term)];
+      if (phoneToo) { c.push('l.phone_norm LIKE ?', 'l.whatsapp_norm LIKE ?'); a.push('%' + digits + '%', '%' + digits + '%'); }
+      where.push('(' + c.join(' OR ') + ')'); args.push(...a);
+    }
   }
   if (q.get('status')) inList('l.status_key', q.get('status'));
   if (q.get('class')) inList('l.class_key', q.get('class'));
@@ -347,15 +359,33 @@ function leadFilter(ctx, q) {
   if (rev === 'won') { where.push(`EXISTS (SELECT 1 FROM crm_sales s WHERE s.lead_id = l.id AND ${sc2.sql})`); args.push(...sc2.args); }
   else if (rev === 'none') { where.push(`NOT EXISTS (SELECT 1 FROM crm_sales s WHERE s.lead_id = l.id AND ${sc2.sql})`); args.push(...sc2.args); }
   else if (rev) throw E.bad('revenue must be won or none', 'invalid_revenue');
-  const SORTS = { created: 'l.created_at', created_at: 'l.created_at', updated: 'l.updated_at', updated_at: 'l.updated_at', name: 'l.name COLLATE NOCASE', phone: 'l.phone_norm', status: 'l.status_key',
-    class: 'l.class_key', classification: 'l.class_key', source: 'l.source_key', campaign: 'campaign_name COLLATE NOCASE', ad: 'ad_name COLLATE NOCASE', product: 'product_names COLLATE NOCASE', staff: 'owner_name COLLATE NOCASE', owner: 'owner_name COLLATE NOCASE',
-    last_contact: 'l.last_contacted_at', last_activity: 'l.last_activity_at', next_followup: 'next_followup_at', deal_value: 'l.estimated_value', estimated_value: 'l.estimated_value', revenue: 'revenue' };
-  const sortCol = SORTS[sortKey];
-  if (!sortCol) throw E.bad('unknown sort', 'invalid_sort');
+  // `outer` = the expression as the hydrating SELECT sees it (it can use that SELECT's aliases); `inner` = the same value computed straight from the lead row, which is what
+  // the id-page query (phase 1) orders by, so that only the rows of ONE page pay for the ~9 sub-selects of a lead row. `key` = usable as a keyset cursor.
+  const rowSort = (col) => ({ outer: col, inner: col });
+  const SORTS = { created: rowSort('l.created_at'), created_at: rowSort('l.created_at'), updated: rowSort('l.updated_at'), updated_at: rowSort('l.updated_at'), name: rowSort('l.name COLLATE NOCASE'), phone: rowSort('l.phone_norm'), status: rowSort('l.status_key'),
+    class: rowSort('l.class_key'), classification: rowSort('l.class_key'), source: rowSort('l.source_key'),
+    campaign: { outer: 'campaign_name COLLATE NOCASE', inner: '(SELECT name FROM crm_campaigns WHERE id = l.first_campaign_id) COLLATE NOCASE' },
+    ad: { outer: 'ad_name COLLATE NOCASE', inner: '(SELECT name FROM crm_ads WHERE id = l.first_ad_id) COLLATE NOCASE' },
+    product: { outer: 'product_names COLLATE NOCASE', inner: '(SELECT group_concat(p.label, char(31)) FROM (SELECT p2.label FROM crm_lead_products lp2 JOIN crm_products p2 ON p2.id = lp2.product_id WHERE lp2.lead_id = l.id ORDER BY p2.position) p) COLLATE NOCASE' },
+    staff: { outer: 'owner_name COLLATE NOCASE', inner: '(SELECT name FROM crm_users WHERE id = l.owner_id) COLLATE NOCASE' }, owner: { outer: 'owner_name COLLATE NOCASE', inner: '(SELECT name FROM crm_users WHERE id = l.owner_id) COLLATE NOCASE' },
+    last_contact: rowSort('l.last_contacted_at'), last_activity: rowSort('l.last_activity_at'),
+    next_followup: { outer: 'next_followup_at', inner: `(SELECT MIN(f.due_at) FROM crm_followups f WHERE f.lead_id = l.id AND f.status = 'open')` },
+    deal_value: rowSort('l.estimated_value'), estimated_value: rowSort('l.estimated_value'),
+    revenue: { outer: 'revenue', inner: sc2 ? `(SELECT SUM(s.total) FROM crm_sales s WHERE s.lead_id = l.id AND ${sc2.sql})` : 'NULL', args: sc2 ? sc2.args : [] } };
+  const sortSpec = SORTS[sortKey];
+  if (!sortSpec) throw E.bad('unknown sort', 'invalid_sort');
   const dir = String(q.get('dir') || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
   // empty values always sort last, whatever the direction
-  const order = ['name', 'created', 'created_at', 'updated', 'updated_at', 'status'].includes(sortKey) ? `${sortCol} ${dir}, l.id` : `(${sortCol.replace(' COLLATE NOCASE', '')} IS NULL), ${sortCol} ${dir}, l.id`;
-  return { where: where.join(' AND '), args, order, dir };
+  const plain = ['name', 'created', 'created_at', 'updated', 'updated_at', 'status'].includes(sortKey);
+  const orderOf = (col) => (plain ? `${col} ${dir}, l.id` : `(${col.replace(' COLLATE NOCASE', '')} IS NULL), ${col} ${dir}, l.id`);
+  const order = orderOf(sortSpec.outer);
+  // keyset paging (zip 161): only for the two sorts whose key is a plain, never-empty number (created / updated); `after` = "<value>:<id>" from the previous page's nextCursor
+  const keyCol = { created: 'l.created_at', created_at: 'l.created_at', updated: 'l.updated_at', updated_at: 'l.updated_at' }[sortKey] || null;
+  let cursorSql = null, cursorArgs = [];
+  const cur = q.get('after') ? /^(\d{1,15}):(.{1,64})$/.exec(q.get('after')) : null;
+  if (q.get('after') && !cur) throw E.bad('after is not a valid cursor', 'invalid_cursor');
+  if (cur && keyCol) { const op = dir === 'ASC' ? '>' : '<'; cursorSql = `(${keyCol} ${op} ? OR (${keyCol} = ? AND l.id > ?))`; cursorArgs = [Number(cur[1]), Number(cur[1]), cur[2]]; }
+  return { where: where.join(' AND '), args, order, dir, inner: { order: orderOf(sortSpec.inner), args: sortSpec.args || [] }, keyCol, cursor: cursorSql ? { sql: cursorSql, args: cursorArgs } : null };
 }
 
 export async function listLeads(ctx) {
@@ -364,9 +394,22 @@ export async function listLeads(ctx) {
   const pageSize = Math.min(200, Math.max(1, parseInt(query.get('pageSize'), 10) || 50));
   const page = Math.max(1, parseInt(query.get('page'), 10) || 1);
   const ls = listSelect(actor);
-  const total = (await first(db, `SELECT COUNT(*) n FROM crm_leads l WHERE ${f.where}`, ...f.args)).n;
-  const rows = await all(db, `${ls.sql} WHERE ${f.where} ORDER BY ${f.order} LIMIT ? OFFSET ?`, ...ls.args, ...f.args, pageSize, (page - 1) * pageSize);
-  return { items: rows.map((r) => leadOut(ls.hasRevenue ? r : { ...r, actual_value: null })), total, page, pageSize, canSeeRevenue: ls.hasRevenue };
+  // zip 161: TWO phases in ONE round trip. Phase 1 picks the ids of the page from the lead rows alone (filter, sort, LIMIT). Phase 2 fetches those rows with their ~9 sub-selects
+  // (owner, products, next follow-up, campaign names, revenue ...), so the sub-selects run for the 25-50 rows of the page instead of for every row the sort had to look at.
+  // The keyset cursor (`after`, sort created / updated only) replaces OFFSET; `count=0` skips the COUNT(*) (a client that already knows the total).
+  const wantCount = query.get('count') !== '0' && !f.cursor;
+  const where = f.cursor ? `${f.where} AND ${f.cursor.sql}` : f.where;
+  const offset = f.cursor ? 0 : (page - 1) * pageSize;
+  const idPage = `SELECT l.id FROM crm_leads l WHERE ${where} ORDER BY ${f.inner.order} LIMIT ? OFFSET ?`;
+  const hydrate = ls.sql.replace('FROM crm_leads l LEFT JOIN', 'FROM page p CROSS JOIN crm_leads l ON l.id = p.id LEFT JOIN');
+  const stmts = [st(db, `WITH page AS (${idPage}) ${hydrate} ORDER BY ${f.order}`, ...f.args, ...(f.cursor ? f.cursor.args : []), ...f.inner.args, pageSize + 1, offset, ...ls.args)];        // placeholders are numbered by position in the text: the page CTE comes first, the sub-selects of the hydrating SELECT after it
+  if (wantCount) stmts.unshift(st(db, `SELECT COUNT(*) n FROM crm_leads l WHERE ${f.where}`, ...f.args));
+  const res = await many(db, stmts);
+  const rows = wantCount ? res[1] : res[0];
+  const more = rows.length > pageSize; if (more) rows.length = pageSize;
+  const last = rows[rows.length - 1];
+  return { items: rows.map((r) => leadOut(ls.hasRevenue ? r : { ...r, actual_value: null })), total: wantCount ? res[0][0].n : null, page, pageSize, canSeeRevenue: ls.hasRevenue,
+    hasMore: more, nextCursor: more && f.keyCol && last ? `${f.keyCol === 'l.created_at' ? last.created_at : last.updated_at}:${last.id}` : null };
 }
 
 export async function exportLeads(ctx) {
@@ -387,19 +430,22 @@ export async function exportLeads(ctx) {
 
 export async function getLead(ctx) {
   const { db, actor } = ctx; actor.require('leads.view');
-  const row = await getLeadFor(ctx, ctx.params.id);
-  const id = row.id;
-  const sales = salesScope(actor, 's');
-  const [products, timeline, followups, meetings, saleRows, owners, attrs, conv] = await Promise.all([
-    all(db, `SELECT p.id, p.key, p.label FROM crm_lead_products lp JOIN crm_products p ON p.id = lp.product_id WHERE lp.lead_id = ? ORDER BY p.position`, id),
-    all(db, `SELECT id, user_id, user_name, type, summary, data, created_at FROM crm_activities WHERE lead_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 500`, id),
-    all(db, `SELECT f.*, u.name AS assigned_name FROM crm_followups f LEFT JOIN crm_users u ON u.id = f.assigned_user_id WHERE f.lead_id = ? ORDER BY f.due_at DESC LIMIT 100`, id),
-    all(db, `SELECT m.*, u.name AS user_name FROM crm_meetings m LEFT JOIN crm_users u ON u.id = m.user_id WHERE m.lead_id = ? ORDER BY m.starts_at DESC LIMIT 100`, id),
-    sales ? all(db, `SELECT s.* FROM crm_sales s WHERE s.lead_id = ? AND ${sales.sql} ORDER BY s.sold_at DESC`, id, ...sales.args) : [],
-    all(db, `SELECT * FROM crm_lead_owners WHERE lead_id = ? ORDER BY started_at, rowid`, id),
-    all(db, `SELECT e.*, c.name AS campaign_name, a.name AS adset_name, d.name AS ad_name FROM crm_attribution_events e LEFT JOIN crm_campaigns c ON c.id = e.campaign_id LEFT JOIN crm_adsets a ON a.id = e.adset_id LEFT JOIN crm_ads d ON d.id = e.ad_id WHERE e.lead_id = ? ORDER BY e.at, e.rowid`, id),
-    actor.has('inbox.view') ? first(db, `SELECT id, wa_id, contact_name, last_message_at, last_message_text, unread_count FROM crm_conversations WHERE lead_id = ? ORDER BY last_message_at DESC LIMIT 1`, id) : null,
-  ]);
+  // zip 161: the lead (with its scope check) and its 8 related lists in ONE round trip (a lookup, then eight queries; the eight ran in parallel but were eight trips)
+  const id = ctx.params.id, sc = leadScope(actor), sales = salesScope(actor, 's');
+  const [rows, products, timeline, followups, meetings, saleRows, owners, attrs, conv] = typeof id === 'string' && id.length <= 64 ? await many(db, [
+    st(db, `${LEAD_SELECT} WHERE l.id = ? AND ${sc.sql}`, id, ...sc.args),
+    st(db, `SELECT p.id, p.key, p.label FROM crm_lead_products lp JOIN crm_products p ON p.id = lp.product_id WHERE lp.lead_id = ? ORDER BY p.position`, id),
+    st(db, `SELECT id, user_id, user_name, type, summary, data, created_at FROM crm_activities WHERE lead_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 500`, id),
+    st(db, `SELECT f.*, u.name AS assigned_name FROM crm_followups f LEFT JOIN crm_users u ON u.id = f.assigned_user_id WHERE f.lead_id = ? ORDER BY f.due_at DESC LIMIT 100`, id),
+    st(db, `SELECT m.*, u.name AS user_name FROM crm_meetings m LEFT JOIN crm_users u ON u.id = m.user_id WHERE m.lead_id = ? ORDER BY m.starts_at DESC LIMIT 100`, id),
+    sales ? st(db, `SELECT s.* FROM crm_sales s WHERE s.lead_id = ? AND ${sales.sql} ORDER BY s.sold_at DESC`, id, ...sales.args) : st(db, `SELECT 1 x WHERE 0`),
+    st(db, `SELECT * FROM crm_lead_owners WHERE lead_id = ? ORDER BY started_at, rowid`, id),
+    st(db, `SELECT e.*, c.name AS campaign_name, a.name AS adset_name, d.name AS ad_name FROM crm_attribution_events e LEFT JOIN crm_campaigns c ON c.id = e.campaign_id LEFT JOIN crm_adsets a ON a.id = e.adset_id LEFT JOIN crm_ads d ON d.id = e.ad_id WHERE e.lead_id = ? ORDER BY e.at, e.rowid`, id),
+    actor.has('inbox.view') ? st(db, `SELECT id, wa_id, contact_name, last_message_at, last_message_text, unread_count FROM crm_conversations WHERE lead_id = ? ORDER BY last_message_at DESC LIMIT 1`, id) : st(db, `SELECT 1 x WHERE 0`),
+  ]) : [[]];
+  const row = rows[0];
+  if (!row) throw E.notFound('Lead not found', 'lead_not_found');
+  const conv1 = conv && conv[0] || null;
   const { followupOut, meetingOut } = await import('./followups.js');
   const { saleOut } = await import('./sales.js');
   return {
@@ -409,7 +455,7 @@ export async function getLead(ctx) {
     followups: followups.map(followupOut), meetings: meetings.map(meetingOut), sales: saleRows.map(saleOut),
     owners: owners.map((o) => ({ id: o.id, userId: o.user_id, userName: o.user_name, kind: o.kind, fromUserId: o.from_user_id, byUserId: o.by_user_id, byName: o.by_name, reason: o.reason, startedAt: o.started_at, endedAt: o.ended_at })),
     attributions: attrs.map((e) => ({ id: e.id, kind: e.kind, source: e.source_key, campaignId: e.campaign_id, campaignName: e.campaign_name, adsetId: e.adset_id, adsetName: e.adset_name, adId: e.ad_id, adName: e.ad_name, utmSource: e.utm_source, utmMedium: e.utm_medium, utmCampaign: e.utm_campaign, utmContent: e.utm_content, utmTerm: e.utm_term, referrer: e.referrer, landingUrl: e.landing_url, headline: e.headline, resolved: !!e.resolved, at: e.at })),
-    conversation: conv ? { id: conv.id, waId: conv.wa_id, contactName: conv.contact_name, lastMessageAt: conv.last_message_at, lastMessageText: conv.last_message_text, unread: conv.unread_count } : null,
+    conversation: conv1 ? { id: conv1.id, waId: conv1.wa_id, contactName: conv1.contact_name, lastMessageAt: conv1.last_message_at, lastMessageText: conv1.last_message_text, unread: conv1.unread_count } : null,
   };
 }
 

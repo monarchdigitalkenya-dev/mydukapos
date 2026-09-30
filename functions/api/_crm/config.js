@@ -1,16 +1,21 @@
 // functions/api/_crm/config.js — statuses / classifications / sources / lost reasons, products, settings (NOT a route).
-import { E, json, all, first, st, now, newId, text, slug, auditSt, arr, money, oneOf, jparse } from './core.js';
+import { E, json, all, first, st, many, now, newId, text, slug, auditSt, arr, money, oneOf, jparse } from './core.js';
+import { cached, invalidate } from './cache.js';
 import { listProducts } from '../_license.js';
 
 const KINDS = { statuses: 'crm_statuses', classifications: 'crm_classifications', sources: 'crm_sources', 'lost-reasons': 'crm_lost_reasons', lostReasons: 'crm_lost_reasons' };
 const cfgOut = (r) => ({ id: r.id, key: r.key, label: r.label, color: r.color, position: r.position, active: !!r.active, isSystem: !!r.is_system, ...('is_won' in r ? { isWon: !!r.is_won, isLost: !!r.is_lost } : {}) });
 export const productOut = (r) => ({ id: r.id, key: r.key, label: r.label, description: r.description, price: r.price, licenseProduct: r.license_product, active: !!r.active, position: r.position });
 
-export async function getConfig(db, { all: includeInactive = true } = {}) {
+// zip 161: the five config lists are ONE round trip (they were five), and are kept in the instance's memory for a short time (cache.js). Every write below drops the entry.
+const CFG_TABLES = ['crm_statuses', 'crm_classifications', 'crm_sources', 'crm_lost_reasons'];
+export const configStatements = (db, includeInactive) => {
   const w = includeInactive ? '' : 'WHERE active = 1';
-  const rows = async (t) => (await all(db, `SELECT * FROM ${t} ${w} ORDER BY position, key`)).map(cfgOut);
-  const products = (await all(db, `SELECT * FROM crm_products ${w} ORDER BY position, label`)).map(productOut);
-  return { statuses: await rows('crm_statuses'), classifications: await rows('crm_classifications'), sources: await rows('crm_sources'), lostReasons: await rows('crm_lost_reasons'), products };
+  return [...CFG_TABLES.map((t) => st(db, `SELECT * FROM ${t} ${w} ORDER BY position, key`)), st(db, `SELECT * FROM crm_products ${w} ORDER BY position, label`)];
+};
+export const configFromRows = (r) => ({ statuses: r[0].map(cfgOut), classifications: r[1].map(cfgOut), sources: r[2].map(cfgOut), lostReasons: r[3].map(cfgOut), products: r[4].map(productOut) });
+export async function getConfig(db, { all: includeInactive = true } = {}) {
+  return cached(db, includeInactive ? 'cfg:all' : 'cfg:active', async () => configFromRows(await many(db, configStatements(db, includeInactive))));
 }
 export async function configRoute(ctx) { return getConfig(ctx.db); }
 
@@ -63,7 +68,7 @@ export async function putConfig(ctx) {
     if (r.position !== pos) stmts.push(st(db, `UPDATE ${table} SET position = ?, updated_at = ? WHERE id = ?`, pos, t, r.id));
     pos++;
   }
-  if (stmts.length) await db.batch(stmts);
+  if (stmts.length) { await db.batch(stmts); invalidate(db, 'cfg:'); }
   return getConfig(db).then((c) => ({ items: c[params.kind === 'lost-reasons' || params.kind === 'lostReasons' ? 'lostReasons' : params.kind] }));
 }
 
@@ -95,6 +100,7 @@ export async function createProduct(ctx) {
     st(db, `INSERT INTO crm_products (id, key, label, description, price, license_product, active, position, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, id, k, f.label, f.description ?? null, f.price ?? null, f.license_product ?? null, f.active ?? 1, (pos == null ? -1 : pos) + 1, t, t),
     auditSt(db, actor, 'product_create', 'product', id, null, { key: k, ...f }, t),
   ]);
+  invalidate(db, 'cfg:');
   return json({ product: productOut(await first(db, `SELECT * FROM crm_products WHERE id = ?`, id)) }, 201);
 }
 export async function patchProduct(ctx) {
@@ -110,6 +116,7 @@ export async function patchProduct(ctx) {
     st(db, `UPDATE crm_products SET ${keys.map((k) => k + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`, ...keys.map((k) => f[k]), t, cur.id),
     auditSt(db, actor, 'product_update', 'product', cur.id, prev, f, t),
   ]);
+  invalidate(db, 'cfg:');
   return { product: productOut(await first(db, `SELECT * FROM crm_products WHERE id = ?`, cur.id)) };
 }
 
@@ -124,10 +131,12 @@ const SETTING_DEFS = {
   firstContactTargetMinutes: { dflt: 30, check: (v) => { const n = Number(v); if (!Number.isInteger(n) || n < 1 || n > 10080) throw E.bad('firstContactTargetMinutes must be 1-10080', 'invalid_setting'); return n; } },
 };
 export async function readSettings(db) {
-  const rows = await all(db, `SELECT k, v FROM crm_settings`);
-  const out = {}; for (const [k, d] of Object.entries(SETTING_DEFS)) out[k] = d.dflt;
-  for (const r of rows) if (r.k in SETTING_DEFS) out[r.k] = jparse(r.v, SETTING_DEFS[r.k].dflt);
-  return out;
+  return cached(db, 'settings', async () => {
+    const rows = await all(db, `SELECT k, v FROM crm_settings`);
+    const out = {}; for (const [k, d] of Object.entries(SETTING_DEFS)) out[k] = d.dflt;
+    for (const r of rows) if (r.k in SETTING_DEFS) out[r.k] = jparse(r.v, SETTING_DEFS[r.k].dflt);
+    return out;
+  });
 }
 export const integrationStatus = (env) => ({
   whatsappInbound: !!(env.WHATSAPP_APP_SECRET && env.WHATSAPP_VERIFY_TOKEN),
@@ -142,7 +151,7 @@ export async function getSettings(ctx) {
 }
 export async function putSettings(ctx) {
   const { db, actor } = ctx; actor.require('settings.manage');
-  const b = await ctx.json(); const cur = await readSettings(db);
+  const b = await ctx.json(); invalidate(db, 'settings'); const cur = await readSettings(db);       // a write always compares with the database, never with the memory
   const next = {}, prev = {}, stmts = [], t = now();
   for (const [k, v] of Object.entries(b.settings && typeof b.settings === 'object' ? b.settings : b)) {
     if (!(k in SETTING_DEFS)) continue;
@@ -151,6 +160,6 @@ export async function putSettings(ctx) {
     prev[k] = cur[k]; next[k] = val;
     stmts.push(st(db, `INSERT INTO crm_settings (k, v, updated_at, updated_by) VALUES (?,?,?,?) ON CONFLICT(k) DO UPDATE SET v = excluded.v, updated_at = excluded.updated_at, updated_by = excluded.updated_by`, k, JSON.stringify(val), t, actor.id));
   }
-  if (stmts.length) { stmts.push(auditSt(db, actor, 'settings_update', 'settings', null, prev, next, t)); await db.batch(stmts); }
+  if (stmts.length) { stmts.push(auditSt(db, actor, 'settings_update', 'settings', null, prev, next, t)); await db.batch(stmts); invalidate(db, 'settings'); }
   return { settings: await readSettings(db) };
 }

@@ -12,7 +12,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { decodeStateText, gzipText, isCompressed, writeStateText, readStateRaw, shopMode } from './_state-store.js';
+import { decodeStateText, gzipText, isCompressed, writeStateText, writeStateFenced, readStateRaw, shopMode } from './_state-store.js';
 
 const BACKUP_PREFIX = 'pos-data:backup:';
 // Every shop keeps 30 daily copies, so a big shop's storage is ~30x its size. Backups larger than this are stored
@@ -135,8 +135,13 @@ export async function restoreBackup(env, clientId, date) {
   // newer than whatever they currently have and actually pulls it in.
   record.updatedAt = Date.now();
 
-  const cur = await readStateRaw(env, stateKey(clientId));
-  await writeStateText(env, stateKey(clientId), JSON.stringify(record), { keepCompressed: !!(cur && cur.gz), prevMeta: cur && cur.meta, updatedAt: record.updatedAt });
+  // zip 160: through the write fence. A restore replaces the shop whatever is there, so when another save lands between the read and the write it just reads again.
+  let wrote = null;
+  for (let i = 0; i < 5 && !wrote; i++) {
+    const cur = await readStateRaw(env, stateKey(clientId));
+    wrote = await writeStateFenced(env, stateKey(clientId), JSON.stringify(record), { keepCompressed: !!(cur && cur.gz), prevMeta: cur && cur.meta, updatedAt: record.updatedAt });
+  }
+  if (!wrote) return { error: 'The shop was busy syncing, so nothing was restored. Try again in a moment.', status: 409 };
   // Also mark today as already "snapshotted" — prevents the very next sync
   // push from immediately re-snapshotting this restore over today's slot.
   await env.mydukapos_kv.put(lastBackupDateKey(clientId), todayDateStr());

@@ -18,7 +18,8 @@ test('migrations/0002_crm.sql is exactly what the code generates, and 0001 is un
 test('running the migration file creates the same tables, indexes and triggers as ensureCrmSchema (and twice is harmless)', async () => {
   const viaFile = new DatabaseSync(':memory:'); viaFile.exec('PRAGMA foreign_keys = ON');
   const sql = fs.readFileSync(new URL('../migrations/0002_crm.sql', import.meta.url), 'utf8');
-  viaFile.exec(sql); viaFile.exec(sql);
+  const speed = fs.readFileSync(new URL('../migrations/0004_crm_speed.sql', import.meta.url), 'utf8');   // zip 161: the speed indexes are a second migration
+  viaFile.exec(sql); viaFile.exec(sql); viaFile.exec(speed); viaFile.exec(speed);
   const d1 = makeD1(); await ensureCrmSchema(d1); await ensureCrmSchema(d1);
   assert.deepEqual(objects(viaFile), objects(d1._db));
   for (const t of ['crm_statuses', 'crm_sources', 'crm_classifications', 'crm_lost_reasons', 'crm_products', 'crm_roles']) {

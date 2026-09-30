@@ -1,6 +1,6 @@
 // functions/api/_crm/staff.js — staff lifecycle: invite / edit / suspend / restore / deactivate / remove (history kept) / reassign / roles / permissions /
 // activity + performance (NOT a route).
-import { E, json, all, first, st, now, newId, text, email as normEmail, phoneNorm, auditSt, oneOf, arr, jparse, changes, optRange, dayStart, nairobiDay, DAY, round2, phoneDisplay } from './core.js';
+import { E, json, batcher, all, first, st, now, newId, text, email as normEmail, phoneNorm, auditSt, oneOf, arr, jparse, changes, optRange, dayStart, nairobiDay, DAY, round2, phoneDisplay } from './core.js';
 import { INVITE_TTL, createInvitation, linkFor, publicUser, rolePerms, userPerms } from './auth.js';
 import { PERM_KEYS } from './schema.js';
 import { assignLead, activeUser, LEAD_SELECT } from './leads.js';
@@ -79,12 +79,17 @@ async function stats(ctx, u, q) {
   const tr = (col) => ({ sql: `${r.from != null ? ` AND ${col} >= ?` : ''}${r.to != null ? ` AND ${col} < ?` : ''}`, args: [...(r.from != null ? [r.from] : []), ...(r.to != null ? [r.to] : [])] });
   const done = `l.status_key IN (SELECT key FROM crm_statuses WHERE is_won = 1 OR is_lost = 1)`;
   const t = now();
-  const ownedLeads = await first(db, `SELECT COUNT(*) total, SUM(CASE WHEN ${done} THEN 0 ELSE 1 END) open, SUM(CASE WHEN l.status_key IN (SELECT key FROM crm_statuses WHERE is_lost = 1) THEN 1 ELSE 0 END) lost FROM crm_leads l WHERE l.owner_id = ? AND l.deleted_at IS NULL`, u.id);
-  const ca = tr('at'); const contacts = await first(db, `SELECT COUNT(*) n, MAX(at) last FROM crm_contact_attempts WHERE user_id = ?${ca.sql}`, u.id, ...ca.args);
-  const resp = await first(db, `SELECT AVG(first_contact_at - COALESCE(assigned_at, created_at)) avg_ms, COUNT(*) n FROM crm_leads WHERE owner_id = ? AND deleted_at IS NULL AND first_contact_at IS NOT NULL AND first_contact_at >= COALESCE(assigned_at, created_at)`, u.id);
-  const fu = await first(db, `SELECT SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) open, SUM(CASE WHEN status = 'open' AND due_at < ? THEN 1 ELSE 0 END) overdue, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) done FROM crm_followups WHERE assigned_user_id = ?`, t, u.id);
-  const mt = await first(db, `SELECT SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) completed, SUM(CASE WHEN status = 'no_show' THEN 1 ELSE 0 END) no_show, COUNT(*) n FROM crm_meetings WHERE user_id = ?`, u.id);
-  const last = await first(db, `SELECT MAX(created_at) last FROM crm_activities WHERE user_id = ?`, u.id);
+  const bx = batcher(db);                                           // zip 161: the six figures in ONE round trip (before: six)
+  const ownedLeads_ = bx.first( `SELECT COUNT(*) total, SUM(CASE WHEN ${done} THEN 0 ELSE 1 END) open, SUM(CASE WHEN l.status_key IN (SELECT key FROM crm_statuses WHERE is_lost = 1) THEN 1 ELSE 0 END) lost FROM crm_leads l WHERE l.owner_id = ? AND l.deleted_at IS NULL`, u.id);
+  const ca = tr('at'); const contacts_ = bx.first( `SELECT COUNT(*) n, MAX(at) last FROM crm_contact_attempts WHERE user_id = ?${ca.sql}`, u.id, ...ca.args);
+  const resp_ = bx.first( `SELECT AVG(first_contact_at - COALESCE(assigned_at, created_at)) avg_ms, COUNT(*) n FROM crm_leads WHERE owner_id = ? AND deleted_at IS NULL AND first_contact_at IS NOT NULL AND first_contact_at >= COALESCE(assigned_at, created_at)`, u.id);
+  const fu_ = bx.first( `SELECT SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) open, SUM(CASE WHEN status = 'open' AND due_at < ? THEN 1 ELSE 0 END) overdue, SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) done FROM crm_followups WHERE assigned_user_id = ?`, t, u.id);
+  const mt_ = bx.first( `SELECT SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) completed, SUM(CASE WHEN status = 'no_show' THEN 1 ELSE 0 END) no_show, COUNT(*) n FROM crm_meetings WHERE user_id = ?`, u.id);
+  const last_ = bx.first( `SELECT MAX(created_at) last FROM crm_activities WHERE user_id = ?`, u.id);
+  const sc = salesScope(actor, 's'), s2 = tr('s.sold_at');
+  const sales_ = sc ? bx.first(`SELECT COUNT(*) n, COALESCE(SUM(total),0) rev, COALESCE(SUM(amount_paid),0) paid FROM crm_sales s WHERE s.closed_by = ? AND ${sc.sql}${s2.sql}`, u.id, ...sc.args, ...s2.args) : null;
+  await bx.run();
+  const [ownedLeads, contacts, resp, fu, mt, last] = await Promise.all([ownedLeads_, contacts_, resp_, fu_, mt_, last_]);
   const out = {
     leadsOwned: ownedLeads.total || 0, openLeads: ownedLeads.open || 0, lostLeads: ownedLeads.lost || 0,
     contactAttempts: contacts.n || 0, avgFirstContactMinutes: resp.n ? round2(resp.avg_ms / 60000) : null,
@@ -92,10 +97,8 @@ async function stats(ctx, u, q) {
     meetings: mt.n || 0, meetingsCompleted: mt.completed || 0, meetingsNoShow: mt.no_show || 0, lastActivityAt: last.last || null,
     dealsClosed: null, revenue: null, collected: null,
   };
-  const sc = salesScope(actor, 's');
   if (sc) {                                                     // revenue only through the viewer's own revenue scope
-    const s2 = tr('s.sold_at');
-    const s = await first(db, `SELECT COUNT(*) n, COALESCE(SUM(total),0) rev, COALESCE(SUM(amount_paid),0) paid FROM crm_sales s WHERE s.closed_by = ? AND ${sc.sql}${s2.sql}`, u.id, ...sc.args, ...s2.args);
+    const s = await sales_;
     out.dealsClosed = s.n; out.revenue = round2(s.rev); out.collected = round2(s.paid);
   }
   return out;
@@ -104,7 +107,8 @@ export async function getStaff(ctx) {
   const { db, actor } = ctx;
   if (ctx.params.id !== actor.id) actor.require('staff.view');
   const u = await target(ctx, ctx.params.id, { allowOwner: true });
-  return { user: await userDetail(db, u), stats: await stats(ctx, u, ctx.query) };
+  const [user, st_] = await Promise.all([userDetail(db, u), stats(ctx, u, ctx.query)]);      // zip 161: side by side, not one after the other
+  return { user, stats: st_ };
 }
 
 export async function patchStaff(ctx) {

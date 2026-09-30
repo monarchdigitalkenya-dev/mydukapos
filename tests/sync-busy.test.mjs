@@ -48,7 +48,10 @@ test('storage failing outright: a clean "busy, retry in 2 s" (503 + Retry-After)
   assert.equal(res.status, 503);
   assert.equal(res.headers.get('Retry-After'), '2');
   assert.equal((await res.json()).code, 'busy');
+  // zip 159: the licence is now remembered for 10 s (stale-if-error), so a KV read outage no longer fails at the licence step; the shop's own
+  // record is read with getWithMetadata, so break that read too — this still asserts a clean 503 when the shop's data cannot be read.
   kv.get = async () => { throw new Error('KV GET failed'); };
+  kv.getWithMetadata = async () => { throw new Error('KV GET failed'); };
   const g = await sync.onRequestGet({ request: req('GET'), env: { mydukapos_kv: kv } });
   assert.equal(g.status, 503);
 });

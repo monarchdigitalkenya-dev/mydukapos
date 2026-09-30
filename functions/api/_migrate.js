@@ -5,7 +5,7 @@
 // While it runs the shop is flagged 'migrating', so pushes are told to retry in a few seconds (503) — nothing can land in the wrong place.
 // On any failure the shop is left EXACTLY as it was and the error is thrown.
 
-import { readStateRaw, shopMode, shopCall, MODE_PREFIX } from './_state-store.js';
+import { readStateRaw, shopMode, shopCall, MODE_PREFIX, forgetShopMode } from './_state-store.js';
 import { MERGE_BY_ID_FIELDS } from './_merge.js';
 
 export async function migrateShopToDatabase(env, clientId) {
@@ -15,6 +15,7 @@ export async function migrateShopToDatabase(env, clientId) {
   if (current === 'do') return { changed: false };
   if (current === 'migrating') throw new Error('a move is already in progress for this shop');
   await env.mydukapos_kv.put(modeKey, 'migrating', { expirationTtl: 300 });
+  forgetShopMode(env, clientId);
   try {
     const cur = await readStateRaw(env, 'pos-data:state:' + clientId);
     const state = cur ? JSON.parse(cur.text) : { updatedAt: 0 };
@@ -39,9 +40,11 @@ export async function migrateShopToDatabase(env, clientId) {
     }
     const records = (stats.collections || []).reduce((n, c) => n + c.n, 0);
     await env.mydukapos_kv.put(modeKey, 'do', { metadata: { at: Date.now(), records, bytes: stats.bytes } });
+    forgetShopMode(env, clientId);
     return { changed: true, records, bytes: stats.bytes };
   } catch (e) {
     await env.mydukapos_kv.delete(modeKey);            // leave the shop exactly as it was
+    forgetShopMode(env, clientId);
     throw e;
   }
 }

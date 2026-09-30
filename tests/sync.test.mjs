@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { boot, ROOT } from './helpers.mjs';
+import { boot, ROOT, until } from './helpers.mjs';
 
 // --- client: conditional pull ---
 for (const [app, key, fn] of [['index.html', 'pos_last_synced_at', 'pullState'], ['hotel/index.html', 'pos_last_synced_at', 'pullState'], ['water/index.html', 'aqua_last_synced_at', 'pullFromServer']]) {
@@ -10,6 +10,7 @@ for (const [app, key, fn] of [['index.html', 'pos_last_synced_at', 'pullState'],
     const urls = [];
     const fetch = (u) => { urls.push(String(u)); return Promise.resolve({ ok: true, status: 200, json: async () => ({ unchanged: true, updatedAt: 123 }) }); };
     const { w, d, close } = await boot(app, { storage: { [key]: '123' }, fetch, wait: 800 });
+    await until(() => !w.eval('window.__pullInFlight') && !w.eval('window.__prePullBusy'), 8000);   // zip 160: the boot pull(s) finish first (one pull at a time)
     urls.length = 0;
     await w.eval(fn + '()');
     assert.ok(urls.some((u) => u.includes('/api/pos-sync?since=123')), 'since param sent: ' + urls.join(','));

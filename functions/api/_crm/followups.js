@@ -37,7 +37,7 @@ const checkLink = (v) => { const s = text(v, 500); if (!s) return null; if (!/^h
 // ---------- follow-ups ----------
 export async function listFollowups(ctx) {
   const { db, actor, query } = ctx; actor.require('followups.manage');
-  await sweepReminders(db);
+  await sweepReminders(db, ctx.actor && ctx.actor.meta);
   const bucket = query.get('bucket') || 'today';
   const t = now(), todayEnd = dayStart(nairobiDay(t)) + DAY;
   const where = ['l.deleted_at IS NULL'], args = [];
@@ -234,8 +234,9 @@ export async function meetingStatus(ctx) {
 // ---------- reminder sweep ----------
 // There is no scheduler on Pages, so due / overdue follow-ups and meeting reminders are turned into notifications whenever the CRM is used
 // (at most once a minute — one conditional upsert decides who runs it). Each notification has a dedupe key, so it is never sent twice.
-export async function sweepReminders(db) {
+export async function sweepReminders(db, seen) {
   const t = now();
+  if (seen && Number.isFinite(seen.sweep) && seen.sweep >= t - 60000) return 0;      // zip 161: this request's first round trip already showed the sweep ran within the minute
   const r = await run(db, `INSERT INTO crm_meta (k, v) VALUES ('sweep', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE CAST(crm_meta.v AS INTEGER) < ?`, String(t), t - 60000);
   if (changes(r) !== 1) return 0;
   let sent = 0;

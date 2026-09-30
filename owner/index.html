@@ -7355,6 +7355,7 @@
                 return;
             }
 
+            try { clickGuardInstall(); } catch (e) { /* zip 161: a guard against double presses; the buttons work without it */ }
             initPasswordToggles();
             initPhonebookPickers();
             warnAboutCorruptedStorageIfNeeded();
@@ -7393,6 +7394,8 @@
             flushThenPull().then(() => {
                 if (hasInviteFlow) {
                     checkForInviteToken();
+                } else if (!hasStaffLinkFlow && authLinkRecheck()) {
+                    // zip 161: this phone had never synced, so the ?invite= / ?staff= link found nobody at first; the first pull has landed and its own screen is up now
                 } else if (document.getElementById('login-screen').style.display !== 'none') {
                     renderLoginPicker();
                 } else if (!hasStaffLinkFlow && !currentServer && !window.__adminAuthed) {
@@ -9324,62 +9327,375 @@
             showToast(`Removed the lock for ${date}.`);
         }
 
+        // zip 161: the flow itself is inviteGenerate() (shared code, below): instant busy state, one invite per press, the link is released once the server has it.
+        // The owner console keeps its own warnings about a name that already has an invite / an account (confirmDuplicate).
         async function generateInviteLink() {
-            const nameInput = document.getElementById('new-staff-name-input');
-            const name = nameInput.value.trim();
-            if (!name) {
-                showToast('Enter the staff member’s name first.', true);
-                return;
-            }
-            // The exact source of a name showing twice on "Who's logging in?":
-            // clicking this again for a name that already has a pending
-            // invite (a double-click, or not realizing one was already made)
-            // creates a second, separate token — a genuinely different
-            // account once accepted, with its own PIN, which dedupeStaff()'s
-            // name+PIN matching has no reason to ever merge. Catching it here,
-            // before a second token even exists, is the reliable fix; nothing
-            // downstream can un-create two already-separate people.
-            const existingInvite = pendingInvites.find((i) => String(i.name || '').trim().toLowerCase() === name.toLowerCase());
-            if (existingInvite) {
-                const existingLink = `${window.location.origin}${window.location.pathname}?${clientToken ? 'c=' + encodeURIComponent(clientToken) + '&' : ''}invite=${existingInvite.token}`;
-                if (!confirm(`"${name}" already has an invite link waiting to be accepted. If this is the same person, close this and share their existing link instead:\n\n${existingLink}\n\nPress OK only if you mean a DIFFERENT person who also happens to be named "${name}".`)) return;
-            }
-            const existingStaff = staff.find((s) => s && !s.removed && String(s.name || '').trim().toLowerCase() === name.toLowerCase());
-            if (existingStaff) {
-                if (!confirm(`"${name}" is already an active staff member here. Press OK only if you mean a DIFFERENT person who also happens to be named "${name}" — otherwise close this and use their existing account.`)) return;
-            }
-            const token = generateToken();
-            const roles = [...newStaffSelectedRoles]; // sales-tab is implicit, added on account creation
-            pendingInvites.push({ token, name, roles, createdAt: Date.now() });
-            safeSetItem('pos_pending_invites', JSON.stringify(pendingInvites));
+            return inviteGenerate({
+                rolesAfter: [],
+                linkFor: (token) => `${window.location.origin}${window.location.pathname}?${clientToken ? 'c=' + encodeURIComponent(clientToken) + '&' : ''}invite=${token}`,
+                confirmDuplicate: (name) => {
+                    const existingInvite = pendingInvites.find((i) => String(i.name || '').trim().toLowerCase() === name.toLowerCase());
+                    if (existingInvite) {
+                        const existingLink = `${window.location.origin}${window.location.pathname}?${clientToken ? 'c=' + encodeURIComponent(clientToken) + '&' : ''}invite=${existingInvite.token}`;
+                        if (!confirm(`"${name}" already has an invite link waiting to be accepted. If this is the same person, close this and share their existing link instead:\n\n${existingLink}\n\nPress OK only if you mean a DIFFERENT person who also happens to be named "${name}".`)) return false;
+                    }
+                    const existingStaff = staff.find((s) => s && !s.removed && String(s.name || '').trim().toLowerCase() === name.toLowerCase());
+                    if (existingStaff) {
+                        if (!confirm(`"${name}" is already an active staff member here. Press OK only if you mean a DIFFERENT person who also happens to be named "${name}" — otherwise close this and use their existing account.`)) return false;
+                    }
+                    return true;
+                },
+            });
+        }
 
-            // Push immediately (not debounced) so the invite exists on the server
-            // before the link is shared — otherwise opening it too fast would 404.
-            await pushNow();
+        // owner console: a change made on this device counts as unsent work until the server has it (see queuePush)
+        function markLocalDirty() { ownerLocalGen++; }
 
-            const link = `${window.location.origin}${window.location.pathname}?${clientToken ? 'c=' + encodeURIComponent(clientToken) + '&' : ''}invite=${token}`;
-            const resultBox = document.getElementById('invite-link-result');
-            const linkInput = document.getElementById('invite-link-text');
-            linkInput.value = link;
-            resultBox.style.display = 'block';
-            nameInput.value = '';
-            newStaffSelectedRoles = [];
-            renderNewStaffRoleCheckboxes();
-            showToast(`Invite link ready for ${name}.`);
+        /* @shared:begin names=authLinkRecheck,clickGuardInstall,copyInviteLink,inviteAccountPush,inviteGenerate,inviteIsLive,inviteMakeLive,inviteRetryNow,inviteRunPush,inviteSubmitRun,inviteUiEnsure,inviteUiSet */
+        /* GENERATED from src/shared/functions.js by tools/sync-shared.mjs - do not edit here; edit the library and run `npm run sync`. */
+        function authLinkRecheck() {
+            // zip 161: a phone that opens ?invite= or ?staff= before it has ever synced knows nobody yet, so the first look finds nothing and the normal login
+            // appeared instead. Once the first pull has landed, look again: the link's own screen (invite / personal PIN) is shown if the record is there now.
+            try {
+                const q = new URLSearchParams(window.location.search);
+                if (q.get('invite') && typeof checkForInviteToken === 'function' && checkForInviteToken()) return true;
+                if (q.get('staff') && typeof checkForStaffLoginToken === 'function' && checkForStaffLoginToken()) return true;
+            } catch (e) { /* the normal login stays */ }
+            return false;
+        }
+
+        function clickGuardInstall() {
+            // zip 161: ONE guard for every button whose inline onclick calls a global ASYNC function (a save, a send, anything that waits for the network):
+            //  * pressing it again while the first press is still running does nothing (no second invite, no second bill, no second payment);
+            //  * after 250 ms the pressed button LOOKS busy (aria-busy, dimmed, label + " …"); after ~6 s it says "Still working…"; it never blocks other buttons;
+            //  * a rejection is shown as a message instead of dying silently in the console;
+            //  * a function that keeps settling within 250 ms (an add-to-cart, a +/- button) is left alone, and a plain (non-async) function is never touched.
+            // Exceptions: window.__noClickGuard = ['fnName', ...], or data-no-click-guard on the button. A call still pending after 30 s is let go.
+            if (window.__clickGuardInstalled || typeof document === 'undefined') return;
+            window.__clickGuardInstalled = true;
+            const NEVER = ['showToast', 'closeReceipt', 'switchTab', 'guardedSwitchTab'];
+            const KEYWORDS = /^(if|for|while|switch|return|function|catch|typeof|await|new|void|delete|event|this|do|else|try|throw|in|of|alert|confirm|prompt|parseInt|parseFloat|String|Number|Boolean|Math|JSON|Date|Array|Object|setTimeout|clearTimeout)$/;
+            const st = window.__clickGuard = { pending: new Map(), quick: new Map(), quickRun: new Map(), ctx: null, wrapped: 0 };
+            try {
+                if (!document.getElementById('click-guard-css')) {
+                    const css = document.createElement('style');
+                    css.id = 'click-guard-css';
+                    css.textContent = '.cg-busy { opacity: .65; cursor: progress; }';
+                    (document.head || document.documentElement).appendChild(css);
+                }
+            } catch (e) { /* only looks */ }
+            const isAsync = (f) => { try { return typeof f === 'function' && (f.__cgAsync === true || Object.prototype.toString.call(f) === '[object AsyncFunction]'); } catch (e) { return false; } };
+            const denied = (name) => NEVER.indexOf(name) >= 0 || (Array.isArray(window.__noClickGuard) && window.__noClickGuard.indexOf(name) >= 0);
+            const namesOf = (code) => {
+                const out = [];
+                const re = /(^|[^.\w$'"`])([A-Za-z_$][\w$]*)\s*\(/g;
+                let m;
+                while ((m = re.exec(code))) { if (!KEYWORDS.test(m[2]) && out.indexOf(m[2]) < 0) out.push(m[2]); }
+                return out;
+            };
+            const say = (msg, isErr) => { try { if (typeof showToast === 'function') showToast(msg, !!isErr); } catch (e) { /* the label says it too */ } };
+            const busyOn = (e) => {
+                const el = e.el;
+                if (!el || !el.isConnected) return;
+                el.__cgCount = (el.__cgCount || 0) + 1;
+                e.marked = true;
+                el.classList.add('cg-busy');
+                const own = el.getAttribute('aria-busy') === 'true';                    // the button's own function already shows its own busy label (the invite button does)
+                el.setAttribute('aria-busy', 'true');
+                if (!own && !el.children.length && /^(BUTTON|A)$/.test(el.tagName) && el.textContent) { e.label = el.textContent; e.shown = el.textContent + ' …'; el.textContent = e.shown; }
+            };
+            const busyOff = (e) => {
+                const el = e.el;
+                if (!e.marked || !el) return;
+                el.__cgCount = Math.max(0, (el.__cgCount || 1) - 1);
+                if (el.__cgCount > 0) return;
+                el.classList.remove('cg-busy');
+                el.removeAttribute('aria-busy');
+                if (e.label != null && el.textContent === e.shown) el.textContent = e.label;      // only when nothing else changed the label meanwhile
+                else if (e.label != null && el.textContent === 'Still working…') el.textContent = e.label;
+            };
+            const track = (ctx, name, p) => {
+                const key = ctx.key + '::' + name;
+                const e = { key, name, el: ctx.el, t: Date.now(), marked: false, label: null, shown: null, slow: 0, busy: 0, free: 0 };
+                st.pending.set(key, e);
+                e.busy = setTimeout(() => busyOn(e), 250);
+                e.slow = setTimeout(() => {
+                    if (e.el && e.el.isConnected && e.marked && e.label != null && !e.el.children.length) e.el.textContent = 'Still working…';
+                    say('Still working… you do not need to press it again.');
+                }, 6000);
+                e.free = setTimeout(() => { if (st.pending.get(key) === e) { st.pending.delete(key); busyOff(e); } }, 30000);
+                const end = (err) => {
+                    clearTimeout(e.busy); clearTimeout(e.slow); clearTimeout(e.free);
+                    if (st.pending.get(key) === e) st.pending.delete(key);
+                    busyOff(e);
+                    const took = Date.now() - e.t;
+                    if (took < 250) { const n = (st.quickRun.get(name) || 0) + 1; st.quickRun.set(name, n); if (n >= 3) st.quick.set(name, true); }
+                    else { st.quickRun.set(name, 0); st.quick.set(name, false); }
+                    if (err) {
+                        const msg = String((err && err.message) || err || 'unknown error').slice(0, 140);
+                        try { console.error('[click-guard] ' + name + ' failed:', err); } catch (e2) { /* console gone */ }
+                        say('That did not go through: ' + msg, true);
+                    }
+                };
+                p.then(() => end(), (err) => end(err || new Error('failed')));
+            };
+            const wrap = (name, orig) => {
+                const w = function () {
+                    const ctx = st.ctx;
+                    if (!ctx || ctx.names.indexOf(name) < 0 || ctx.called[name]) return orig.apply(this, arguments);      // called by other code, by another button, or by itself: untouched
+                    ctx.called[name] = true;
+                    const p = orig.apply(this, arguments);
+                    if (p && typeof p.then === 'function') track(ctx, name, p);
+                    return p;
+                };
+                w.__clickGuardOrig = orig;
+                w.__cgAsync = true;
+                try { Object.defineProperty(w, 'name', { value: name }); } catch (e) { /* cosmetic */ }
+                return w;
+            };
+            document.addEventListener('click', (ev) => {
+                st.ctx = null;
+                const t = ev.target;
+                const el = t && t.closest ? t.closest('[onclick]') : null;
+                if (!el || el.disabled || el.hasAttribute('data-no-click-guard') || el.getAttribute('aria-disabled') === 'true') return;
+                const code = el.getAttribute('onclick') || '';
+                const names = namesOf(code).filter((n) => !denied(n) && typeof window[n] === 'function' && (isAsync(window[n]) || window[n].__clickGuardOrig));
+                if (!names.length) return;
+                const key = code.trim();
+                for (let i = 0; i < names.length; i++) {
+                    const e = st.pending.get(key + '::' + names[i]);
+                    if (e && (!st.quick.get(names[i]) || Date.now() - e.t > 250)) { ev.stopImmediatePropagation(); ev.preventDefault(); return; }       // still running: this press does nothing
+                }
+                names.forEach((n) => { const f = window[n]; if (!f.__clickGuardOrig) { try { window[n] = wrap(n, f); st.wrapped++; } catch (e) { /* not writable: left alone */ } } });
+                st.ctx = { el, key, names, called: {} };
+                setTimeout(() => { if (st.ctx && st.ctx.el === el) st.ctx = null; }, 0);
+            }, true);
         }
 
         function copyInviteLink() {
             const linkInput = document.getElementById('invite-link-text');
+            if (!linkInput || !linkInput.value) return;
+            // zip 161: a link that is not on the server yet is not shared (it would open "no longer valid"); the box says so while it is being made live
+            if (linkInput.getAttribute('data-live') === '0') { showToast('Not live yet — wait for "Ready" before sending this link.', true); return; }
             linkInput.select();
-            linkInput.setSelectionRange(0, 99999);
+            try { linkInput.setSelectionRange(0, 99999); } catch (e) { /* select() is enough */ }
+            const fallback = () => { try { document.execCommand('copy'); showToast('Link copied.'); } catch (e) { window.prompt('Copy this link:', linkInput.value); } };
             try {
-                navigator.clipboard.writeText(linkInput.value);
-                showToast('Link copied to clipboard.');
+                if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(linkInput.value).then(() => showToast('Link copied to clipboard.'), fallback);
+                else fallback();
             } catch (e) {
-                document.execCommand('copy');
-                showToast('Link copied.');
+                fallback();
             }
         }
+
+        function inviteAccountPush() {
+            // The new staff account is on this device already; sending it must not hold the screen. Marked as unsent work first, so a pull that lands
+            // before the send cannot put the server's older list (without this person) over it. Failure is reported and retried by the app itself.
+            try { if (typeof markLocalDirty === 'function') markLocalDirty(); } catch (e) { /* the push below still runs */ }
+            const p = typeof pushNowOrWarn === 'function' ? pushNowOrWarn('Your account') : (typeof pushNow === 'function' ? pushNow({ skipPrePull: true }) : Promise.resolve(false));
+            Promise.resolve(p).catch(() => {});
+            return p;
+        }
+
+        async function inviteGenerate(cfg) {
+            // zip 161: Settings -> Staff -> "Generate Invite Link". Answers at once (button busy), ONE invite per press however many presses, the link is shown as
+            // soon as the invite exists on this device, and is only released ("Ready") once the server has it. `cfg`: { linkFor(token), extra(), confirmDuplicate(name), rolesAfter, reset() }.
+            cfg = cfg || {};
+            const st = window.__inviteGen || (window.__inviteGen = { busy: false, token: '', seq: 0, invite: null, watch: 0 });
+            if (st.busy) { showToast('Still making that link — one moment.'); return false; }
+            const nameInput = document.getElementById('new-staff-name-input');
+            const name = nameInput ? nameInput.value.trim() : '';
+            if (!name) { showToast('Enter the staff member’s name first.', true); return false; }
+            const btn = document.querySelector('button[onclick^="generateInviteLink"]');
+            const btnLabel = btn ? btn.textContent : '';
+            st.busy = true;
+            if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.textContent = 'Generating…'; }
+            try {
+                // Pressing again for the same name while that invite is still not on the server re-sends THAT invite; it never makes a second person.
+                let invite = st.token && st.invite && String(st.invite.name || '').trim().toLowerCase() === name.toLowerCase() && pendingInvites.find((i) => i && i.token === st.token);
+                if (!invite) {
+                    if (typeof cfg.confirmDuplicate === 'function' && cfg.confirmDuplicate(name) === false) return false;          // an app's own "this name already has an invite" warning
+                    const roles = typeof newStaffSelectedRoles !== 'undefined' ? [...newStaffSelectedRoles] : [];          // sales-tab is implicit, added on account creation
+                    const mgr = document.getElementById('new-staff-is-manager');
+                    invite = Object.assign({ token: generateToken(), name, roles, createdAt: Date.now() }, mgr ? { isManager: !!mgr.checked } : {}, typeof cfg.extra === 'function' ? cfg.extra() : {});
+                    pendingInvites.push(invite);
+                }
+                safeSetItem('pos_pending_invites', JSON.stringify(pendingInvites));
+                if (typeof markLocalDirty === 'function') markLocalDirty();                 // "unsent work": a pull that lands now must not replace the list before it is sent
+                st.invite = invite;
+                st.token = invite.token;
+                st.seq = parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0;
+                const link = typeof cfg.linkFor === 'function' ? cfg.linkFor(invite.token) : `${window.location.origin}${window.location.pathname}?invite=${invite.token}`;
+                const u = inviteUiEnsure();
+                if (u) { u.input.value = link; u.open.href = link; }
+                inviteUiSet('making', 'Making it live… don’t send the link yet.');
+                if (nameInput) nameInput.value = '';
+                if (typeof newStaffSelectedRoles !== 'undefined') newStaffSelectedRoles = Array.isArray(cfg.rolesAfter) ? [...cfg.rolesAfter] : ['sales-tab'];           // reset for the next invite, pre-checked by default (an app can say otherwise)
+                const managerCheckbox = document.getElementById('new-staff-is-manager');
+                if (managerCheckbox) managerCheckbox.checked = false;
+                if (typeof cfg.reset === 'function') { try { cfg.reset(); } catch (e) { /* the invite itself is made */ } }
+                if (typeof renderNewStaffRoleCheckboxes === 'function') renderNewStaffRoleCheckboxes();
+                const live = await inviteMakeLive();
+                showToast(live ? `Invite link ready for ${name}.` : `Invite for ${name} is saved here — not on the server yet. Tap “Try again” under the link.`, !live);
+                return live;
+            } finally {
+                st.busy = false;
+                if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.textContent = btnLabel; }
+            }
+        }
+
+        function inviteIsLive(seq) {
+            // The invite is on the server once a push that STARTED after it was created has been acknowledged (see ackLocalDirty).
+            try { if (typeof ownerHasUnsentChanges === 'function') return !ownerHasUnsentChanges(); } catch (e) { /* the owner console counts differently; the shop apps below */ }
+            try { return (parseInt(localStorage.getItem('pos_acked_seq') || '0', 10) || 0) >= seq; } catch (e) { return false; }
+        }
+
+        async function inviteMakeLive() {
+            // Sends the invite to the server, visibly and for at most ~12 s per call. Never hands out the link before the server has it.
+            const st = window.__inviteGen;
+            if (!st || !st.invite) return false;
+            const t0 = Date.now();
+            const budget = 12000;
+            let live = false;
+            let tries = 0;
+            while (Date.now() - t0 < budget) {
+                tries++;
+                // a pull that landed in the meantime may have replaced the list with the server's older copy: put the invite back
+                if (!pendingInvites.some((i) => i && i.token === st.invite.token)) {
+                    pendingInvites.push(st.invite);
+                    safeSetItem('pos_pending_invites', JSON.stringify(pendingInvites));
+                    if (typeof markLocalDirty === 'function') markLocalDirty();
+                    st.seq = parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0;
+                }
+                inviteUiSet('making', tries > 1 ? `The server is busy — trying again (${tries})…` : 'Making it live… don’t send the link yet.');
+                let ok = false;
+                try { ok = (await inviteRunPush(Math.min(10000, Math.max(3000, budget - (Date.now() - t0))))) === true; } catch (e) { ok = false; }
+                if (ok && pendingInvites.some((i) => i && i.token === st.invite.token)) { live = true; break; }
+                if (window.__pushFailKind === 'network') break;                       // no answer at all: hammering does not help; say so and offer "Try again"
+                const wait = Math.min(Math.max(window.__pushRetryAfterMs || 0, 900), 3000);
+                if (Date.now() - t0 + wait >= budget) break;
+                await new Promise((r) => setTimeout(r, wait));
+            }
+            if (live) {
+                inviteUiSet('ready', 'Ready — you can send this link now.');
+                clearInterval(st.watch);
+                st.token = '';
+                return true;
+            }
+            let why = '';
+            try { why = typeof netFailReason === 'function' ? netFailReason() : ''; } catch (e) { why = ''; }
+            inviteUiSet('retry', 'Saved on this device, but not on the server yet' + (why ? ' (' + why + ')' : '') + '. It is sent by itself as soon as the server answers — or tap Try again.');
+            // if the app's own automatic retry gets it through later, say "Ready" without another tap
+            clearInterval(st.watch);
+            const started = Date.now();
+            const token = st.invite.token;
+            st.watch = setInterval(() => {
+                try {
+                    if (!window.__inviteGen || window.__inviteGen.invite.token !== token || Date.now() - started > 600000) { clearInterval(st.watch); return; }
+                    if (inviteIsLive(st.seq) && pendingInvites.some((i) => i && i.token === token)) { inviteUiSet('ready', 'Ready — you can send this link now.'); st.token = ''; clearInterval(st.watch); }
+                } catch (e) { clearInterval(st.watch); }
+            }, 1200);
+            return false;
+        }
+
+        async function inviteRetryNow() {
+            const st = window.__inviteGen;
+            if (!st || !st.invite || st.busy) return;
+            st.busy = true;
+            const btn = document.getElementById('invite-link-retry');
+            if (btn) btn.disabled = true;
+            try { await inviteMakeLive(); }
+            finally { st.busy = false; if (btn) btn.disabled = false; }
+        }
+
+        function inviteRunPush(timeoutMs) {
+            // One push for somebody who is waiting for it: no pre-pull, one attempt (the caller shows progress and asks again), bounded wait.
+            if (typeof pushNow === 'function') return pushNow({ skipPrePull: true, priority: true, maxAttempts: 1, timeoutMs: timeoutMs || 10000 });
+            if (typeof pushNowOrWarn === 'function') return pushNowOrWarn('Invite link');
+            return Promise.resolve(false);
+        }
+
+        async function inviteSubmitRun(inner) {
+            // zip 161: the invited person's "Create My Account": busy at once, one tap at a time (a second tap does nothing, visibly), restored when done.
+            if (window.__inviteSubmitting) return;
+            window.__inviteSubmitting = true;
+            const screen = document.getElementById('invite-screen');
+            const btn = screen ? screen.querySelector('.btn-main') : null;
+            const label = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.textContent = 'Creating your account…'; }
+            try { await inner(); }
+            finally {
+                window.__inviteSubmitting = false;
+                if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.textContent = label; }
+            }
+        }
+
+        function inviteUiEnsure() {
+            // zip 161: the invite box always has a status line, a "Try again" button and a real "Open" link, whichever app's markup it came with.
+            const box = document.getElementById('invite-link-result');
+            const input = document.getElementById('invite-link-text');
+            if (!box || !input) return null;
+            const row = box.querySelector('.invite-link-box') || box;
+            let status = document.getElementById('invite-link-status');
+            if (!status) {
+                status = document.createElement('div');
+                status.id = 'invite-link-status';
+                status.setAttribute('role', 'status');
+                status.setAttribute('aria-live', 'polite');
+                status.style.cssText = 'font-size:13px; margin:8px 0 0; padding:8px 10px; border-radius:8px; background:#f4f6f7; color:#2c3e50; display:flex; align-items:center; gap:8px; flex-wrap:wrap;';
+                const msg = document.createElement('span');
+                msg.id = 'invite-link-status-msg';
+                status.appendChild(msg);
+                const retry = document.createElement('button');
+                retry.type = 'button';
+                retry.id = 'invite-link-retry';
+                retry.className = 'settings-small-btn';
+                retry.textContent = 'Try again';
+                retry.style.display = 'none';
+                retry.addEventListener('click', () => { inviteRetryNow(); });
+                status.appendChild(retry);
+                if (row.parentNode) row.parentNode.insertBefore(status, row.nextSibling); else box.appendChild(status);
+            }
+            let open = document.getElementById('invite-link-open');
+            if (!open) {
+                open = document.createElement('a');
+                open.id = 'invite-link-open';
+                open.className = 'settings-small-btn';
+                open.style.cssText = 'text-decoration:none; text-align:center;';
+                open.textContent = '🔗 Open';
+                open.href = '#';
+                row.appendChild(open);
+            }
+            if (!open.__inviteBound) {
+                open.__inviteBound = true;
+                open.target = '_blank';
+                open.rel = 'noopener';
+                open.addEventListener('click', (e) => { if (open.getAttribute('aria-disabled') === 'true') { e.preventDefault(); showToast('Not live yet — wait for "Ready" before opening it.', true); } });
+            }
+            const copy = box.querySelector('button[onclick^="copyInviteLink"]');
+            return { box, row, input, status, msg: document.getElementById('invite-link-status-msg'), retry: document.getElementById('invite-link-retry'), open, copy };
+        }
+
+        function inviteUiSet(state, message) {
+            // state: 'making' (being sent to the server, not to be shared yet), 'ready' (on the server), 'retry' (not on the server yet: saved on this device)
+            const u = inviteUiEnsure();
+            if (!u) return;
+            const live = state === 'ready';
+            u.input.setAttribute('data-live', live ? '1' : '0');
+            if (u.copy) u.copy.disabled = !live;
+            u.open.setAttribute('aria-disabled', live ? 'false' : 'true');
+            u.open.style.pointerEvents = live ? '' : 'none';
+            u.open.style.opacity = live ? '' : '0.5';
+            u.open.tabIndex = live ? 0 : -1;
+            const tone = live ? ['#e8f8f0', '#1e7e4f'] : state === 'retry' ? ['#fdecea', '#a93226'] : ['#fff8e1', '#7d5a00'];
+            u.status.style.background = tone[0];
+            u.status.style.color = tone[1];
+            if (u.msg) u.msg.textContent = message || '';
+            if (u.retry) u.retry.style.display = state === 'retry' ? '' : 'none';
+            u.box.style.display = 'block';
+        }
+        /* @shared:end */
+
 
         // Checks the URL for a ?invite=TOKEN param and, if it matches a pending
         // invite (state is pulled from the server first), shows the staff signup
@@ -9435,9 +9751,7 @@
         }
 
         async function submitStaffInvite() {
-            if (window.__inviteSubmitting) return;               // one tap at a time
-            window.__inviteSubmitting = true;
-            try { await submitStaffInviteInner(); } finally { window.__inviteSubmitting = false; }
+            return inviteSubmitRun(submitStaffInviteInner);       // zip 161: busy at once, one tap at a time, restored when done
         }
 
         async function submitStaffInviteInner() {
@@ -9468,7 +9782,7 @@
             pendingInvites = pendingInvites.filter(i => i.token !== token);
             safeSetItem('pos_staff', JSON.stringify(staff));
             safeSetItem('pos_pending_invites', JSON.stringify(pendingInvites));
-            await pushNow();
+            inviteAccountPush();        // zip 161: the account is on this device; sending it does not hold the screen (marked unsent first, failure is shown and retried)
 
             // The one-time ?invite= link is now spent — replace it in the address bar with
             // this staff member's permanent personal login link (?staff=ID). Bookmarking
@@ -17577,6 +17891,7 @@ async function storageMeasureUnknown() {
                 done(); return out;
             };
             w.__sessionKept = true;
+            try { w.__cgAsync = orig.__cgAsync === true || Object.prototype.toString.call(orig) === '[object AsyncFunction]'; } catch (e) { /* zip 161: tells the click guard this still returns a promise */ }
             window[name] = w;
         }
         // a successful login = the login screen was showing and now is not

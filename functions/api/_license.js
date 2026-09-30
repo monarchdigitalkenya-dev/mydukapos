@@ -1,4 +1,5 @@
-import { MODE_PREFIX } from './_state-store.js';
+import { MODE_PREFIX, forgetShopMode } from './_state-store.js';
+import { withRetry } from './_retry.js';
 // functions/api/_license.js — shared helper, NOT a route.
 //
 // Every client link this master POS generates (demo or permanent) is backed
@@ -34,6 +35,66 @@ import { MODE_PREFIX } from './_state-store.js';
 const LICENSE_PREFIX = 'license:';
 const SLUG_PREFIX = 'slug:'; // slug:<slug> -> clientId, for O(1) subdomain resolution
 const INDEX_KEY = 'license-index:v1'; // array of SUMMARY objects, not just ids — see note above
+
+// ---------- HOT-PATH CACHE (zip 159) ----------
+// Every request to every shop endpoint starts with "which shop is this, and is its licence valid": the slug lookup (subdomain -> id) and the licence record,
+// read from KV — and, until zip 159, the licence record TWICE (once to check the slug's record exists, once again to evaluate it). A device polls every
+// 7 s and re-checks its licence every 30 s, so that was 3-4 KV reads per request before any real work. Both lookups are kept for a few seconds in the
+// memory of the Worker instance that made them (per instance, per KV binding; nothing shared, nothing persisted):
+//   * the record is kept as its JSON text and parsed on every use, so a caller that changes the object it gets can never change the cache;
+//   * every write this instance makes (saveLicense, createClient, claimSlug, permanent delete) updates or drops the entry at once, so an owner who
+//     locks a link in the Owner Console sees it take effect on the very next request served by the same instance; another instance follows within
+//     LICENSE_CACHE_MS (default 10 s) — inside the ~60 s that KV itself takes to spread a change to other locations, so nothing new is introduced;
+//   * NOT-FOUND answers are never kept (a link created a moment ago must not read "not found" for 10 s);
+//   * if KV briefly fails, the last known record (at most 10 minutes old) answers instead of an error: a storage hiccup must not lock a shop out.
+// Writers that read a record in order to change it (owner-lock, owner-confirm ...) keep using getLicense(), which is never cached.
+// LICENSE_CACHE_MS = 0 (environment variable) switches the cache off.
+const LICENSE_CACHE_MS = 10000;
+const LICENSE_STALE_OK_MS = 10 * 60000;
+const LICENSE_CACHE_MAX = 2000;
+const cacheHolders = new WeakMap();                                   // KV binding -> { lic: Map(id -> {at, text}), slug: Map(slug -> {at, id}) }
+function cacheHolder(env) {
+  const kv = env && env.mydukapos_kv;
+  if (!kv || typeof kv !== 'object') return null;
+  let h = cacheHolders.get(kv);
+  if (!h) { h = { lic: new Map(), slug: new Map() }; cacheHolders.set(kv, h); }
+  return h;
+}
+function cacheMs(env) {
+  const n = env && env.LICENSE_CACHE_MS != null && env.LICENSE_CACHE_MS !== '' ? Number(env.LICENSE_CACHE_MS) : LICENSE_CACHE_MS;
+  return Number.isFinite(n) && n >= 0 ? n : LICENSE_CACHE_MS;
+}
+function remember(map, key, val) { map.delete(key); map.set(key, val); if (map.size > LICENSE_CACHE_MAX) map.delete(map.keys().next().value); }
+function rememberLicense(env, record) { const h = cacheHolder(env); if (h && record && record.id) remember(h.lic, record.id, { at: Date.now(), text: JSON.stringify(record) }); }
+function rememberSlug(env, slug, id) { const h = cacheHolder(env); if (h && slug && id) remember(h.slug, String(slug).toLowerCase(), { at: Date.now(), id }); }
+function forgetLicense(env, id, slug) { const h = cacheHolder(env); if (!h) return; if (id) h.lic.delete(id); if (slug) h.slug.delete(String(slug).toLowerCase()); }
+// for tests and tools
+export function clearLicenseCache(env) { const h = cacheHolder(env); if (h) { h.lic.clear(); h.slug.clear(); } }
+
+// The licence record for the hot path (cached, see above). Same result as getLicense() otherwise.
+export async function getLicenseCached(env, clientId) {
+  if (!clientId) return null;
+  const h = cacheHolder(env), ttl = cacheMs(env), now = Date.now();
+  const hit = h && ttl > 0 ? h.lic.get(clientId) : null;
+  if (hit && now - hit.at < ttl) return JSON.parse(hit.text);
+  let raw;
+  try { raw = await withRetry(() => env.mydukapos_kv.get(LICENSE_PREFIX + clientId), { tries: 2, baseMs: 30, env }); }
+  catch (e) { if (hit && now - hit.at < LICENSE_STALE_OK_MS) return JSON.parse(hit.text); throw e; }
+  if (h) { if (raw && ttl > 0) remember(h.lic, clientId, { at: now, text: raw }); else h.lic.delete(clientId); }
+  return raw ? JSON.parse(raw) : null;
+}
+async function slugToIdCached(env, slug) {
+  const key = String(slug || '').toLowerCase();
+  if (!key) return null;
+  const h = cacheHolder(env), ttl = cacheMs(env), now = Date.now();
+  const hit = h && ttl > 0 ? h.slug.get(key) : null;
+  if (hit && now - hit.at < ttl) return hit.id;
+  let id;
+  try { id = await withRetry(() => env.mydukapos_kv.get(SLUG_PREFIX + key), { tries: 2, baseMs: 30, env }); }
+  catch (e) { if (hit && now - hit.at < LICENSE_STALE_OK_MS) return hit.id; throw e; }
+  if (h) { if (id && ttl > 0) remember(h.slug, key, { at: now, id }); else h.slug.delete(key); }
+  return id || null;
+}
 
 // ---------- DEMO DURATION (owner-configurable, one value shared everywhere) ----------
 // Used to be a fixed 72h constant. Now a single owner-editable setting,
@@ -200,6 +261,7 @@ export async function pickNextBranchSlug(env, mainSlug) {
 
 async function claimSlug(env, slug, clientId) {
   await env.mydukapos_kv.put(SLUG_PREFIX + slug, clientId);
+  rememberSlug(env, slug, clientId);
 }
 
 export async function getLicenseBySlug(env, slug) {
@@ -369,6 +431,7 @@ export async function createClient(env, type, label, product, extra = {}) {
     balanceOwed: Math.max(0, (extra.agreedAmount || 0) - (extra.paidAmount || 0)),
   };
   await env.mydukapos_kv.put(LICENSE_PREFIX + id, JSON.stringify(record));
+  rememberLicense(env, record);
   await claimSlug(env, slug, id);
   await upsertIndexSummary(env, record);
   // A brand-new PERMANENT shop starts in its own database (no size ceiling, nothing archived away). Nothing is stored yet, so there is nothing to
@@ -376,7 +439,7 @@ export async function createClient(env, type, label, product, extra = {}) {
   // zip 147: ...and only when that database ANSWERS. The binding existing proves nothing: with the router Worker not deployed (or out of
   // date) every new permanent shop — the Owner Console's own included — was put on a database that could not be reached, and never synced.
   if (record.type === 'permanent' && env.SHOP_STORE && (await shopDbAnswers(env, record.id))) {
-    try { await env.mydukapos_kv.put(MODE_PREFIX + record.id, 'do', { metadata: { at: Date.now(), records: 0, bytes: 0, auto: true } }); } catch (e) { /* stays a normal shop */ }
+    try { await env.mydukapos_kv.put(MODE_PREFIX + record.id, 'do', { metadata: { at: Date.now(), records: 0, bytes: 0, auto: true } }); forgetShopMode(env, record.id); } catch (e) { /* stays a normal shop */ }
   }
   return record;
 }
@@ -475,6 +538,7 @@ export async function getLicense(env, clientId) {
 
 export async function saveLicense(env, record) {
   await env.mydukapos_kv.put(LICENSE_PREFIX + record.id, JSON.stringify(record));
+  rememberLicense(env, record);                    // zip 159: this instance sees the change at once (see the cache note at the top)
   await upsertIndexSummary(env, record);
 }
 
@@ -519,6 +583,7 @@ const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 // later if that ever matters. Only reached via purgeExpiredTrash() once 30 days have passed unrestored.
 async function permanentlyDeleteClient(env, clientId, record) {
   await env.mydukapos_kv.delete(LICENSE_PREFIX + clientId);
+  forgetLicense(env, clientId, record && record.slug);
   if (record && record.slug) {
     await env.mydukapos_kv.delete(SLUG_PREFIX + record.slug);
   }
@@ -616,15 +681,18 @@ export function subdomainLabel(hostname, rootDomain) {
 // an actual point of sale), Cloudflare Pages preview deployments
 // (*.pages.dev, which never match the root domain), and any link generated
 // before subdomains existed.
-export async function resolveClientId(request, env) {
+// -> { clientId, record } — `record` is the licence record when the lookup already had to read it (a subdomain link), else undefined. (zip 159: cached, and
+// the record is read ONCE — resolveClientId used to read it just to prove it exists and requireValidLicense then read it again.)
+async function resolveIdAndRecord(request, env) {
   const url = new URL(request.url);
   const hostname = hostnameFromRequest(request, env);
   const rootDomain = getRootDomain(env);
   const label = subdomainLabel(hostname, rootDomain);
 
   if (label) {
-    const record = await getLicenseBySlug(env, label);
-    if (record) return record.id;
+    const id = await slugToIdCached(env, label);
+    const record = id ? await getLicenseCached(env, id) : null;
+    if (record) return { clientId: record.id, record };
 
     // Subdomain lookup came up empty. Normally that's a genuine typo/stale
     // link and we report "not_found" — see the comment above about not
@@ -645,20 +713,30 @@ export async function resolveClientId(request, env) {
     // case where the id and slug genuinely agree.
     const fallbackId = url.searchParams.get('c') || '';
     if (fallbackId) {
-      const fallbackRecord = await getLicense(env, fallbackId);
+      const fallbackRecord = await getLicenseCached(env, fallbackId);
       if (fallbackRecord && fallbackRecord.slug && fallbackRecord.slug.toLowerCase() === label.toLowerCase()) {
-        return fallbackRecord.id;
+        return { clientId: fallbackRecord.id, record: fallbackRecord };
       }
     }
-    return '';
+    return { clientId: '', record: null };
   }
 
-  return url.searchParams.get('c') || '';
+  return { clientId: url.searchParams.get('c') || '', record: undefined };
+}
+
+export async function resolveClientId(request, env) {
+  return (await resolveIdAndRecord(request, env)).clientId;
+}
+
+// Which shop, and its licence record — for the endpoints that need both (license-status). Cached (see the cache note at the top).
+export async function resolveLicense(request, env) {
+  const r = await resolveIdAndRecord(request, env);
+  const record = r.record !== undefined ? r.record : await getLicenseCached(env, r.clientId);
+  return { clientId: r.clientId, record };
 }
 
 export async function requireValidLicense(request, env) {
-  const clientId = await resolveClientId(request, env);
-  const record = await getLicense(env, clientId);
+  const { clientId, record } = await resolveLicense(request, env);
   const result = evaluateLicense(record);
   return { ...result, clientId };
 }

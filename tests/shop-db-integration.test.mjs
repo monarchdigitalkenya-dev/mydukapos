@@ -16,7 +16,7 @@ async function setup(opts = {}) {
   // single-record shop, so the shop here is a demo link (which keeps the single-record start).
   const kv = makeKV(); seedShop(kv, 'C1', { type: 'demo', expiresAt: Date.now() + 30 * 86400000, createdAt: Date.now() });
   kv.data.set('owner-session:tok', { value: '1' });
-  const env = { mydukapos_kv: kv, SHOP_STORE: await makeBinding(opts) };
+  const env = { mydukapos_kv: kv, SHOP_STORE: await makeBinding(opts), MIGRATE_SETTLE_MS: 10 };
   const call = async (mod, fn, url, method = 'GET', body, headers = {}) => {
     const m = await load(mod);
     return m[fn]({ request: new Request('https://x.pages.dev' + url, { method, body: body ? JSON.stringify(body) : undefined, headers: { 'content-type': 'application/json', ...headers } }), env, waitUntil() {} });

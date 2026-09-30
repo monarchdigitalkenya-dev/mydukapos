@@ -45,3 +45,24 @@ Rebuild the APK and EXE via GitHub Actions: the Windows build is now a parallel 
 ## Zip 158 — receipt size + leftovers — Windows cmd, in `C:\dev\mydukapos`
 No new migration and the router did not change: `npm run check`, then `npm run deploy` (no `deploy:router`). Rebuild the APK/EXE (GitHub Actions) to get the new receipt size screen on the native apps.
 Then on each till: Settings -> Receipt -> **Adjust receipt size** -> pick 58 / 80 / Custom, set the letter size, check the sample, **Print test receipt**, **Save**.
+
+## Zip 159 — hotel categories + import, Cloudflare efficiency, leftovers — Windows cmd, in `C:\dev\mydukapos`
+1. `npx wrangler d1 migrations apply mydukapos-ledger --remote` (adds the write-fence table and CRM indexes; safe to repeat, and the server also creates them on first use).
+2. `npm run check`
+3. `npm run deploy` (no `deploy:router` — the router did not change). Then open `https://<your-domain>/api/health?deep=1` — it must say `"d1":true`.
+4. Rebuild the APK/EXE (GitHub Actions) to get the hotel changes on the native apps.
+5. Hotel: Inventory -> pick a type -> **Categories & assign** / **Import**. On the Sales Counter and Service Orders tap a category chip.
+6. Optional Cloudflare dashboard steps (Smart Placement, cache rule for /icons/*, R2 lifecycle) are listed in `EFFICIENCY_REPORT_ZIP_159.md`.
+
+## Zip 160 — reliability + real-browser fixes — Windows cmd, in `C:\dev\mydukapos`
+No new migration and no router change: `npm run check`, then `npm run deploy`. Rebuild the APK/EXE (GitHub Actions) to get the fixes on the native apps.
+Details: `CHANGES_ZIP_160_RELIABILITY.md`, `CHANGES_ZIP_160_BROWSER.md` (screenshots in `docs/screens-zip160/`).
+
+## Zip 161 — fractional past sales, staff-link buttons, faster CRM — Windows cmd, in `C:\dev\mydukapos`
+1. `npx wrangler d1 migrations apply mydukapos-ledger --remote` (adds the CRM speed indexes; safe to repeat — the server also creates them on first use).
+2. `npm run check`
+3. `npm run deploy` (no `deploy:router`).
+4. Open `https://mydukapos.store/crm/` once while online so the new CRM app-shell cache installs (if anything looks stale add `?nosw=1` to the address to bypass it).
+5. Rebuild the APK/EXE (GitHub Actions) for the native apps.
+Optional (search speed-up, not required): `migrations-optional/0005_crm_search.sql` adds full-text search — see `CRM_PERF_ZIP_161.md` before applying (it stops `wrangler d1 export` from working).
+Details: `CHANGES_ZIP_161_BUTTONS.md`, `CHANGES_ZIP_161_PASTSALE_HOTEL.md`, `CRM_PERF_ZIP_161.md`.

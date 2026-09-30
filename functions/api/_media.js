@@ -55,6 +55,30 @@ export async function mediaGet(env, key) {
   const rec = JSON.parse(raw);
   return { bytes: fromBase64(rec.b64), type: rec.type, meta: rec.meta || {} };
 }
+// zip 159 — STREAMING READ WITH A VALIDATOR. -> { notModified: true, etag } | { body, size, type, etag } | null.
+// R2 answers a conditional request itself (`onlyIf`), so a browser or the edge revalidating a picture costs a metadata read, not the bytes,
+// and the picture is streamed to the client instead of being buffered in the Worker first. The KV fallback keeps its old buffered path.
+export async function mediaOpen(env, key, { ifNoneMatch = '' } = {}) {
+  if (mediaBackend(env) === 'r2') {
+    const tag = String(ifNoneMatch || '').replace(/^W\//, '').split(',')[0].trim().replace(/^"|"$/g, '');
+    const obj = await env.MEDIA.get(key, tag ? { onlyIf: { etagDoesNotMatch: tag } } : undefined);
+    if (obj) {
+      const etag = obj.httpEtag || (obj.etag ? `"${obj.etag}"` : '');
+      if (!obj.body) {
+        if (tag) return { notModified: true, etag };                   // R2: precondition failed = the caller's copy is current
+        if (typeof obj.arrayBuffer === 'function') {                   // no validator was sent and no stream came back: read the bytes
+          const buf = new Uint8Array(await obj.arrayBuffer());
+          return { body: buf, size: buf.length, type: (obj.httpMetadata && obj.httpMetadata.contentType) || 'image/jpeg', etag };
+        }
+      } else return { body: obj.body, size: obj.size, type: (obj.httpMetadata && obj.httpMetadata.contentType) || 'image/jpeg', etag };
+    }
+  }
+  const f = await mediaGet(env, key);                                   // KV fallback (or an R2 miss that a KV copy still answers)
+  if (!f) return null;
+  const etag = `"kv-${f.bytes.length}-${f.type.length}"`;
+  if (ifNoneMatch && String(ifNoneMatch).replace(/^W\//, '').split(',').map((x) => x.trim()).includes(etag)) return { notModified: true, etag };
+  return { body: f.bytes, size: f.bytes.length, type: f.type, etag };
+}
 export async function mediaDelete(env, key) {
   if (mediaBackend(env) === 'r2') await env.MEDIA.delete(key);
   await env.mydukapos_kv.delete('media:' + key);

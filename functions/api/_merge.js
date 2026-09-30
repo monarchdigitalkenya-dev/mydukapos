@@ -291,6 +291,34 @@ export function mergeLoyaltyFields(a, b) {
   return { tokens: base + sum, tokenBase: base, tokenLedger: ledger };
 }
 
+// TANK REFILL LOG (zip 159). Two tills logging a refill on the same tank in the same sync window used to lose one entry (the tank record
+// is newest-wins). The log is now unioned by entry id, oldest first, newest 500 kept. A legacy entry without an id gets a deterministic
+// one from its fields. Same rule, line for line, as refillEntryId / mergeRefillLogs in src/shared/functions.js.
+export function refillEntryId(e) {
+  if (!e || typeof e !== 'object') return null;
+  if (e.id != null && e.id !== '') return String(e.id);
+  const raw = [e.timestamp, e.litersAdded, e.cost, e.supplier, e.servedBy].map((v) => (v == null ? '' : String(v))).join('|');
+  let h = 5381;
+  for (let i = 0; i < raw.length; i++) h = (((h << 5) + h) ^ raw.charCodeAt(i)) >>> 0;
+  return 'rf-legacy-' + h.toString(36) + '-' + raw.length;
+}
+export function mergeRefillLogs(a, b, cap, info) {
+  const la = a && Array.isArray(a.refillLog) ? a.refillLog : null;
+  const lb = b && Array.isArray(b.refillLog) ? b.refillLog : null;
+  if (!la && !lb) return null;
+  const seen = new Map();
+  [la || [], lb || []].forEach((list) => list.forEach((e) => {
+    const id = refillEntryId(e);
+    if (id == null || seen.has(id)) return;
+    seen.set(id, e.id != null && e.id !== '' ? e : { ...e, id });
+  }));
+  const t = (e) => { const v = Date.parse(e && e.timestamp); return Number.isFinite(v) ? v : 0; };
+  const out = [...seen.values()].map((e, i) => [e, i]).sort((x, y) => (t(x[0]) - t(y[0])) || (x[1] - y[1])).map((x) => x[0]);
+  const max = cap > 0 ? cap : 500;
+  if (info && out.length > max) info.dropped = out.length - max;      // zip 160: how many of the oldest entries this merge let go (see refillLogTruncated)
+  return out.length > max ? out.slice(out.length - max) : out;
+}
+
 export function mergeRecordsById(existingArr, incomingArr, finalTombstones = false, field = '') {
   if (!Array.isArray(incomingArr)) return existingArr;
   if (!Array.isArray(existingArr) || existingArr.length === 0) return incomingArr;
@@ -327,6 +355,14 @@ export function mergeRecordsById(existingArr, incomingArr, finalTombstones = fal
       merged.set(key, mergeBillRecords(existing, incoming)); continue;
     }
     if (field === 'debts' && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeDebtRecords(existing, incoming)); continue; }
+    if (field === 'tanks' && existing._deleted !== true && incoming._deleted !== true) {
+      const win = (incoming.updatedAt || 0) >= (existing.updatedAt || 0) ? incoming : existing;
+      const info = {};
+      const log = mergeRefillLogs(existing, incoming, undefined, info);
+      // zip 160: the cap used to drop the oldest entries silently. `refillLogTruncated` = at least this many older entries were dropped (max of the copies and this merge, never summed, so a re-merge does not inflate it)
+      const lost = Math.max(Number(existing.refillLogTruncated) || 0, Number(incoming.refillLogTruncated) || 0, info.dropped || 0);
+      merged.set(key, log ? { ...win, refillLog: log, ...(lost > 0 ? { refillLogTruncated: lost } : {}) } : win); continue;
+    }
     if (NESTED_MERGE[field] && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeNestedRecord(field, existing, incoming)); continue; }
     if (PROGRESS_FIELDS.includes(field) && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeProgressRecord(field, existing, incoming)); continue; }
     const existingTs = existing.updatedAt || 0;
@@ -421,6 +457,9 @@ export const MERGE_BY_ID_FIELDS = [
   'customOrders',
   // Draught kegs (zip 142): each keg taken into use, merged per record with NESTED_MERGE.kegs (per-device served counters + events).
   'kegs',
+  // Inventory categories (zip 159, Hotel POS): one record per category (id, type, name, active, order). Removal is a `_deleted` tombstone kept in the
+  // list, so a till that missed the deletion cannot bring the category back. Newest updatedAt wins per category.
+  'inventoryCategories',
   // Aqua POS raw materials (caps, labels, preforms ...). Were replaced as ONE whole list, so any device's push put back every
   // other device's material edits and stock counts. Now per record (its stock is ledger-managed: see CELL_SPECS).
   'rawMaterials',

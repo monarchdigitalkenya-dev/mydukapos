@@ -1,0 +1,20 @@
+# Cloudflare Pages static headers (zip 159). Only STATIC files are affected; /api answers set their own headers in functions/api/_middleware.js.
+# Pages already serves every static file with an ETag and revalidates it, so nothing here makes an app file stay stale: the app HTML, JS
+# and CSS are deliberately NOT given a long max-age (they are not fingerprinted and a new release must reach every till at once).
+
+# Icons and images never change without a new file name in practice: let the browser and the edge reuse them for a day, and serve a stale
+# copy for a week while it refreshes in the background.
+/icons/*
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+  X-Content-Type-Options: nosniff
+
+# A service worker must always be re-checked (the browser does this by itself, this makes an intermediary do the same).
+/sw.js
+  Cache-Control: no-cache
+/*/sw.js
+  Cache-Control: no-cache
+
+# zip 161: the CRM's own files are not fingerprinted, so they must be re-checked (a 304 when unchanged). /crm/sw.js is covered by the /*/sw.js rule above.
+# (Cloudflare MERGES the headers of every matching rule, so no second, conflicting Cache-Control is set for the icon.)
+/crm/*
+  Cache-Control: no-cache

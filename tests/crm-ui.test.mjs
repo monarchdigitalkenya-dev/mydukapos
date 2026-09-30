@@ -194,10 +194,10 @@ test('theme toggle switches data-theme and persists; 401 from the API returns to
   b.go('#/leads'); await b.until(() => /Sign in/.test(b.text()) && b.q('input[type=password]')); assert.equal(b.w.localStorage.getItem('crm_mode'), null); b.close();
 });
 
-test('static assets: manifest is valid JSON with an SVG icon; no external CDNs; no service worker', () => {
+test('static assets: manifest is valid JSON with an SVG icon; no external CDNs; the only service worker is the dedicated /crm/sw.js (zip 161)', () => {
   const man = JSON.parse(fs.readFileSync(path.join(CRMDIR, 'manifest.webmanifest'), 'utf8')); assert.equal(man.name, 'MyDuka CRM'); assert.equal(man.scope, '/crm/'); assert.ok(fs.existsSync(path.join(CRMDIR, man.icons[0].src)));
   const all = ['index.html', 'crm.css', ...fs.readdirSync(CRMDIR).filter((f) => f.endsWith('.js'))].map((f) => fs.readFileSync(path.join(CRMDIR, f), 'utf8')).join('\n');
-  assert.ok(!/https?:\/\/(?!wa\.me|mydukapos|www\.w3\.org)[a-z0-9.-]+\.[a-z]{2,}\//i.test(all.replace(/\/\*[\s\S]*?\*\//g, '')), 'no external hosts'); assert.ok(!/serviceWorker/.test(all));
+  assert.ok(!/https?:\/\/(?!wa\.me|mydukapos|www\.w3\.org)[a-z0-9.-]+\.[a-z]{2,}\//i.test(all.replace(/\/\*[\s\S]*?\*\//g, '')), 'no external hosts'); { const users = fs.readdirSync(CRMDIR).filter((f) => f.endsWith('.js') && /serviceWorker/.test(fs.readFileSync(path.join(CRMDIR, f), 'utf8'))); assert.deepEqual(users, ['crm-start.js'], 'only crm-start.js registers the CRM service worker (zip 161)'); }
   assert.ok(!/innerHTML\s*=\s*[^'"<]*[a-z]/i.test(all.replace(/s\.innerHTML = '<svg[^\n]+/g, '').replace(/s\.innerHTML = '<svg[^\n]+/g, '')) || true);
 });
 

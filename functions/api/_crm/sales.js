@@ -1,5 +1,5 @@
 // functions/api/_crm/sales.js — revenue (crm_sales), Convert, sales list (NOT a route).
-import { E, json, all, first, st, now, newId, text, int, money, oneOf, round2, auditSt, activitySt, notifySt, emitSt, optRange, arr } from './core.js';
+import { E, json, all, first, st, many, now, newId, text, int, money, oneOf, round2, auditSt, activitySt, notifySt, emitSt, optRange, arr } from './core.js';
 import { getLeadFor, assignLead, LEAD_SELECT, leadOut } from './leads.js';
 import { salesScope, staffIdsFor } from './scope.js';
 import { notifyMany, managers } from './notify.js';
@@ -84,8 +84,8 @@ export async function listSales(ctx) {
   const level = actor.has('revenue.company') ? 'company' : actor.has('revenue.team') ? 'team' : actor.has('revenue.own') ? 'own' : null;
   if (!level) throw E.forbidden('You cannot see revenue', 'forbidden');
   const f = salesFilter(actor, query, level === 'own' ? [actor.id] : null);
-  const rows = await all(db, `${S_SELECT} WHERE ${f.where} ORDER BY s.sold_at DESC, s.id LIMIT 1000`, ...f.args);
-  const tot = await first(db, `SELECT COUNT(*) n, COALESCE(SUM(total),0) revenue, COALESCE(SUM(amount_paid),0) collected FROM crm_sales s WHERE ${f.where}`, ...f.args);
+  const limit = Math.min(1000, Math.max(1, parseInt(query.get('limit'), 10) || 1000));     // zip 161: `limit` is optional (default and maximum stay 1000); the totals always cover every sale
+  const [rows, [tot]] = await many(db, [st(db, `${S_SELECT} WHERE ${f.where} ORDER BY s.sold_at DESC, s.id LIMIT ${limit}`, ...f.args), st(db, `SELECT COUNT(*) n, COALESCE(SUM(total),0) revenue, COALESCE(SUM(amount_paid),0) collected FROM crm_sales s WHERE ${f.where}`, ...f.args)]);
   return { items: rows.map(saleOut), totals: { count: tot.n, revenue: round2(tot.revenue), collected: round2(tot.collected), outstanding: round2(tot.revenue - tot.collected) }, scope: level };
 }
 async function saleFor(ctx, id) {

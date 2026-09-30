@@ -80,7 +80,9 @@ test('a change that cannot be sent is kept, retried on the next poll, and delive
   assert.equal(price(a.w), 55, 'not overwritten by a pull');
   s.state.status = null;
   a.w.eval('window.__pushBackoffUntil = 0');                                         // (the short pause after a failure has elapsed)
+  await until(() => !a.w.eval('window.__pullInFlight'));                             // a pull already running would swallow the next poll (one pull at a time)
   await a.w.eval('pullState()');                                                     // next poll retries the push first
+  await settled(a);
   assert.equal(s.serverState().inventory[0].price, 55, 'delivered');
   assert.equal(price(a.w), 55);
   a.close();

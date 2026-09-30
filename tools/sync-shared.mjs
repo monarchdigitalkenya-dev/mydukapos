@@ -23,9 +23,11 @@ for (const m of BLOCK_TARGETS) {
   let html = read(m);
   const before = html;
 
-  const mm = MODULES.includes(m) ? html.match(REGION_RE) : true;
+  // zip 161: the owner console has no full functions region, but may carry a small one (the click guard + invite flow) - synced when present
+  const hasRegion = MODULES.includes(m) || REGION_RE.test(html);
+  const mm = hasRegion ? html.match(REGION_RE) : true;
   if (!mm) { console.error(`${m}: no @shared region found`); process.exit(2); }
-  if (MODULES.includes(m)) {
+  if (hasRegion) {
     const names = mm[1].split(',').filter(Boolean);
     const missing = names.filter((n) => !lib.has(n));
     if (missing.length) { console.error(`${m}: shared functions not in the library: ${missing.join(', ')}`); process.exit(2); }

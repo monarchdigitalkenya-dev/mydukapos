@@ -22,7 +22,7 @@
   async function inboxScreen(ctx) {
     ctx.flush(true); const root = ctx.root; const activeId = ctx.parts[1] || null;
     const conv = { list: [], q: '', unread: false, mine: false }; let status = { apiConfigured: false }; let active = null; let infoOpen = false;
-    try { status = await api('/inbox/status'); } catch (e) { status = { apiConfigured: false, error: e }; }
+    let statusKnown = false;   // zip 161: the conversation list already says whether the WhatsApp API is connected, so /inbox/status is only asked when the list could not answer
     const listPane = h('section', { class: 'p-list', 'aria-label': 'Conversations' }), chatPane = h('section', { class: 'p-chat', 'aria-label': 'Conversation' }), infoPane = h('aside', { class: 'p-info', 'aria-label': 'Lead details' });
     const wrap = h('div', { class: 'inbox', 'data-view': activeId ? 'chat' : 'list' }, listPane, chatPane, infoPane); mount(root, wrap);
     const setView = (v) => wrap.setAttribute('data-view', v);
@@ -33,11 +33,12 @@
     const mineT = h('button', { class: 'chip', type: 'button', 'aria-pressed': 'false', onclick: (e) => { conv.mine = !conv.mine; e.currentTarget.setAttribute('aria-pressed', String(conv.mine)); loadList(); } }, 'Mine');
     const convs = h('div', { class: 'convs', role: 'listbox', 'aria-label': 'Conversation list' });
     mount(listPane, h('div', { class: 'p-head' }, q), h('div', { class: 'p-head row', style: { minHeight: '0', padding: '6px 12px' } }, unreadT, mineT), convs);
-    q.addEventListener('input', C.debounce(() => { conv.q = q.value.trim(); loadList(); }, 300));
+    q.addEventListener('input', C.debounce(() => { conv.q = q.value.trim(); loadList(); }, 250));
+    let listSeq = 0;
     async function loadList() {
-      mount(convs, loading());
+      mount(convs, loading()); const my = ++listSeq;
       try {
-        const d = await api('/inbox/conversations', { query: { q: conv.q, unread: conv.unread, mine: conv.mine } }); if (!ctx.alive()) return; conv.list = listOf(d, 'conversations');
+        const d = await api('/inbox/conversations', { query: { q: conv.q, unread: conv.unread, mine: conv.mine } }); if (!ctx.alive() || my !== listSeq) return; if (d && d.apiConfigured != null) { status = { apiConfigured: !!d.apiConfigured }; statusKnown = true; } conv.list = listOf(d, 'conversations');
         mount(convs, conv.list.length ? conv.list.map((c) => {
           const name = pick(c, 'name', 'contactName', 'contact_name', 'leadName', 'lead_name') || pick(c, 'phone', 'waId', 'wa_id') || 'Unknown'; const un = Number(pick(c, 'unread', 'unreadCount', 'unread_count') || 0); const st = pick(c, 'status', 'leadStatus', 'lead_status'); const staff = pick(c, 'staffName', 'staff_name', 'ownerName', 'owner_name');
           return h('button', { class: 'conv' + (un ? ' unread' : ''), type: 'button', role: 'option', 'aria-selected': String(c.id) === String(activeId) ? 'true' : 'false', onclick: () => C.go('#/inbox/' + c.id) }, C.avatar(name),
@@ -103,7 +104,10 @@
         setup();
       };
       send.addEventListener('click', doSend); ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); } });
-      async function refresh() { const d = await api('/inbox/conversations/' + activeId + '/messages'); msgs = listOf(d, 'messages'); drawMsgs(); }
+      // zip 161: the 15 s poll only redraws the thread when something changed (a new / edited message); an unchanged thread is left alone (no DOM rebuild, no scroll jump)
+      const sigOf = (l) => l.length + ':' + (l.length ? (l[l.length - 1].id || '') + (pick(l[l.length - 1], 'status', 'deliveryStatus') || '') : '');
+      let lastSig = sigOf(msgs);
+      async function refresh() { const d = await api('/inbox/conversations/' + activeId + '/messages', { bg: true }); const next = listOf(d, 'messages'); const sg = sigOf(next); if (sg === lastSig) return; lastSig = sg; msgs = next; drawMsgs(); }
       const head = h('div', { class: 'p-head' }, h('button', { class: 'iconbtn back', type: 'button', 'aria-label': 'Back to conversations', onclick: () => C.go('#/inbox') }, ic('back')), C.avatar(name(), null, 'sm'), h('div', { class: 'grow' }, h('div', { class: 'trunc', style: { fontWeight: 700 } }, name()), h('div', { class: 'tiny faint' }, phone || '')),
         phone ? h('a', { class: 'iconbtn', href: C.telHref(phone), 'aria-label': 'Call' }, ic('phone')) : null, phone ? h('a', { class: 'iconbtn', href: C.waHref(phone), target: '_blank', rel: 'noopener', 'aria-label': 'Open in WhatsApp' }, ic('wa')) : null,
         h('button', { class: 'iconbtn infobtn', type: 'button', 'aria-label': 'Lead details', onclick: () => { infoOpen = !infoOpen; setView(infoOpen ? 'info' : 'chat'); } }, ic('user')));
@@ -125,7 +129,8 @@
           h('div', { class: 'lbl' }, 'Recent notes'), notes.length ? notes.map((n) => h('div', { class: 'small', style: { padding: '4px 0' } }, pick(n, 'text', 'body', 'summary') || '')) : h('div', { class: 'small faint' }, 'No notes.')));
       } catch (e) { mount(infoPane, back, h('div', { class: 'infopanel' }, errbox(e, () => drawInfo(leadId)))); }
     }
-    await loadList(); await openChat();
+    await loadList(); if (!statusKnown) { try { status = await api('/inbox/status'); } catch (e) { status = { apiConfigured: false, error: e }; } }
+    await openChat();
   }
 
   /* ---------- follow-ups ---------- */

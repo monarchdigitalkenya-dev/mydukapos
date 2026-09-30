@@ -31,7 +31,7 @@
 
   async function meta() {
     if (C.state.meta) return C.state.meta;
-    const [camps, prods] = await Promise.all([api('/campaigns').catch(() => ({})), api('/products').catch(() => ({}))]);
+    const [camps, prods] = await Promise.all([api('/campaigns', { query: { lite: 1 } }).catch((e) => (e && e.status === 403 ? api('/campaigns').catch(() => ({})) : {})), api('/products').catch(() => ({}))]);
     C.state.meta = { campaigns: listOf(camps, 'campaigns'), products: listOf(prods, 'products') }; return C.state.meta;
   }
   C.meta = meta; C.invalidateMeta = () => { C.state.meta = null; };
@@ -229,7 +229,7 @@
       btn('Clear', () => { Object.keys(f).forEach((k) => delete f[k]); S.page = 1; C.go(location.hash); }, 'sm ghost'));
     const filtBtn = h('button', { class: 'btn only-narrow-inline', type: 'button', 'aria-expanded': 'false', onclick: (e) => { const o = adv.classList.toggle('open'); e.currentTarget.setAttribute('aria-expanded', String(o)); } }, ic('filter'), 'Filters');
     const filters = h('div', null, h('div', { class: 'filters' }, q, filtBtn), adv);
-    q.addEventListener('input', C.debounce(() => { f.q = q.value.trim(); S.page = 1; load(); }, 300));
+    q.addEventListener('input', C.debounce(() => { const v = q.value.trim(); if (v === (f.q || '')) return; f.q = v; S.page = 1; load(); }, 250));
     function queryOf() { const o = Object.assign({}, f, { sort: S.sort, dir: S.dir, page: S.page, pageSize: S.pageSize }); if (mode === 'pool') o.pool = 1; if (mode === 'mine') o.staff = 'me'; return o; }
     function renderBulk() {
       if (!sel_.size || mode === 'pool') return mount(bulk);
@@ -250,8 +250,9 @@
       const tbody = h('tbody', null, items.map((l) => h('tr', { class: 'click', tabindex: '0', onclick: () => C.go('#/leads/' + l.id), onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) C.go('#/leads/' + l.id); } },
         mode === 'pool' ? null : h('td', { onclick: (e) => e.stopPropagation() }, inp('checkbox', { checked: sel_.has(l.id), 'aria-label': 'Select ' + l.name, onchange: (e) => { e.target.checked ? sel_.add(l.id) : sel_.delete(l.id); renderBulk(); } })),
         cols.map(([k]) => h('td', null, cell(l, k))), h('td', { style: { whiteSpace: 'nowrap' } }, mode === 'pool' || (!l.ownerId && can('leads.claim')) ? (can('leads.claim') ? btn('Claim', (e) => { e.stopPropagation(); claim(l.id, load); }, 'sm primary') : null) : quickBtns(l)))));
-      const table = h('div', { class: 'tablewrap only-wide' }, h('table', { class: 't' }, h('thead', null, thead), tbody));
-      const cards = h('div', { class: 'only-narrow' }, items.map((l) => h('div', { class: 'lcard', tabindex: '0', onclick: () => C.go('#/leads/' + l.id), onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) C.go('#/leads/' + l.id); } }, C.avatar(l.name),
+      const wide = window.innerWidth >= 820;   // zip 161: build ONE layout (the table or the cards), not both (halves the DOM)
+      const table = !wide ? null : h('div', { class: 'tablewrap only-wide' }, h('table', { class: 't' }, h('thead', null, thead), tbody));
+      const cards = wide ? null : h('div', { class: 'only-narrow' }, items.map((l) => h('div', { class: 'lcard', tabindex: '0', onclick: () => C.go('#/leads/' + l.id), onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) C.go('#/leads/' + l.id); } }, C.avatar(l.name),
         h('div', { class: 'grow' }, h('div', { class: 'row between' }, h('b', { class: 'trunc' }, l.name), cfgPill('statuses', l.status)), h('div', { class: 'small muted trunc' }, [l.phone, l.source, l.campaign, ownerLabel(l)].filter(Boolean).join(' - ')),
           l.product || l.dealValue != null ? h('div', { class: 'tiny muted trunc' }, [l.product, l.dealValue != null ? money(l.dealValue) : ''].filter(Boolean).join(' - ')) : null,
           l.lastContact ? h('div', { class: 'tiny faint' }, 'Last contact ' + rel(l.lastContact)) : null,
@@ -259,9 +260,12 @@
           h('div', { class: 'actions' }, !l.ownerId && can('leads.claim') ? btn('Claim', (e) => { e.stopPropagation(); claim(l.id, load); }, 'sm primary') : null, quickBtns(l))))));
       mount(listBox, table, cards, C.pager(S, lastTotal, (p) => { S.page = p; load(); }));
     }
+    let loadCtl = null, loadSeq = 0, lastD = null;
+    let wasWide = window.innerWidth >= 820; const onResize = () => { if (!ctx.alive()) return window.removeEventListener('resize', onResize); const w = window.innerWidth >= 820; if (w !== wasWide) { wasWide = w; if (lastD) draw(lastD); } }; window.addEventListener('resize', onResize);
     async function load() {
       renderBulk(); mount(listBox, loading());
-      try { const d = await api('/leads', { query: queryOf() }); if (!ctx.alive()) return; draw(d); } catch (e) { if (ctx.alive()) mount(listBox, errbox(e, load)); }
+      if (loadCtl) { try { loadCtl.abort(); } catch (e) { /* ignore */ } } loadCtl = window.AbortController ? new AbortController() : null; const my = ++loadSeq;
+      try { const d = await api('/leads', { query: queryOf(), signal: loadCtl ? loadCtl.signal : undefined }); if (!ctx.alive() || my !== loadSeq) return; lastD = d; draw(d); } catch (e) { if (ctx.alive()) mount(listBox, errbox(e, load)); }
     }
     mount(root, head, filters, bulk, listBox); load();
   }

@@ -64,9 +64,12 @@
       } catch (e) { if (ctx.alive()) mount(box, errbox(e, load)); }
     }
     // filters (spec section 30): staff (above), date (below), source, campaign, product
-    const m = await C.meta().catch(() => ({ campaigns: [], products: [] }));
+    // zip 161: the dashboard figures no longer wait for the campaign/product lists (they only fill the filter boxes, a moment later)
+    const metaP = C.meta().catch(() => ({ campaigns: [], products: [] }));
     const fsel = (key, opts, label) => sel(opts, DB[key], { 'aria-label': label, onchange: (e) => { DB[key] = e.target.value; load(); } });
-    const filt = h('div', { class: 'filters' }, fsel('source', C.cfgOptions('sources', true, 'Any source', true), 'Source'), fsel('campaign', [{ v: '', l: 'Any campaign' }].concat((m.campaigns || []).map((c) => ({ v: c.id, l: c.name }))), 'Campaign'), fsel('product', [{ v: '', l: 'Any product' }].concat((m.products || []).map((p) => ({ v: p.id, l: C.pname(p) }))), 'Product'));
+    const buildFilters = (m) => [fsel('source', C.cfgOptions('sources', true, 'Any source', true), 'Source'), fsel('campaign', [{ v: '', l: 'Any campaign' }].concat((m.campaigns || []).map((c) => ({ v: c.id, l: c.name }))), 'Campaign'), fsel('product', [{ v: '', l: 'Any product' }].concat((m.products || []).map((p) => ({ v: p.id, l: C.pname(p) }))), 'Product')];
+    const filt = h('div', { class: 'filters' }, buildFilters({ campaigns: [], products: [] }));
+    metaP.then((m) => { if (ctx.alive() && (m.campaigns || m.products)) mount(filt, buildFilters(m)); });
     mount(root, top, quick, filt, h('div', { style: { margin: '12px 0' } }, C.rangeBar(DB, load)), box); load();
   }
 

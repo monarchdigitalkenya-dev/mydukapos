@@ -18,6 +18,7 @@ import { sendEmail } from './_email.js';
 
 const json = (b, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
 const LAST_KEY = 'owner-health:last';
+const RUN_KEY = 'owner-health:run';                             // the running result of a chunked daily check (zip 159)
 const MOVE_AT = 4 * 1048576;                                   // single-record shops above ~4 MB: suggest their own database
 
 export async function shopHealth(env, shop) {
@@ -71,19 +72,37 @@ export async function onRequestGet(context) {
   if (!cron && !(await requireOwnerAuth(context))) return json({ error: 'Unauthorized' }, 401);
   const shops = await paidShops(env);
   if (cron) {
+    // zip 159 — CHUNKED. One invocation used to check EVERY shop in a row (a Durable Object export each, one after another): with a few
+    // hundred shops that is minutes of work and hundreds of subrequests in a single request, which Cloudflare cuts off part-way. Now each
+    // invocation checks `HEALTH_CRON_SLICE` shops (default 12), keeps the running result in KV and calls the next slice itself; the last
+    // slice writes the summary and sends the email exactly as before. A fleet that fits in one slice behaves exactly as it always did.
+    const slice = Math.max(1, Number(env.HEALTH_CRON_SLICE) || 12);
+    const offset = Math.max(0, Number(u.searchParams.get('offset')) || 0);
+    let prior = { bad: [], checked: 0 };
+    if (offset > 0) { try { prior = JSON.parse((await env.mydukapos_kv.get(RUN_KEY)) || 'null') || prior; } catch (e) { /* start over from what this slice sees */ } }
     const results = [];
-    for (const s of shops) results.push(await shopHealth(env, s));
+    for (const s of shops.slice(offset, offset + slice)) results.push(await shopHealth(env, s));
+    const nextOffset = offset + slice;
+    if (nextOffset < shops.length) {
+      await env.mydukapos_kv.put(RUN_KEY, JSON.stringify({ bad: [...prior.bad, ...results.filter((r) => r.problems.length)].slice(0, 200), checked: prior.checked + results.length }), { expirationTtl: 3600 });
+      const nextUrl = new URL(request.url); nextUrl.searchParams.set('cron', '1'); nextUrl.searchParams.set('offset', String(nextOffset));
+      let chained = false;
+      if (context.waitUntil) { chained = true; context.waitUntil(fetch(nextUrl.toString(), { headers: { 'X-Router-Secret': env.ROUTER_SHARED_SECRET } }).catch(() => {})); }
+      return json({ ok: true, done: false, checked: prior.checked + results.length, total: shops.length, next: nextOffset, chained });
+    }
+    results.unshift(...prior.bad);                                   // earlier slices' problem shops first, then this slice's (all shops for a single-slice fleet)
+    const checkedTotal = prior.checked + shops.slice(offset).length;
     const bad = results.filter((r) => r.problems.length);
-    await env.mydukapos_kv.put(LAST_KEY, JSON.stringify({ at: Date.now(), total: results.length, bad: bad.length, shops: bad.slice(0, 100) }));
+    await env.mydukapos_kv.put(LAST_KEY, JSON.stringify({ at: Date.now(), total: checkedTotal, bad: bad.length, shops: bad.slice(0, 100) }));
     let emailed = false;
     const owner = await getOwnerAccount(env).catch(() => null);
     const to = owner && /@/.test(String(owner.identifier || '')) ? owner.identifier : '';
     if (bad.length && to) {
       const rows = bad.map((r) => `<li><strong>${String(r.label).replace(/[<>&]/g, '')}</strong>: ${r.problems.map((p) => String(p).replace(/[<>&]/g, '')).join('; ')}</li>`).join('');
-      const sent = await sendEmail(env, { to, subject: `mydukapos: ${bad.length} shop(s) need attention`, html: `<p>Daily health check of ${results.length} shops:</p><ul>${rows}</ul><p>Details: Owner Console ▸ 🩺 Health.</p>` });
+      const sent = await sendEmail(env, { to, subject: `mydukapos: ${bad.length} shop(s) need attention`, html: `<p>Daily health check of ${checkedTotal} shops:</p><ul>${rows}</ul><p>Details: Owner Console ▸ 🩺 Health.</p>` });
       emailed = !!(sent && sent.ok);
     }
-    return json({ ok: true, total: results.length, bad: bad.length, emailed });
+    return json({ ok: true, total: checkedTotal, bad: bad.length, emailed });
   }
   const offset = Math.max(0, Number(u.searchParams.get('offset')) || 0);
   const limit = Math.min(50, Math.max(1, Number(u.searchParams.get('limit')) || 25));

@@ -23,6 +23,42 @@ export const st = (db, sql, ...args) => db.prepare(sql).bind(...nz(args));
 export const all = async (db, sql, ...args) => (await st(db, sql, ...args).all()).results || [];
 export const first = async (db, sql, ...args) => (await st(db, sql, ...args).first()) || null;
 export const run = async (db, sql, ...args) => st(db, sql, ...args).run();
+// zip 161: several SELECTs in ONE round trip (one db.batch = one D1 request, one consistent snapshot) -> an array of row arrays, in the order given.
+export const many = async (db, stmts) => (await db.batch(stmts)).map((r) => (r && r.results) || []);
+// zip 161: counts what a request asks of D1, for the Server-Timing header (trips = round trips: each prepare().run/all/first/raw is one, a batch is ONE however many
+// statements it holds). A transparent wrapper: everything the handlers call (prepare, batch, exec) behaves exactly like the real handle.
+export function countedDb(db) {
+  const c = { trips: 0, stmts: 0, ms: 0 };
+  const timed = async (n, fn) => { const t0 = Date.now(); try { return await fn(); } finally { c.trips++; c.stmts += n; c.ms += Date.now() - t0; } };
+  const wrap = (s) => ({
+    _s: s, sql: s.sql, args: s.args,
+    bind: (...a) => wrap(s.bind(...a)),
+    run: (...a) => timed(1, () => s.run(...a)), all: (...a) => timed(1, () => s.all(...a)), first: (...a) => timed(1, () => s.first(...a)), raw: (...a) => timed(1, () => s.raw(...a)),
+  });
+  return {
+    _raw: db, counts: c,
+    prepare: (sql) => wrap(db.prepare(sql)),
+    batch: (list) => timed(list.length, () => db.batch(list.map((x) => (x && x._s) || x))),
+    exec: (sql) => timed(1, () => db.exec(sql)),
+  };
+}
+// zip 161: write the queries of a screen one after another as usual, get ONE round trip. `bx.all(sql, ...args)` / `bx.first(...)` return promises; `await bx.run()` sends
+// everything queued so far as one db.batch and settles them. (Queries that depend on an earlier answer go after run(), in a second batch.)
+export function batcher(db) {
+  let queue = [];
+  const enqueue = (sql, args, pick) => { const p = new Promise((resolve, reject) => { queue.push({ stmt: st(db, sql, ...args), resolve: (rows) => resolve(pick(rows)), reject }); }); p.catch(() => {}); return p; };      // (the catch: a failed batch must not leave unhandled rejections behind; run() itself throws)
+  return {
+    all: (sql, ...args) => enqueue(sql, args, (rows) => rows),
+    first: (sql, ...args) => enqueue(sql, args, (rows) => rows[0] || null),
+    async run() {
+      const items = queue; queue = [];
+      if (!items.length) return;
+      let out;
+      try { out = await many(db, items.map((i) => i.stmt)); } catch (e) { items.forEach((i) => i.reject(e)); throw e; }
+      items.forEach((i, k) => i.resolve(out[k]));
+    },
+  };
+}
 export const changes = (r) => Number((r && r.meta && r.meta.changes) || 0);
 export const placeholders = (n) => Array.from({ length: n }, () => '?').join(',');
 export const jparse = (s, d = null) => { if (s == null || s === '') return d; try { return JSON.parse(s); } catch (e) { return d; } };

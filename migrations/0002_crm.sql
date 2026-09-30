@@ -187,6 +187,10 @@ CREATE TABLE IF NOT EXISTS crm_spend (
 
 CREATE INDEX IF NOT EXISTS ix_crm_spend_campaign ON crm_spend (campaign_id, date);
 
+CREATE INDEX IF NOT EXISTS ix_crm_spend_date ON crm_spend (date);
+
+CREATE INDEX IF NOT EXISTS ix_crm_spend_ad ON crm_spend (ad_id);
+
 CREATE TABLE IF NOT EXISTS crm_imports (
   id TEXT PRIMARY KEY,
   file_name TEXT,
@@ -299,6 +303,8 @@ CREATE INDEX IF NOT EXISTS ix_crm_leads_lastcontact ON crm_leads (last_contacted
 
 CREATE INDEX IF NOT EXISTS ix_crm_leads_campaign ON crm_leads (first_campaign_id, first_adset_id, first_ad_id);
 
+CREATE INDEX IF NOT EXISTS ix_crm_leads_ad ON crm_leads (first_ad_id);
+
 CREATE TABLE IF NOT EXISTS crm_lead_products (
   lead_id TEXT NOT NULL REFERENCES crm_leads(id),
   product_id TEXT NOT NULL REFERENCES crm_products(id),
@@ -406,6 +412,8 @@ CREATE INDEX IF NOT EXISTS ix_crm_meetings_start ON crm_meetings (starts_at);
 
 CREATE INDEX IF NOT EXISTS ix_crm_meetings_lead ON crm_meetings (lead_id);
 
+CREATE INDEX IF NOT EXISTS ix_crm_meetings_user ON crm_meetings (user_id, status);
+
 CREATE TABLE IF NOT EXISTS crm_conversations (
   id TEXT PRIMARY KEY,
   channel TEXT NOT NULL DEFAULT 'whatsapp',
@@ -490,6 +498,8 @@ CREATE INDEX IF NOT EXISTS ix_crm_sales_staff ON crm_sales (closed_by, sold_at);
 
 CREATE INDEX IF NOT EXISTS ix_crm_sales_campaign ON crm_sales (campaign_id, adset_id, ad_id);
 
+CREATE INDEX IF NOT EXISTS ix_crm_sales_ad ON crm_sales (ad_id);
+
 CREATE INDEX IF NOT EXISTS ix_crm_sales_product ON crm_sales (product_id);
 
 CREATE TABLE IF NOT EXISTS crm_attribution_events (
@@ -521,6 +531,8 @@ CREATE TABLE IF NOT EXISTS crm_attribution_events (
 CREATE INDEX IF NOT EXISTS ix_crm_attr_lead ON crm_attribution_events (lead_id, at);
 
 CREATE INDEX IF NOT EXISTS ix_crm_attr_unresolved ON crm_attribution_events (resolved);
+
+CREATE INDEX IF NOT EXISTS ix_crm_attr_ad ON crm_attribution_events (ad_id);
 
 CREATE TABLE IF NOT EXISTS crm_notifications (
   id TEXT PRIMARY KEY,

@@ -1,6 +1,7 @@
 // functions/api/_crm/router.js — the CRM API router (NOT a route; functions/api/crm/[[path]].js hands every /api/crm/* request to handle()).
 // Every route except the four public auth ones needs a valid token, and each handler checks its permission from D1 for that request.
-import { HttpError, E, json, errorResponse, readJson, first } from './core.js';
+import { HttpError, E, json, errorResponse, readJson, first, countedDb } from './core.js';
+import { configureCache } from './cache.js';
 import { ledgerDb } from '../_ledger.js';
 import { ensureCrmSchema } from './schema.js';
 import { authenticate, requireOwnerOnly, login, inviteInfo, inviteAccept, resetAccept, passwordChange, meUser } from './auth.js';
@@ -28,8 +29,9 @@ route('GET', '/auth/invite', inviteInfo, pub);
 route('POST', '/auth/invite/accept', inviteAccept, pub);
 route('POST', '/auth/reset/accept', resetAccept, pub);
 route('POST', '/auth/password/change', passwordChange);
-route('GET', '/me', async (ctx) => { await fu.sweepReminders(ctx.db); return { user: meUser(ctx.actor), config: await cfg.getConfig(ctx.db, { all: false }), integrations: cfg.integrationStatus(ctx.env) }; });
+route('GET', '/me', async (ctx) => { await fu.sweepReminders(ctx.db, ctx.actor.meta); return { user: meUser(ctx.actor), config: await cfg.getConfig(ctx.db, { all: false }), integrations: cfg.integrationStatus(ctx.env) }; });
 
+route('GET', '/boot', misc.boot);
 route('GET', '/staff', staff.listStaff);
 route('POST', '/staff', staff.createStaff);
 route('GET', '/staff/:id', staff.getStaff);
@@ -148,23 +150,31 @@ function match(method, segs) {
   return { pathExists };
 }
 
+// zip 161: Server-Timing on every CRM answer: what the request asked of D1 (round trips / statements / time inside D1 calls) and the Function's own time. The browser's
+// Network panel shows it (F12, Timing tab), so a slow screen can be told apart: many trips = a query problem, one slow trip = an index problem, neither = the network.
+const timing = (t0, c) => `d1;dur=${c ? c.ms : 0};desc="${c ? c.trips : 0} trips ${c ? c.stmts : 0} stmts", app;dur=${Date.now() - t0}`;
 export async function handle(context) {
   const { request, env } = context;
+  const t0 = Date.now();
   const cors = corsHeadersFor(request, env, { methods: 'GET, POST, PUT, PATCH, DELETE, OPTIONS', headers: 'Content-Type, Authorization' });
-  const done = (res) => { for (const [k, v] of Object.entries(cors)) res.headers.set(k, v); return res; };
+  let counted = null;
+  const done = (res) => { for (const [k, v] of Object.entries(cors)) res.headers.set(k, v); if (request.method !== 'OPTIONS') res.headers.set('Server-Timing', timing(t0, counted && counted.counts)); return res; };
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
   try {
-    const db = ledgerDb(env);
-    if (!db) throw new HttpError(503, 'crm_database_missing', 'The CRM database (D1 binding LEDGER_DB) is not connected to this deployment.');
+    const raw = ledgerDb(env);
+    if (!raw) throw new HttpError(503, 'crm_database_missing', 'The CRM database (D1 binding LEDGER_DB) is not connected to this deployment.');
+    configureCache(env);
     const url = new URL(request.url);
     const parts = url.pathname.replace(/^\/api\/crm\/?/, '').split('/').filter(Boolean).map((s) => s.slice(0, 200));
     const m = match(request.method, parts);
     if (!m.r) throw m.pathExists ? new HttpError(405, 'method_not_allowed', 'Method not allowed') : E.notFound('No such CRM endpoint', 'not_found');
-    try { await ensureCrmSchema(db); } catch (e) { console.error('crm schema', e && e.message); throw new HttpError(503, 'crm_database_unavailable', 'The CRM database is not reachable right now.'); }
+    counted = countedDb(raw);
+    try { await ensureCrmSchema(counted, { fts: String(env.CRM_FTS == null ? '' : env.CRM_FTS) === '1' }); } catch (e) { console.error('crm schema', e && e.message); throw new HttpError(503, 'crm_database_unavailable', 'The CRM database is not reachable right now.'); }
+    const db = counted;
     let body;
     const ctx = { env, db, request, url, query: url.searchParams, params: m.params, context, actor: null, json: () => (body || (body = readJson(request))) };
     if (!m.r.public) ctx.actor = m.r.owner ? await requireOwnerOnly(context, db) : await authenticate(context, db);
-    if (!m.r.public) { try { await auto.runAutomation(db); } catch (e) { console.error('crm automation', e && e.message); } }      // zip 158: lazy rules, never fail the request
+    if (!m.r.public) { try { await auto.runAutomation(db, ctx.actor.meta); } catch (e) { console.error('crm automation', e && e.message); } }      // zip 158: lazy rules, never fail the request (zip 161: no round trip unless they are due)
     const out = await m.r.handler(ctx);
     return done(out instanceof Response ? out : json(out));
   } catch (e) {

@@ -8,7 +8,7 @@
 //   * spend is one row per (campaign/ad set/ad, day).
 import { listProducts } from '../_license.js';
 
-export const CRM_SCHEMA_VERSION = 3;
+export const CRM_SCHEMA_VERSION = 5;                      // zip 161: 4 -> 5 (the speed indexes below; a database at 4 gets them at its next first use)
 export const CRM_SEED_VERSION = 2;
 
 // Columns added after schema v1. A database created at v1 gets them through ALTER TABLE ... ADD COLUMN in ensureCrmSchema (CREATE TABLE IF NOT EXISTS
@@ -176,6 +176,8 @@ export const CRM_SCHEMA = [
   UNIQUE (scope_key, date)
 )`,
   `CREATE INDEX IF NOT EXISTS ix_crm_spend_campaign ON crm_spend (campaign_id, date)`,
+  `CREATE INDEX IF NOT EXISTS ix_crm_spend_date ON crm_spend (date)`,                                     // zip 159: reports sum spend over a date range
+  `CREATE INDEX IF NOT EXISTS ix_crm_spend_ad ON crm_spend (ad_id)`,                                       // zip 159: ad-level spend roll-up
 
   // ---- imports ----
   `CREATE TABLE IF NOT EXISTS crm_imports (
@@ -271,6 +273,7 @@ ${colsSql('crm_leads')}
   `CREATE INDEX IF NOT EXISTS ix_crm_leads_source ON crm_leads (source_key)`,
   `CREATE INDEX IF NOT EXISTS ix_crm_leads_lastcontact ON crm_leads (last_contacted_at)`,
   `CREATE INDEX IF NOT EXISTS ix_crm_leads_campaign ON crm_leads (first_campaign_id, first_adset_id, first_ad_id)`,
+  `CREATE INDEX IF NOT EXISTS ix_crm_leads_ad ON crm_leads (first_ad_id)`,                                 // zip 159: the composite above cannot serve an ad-only filter or the ad re-link UPDATE
   `CREATE TABLE IF NOT EXISTS crm_lead_products (
   lead_id TEXT NOT NULL REFERENCES crm_leads(id),
   product_id TEXT NOT NULL REFERENCES crm_products(id),
@@ -363,6 +366,7 @@ ${colsSql('crm_leads')}
 )`,
   `CREATE INDEX IF NOT EXISTS ix_crm_meetings_start ON crm_meetings (starts_at)`,
   `CREATE INDEX IF NOT EXISTS ix_crm_meetings_lead ON crm_meetings (lead_id)`,
+  `CREATE INDEX IF NOT EXISTS ix_crm_meetings_user ON crm_meetings (user_id, status)`,                 // zip 159: staff scorecard counts a person's meetings (was a full scan)
 
   // ---- WhatsApp inbox ----
   `CREATE TABLE IF NOT EXISTS crm_conversations (
@@ -437,6 +441,7 @@ ${colsSql('crm_messages')}
   `CREATE INDEX IF NOT EXISTS ix_crm_sales_lead ON crm_sales (lead_id)`,
   `CREATE INDEX IF NOT EXISTS ix_crm_sales_staff ON crm_sales (closed_by, sold_at)`,
   `CREATE INDEX IF NOT EXISTS ix_crm_sales_campaign ON crm_sales (campaign_id, adset_id, ad_id)`,
+  `CREATE INDEX IF NOT EXISTS ix_crm_sales_ad ON crm_sales (ad_id)`,                                       // zip 159: same, for sales
   `CREATE INDEX IF NOT EXISTS ix_crm_sales_product ON crm_sales (product_id)`,
 
   // ---- attribution ----
@@ -467,6 +472,7 @@ ${colsSql('crm_messages')}
 )`,
   `CREATE INDEX IF NOT EXISTS ix_crm_attr_lead ON crm_attribution_events (lead_id, at)`,
   `CREATE INDEX IF NOT EXISTS ix_crm_attr_unresolved ON crm_attribution_events (resolved)`,
+  `CREATE INDEX IF NOT EXISTS ix_crm_attr_ad ON crm_attribution_events (ad_id)`,                           // zip 159: the ad re-link UPDATE
 
   // ---- notifications + audit ----
   `CREATE TABLE IF NOT EXISTS crm_notifications (
@@ -521,6 +527,31 @@ ${colsSql('crm_messages')}
   `CREATE TRIGGER IF NOT EXISTS no_update_crm_audit BEFORE UPDATE ON crm_audit BEGIN SELECT RAISE(ABORT, 'the audit trail is append-only'); END`,
   // an event may only be acknowledged (processed_at), never rewritten
   `CREATE TRIGGER IF NOT EXISTS no_rewrite_crm_events BEFORE UPDATE OF name, entity, entity_id, lead_id, actor_id, actor_name, data, at ON crm_events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END`,
+];
+
+// ---------------- zip 161: objects added for speed (schema v5). migrations/0004_crm_speed.sql is GENERATED from this list. ----------------
+// Every statement is IF NOT EXISTS and only adds an index (no table, no data change). EXPLAIN QUERY PLAN (tools/audit-d1-queries.mjs, tests/zip161-crm-speed.test.mjs)
+// shows which list query each one serves.
+export const CRM_SPEED_SCHEMA = [
+  `CREATE INDEX IF NOT EXISTS ix_crm_leads_owner_created ON crm_leads (owner_id, created_at)`,             // "my leads" / a staff filter, newest first (was: ix_crm_leads_owner + a sort of every one of their leads)
+  `CREATE INDEX IF NOT EXISTS ix_crm_leads_updated ON crm_leads (updated_at)`,                             // sort = updated, and the keyset cursor of that sort
+  `CREATE INDEX IF NOT EXISTS ix_crm_leads_status_created ON crm_leads (status_key, created_at)`,          // the status filter, newest first
+  `CREATE INDEX IF NOT EXISTS ix_crm_followups_lead_open ON crm_followups (lead_id, status, due_at)`,      // the "next follow-up" of every lead row and the follow=... filters: (lead, open, earliest) is one index probe
+  `CREATE INDEX IF NOT EXISTS ix_crm_notif_created ON crm_notifications (user_id, created_at)`,            // the notification list is "mine, newest first"
+  `CREATE INDEX IF NOT EXISTS ix_crm_conv_unread ON crm_conversations (last_message_at) WHERE unread_count > 0`,   // the inbox badge and the Unread filter
+];
+// OPTIONAL full-text search over leads (migrations-optional/0005_crm_search.sql). NOT part of CRM_SCHEMA: a database that has this virtual table cannot be exported with
+// `wrangler d1 export` (a documented D1 limitation for virtual tables), so it is only created when the owner turns it on (CRM_FTS=1) or applies the migration by hand.
+// trigram tokenizer = substring search like LIKE '%x%' (case-insensitive, 3+ characters); shorter terms use LIKE. The table is a copy of the searchable text, kept
+// in step by triggers on every write path (INSERT and UPDATE of those columns; crm_leads rows are never deleted, a soft delete only sets deleted_at, and the query
+// filters on deleted_at). rowid = crm_leads.rowid.
+const FTS_COLS = `name, business_name, email, location, phones`;
+const ftsVals = (r) => `${r}.name, ${r}.business_name, ${r}.email, ${r}.location, COALESCE(${r}.phone_norm, '') || ' ' || COALESCE(${r}.whatsapp_norm, '')`;
+export const CRM_FTS_SCHEMA = [
+  `CREATE VIRTUAL TABLE IF NOT EXISTS crm_leads_fts USING fts5(${FTS_COLS}, tokenize = 'trigram')`,
+  `CREATE TRIGGER IF NOT EXISTS crm_leads_fts_ai AFTER INSERT ON crm_leads BEGIN INSERT INTO crm_leads_fts (rowid, ${FTS_COLS}) VALUES (new.rowid, ${ftsVals('new')}); END`,
+  `CREATE TRIGGER IF NOT EXISTS crm_leads_fts_au AFTER UPDATE OF name, business_name, email, location, phone_norm, whatsapp_norm ON crm_leads BEGIN DELETE FROM crm_leads_fts WHERE rowid = old.rowid; INSERT INTO crm_leads_fts (rowid, ${FTS_COLS}) VALUES (new.rowid, ${ftsVals('new')}); END`,
+  `INSERT INTO crm_leads_fts (rowid, ${FTS_COLS}) SELECT l.rowid, ${ftsVals('l')} FROM crm_leads l WHERE l.rowid NOT IN (SELECT rowid FROM crm_leads_fts)`,        // back-fill of the leads that existed before (a no-op when nothing is missing)
 ];
 
 // ---------------- permission catalogue + role defaults (also seeded into crm_roles) ----------------
@@ -608,23 +639,41 @@ async function upgradeColumns(db) {
     for (const [c, ddl] of cols) if (!have.has(c)) await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${c} ${ddl}`).run();
   }
 }
+// What the database can do beyond the basics, decided once per instance: { fts } (crm_leads_fts exists and may be used).
+export const crmFeatures = (db) => ready.get((db && db._raw) || db) || { fts: false };
 // Creates the CRM tables on first use and seeds the defaults (idempotent). Returns true when the database is usable.
-export async function ensureCrmSchema(db) {
+// zip 161: the "is it already set up?" check is ONE round trip (schema version, seed tag and the FTS table together; it was two, then a third for the seed).
+//   opts.fts === true: create the optional full-text table when it is missing (CRM_FTS=1). Whether to USE an existing one is the caller's call (CRM_FTS=0 in leads.js).
+export async function ensureCrmSchema(db, opts = {}) {
   if (!db) return false;
-  if (ready.get(db)) return true;
-  let ok = false;
-  try { const r = await db.prepare(`SELECT v FROM crm_meta WHERE k = 'schema'`).first(); ok = !!(r && Number(r.v) >= CRM_SCHEMA_VERSION); } catch (e) { ok = false; }
-  if (!ok) {
+  const key = db._raw || db;                                     // a request's counting wrapper (core.js) and the real handle are the same database
+  const known = ready.get(key);
+  if (known) {
+    if (opts.fts === true && !known.fts && !known.ftsTried) { known.ftsTried = true; try { await db.batch(CRM_FTS_SCHEMA.map((s) => db.prepare(s))); known.fts = true; } catch (e) { console.error('crm fts unavailable, searching with LIKE', e && e.message); } }
+    return true;
+  }
+  let schemaOk = false, seedCur = null, hasFts = false;
+  try {
+    const [rm, rf] = await db.batch([db.prepare(`SELECT k, v FROM crm_meta WHERE k IN ('schema', 'seed')`), db.prepare(`SELECT name FROM sqlite_master WHERE name = 'crm_leads_fts'`)]);
+    for (const r of rm.results || []) { if (r.k === 'schema') schemaOk = Number(r.v) >= CRM_SCHEMA_VERSION; else if (r.k === 'seed') seedCur = r.v; }
+    hasFts = !!(rf.results && rf.results.length);
+  } catch (e) { schemaOk = false; }
+  if (!schemaOk) {
     await upgradeColumns(db);                                    // v1 -> v2 (before the batch: it creates indexes on the new columns)
-    await db.batch(CRM_SCHEMA.map((s) => db.prepare(s)));
+    await db.batch([...CRM_SCHEMA, ...CRM_SPEED_SCHEMA].map((s) => db.prepare(s)));
     await db.prepare(`INSERT INTO crm_meta (k, v) VALUES ('schema', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).bind(String(CRM_SCHEMA_VERSION)).run();
   }
   const seedTag = `${CRM_SEED_VERSION}:${listProducts().map((p) => p.id).join(',')}`;
-  const cur = await db.prepare(`SELECT v FROM crm_meta WHERE k = 'seed'`).first();
-  if (!cur || cur.v !== seedTag) {
+  if (seedCur !== seedTag) {
     await db.batch(CRM_SEEDS.map((s) => db.prepare(s.sql).bind(...s.args)));
     await db.prepare(`INSERT INTO crm_meta (k, v) VALUES ('seed', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).bind(seedTag).run();
   }
-  ready.set(db, true);
+  let tried = false;
+  if (!hasFts && opts.fts === true) {
+    tried = true;
+    try { await db.batch(CRM_FTS_SCHEMA.map((s) => db.prepare(s))); hasFts = true; }
+    catch (e) { console.error('crm fts unavailable, searching with LIKE', e && e.message); }        // D1 without FTS5 / trigram: everything keeps working, search just scans
+  }
+  ready.set(key, { fts: hasFts, ftsTried: tried });
   return true;
 }

@@ -1184,6 +1184,40 @@ function computeStaffStats(id) {
             };
         }
 
+//@fn refillEntryId
+// zip 159: the stable id of a tank refill-log entry. An entry that has an id keeps it; a legacy one (logged before entries carried ids) gets a
+// deterministic id made from its own fields, so two devices holding the same legacy entry agree on it and it is never duplicated by a merge.
+// Same rule, line for line, as refillEntryId in functions/api/_merge.js.
+function refillEntryId(e) {
+            if (!e || typeof e !== 'object') return null;
+            if (e.id != null && e.id !== '') return String(e.id);
+            const raw = [e.timestamp, e.litersAdded, e.cost, e.supplier, e.servedBy].map((v) => (v == null ? '' : String(v))).join('|');
+            let h = 5381;
+            for (let i = 0; i < raw.length; i++) h = (((h << 5) + h) ^ raw.charCodeAt(i)) >>> 0;
+            return 'rf-legacy-' + h.toString(36) + '-' + raw.length;
+        }
+
+//@fn mergeRefillLogs
+// The refill log two copies of the same tank should end with: the union of both by entry id (nothing is lost when two tills log a refill at
+// the same time), oldest first, newest 500 kept. Legacy entries get their deterministic id. Returns null when neither copy has a log.
+// Same rule, line for line, as mergeRefillLogs in functions/api/_merge.js.
+function mergeRefillLogs(a, b, cap, info) {
+            const la = a && Array.isArray(a.refillLog) ? a.refillLog : null;
+            const lb = b && Array.isArray(b.refillLog) ? b.refillLog : null;
+            if (!la && !lb) return null;
+            const seen = new Map();
+            [la || [], lb || []].forEach((list) => list.forEach((e) => {
+                const id = refillEntryId(e);
+                if (id == null || seen.has(id)) return;
+                seen.set(id, e.id != null && e.id !== '' ? e : { ...e, id });
+            }));
+            const t = (e) => { const v = Date.parse(e && e.timestamp); return Number.isFinite(v) ? v : 0; };
+            const out = [...seen.values()].map((e, i) => [e, i]).sort((x, y) => (t(x[0]) - t(y[0])) || (x[1] - y[1])).map((x) => x[0]);
+            const max = cap > 0 ? cap : 500;
+            if (info && out.length > max) info.dropped = out.length - max;      // zip 160: how many of the oldest entries this merge let go (see refillLogTruncated)
+            return out.length > max ? out.slice(out.length - max) : out;
+        }
+
 //@fn awardTokensToCustomer
 // zip 158: credits loyalty tokens to a customer record in a way that survives two tills awarding at the same time. Each device raises only ITS OWN entry in
 // `tokenLedger` (on top of `tokenBase`, the balance before the ledger began); `tokens` stays the total, so every screen keeps reading it. The server
@@ -1322,15 +1356,246 @@ function copyGatewayUrl(inputId) {
 //@fn copyInviteLink
 function copyInviteLink() {
             const linkInput = document.getElementById('invite-link-text');
+            if (!linkInput || !linkInput.value) return;
+            // zip 161: a link that is not on the server yet is not shared (it would open "no longer valid"); the box says so while it is being made live
+            if (linkInput.getAttribute('data-live') === '0') { showToast('Not live yet — wait for "Ready" before sending this link.', true); return; }
             linkInput.select();
-            linkInput.setSelectionRange(0, 99999);
+            try { linkInput.setSelectionRange(0, 99999); } catch (e) { /* select() is enough */ }
+            const fallback = () => { try { document.execCommand('copy'); showToast('Link copied.'); } catch (e) { window.prompt('Copy this link:', linkInput.value); } };
             try {
-                navigator.clipboard.writeText(linkInput.value);
-                showToast('Link copied to clipboard.');
+                if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(linkInput.value).then(() => showToast('Link copied to clipboard.'), fallback);
+                else fallback();
             } catch (e) {
-                document.execCommand('copy');
-                showToast('Link copied.');
+                fallback();
             }
+        }
+
+//@fn inviteUiEnsure
+function inviteUiEnsure() {
+            // zip 161: the invite box always has a status line, a "Try again" button and a real "Open" link, whichever app's markup it came with.
+            const box = document.getElementById('invite-link-result');
+            const input = document.getElementById('invite-link-text');
+            if (!box || !input) return null;
+            const row = box.querySelector('.invite-link-box') || box;
+            let status = document.getElementById('invite-link-status');
+            if (!status) {
+                status = document.createElement('div');
+                status.id = 'invite-link-status';
+                status.setAttribute('role', 'status');
+                status.setAttribute('aria-live', 'polite');
+                status.style.cssText = 'font-size:13px; margin:8px 0 0; padding:8px 10px; border-radius:8px; background:#f4f6f7; color:#2c3e50; display:flex; align-items:center; gap:8px; flex-wrap:wrap;';
+                const msg = document.createElement('span');
+                msg.id = 'invite-link-status-msg';
+                status.appendChild(msg);
+                const retry = document.createElement('button');
+                retry.type = 'button';
+                retry.id = 'invite-link-retry';
+                retry.className = 'settings-small-btn';
+                retry.textContent = 'Try again';
+                retry.style.display = 'none';
+                retry.addEventListener('click', () => { inviteRetryNow(); });
+                status.appendChild(retry);
+                if (row.parentNode) row.parentNode.insertBefore(status, row.nextSibling); else box.appendChild(status);
+            }
+            let open = document.getElementById('invite-link-open');
+            if (!open) {
+                open = document.createElement('a');
+                open.id = 'invite-link-open';
+                open.className = 'settings-small-btn';
+                open.style.cssText = 'text-decoration:none; text-align:center;';
+                open.textContent = '🔗 Open';
+                open.href = '#';
+                row.appendChild(open);
+            }
+            if (!open.__inviteBound) {
+                open.__inviteBound = true;
+                open.target = '_blank';
+                open.rel = 'noopener';
+                open.addEventListener('click', (e) => { if (open.getAttribute('aria-disabled') === 'true') { e.preventDefault(); showToast('Not live yet — wait for "Ready" before opening it.', true); } });
+            }
+            const copy = box.querySelector('button[onclick^="copyInviteLink"]');
+            return { box, row, input, status, msg: document.getElementById('invite-link-status-msg'), retry: document.getElementById('invite-link-retry'), open, copy };
+        }
+
+//@fn inviteUiSet
+function inviteUiSet(state, message) {
+            // state: 'making' (being sent to the server, not to be shared yet), 'ready' (on the server), 'retry' (not on the server yet: saved on this device)
+            const u = inviteUiEnsure();
+            if (!u) return;
+            const live = state === 'ready';
+            u.input.setAttribute('data-live', live ? '1' : '0');
+            if (u.copy) u.copy.disabled = !live;
+            u.open.setAttribute('aria-disabled', live ? 'false' : 'true');
+            u.open.style.pointerEvents = live ? '' : 'none';
+            u.open.style.opacity = live ? '' : '0.5';
+            u.open.tabIndex = live ? 0 : -1;
+            const tone = live ? ['#e8f8f0', '#1e7e4f'] : state === 'retry' ? ['#fdecea', '#a93226'] : ['#fff8e1', '#7d5a00'];
+            u.status.style.background = tone[0];
+            u.status.style.color = tone[1];
+            if (u.msg) u.msg.textContent = message || '';
+            if (u.retry) u.retry.style.display = state === 'retry' ? '' : 'none';
+            u.box.style.display = 'block';
+        }
+
+//@fn inviteIsLive
+function inviteIsLive(seq) {
+            // The invite is on the server once a push that STARTED after it was created has been acknowledged (see ackLocalDirty).
+            try { if (typeof ownerHasUnsentChanges === 'function') return !ownerHasUnsentChanges(); } catch (e) { /* the owner console counts differently; the shop apps below */ }
+            try { return (parseInt(localStorage.getItem('pos_acked_seq') || '0', 10) || 0) >= seq; } catch (e) { return false; }
+        }
+
+//@fn inviteRunPush
+function inviteRunPush(timeoutMs) {
+            // One push for somebody who is waiting for it: no pre-pull, one attempt (the caller shows progress and asks again), bounded wait.
+            if (typeof pushNow === 'function') return pushNow({ skipPrePull: true, priority: true, maxAttempts: 1, timeoutMs: timeoutMs || 10000 });
+            if (typeof pushNowOrWarn === 'function') return pushNowOrWarn('Invite link');
+            return Promise.resolve(false);
+        }
+
+//@fn inviteMakeLive
+async function inviteMakeLive() {
+            // Sends the invite to the server, visibly and for at most ~12 s per call. Never hands out the link before the server has it.
+            const st = window.__inviteGen;
+            if (!st || !st.invite) return false;
+            const t0 = Date.now();
+            const budget = 12000;
+            let live = false;
+            let tries = 0;
+            while (Date.now() - t0 < budget) {
+                tries++;
+                // a pull that landed in the meantime may have replaced the list with the server's older copy: put the invite back
+                if (!pendingInvites.some((i) => i && i.token === st.invite.token)) {
+                    pendingInvites.push(st.invite);
+                    safeSetItem('pos_pending_invites', JSON.stringify(pendingInvites));
+                    if (typeof markLocalDirty === 'function') markLocalDirty();
+                    st.seq = parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0;
+                }
+                inviteUiSet('making', tries > 1 ? `The server is busy — trying again (${tries})…` : 'Making it live… don’t send the link yet.');
+                let ok = false;
+                try { ok = (await inviteRunPush(Math.min(10000, Math.max(3000, budget - (Date.now() - t0))))) === true; } catch (e) { ok = false; }
+                if (ok && pendingInvites.some((i) => i && i.token === st.invite.token)) { live = true; break; }
+                if (window.__pushFailKind === 'network') break;                       // no answer at all: hammering does not help; say so and offer "Try again"
+                const wait = Math.min(Math.max(window.__pushRetryAfterMs || 0, 900), 3000);
+                if (Date.now() - t0 + wait >= budget) break;
+                await new Promise((r) => setTimeout(r, wait));
+            }
+            if (live) {
+                inviteUiSet('ready', 'Ready — you can send this link now.');
+                clearInterval(st.watch);
+                st.token = '';
+                return true;
+            }
+            let why = '';
+            try { why = typeof netFailReason === 'function' ? netFailReason() : ''; } catch (e) { why = ''; }
+            inviteUiSet('retry', 'Saved on this device, but not on the server yet' + (why ? ' (' + why + ')' : '') + '. It is sent by itself as soon as the server answers — or tap Try again.');
+            // if the app's own automatic retry gets it through later, say "Ready" without another tap
+            clearInterval(st.watch);
+            const started = Date.now();
+            const token = st.invite.token;
+            st.watch = setInterval(() => {
+                try {
+                    if (!window.__inviteGen || window.__inviteGen.invite.token !== token || Date.now() - started > 600000) { clearInterval(st.watch); return; }
+                    if (inviteIsLive(st.seq) && pendingInvites.some((i) => i && i.token === token)) { inviteUiSet('ready', 'Ready — you can send this link now.'); st.token = ''; clearInterval(st.watch); }
+                } catch (e) { clearInterval(st.watch); }
+            }, 1200);
+            return false;
+        }
+
+//@fn inviteRetryNow
+async function inviteRetryNow() {
+            const st = window.__inviteGen;
+            if (!st || !st.invite || st.busy) return;
+            st.busy = true;
+            const btn = document.getElementById('invite-link-retry');
+            if (btn) btn.disabled = true;
+            try { await inviteMakeLive(); }
+            finally { st.busy = false; if (btn) btn.disabled = false; }
+        }
+
+//@fn inviteGenerate
+async function inviteGenerate(cfg) {
+            // zip 161: Settings -> Staff -> "Generate Invite Link". Answers at once (button busy), ONE invite per press however many presses, the link is shown as
+            // soon as the invite exists on this device, and is only released ("Ready") once the server has it. `cfg`: { linkFor(token), extra(), confirmDuplicate(name), rolesAfter, reset() }.
+            cfg = cfg || {};
+            const st = window.__inviteGen || (window.__inviteGen = { busy: false, token: '', seq: 0, invite: null, watch: 0 });
+            if (st.busy) { showToast('Still making that link — one moment.'); return false; }
+            const nameInput = document.getElementById('new-staff-name-input');
+            const name = nameInput ? nameInput.value.trim() : '';
+            if (!name) { showToast('Enter the staff member’s name first.', true); return false; }
+            const btn = document.querySelector('button[onclick^="generateInviteLink"]');
+            const btnLabel = btn ? btn.textContent : '';
+            st.busy = true;
+            if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.textContent = 'Generating…'; }
+            try {
+                // Pressing again for the same name while that invite is still not on the server re-sends THAT invite; it never makes a second person.
+                let invite = st.token && st.invite && String(st.invite.name || '').trim().toLowerCase() === name.toLowerCase() && pendingInvites.find((i) => i && i.token === st.token);
+                if (!invite) {
+                    if (typeof cfg.confirmDuplicate === 'function' && cfg.confirmDuplicate(name) === false) return false;          // an app's own "this name already has an invite" warning
+                    const roles = typeof newStaffSelectedRoles !== 'undefined' ? [...newStaffSelectedRoles] : [];          // sales-tab is implicit, added on account creation
+                    const mgr = document.getElementById('new-staff-is-manager');
+                    invite = Object.assign({ token: generateToken(), name, roles, createdAt: Date.now() }, mgr ? { isManager: !!mgr.checked } : {}, typeof cfg.extra === 'function' ? cfg.extra() : {});
+                    pendingInvites.push(invite);
+                }
+                safeSetItem('pos_pending_invites', JSON.stringify(pendingInvites));
+                if (typeof markLocalDirty === 'function') markLocalDirty();                 // "unsent work": a pull that lands now must not replace the list before it is sent
+                st.invite = invite;
+                st.token = invite.token;
+                st.seq = parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0;
+                const link = typeof cfg.linkFor === 'function' ? cfg.linkFor(invite.token) : `${window.location.origin}${window.location.pathname}?invite=${invite.token}`;
+                const u = inviteUiEnsure();
+                if (u) { u.input.value = link; u.open.href = link; }
+                inviteUiSet('making', 'Making it live… don’t send the link yet.');
+                if (nameInput) nameInput.value = '';
+                if (typeof newStaffSelectedRoles !== 'undefined') newStaffSelectedRoles = Array.isArray(cfg.rolesAfter) ? [...cfg.rolesAfter] : ['sales-tab'];           // reset for the next invite, pre-checked by default (an app can say otherwise)
+                const managerCheckbox = document.getElementById('new-staff-is-manager');
+                if (managerCheckbox) managerCheckbox.checked = false;
+                if (typeof cfg.reset === 'function') { try { cfg.reset(); } catch (e) { /* the invite itself is made */ } }
+                if (typeof renderNewStaffRoleCheckboxes === 'function') renderNewStaffRoleCheckboxes();
+                const live = await inviteMakeLive();
+                showToast(live ? `Invite link ready for ${name}.` : `Invite for ${name} is saved here — not on the server yet. Tap “Try again” under the link.`, !live);
+                return live;
+            } finally {
+                st.busy = false;
+                if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.textContent = btnLabel; }
+            }
+        }
+
+//@fn inviteSubmitRun
+async function inviteSubmitRun(inner) {
+            // zip 161: the invited person's "Create My Account": busy at once, one tap at a time (a second tap does nothing, visibly), restored when done.
+            if (window.__inviteSubmitting) return;
+            window.__inviteSubmitting = true;
+            const screen = document.getElementById('invite-screen');
+            const btn = screen ? screen.querySelector('.btn-main') : null;
+            const label = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.textContent = 'Creating your account…'; }
+            try { await inner(); }
+            finally {
+                window.__inviteSubmitting = false;
+                if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.textContent = label; }
+            }
+        }
+
+//@fn inviteAccountPush
+function inviteAccountPush() {
+            // The new staff account is on this device already; sending it must not hold the screen. Marked as unsent work first, so a pull that lands
+            // before the send cannot put the server's older list (without this person) over it. Failure is reported and retried by the app itself.
+            try { if (typeof markLocalDirty === 'function') markLocalDirty(); } catch (e) { /* the push below still runs */ }
+            const p = typeof pushNowOrWarn === 'function' ? pushNowOrWarn('Your account') : (typeof pushNow === 'function' ? pushNow({ skipPrePull: true }) : Promise.resolve(false));
+            Promise.resolve(p).catch(() => {});
+            return p;
+        }
+
+//@fn authLinkRecheck
+function authLinkRecheck() {
+            // zip 161: a phone that opens ?invite= or ?staff= before it has ever synced knows nobody yet, so the first look finds nothing and the normal login
+            // appeared instead. Once the first pull has landed, look again: the link's own screen (invite / personal PIN) is shown if the record is there now.
+            try {
+                const q = new URLSearchParams(window.location.search);
+                if (q.get('invite') && typeof checkForInviteToken === 'function' && checkForInviteToken()) return true;
+                if (q.get('staff') && typeof checkForStaffLoginToken === 'function' && checkForStaffLoginToken()) return true;
+            } catch (e) { /* the normal login stays */ }
+            return false;
         }
 
 //@fn copySmsWebhookUrl
@@ -1361,7 +1626,132 @@ async function copyStaffLoginLink(id, name) {
 //@fn openStaffLoginLink
 function openStaffLoginLink(id) {
             // The same link "Copy Link" copies, opened directly (handy on the admin's own phone/PC to check or bookmark it).
-            window.open(`${window.location.origin}${window.location.pathname}?staff=${id}`, '_blank', 'noopener');
+            // zip 161: opened by clicking a real <a target=_blank rel=noopener>, the one way every browser and installed app accepts; where even that is refused the
+            // link is copied so it can be pasted into a browser. (The staff cards now show the same thing as a plain link, which needs no script at all.)
+            const url = `${window.location.origin}${window.location.pathname}?staff=${id}`;
+            try {
+                const a = document.createElement('a');
+                a.href = url;
+                a.target = '_blank';
+                a.rel = 'noopener';
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                return true;
+            } catch (e) {
+                try { copyTextToClipboard(url, 'Could not open a new tab — the link is copied, paste it in your browser.'); } catch (e2) { window.prompt('Copy this link:', url); }
+                return false;
+            }
+        }
+
+//@fn clickGuardInstall
+function clickGuardInstall() {
+            // zip 161: ONE guard for every button whose inline onclick calls a global ASYNC function (a save, a send, anything that waits for the network):
+            //  * pressing it again while the first press is still running does nothing (no second invite, no second bill, no second payment);
+            //  * after 250 ms the pressed button LOOKS busy (aria-busy, dimmed, label + " …"); after ~6 s it says "Still working…"; it never blocks other buttons;
+            //  * a rejection is shown as a message instead of dying silently in the console;
+            //  * a function that keeps settling within 250 ms (an add-to-cart, a +/- button) is left alone, and a plain (non-async) function is never touched.
+            // Exceptions: window.__noClickGuard = ['fnName', ...], or data-no-click-guard on the button. A call still pending after 30 s is let go.
+            if (window.__clickGuardInstalled || typeof document === 'undefined') return;
+            window.__clickGuardInstalled = true;
+            const NEVER = ['showToast', 'closeReceipt', 'switchTab', 'guardedSwitchTab'];
+            const KEYWORDS = /^(if|for|while|switch|return|function|catch|typeof|await|new|void|delete|event|this|do|else|try|throw|in|of|alert|confirm|prompt|parseInt|parseFloat|String|Number|Boolean|Math|JSON|Date|Array|Object|setTimeout|clearTimeout)$/;
+            const st = window.__clickGuard = { pending: new Map(), quick: new Map(), quickRun: new Map(), ctx: null, wrapped: 0 };
+            try {
+                if (!document.getElementById('click-guard-css')) {
+                    const css = document.createElement('style');
+                    css.id = 'click-guard-css';
+                    css.textContent = '.cg-busy { opacity: .65; cursor: progress; }';
+                    (document.head || document.documentElement).appendChild(css);
+                }
+            } catch (e) { /* only looks */ }
+            const isAsync = (f) => { try { return typeof f === 'function' && (f.__cgAsync === true || Object.prototype.toString.call(f) === '[object AsyncFunction]'); } catch (e) { return false; } };
+            const denied = (name) => NEVER.indexOf(name) >= 0 || (Array.isArray(window.__noClickGuard) && window.__noClickGuard.indexOf(name) >= 0);
+            const namesOf = (code) => {
+                const out = [];
+                const re = /(^|[^.\w$'"`])([A-Za-z_$][\w$]*)\s*\(/g;
+                let m;
+                while ((m = re.exec(code))) { if (!KEYWORDS.test(m[2]) && out.indexOf(m[2]) < 0) out.push(m[2]); }
+                return out;
+            };
+            const say = (msg, isErr) => { try { if (typeof showToast === 'function') showToast(msg, !!isErr); } catch (e) { /* the label says it too */ } };
+            const busyOn = (e) => {
+                const el = e.el;
+                if (!el || !el.isConnected) return;
+                el.__cgCount = (el.__cgCount || 0) + 1;
+                e.marked = true;
+                el.classList.add('cg-busy');
+                const own = el.getAttribute('aria-busy') === 'true';                    // the button's own function already shows its own busy label (the invite button does)
+                el.setAttribute('aria-busy', 'true');
+                if (!own && !el.children.length && /^(BUTTON|A)$/.test(el.tagName) && el.textContent) { e.label = el.textContent; e.shown = el.textContent + ' …'; el.textContent = e.shown; }
+            };
+            const busyOff = (e) => {
+                const el = e.el;
+                if (!e.marked || !el) return;
+                el.__cgCount = Math.max(0, (el.__cgCount || 1) - 1);
+                if (el.__cgCount > 0) return;
+                el.classList.remove('cg-busy');
+                el.removeAttribute('aria-busy');
+                if (e.label != null && el.textContent === e.shown) el.textContent = e.label;      // only when nothing else changed the label meanwhile
+                else if (e.label != null && el.textContent === 'Still working…') el.textContent = e.label;
+            };
+            const track = (ctx, name, p) => {
+                const key = ctx.key + '::' + name;
+                const e = { key, name, el: ctx.el, t: Date.now(), marked: false, label: null, shown: null, slow: 0, busy: 0, free: 0 };
+                st.pending.set(key, e);
+                e.busy = setTimeout(() => busyOn(e), 250);
+                e.slow = setTimeout(() => {
+                    if (e.el && e.el.isConnected && e.marked && e.label != null && !e.el.children.length) e.el.textContent = 'Still working…';
+                    say('Still working… you do not need to press it again.');
+                }, 6000);
+                e.free = setTimeout(() => { if (st.pending.get(key) === e) { st.pending.delete(key); busyOff(e); } }, 30000);
+                const end = (err) => {
+                    clearTimeout(e.busy); clearTimeout(e.slow); clearTimeout(e.free);
+                    if (st.pending.get(key) === e) st.pending.delete(key);
+                    busyOff(e);
+                    const took = Date.now() - e.t;
+                    if (took < 250) { const n = (st.quickRun.get(name) || 0) + 1; st.quickRun.set(name, n); if (n >= 3) st.quick.set(name, true); }
+                    else { st.quickRun.set(name, 0); st.quick.set(name, false); }
+                    if (err) {
+                        const msg = String((err && err.message) || err || 'unknown error').slice(0, 140);
+                        try { console.error('[click-guard] ' + name + ' failed:', err); } catch (e2) { /* console gone */ }
+                        say('That did not go through: ' + msg, true);
+                    }
+                };
+                p.then(() => end(), (err) => end(err || new Error('failed')));
+            };
+            const wrap = (name, orig) => {
+                const w = function () {
+                    const ctx = st.ctx;
+                    if (!ctx || ctx.names.indexOf(name) < 0 || ctx.called[name]) return orig.apply(this, arguments);      // called by other code, by another button, or by itself: untouched
+                    ctx.called[name] = true;
+                    const p = orig.apply(this, arguments);
+                    if (p && typeof p.then === 'function') track(ctx, name, p);
+                    return p;
+                };
+                w.__clickGuardOrig = orig;
+                w.__cgAsync = true;
+                try { Object.defineProperty(w, 'name', { value: name }); } catch (e) { /* cosmetic */ }
+                return w;
+            };
+            document.addEventListener('click', (ev) => {
+                st.ctx = null;
+                const t = ev.target;
+                const el = t && t.closest ? t.closest('[onclick]') : null;
+                if (!el || el.disabled || el.hasAttribute('data-no-click-guard') || el.getAttribute('aria-disabled') === 'true') return;
+                const code = el.getAttribute('onclick') || '';
+                const names = namesOf(code).filter((n) => !denied(n) && typeof window[n] === 'function' && (isAsync(window[n]) || window[n].__clickGuardOrig));
+                if (!names.length) return;
+                const key = code.trim();
+                for (let i = 0; i < names.length; i++) {
+                    const e = st.pending.get(key + '::' + names[i]);
+                    if (e && (!st.quick.get(names[i]) || Date.now() - e.t > 250)) { ev.stopImmediatePropagation(); ev.preventDefault(); return; }       // still running: this press does nothing
+                }
+                names.forEach((n) => { const f = window[n]; if (!f.__clickGuardOrig) { try { window[n] = wrap(n, f); st.wrapped++; } catch (e) { /* not writable: left alone */ } } });
+                st.ctx = { el, key, names, called: {} };
+                setTimeout(() => { if (st.ctx && st.ctx.el === el) st.ctx = null; }, 0);
+            }, true);
         }
 
 //@fn copyTextToClipboard
@@ -2048,7 +2438,16 @@ function formatQty(qty, unit) {
             if (!isDecimalUnit(unit)) {
                 return Math.round(n).toString();
             }
-            return (Math.round(n * 100) / 100).toString();
+            return qtyRoundShown(n).toString();
+        }
+
+//@fn qtyRoundShown
+// zip 161: a quantity shown to the reader. Normally 2 decimals, but a genuine 3-decimal figure (a past sale of 0.125 kg) keeps its third
+// digit instead of being shown as 0.13; anything longer (a recipe's 0.3333333) is still shown to 2.
+function qtyRoundShown(n) {
+            n = Number(n) || 0;
+            const r3 = Math.round(n * 1000) / 1000;
+            return Math.abs(r3 - n) < 1e-9 ? r3 : Math.round(n * 100) / 100;
         }
 
 //@fn formatQtyDisplay
@@ -2056,7 +2455,7 @@ function formatQtyDisplay(qty, unit) {
             const n = Number(qty) || 0;
             if (!isDecimalUnit(unit)) return Math.round(n).toString();
             if (qtyDisplayFormat === 'fraction') return decimalToFraction(n);
-            return (Math.round(n * 100) / 100).toString();
+            return qtyRoundShown(n).toString();
         }
 
 //@fn formatRemaining
@@ -2432,6 +2831,37 @@ function restockReturnedItem(product, qty, sel, reason) {
             if (!product || !(qty > 0)) return false;
             sel = sel || {};
             const saved = () => { try { if (typeof stockMovementLog !== 'undefined') safeSetItem(appStoreKey('pos_stock_movement_log'), JSON.stringify(stockMovementLog)); } catch (e) { /* the ledger is saved by the next stock change at the latest */ } return true; };
+            // zip 159: a PRODUCED item (productionRecipe) has no stock of its own - selling it took its MATERIALS off the shelf and never touched its own qty
+            // (see deductStockForSaleUnit), and a void gives those materials back. A return follows the same rule: the materials of the returned units go back
+            // (scaled: what the sale really used per unit, or the recipe when the sale did not record it), and the finished item's own qty is NOT raised (that
+            // would invent stock that nothing ever consumed or sells from). `sel.reusableFinished === true` keeps the old behaviour: the finished unit itself goes back.
+            // zip 160: a SET (type 'set' with setComponents: a bundle) is the same story - selling one takes its COMPONENTS off the shelf (deductStockForSaleUnit) and never
+            // touches the set's own qty - so returning one puts its components back, scaled by the returned qty, from what the sale line really used (componentsUsed).
+            const isSet = product.type === 'set' && Array.isArray(product.setComponents) && product.setComponents.length > 0 && !(Array.isArray(product.productionRecipe) && product.productionRecipe.length > 0);
+            if (!sel.variantId && (isSet || (!sel.reusableFinished && Array.isArray(product.productionRecipe) && product.productionRecipe.length > 0)) && typeof inventory !== 'undefined' && Array.isArray(inventory)) {
+                const r6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
+                let per = null;
+                const sale = sel.sourceRefNumber && typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog.find((x) => x && x.refNumber === sel.sourceRefNumber) : null;
+                if (sale) {
+                    const lines = (sale.items || []).filter((l) => l && l.code === product.code && Array.isArray(l.componentsUsed) && l.componentsUsed.length > 0);
+                    const soldQty = lines.reduce((t, l) => t + (Number(l.qty) || 0), 0);
+                    if (soldQty > 0) {
+                        per = {};
+                        lines.forEach((l) => l.componentsUsed.forEach((c) => { const k = c.code != null ? 'c:' + c.code : 'n:' + c.name; (per[k] || (per[k] = { code: c.code, name: c.name, qty: 0 })).qty += Number(c.qty) || 0; }));
+                        Object.keys(per).forEach((k) => { per[k].qty = per[k].qty / soldQty; });
+                        per = Object.values(per);
+                    }
+                }
+                if (!per) per = (isSet ? product.setComponents : product.productionRecipe).map((r) => { const c = inventory.find((x) => x && x.code === r.code); return { code: r.code, name: c ? c.name : r.code, qty: Number(r.qty) || 0 }; });
+                per.forEach((c) => {
+                    const comp = (c.code != null && inventory.find((x) => x && x.code === c.code)) || inventory.find((x) => x && x.name === c.name);
+                    const back = r6(c.qty * qty);
+                    if (!comp || !(back > 0)) return;
+                    comp.qty = r6((Number(comp.qty) || 0) + back);
+                    logStockMovement(comp.code, comp.name, back, isSet ? `Returned set "${product.name}" (components restored)` : `Returned "${product.name}" (materials restored)`, 'qty');
+                });
+                return saved();
+            }
             if (sel.variantId && Array.isArray(product.variants)) {
                 const variant = product.variants.find(v => v && v.id === sel.variantId);
                 if (variant) {
@@ -5153,6 +5583,7 @@ async function pullStateOnce() {
                     // zip 155: a device that has never had a baseline for its settings (it booted with an up-to-date copy, so no pull was ever applied) takes
                     // one now - otherwise its first real edit of a setting goes out unstamped. Never when it holds unsent edits: those must stay changes.
                     try { if (!(window.__fieldAck && window.__fieldAck.size) && typeof hasUnsyncedWork === 'function' && !hasUnsyncedWork()) ackLocalFields(); } catch (e) { /* baseline only */ }
+                    window.__pullOkOnce = true;
                     markSync('synced'); return;
                 }
                 if (data && data.updatedAt && data.updatedAt > localUpdatedAt) {
@@ -5165,6 +5596,7 @@ async function pullStateOnce() {
                     }
                     applyRemotePayload(preparePulledPayload(data));
                 }
+                window.__pullOkOnce = true;
                 markSync('synced');
             } catch (e) {
                 // Timed out or failed. Reachable server = just slow: say "Syncing", try again at once with more patience. No answer = Offline.
@@ -5284,6 +5716,21 @@ function preparePulledPayload(data) {
                         });
                     }
                 } catch (e) { /* the server's customers are applied as they are */ }
+                // zip 159: tanks - a refill logged on THIS device and not yet on the server is added to the server's refill log, not replaced by it
+                try {
+                    if (Array.isArray(data.tanks) && typeof tanks !== 'undefined' && Array.isArray(tanks) && tanks.length) {
+                        const mineT = new Map();
+                        tanks.forEach((t) => { if (t && t.id != null) mineT.set(String(t.id), t); });
+                        out.tanks = (out.tanks || data.tanks).map((t) => {
+                            const m = t && t.id != null ? mineT.get(String(t.id)) : null;
+                            if (!m || m === t) return t;
+                            const info = {};
+                            const log = mergeRefillLogs(m, t, undefined, info);
+                            const lost = Math.max(Number(m.refillLogTruncated) || 0, Number(t.refillLogTruncated) || 0, info.dropped || 0);      // zip 160: "at least this many older entries were dropped by the cap"
+                            return log ? { ...t, refillLog: log, ...(lost > 0 ? { refillLogTruncated: lost } : {}) } : t;
+                        });
+                    }
+                } catch (e) { /* the server's tanks are applied as they are */ }
                 Object.keys(local).forEach((f) => {
                     const mine = local[f];
                     const theirs = data[f];
@@ -5304,7 +5751,25 @@ function preparePulledPayload(data) {
         }
 
 //@fn pushNow
-async function pushNow() {
+async function pushNow(opts) {
+            // zip 161: `opts` (a plain object; anything else, e.g. an event handed over by a click, is ignored) lets ONE caller that a person is waiting on
+            // (the staff invite link) skip the pre-pull below and ask for a shorter, bounded push: { skipPrePull, priority, maxAttempts, timeoutMs }.
+            // Everything else calls pushNow() exactly as before.
+            const o = opts && typeof opts === 'object' && typeof opts.type !== 'string' ? opts : {};
+            // zip 160: the first push of a session, on a device that holds nothing unsent and has not pulled yet since it opened, is preceded by one pull.
+            // A device that was in a drawer for weeks still holds old copies; it looks at the server first (so its snapshots describe what the server has)
+            // and only then sends. Never blocks selling: a device with unsent work (a sale made offline) skips this, a pull that fails or takes longer than
+            // 8 s is given up, and the push then goes ahead unstamped (see stampDirtyExtraSyncedFields) - the server keeps the newer copy of every record.
+            try {
+                if (!o.skipPrePull && !o.priority && !window.__pullOkOnce && !window.__prePullBusy && typeof pullState === 'function' && !(typeof hasUnsyncedWork === 'function' && hasUnsyncedWork())) {
+                    window.__prePullBusy = true;
+                    try {
+                        const t0 = Date.now();
+                        while (window.__pullInFlight && Date.now() - t0 < 8000) await new Promise((r) => setTimeout(r, 50));      // one already on its way: wait for it
+                        if (!window.__pullOkOnce) await Promise.race([Promise.resolve(pullState()).catch(() => {}), new Promise((r) => setTimeout(r, Math.max(0, 8000 - (Date.now() - t0))))]);
+                    } finally { window.__prePullBusy = false; }
+                }
+            } catch (e) { /* never block a push */ }
             return trackPush(async () => {
                 markSync('syncing');
                 // Snapshot BEFORE collecting the payload — see ackLocalDirty()'s
@@ -5318,7 +5783,7 @@ async function pushNow() {
                 // A push that never gets an answer used to sit at "Syncing…" for as long as the browser cared to wait (minutes), blocking
                 // every later push and pull behind it. It now gives up after 40 s (the poll retries).
                 const pushAbortController = new AbortController();
-                const pushAbortTimer = setTimeout(() => pushAbortController.abort(), window.__pushTimeoutMs || 40000);
+                const pushAbortTimer = setTimeout(() => pushAbortController.abort(), o.timeoutMs || window.__pushTimeoutMs || 40000);
                 try {
                     const res = await fetch(apiUrl(SYNC_URL), {
                         method: 'POST',
@@ -5378,7 +5843,7 @@ async function pushNow() {
                 } finally {
                     clearTimeout(pushAbortTimer);
                 }
-            });
+            }, o);
         }
 
 //@fn pushSharedReceiptSettingsIfNeeded
@@ -6118,6 +6583,36 @@ function renderLoyaltyTiersList() {
             `).join('');
         }
 
+//@fn staffListRefresh
+function staffListRefresh() {
+            // zip 161: called when a pull has applied the staff list. The staff cards / list used to be torn down and rebuilt after EVERY pull that carried anything
+            // (another till's sale, every second or two), so a button (Open, Copy Link, Remove) could be replaced between the press and the release and the tap was
+            // lost. Now they are rebuilt only when something they show has changed.
+            let sig = '';
+            try { sig = JSON.stringify(staff); } catch (e) { sig = String(Math.random()); }
+            const list = document.getElementById('staff-list');
+            if (window.__staffListSig === sig && (!list || list.children.length)) return false;
+            window.__staffListSig = sig;
+            renderStaffList();
+            renderServerPickList();
+            return true;
+        }
+
+//@fn staffPanelRefresh
+function staffPanelRefresh() {
+            const box = document.getElementById('staff-roster-list');
+            if (!box) return false;
+            let sig = '';
+            try {
+                sig = JSON.stringify([staff, typeof staffShifts !== 'undefined' && Array.isArray(staffShifts) ? [staffShifts.length, staffShifts.filter((x) => x && !x.clockOut).length] : 0,
+                    typeof expandedStaffRosterId !== 'undefined' ? expandedStaffRosterId : '', new Date().toDateString(), typeof branchesSummaryCache !== 'undefined' && branchesSummaryCache ? JSON.stringify(branchesSummaryCache.branches || []) : '']);
+            } catch (e) { sig = String(Math.random()); }
+            if (window.__staffPanelSig === sig && box.children.length) return false;
+            window.__staffPanelSig = sig;
+            renderStaffPanel();
+            return true;
+        }
+
 //@fn renderNewStaffRoleCheckboxes
 function renderNewStaffRoleCheckboxes() {
             const container = document.getElementById('new-staff-roles');
@@ -6638,6 +7133,8 @@ function resetReturnForm() {
             document.getElementById('return-customer-name-input').value = '';
             document.getElementById('return-customer-phone-input').value = '';
             document.getElementById('return-save-error').textContent = '';
+            const reusableBox = document.getElementById('return-reusable-check');      // zip 160: production only (the "finished item back on the shelf" tickbox)
+            if (reusableBox) reusableBox.checked = false;
             updateReturnConditionHint();
             resetExchangeState();
             resetUnavailableExchangeForm();
@@ -8416,7 +8913,7 @@ function slimPayloadForPush(payload) {
             const MERGED = new Set(['staff', 'pendingInvites', 'inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers',
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
-                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs', 'cashShifts', 'approvalRequests', 'radiologyOrders', 'theatreCases', 'institutions', 'institutionCharges', 'resources', 'resourceSessions', 'facilityBookings', 'serviceRequests', 'customOrders', 'kegs',
+                'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs', 'cashShifts', 'approvalRequests', 'radiologyOrders', 'theatreCases', 'institutions', 'institutionCharges', 'resources', 'resourceSessions', 'facilityBookings', 'serviceRequests', 'customOrders', 'kegs', 'inventoryCategories',
                 'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes', 'rawMaterials']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
@@ -8830,7 +9327,8 @@ function notePushHttp(res) {
         }
 
 //@fn trackPush
-async function trackPush(fn) {
+async function trackPush(fn, o) {
+            const maxTries = o && o.maxAttempts > 0 ? Math.floor(o.maxAttempts) : 3;     // zip 161: the invite push tries once and reports (its caller shows progress and asks again)
             // Wraps every push so the app always knows whether it has changes the server has not acknowledged yet:
             // queued (see queuePush), in flight, or failed. commit() (called only when the server says OK) clears "failed".
             window.__pushInFlight = (window.__pushInFlight || 0) + 1;
@@ -8846,7 +9344,7 @@ async function trackPush(fn) {
                     window.__pushFailed = true;
                     window.__pushFailKind = '';
                     r = await fn();
-                    if (!window.__pushFailed || window.__pushFailKind !== 'busy' || attempt >= 2) break;
+                    if (!window.__pushFailed || window.__pushFailKind !== 'busy' || attempt >= maxTries - 1) break;
                     markSync('syncing');
                     await new Promise((res) => setTimeout(res, window.__pushRetryAfterMs || jitter(window.__pushBusyRetryMs != null ? window.__pushBusyRetryMs : 1200)));
                 }
@@ -8961,6 +9459,7 @@ async function flushPendingPush() {
 function snapshotExtraSyncedFields() {
             ensureExtraSyncedFieldsInitialized();
             extraSyncSnapshot = {};
+            window.__extraSnapTaken = true;      // zip 160: from now on "not in the snapshot" means "created after it", not "never looked at"
             extraSyncedFields.forEach(({ name, getter, keyField }) => {
                 let arr; try { arr = getter(); } catch (e) { return; }
                 if (!Array.isArray(arr)) return;
@@ -8974,6 +9473,16 @@ function snapshotExtraSyncedFields() {
 //@fn snapshotInventorySync
 function snapshotInventorySync() {
             invSyncSnapshot = {};
+            window.__invSnapTaken = true;
+            // zip 160: this runs once at boot, when the other synced lists are not declared yet. Take THEIR baseline right after the page's script
+            // has finished, so an edit made after boot is told apart from the old records this device was carrying (a device booted from old
+            // storage used to have an empty snapshot and stamped every record as fresh on its first push).
+            try {
+                if (!window.__extraSnapTaken && !window.__extraSnapSched) {
+                    window.__extraSnapSched = true;
+                    setTimeout(() => { try { if (!window.__extraSnapTaken && typeof snapshotExtraSyncedFields === 'function') snapshotExtraSyncedFields(); } catch (e) { /* the first push takes it */ } }, 0);
+                }
+            } catch (e) { /* housekeeping only */ }
             (Array.isArray(inventory) ? inventory : []).forEach((it) => {
                 if (!it || it.code == null) return;
                 invSyncSnapshot[it.code] = stockRecSig(it);
@@ -9007,6 +9516,9 @@ function staffShiftsFor(id) {
 //@fn stampDirtyExtraSyncedFields
 function stampDirtyExtraSyncedFields() {
             ensureExtraSyncedFieldsInitialized();
+            // zip 160: no baseline yet (nothing was ever snapshotted on this device since it opened): every record would look "changed". Take the
+            // baseline now and stamp NOTHING - records keep their own updatedAt, so a stale copy can never beat a newer server copy or a tombstone.
+            if (!window.__extraSnapTaken) { snapshotExtraSyncedFields(); return; }
             extraSyncedFields.forEach(({ name, getter, keyField }) => {
                 let arr; try { arr = getter(); } catch (e) { return; }
                 if (!Array.isArray(arr)) return;
@@ -9024,6 +9536,7 @@ function stampDirtyExtraSyncedFields() {
 function stampDirtyInventory() {
             // Any stock change this device made without itemising it becomes a movement first (see reconcileLocalStockChanges).
             try { reconcileLocalStockChanges(); } catch (e) { /* never block a push */ }
+            if (!window.__invSnapTaken) { snapshotInventorySync(); return; }      // zip 160: no baseline: stamp nothing (see stampDirtyExtraSyncedFields)
             (Array.isArray(inventory) ? inventory : []).forEach((it) => {
                 if (!it || it.code == null) return;
                 const sig = stockRecSig(it);
@@ -9763,7 +10276,7 @@ async function submitPrintRelayJob(jobType, text, bytes) {
 //@fn supplierOptionsHtml
 function supplierOptionsHtml(selectedId) {
             const options = [`<option value="">— No supplier —</option>`]
-                .concat([...suppliers].sort((a, b) => a.name.localeCompare(b.name))
+                .concat([...suppliers].sort((a, b) => (typeof hospCatNameCmp === 'function' ? hospCatNameCmp(a.name, b.name) : a.name.localeCompare(b.name)))   /* zip 161: the hotel's cached collator where the app has one */
                     .map(s => `<option value="${escapeHtml(s.id)}" ${selectedId === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`));
             return options.join('');
         }
@@ -14425,6 +14938,43 @@ function pastSalePaymentDetails(total) {
             return { error: 'Choose a payment method.' };
         }
 
+//@fn parsePastSaleQty
+// zip 161: the quantity typed into "Record a Past Sale". Accepts 0.5, 0,5 (comma decimal), 1,200.5 / 1.200,5 (one separator is decimal, the
+// other is grouping), and the usual fractions (1/2, 1 1/2, ½). Returns { qty } rounded to 3 decimals, or { error } with a clear message —
+// it NEVER rounds to a whole number.
+function parsePastSaleQty(raw) {
+            const bad = 'Enter a valid quantity (for example 0.5, 1.25 or 3).';
+            let s = String(raw == null ? '' : raw).trim().replace(/\s+/g, '');
+            if (!s) return { error: bad };
+            let n = NaN;
+            if (/^\d*[.,]?\d+$|^\d+[.,]$/.test(s)) {
+                n = parseFloat(s.replace(',', '.'));                                   // 5 / 0.5 / 0,5 / .5
+            } else if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) {
+                n = parseFloat(s.replace(/,/g, ''));                                   // 1,200.5
+            } else if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) {
+                n = parseFloat(s.replace(/\./g, '').replace(',', '.'));               // 1.200,5
+            } else if (typeof parseQtyInput === 'function') {
+                n = parseQtyInput(s);                                                  // 1/2, 1 1/2, ½
+            }
+            if (!isFinite(n)) return { error: bad };
+            if (n <= 0) return { error: 'Quantity must be more than 0.' };
+            if (n > 1e6) return { error: 'That quantity is too large.' };
+            const q = Math.round(n * 1000) / 1000;
+            if (q <= 0) return { error: 'The smallest quantity is 0.001.' };
+            return { qty: q };
+        }
+
+//@fn pastSaleTakeStock
+// zip 161: takes `qty` (already rounded to 3 decimals) off an item's own stock for a past sale — floored at 0 like a normal sale, rounded to
+// 3 decimals so 10 - 0.5 is exactly 9.5 (never 9.499999) — and logs the movement so the server ledger rebuilds the same figure.
+function pastSaleTakeStock(product, qty) {
+            const before = Math.round((Number(product.qty) || 0) * 1000) / 1000;
+            product.qty = Math.round(Math.max(0, before - qty) * 1000) / 1000;
+            const delta = Math.round((product.qty - before) * 1000) / 1000;
+            if (delta && typeof logStockMovement === 'function') logStockMovement(product.code, product.name, delta, 'Sale (recorded late)', 'qty');
+            return delta;
+        }
+
 //@fn pastSaleStore
 function pastSaleStore(saleRecord, payment) {
             // A paid past sale goes into the sales log, dated when it really happened. A Pay Later one goes to the Bills tab (dated the same way), and
@@ -16994,6 +17544,7 @@ function receiptSizeOpen() {
                 customMm: kind === 'custom' ? String(mm) : (saved >= 30 && saved <= 300 ? String(saved) : '70'),
             };
             modal.style.display = 'block';
+            try { document.body.classList.add('rsz-open'); } catch (e) { /* cosmetic: zip 161 - a class the CSS can key on where :has() is unknown (old WebViews) */ }
             try { document.body.style.overflow = 'hidden'; } catch (e) { /* cosmetic */ }
             window.__rszKey = (ev) => { if (ev && ev.key === 'Escape') receiptSizeCancel(); };
             document.addEventListener('keydown', window.__rszKey);
@@ -17005,6 +17556,7 @@ function receiptSizeOpen() {
 function receiptSizeClose() {
             const modal = document.getElementById('receipt-size-modal');
             if (modal) modal.style.display = 'none';
+            try { document.body.classList.remove('rsz-open'); } catch (e) { /* cosmetic */ }
             try { document.body.style.overflow = ''; } catch (e) { /* cosmetic */ }
             try { document.removeEventListener('keydown', window.__rszKey); } catch (e) { /* cosmetic */ }
             window.__rsz = null;

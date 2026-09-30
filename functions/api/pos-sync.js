@@ -32,12 +32,14 @@ import { maybeSnapshotBackup } from './_backups.js';
 import { corsHeadersFor } from './_cors.js';
 import { mergeIncomingState, correctClockDrift, MERGE_BY_ID_FIELDS, stripTombstones } from './_merge.js';
 import {
-  readStateRaw, readStateStored, decodeStateText, writeStateText, byteLength, sizePolicy, noteOversize, MIB,
+  readStateRaw, readStateStored, decodeStateText, writeStateText, writeStateFenced, byteLength, sizePolicy, noteOversize, MIB,
   chooseAutoCutoff, writeArchive, dropArchivedIncoming, AUTO_ARCHIVE_AT, shopMode, shopCall, migratingResponse, stateStamp, readStateStamp,
 } from './_state-store.js';
 import { deviceGuard } from './_device-auth.js';
 import { stampSales } from './_staff-auth.js';
 import { recordPush } from './_ledger.js';
+import { withRetry } from './_retry.js';
+import { fenceOpen, fenceWaitVisible, fenceClaim, fenceRelease } from './_write-fence.js';
 
 // CORS is decided per request (see _cors.js): the apps call this on their own origin, so only the shop's own
 // domain family is ever answered — no more `Access-Control-Allow-Origin: *`.
@@ -148,10 +150,13 @@ export function stateKey(clientId) {
 // merges the patch in and stamps updatedAt.
 export async function seedInitialState(env, clientId, patch) {
   if ((await shopMode(env, clientId)) === 'do') { await shopCall(env, clientId, 'push', { body: patch, serverNow: Date.now() }); return; }
-  const cur = await readStateRaw(env, stateKey(clientId));
-  const existing = cur ? JSON.parse(cur.text) : {};
-  const merged = { ...existing, ...patch, updatedAt: Date.now() };
-  await writeStateText(env, stateKey(clientId), JSON.stringify(merged), { keepCompressed: !!(cur && cur.gz), prevMeta: cur && cur.meta, updatedAt: merged.updatedAt });
+  for (let i = 0; i < 5; i++) {                                    // zip 160: through the write fence; a save landing meanwhile = merge the patch into that one
+    const cur = await readStateRaw(env, stateKey(clientId));
+    const existing = cur ? JSON.parse(cur.text) : {};
+    const merged = { ...existing, ...patch, updatedAt: Date.now() };
+    if (await writeStateFenced(env, stateKey(clientId), JSON.stringify(merged), { keepCompressed: !!(cur && cur.gz), prevMeta: cur && cur.meta, updatedAt: merged.updatedAt })) return;
+  }
+  throw new Error('the shop kept changing while it was being set up');
 }
 
 export async function onRequestOptions(context) {
@@ -324,7 +329,15 @@ async function handlePost(context) {
     // merged record-by-record instead of just replaced wholesale — see
     // mergeIncomingState() above. Everything else keeps the previous
     // behavior (incoming replaces existing) via the plain spread inside it.
+    // zip 159 — THE D1 WRITE FENCE (see _write-fence.js): KV reads can be stale, which made two devices merge from the same old copy and
+    // the later write erase the other's sales. With D1 available, wait until the copy we read is at least as new as the last write, and
+    // claim the next slot with one conditional upsert. Without D1 this is null and everything below is exactly the legacy behaviour.
+    const fence = await fenceOpen(env, clientId);
     stored = await readStateRaw(env, stateKey(clientId));
+    if (fence) {
+      try { stored = await fenceWaitVisible(env, fence, () => readStateRaw(env, stateKey(clientId)), stored); }
+      catch (e) { if (e && e.code === 'fence_busy') return busyResponse(cors, e); throw e; }
+    }
     existing = stored ? JSON.parse(stored.text) : {};
 
     // Correct for this device's clock drift BEFORE any merge comparison uses
@@ -384,19 +397,34 @@ async function handlePost(context) {
     };
     // zip 156: has another device's save landed since this one read the shop? Then merge again from what is stored now, instead of writing
     // over it. (Narrows the window to the write itself; only the shop database closes it — see autoMoveToDatabase.)
-    if (attempt < 4 && env.SYNC_RECHECK_WRITE !== '0' && carriesRecords(body)) {      // a push with no records (a heartbeat, a setting) has little to lose: no extra read
+    let fenced = false;
+    if (fence) {
+      const claim = await fenceClaim(env, fence, stored);
+      if (claim === true) fenced = true;
+      else if (claim === false) {                                        // another device took the slot first: merge again on top of its write
+        contended = true;
+        if (++attempt >= 8) return busyResponse(cors, new Error('shop write slot kept changing'));
+        await sleep(15 + Math.floor(Math.random() * 60));
+        continue;
+      }                                                                  // 'error' (D1 failed at the claim): legacy checks below
+    }
+    if (!fenced && attempt < 4 && env.SYNC_RECHECK_WRITE !== '0' && carriesRecords(body)) {      // a push with no records (a heartbeat, a setting) has little to lose: no extra read
       const nowStamp = await readStateStamp(env, stateKey(clientId));
       if (nowStamp !== stateStamp(stored && stored.meta)) { contended = true; attempt++; await sleep(20 + Math.floor(Math.random() * 80)); continue; }
     }
     try {
-      await writeStateText(env, stateKey(clientId), jsonText, {
-        bytes, keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, writer, updatedAt: record.updatedAt,
+      const put = () => writeStateText(env, stateKey(clientId), jsonText, {
+        bytes, keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, writer, updatedAt: record.updatedAt, ver: fenced ? fence.nextVer : undefined,
       });
+      if (fenced) {
+        try { await withRetry(put, { tries: 4, baseMs: 600, maxMs: 1600, env }); }        // the slot is ours: retry the put itself rather than re-claiming
+        catch (e) { await fenceRelease(env, fence); throw e; }
+      } else await put();
       // zip 146 — VERIFY THE WRITE. Storage has no "write only if unchanged": two or three tills saving at the same moment each read the
       // shop, added their own sales and wrote it back — the LAST write won and the others' sales were silently gone from the server,
       // while those tills had been told "OK" and never sent them again (reproduced: 3 tills back online, only the last one's sales
       // kept). Read it back: if a sale this push carried is missing, another till's write landed on top — merge again and write again.
-      if (attempt < 5 && env.SYNC_VERIFY_WRITE !== '0' && carriesLogRecords(body)) {      // a push without sales etc. has nothing to lose
+      if (!fenced && attempt < 5 && env.SYNC_VERIFY_WRITE !== '0' && carriesLogRecords(body)) {      // a push without sales etc. has nothing to lose
         await sleep(120 + Math.floor(Math.random() * 180));
         const after = await readStateRaw(env, stateKey(clientId));
         const lost = after ? pushLostRecords(body, JSON.parse(after.text)) : 0;   // body: after archived history was dropped
@@ -429,10 +457,15 @@ async function handlePost(context) {
     try {
       const roomId = env.SYNC_ROOM.idFromName(clientId);
       const room = env.SYNC_ROOM.get(roomId);
+      // zip 159: a big single-record shop used to push its WHOLE record (up to megabytes) to every connected device on every save, from the
+      // Worker to the room and on to each socket. Above BROADCAST_MAX_BYTES a bare poke goes instead — devices that receive it pull the
+      // record themselves (exactly what the database-mode path above already does), so nothing is lost and the fan-out stays small.
+      const full = JSON.stringify({ ...stripTombstones(record), _ledger: 1 });
+      const cap = Number(env.BROADCAST_MAX_BYTES) >= 0 && env.BROADCAST_MAX_BYTES != null && env.BROADCAST_MAX_BYTES !== '' ? Number(env.BROADCAST_MAX_BYTES) : 256 * 1024;
       context.waitUntil(
         room.fetch('https://sync-room/broadcast', {
           method: 'POST',
-          body: JSON.stringify({ ...stripTombstones(record), _ledger: 1 }),
+          body: full.length > cap ? JSON.stringify({ poke: true }) : full,
         }).catch(() => {})
       );
     } catch (e) {

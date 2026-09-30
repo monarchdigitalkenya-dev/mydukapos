@@ -29,9 +29,9 @@ import { requireOwnerAuth, getOwnerAccount } from './_owner-auth.js';
 import { listClientSummaries } from './_license.js';
 import { RL_HIT_PREFIX } from './_ratelimit.js';
 import {
-  sizePolicy, sizeLevel, listStateSizes, readStateRaw, writeStateText, byteLength, fieldBreakdown,
+  sizePolicy, sizeLevel, listStateSizes, readStateRaw, writeStateText, writeStateFenced, byteLength, fieldBreakdown,
   SIZE_ALERT_PREFIX, ARCHIVE_PREFIX, decodeStateText, splitOldHistory, writeArchive, removeFromArchiveIndex,
-  MODE_PREFIX, shopMode, shopCall,
+  MODE_PREFIX, shopMode, shopCall, forgetShopMode, settleModeCache,
 } from './_state-store.js';
 import { migrateShopToDatabase } from './_migrate.js';
 
@@ -181,7 +181,8 @@ export async function onRequestPost(context) {
       }
       let updatedAt = 0;
       try { updatedAt = JSON.parse(cur.text).updatedAt || 0; } catch (e) { return json({ error: 'That shop\'s stored data is unreadable, so it was left untouched.' }, 500); }
-      const meta = await writeStateText(env, key, cur.text, { compress: wantGz, bytes: before.bytes, prevMeta: cur.meta, updatedAt });
+      const meta = await writeStateFenced(env, key, cur.text, { compress: wantGz, bytes: before.bytes, prevMeta: cur.meta, updatedAt });
+      if (!meta) { cur = await readStateRaw(env, key); if (!cur) return json({ error: 'No data stored for this shop yet.' }, 404); continue; }     // zip 160: the write fence saw another save land: start again from it
       return json({
         clientId, changed: true, gz: meta.gz, bytes: before.bytes, storedBefore: before.stored, stored: meta.stored,
         ratio: before.stored > 0 ? Math.round((before.stored / meta.stored) * 10) / 10 : null,
@@ -259,7 +260,8 @@ export async function onRequestPost(context) {
     state.updatedAt = now;
     const text = JSON.stringify(state);
     // Plain when it fits under KV's 25 MiB value limit (no gzip = no extra copies in memory); gzipped only when it would not fit.
-    await writeStateText(env, key, text, { compress: text.length >= 23 * 1048576, bytes: text.length, prevMeta: cur.meta, updatedAt: now });
+    const wrote = await writeStateFenced(env, key, text, { compress: text.length >= 23 * 1048576, bytes: text.length, prevMeta: cur.meta, updatedAt: now });
+    if (!wrote) return json({ error: 'The shop was busy syncing — nothing was changed. Try again.' }, 409);
     return json({ clientId, updated: changed.length });
   }
 
@@ -272,6 +274,7 @@ export async function onRequestPost(context) {
     if ((current === 'do') === (to === 'do')) return json({ clientId, changed: false, message: to === 'do' ? 'Already in the database.' : 'Already a single record.' });
     // While the shop is moving, pushes are told to retry in a few seconds (503) — so nothing can land in the wrong place.
     await env.mydukapos_kv.put(modeKey, 'migrating', { expirationTtl: 300 });
+    forgetShopMode(env, clientId);
     try {
       if (to === 'do') {
         // (the mode flag is already 'migrating'; the helper works from 'kv', so hand it back first)
@@ -280,19 +283,26 @@ export async function onRequestPost(context) {
         const r = await migrateShopToDatabase(env, clientId);
         return json({ clientId, changed: r.changed, mode: 'db', records: r.records, bytes: r.bytes });
       }
+      await settleModeCache(env);      // zip 159: another instance may still hold 'this shop is in its database' for a few seconds — let that expire before copying the data out
       const exp = await shopCall(env, clientId, 'export', {});
       const text = await exp.text();
-      const cur = await readStateRaw(env, key);
       const policy = sizePolicy(env);
       if (byteLength(text) > policy.max) throw new Error(`the shop (${(byteLength(text) / 1048576).toFixed(1)} MB) is too big to go back to a single record`);
-      await writeStateText(env, key, text, { keepCompressed: !!(cur && cur.gz), prevMeta: cur && cur.meta, updatedAt: JSON.parse(text).updatedAt });
+      let back = null;
+      for (let i = 0; i < 4 && !back; i++) {                       // zip 160: through the write fence (a stale read here must not stamp a version below the fence's)
+        const cur = await readStateRaw(env, key);
+        back = await writeStateFenced(env, key, text, { keepCompressed: !!(cur && cur.gz), prevMeta: cur && cur.meta, updatedAt: JSON.parse(text).updatedAt });
+      }
+      if (!back) throw new Error('the shop kept changing while it was being copied');
       await env.mydukapos_kv.delete(modeKey);
+      forgetShopMode(env, clientId);
       // zip 156: shops now move into the database by themselves from their first push; an owner who moves one BACK means it to stay
       await env.mydukapos_kv.put('auto-db-off:' + clientId, String(Date.now()));
       return json({ clientId, changed: true, mode: 'kv', bytes: byteLength(text) });
     } catch (e) {
       // leave the shop exactly as it was
       if (current === 'do') await env.mydukapos_kv.put(modeKey, 'do'); else await env.mydukapos_kv.delete(modeKey);
+      forgetShopMode(env, clientId);
       return json({ error: `The move was cancelled and nothing was changed: ${e.message}` }, 500);
     }
   }
@@ -322,7 +332,8 @@ export async function onRequestPost(context) {
       keep._archiveCutoff = Math.max(Number(state._archiveCutoff) || 0, cutoff);
       const before = byteLength(cur.text);
       const text = JSON.stringify(keep);
-      const meta = await writeStateText(env, key, text, { keepCompressed: cur.gz, prevMeta: cur.meta, updatedAt: keep.updatedAt });
+      const meta = await writeStateFenced(env, key, text, { keepCompressed: cur.gz, prevMeta: cur.meta, updatedAt: keep.updatedAt });
+      if (!meta) { await env.mydukapos_kv.delete(archiveKey); continue; }       // zip 160: the write fence saw another save land: redo from its data
       return json({ clientId, changed: true, moved, counts, archiveId, bytesBefore: before, bytesAfter: meta.bytes, keepDays });
     }
     return json({ error: 'The shop was busy syncing — nothing was changed. Try again in a moment.' }, 409);
@@ -344,17 +355,21 @@ export async function onRequestPost(context) {
     if (body.action === 'downloadArchive') return json(archive);
 
     // merge the archived records back into the live shop, by id (records already there win)
-    const cur = await readStateRaw(env, key);
-    const state = cur ? JSON.parse(cur.text) : {};
-    let restored = 0;
-    for (const [field, records] of Object.entries(archive.fields || {})) {
-      const have = new Set((state[field] || []).map((r) => (r && (r.id != null ? 'i:' + r.id : r.code != null ? 'c:' + r.code : null))));
-      const add = records.filter((r) => { const k = r && (r.id != null ? 'i:' + r.id : r.code != null ? 'c:' + r.code : null); return k == null || !have.has(k); });
-      state[field] = [...(state[field] || []), ...add];
-      restored += add.length;
+    let restored = 0, wroteBack = null;
+    for (let attempt = 0; attempt < 4 && !wroteBack; attempt++) {         // zip 160: through the write fence; another save landing meanwhile = merge again from it
+      const cur = await readStateRaw(env, key);
+      const state = cur ? JSON.parse(cur.text) : {};
+      restored = 0;
+      for (const [field, records] of Object.entries(archive.fields || {})) {
+        const have = new Set((state[field] || []).map((r) => (r && (r.id != null ? 'i:' + r.id : r.code != null ? 'c:' + r.code : null))));
+        const add = records.filter((r) => { const k = r && (r.id != null ? 'i:' + r.id : r.code != null ? 'c:' + r.code : null); return k == null || !have.has(k); });
+        state[field] = [...(state[field] || []), ...add];
+        restored += add.length;
+      }
+      state.updatedAt = Date.now();
+      wroteBack = await writeStateFenced(env, key, JSON.stringify(state), { keepCompressed: !!(cur && cur.gz), prevMeta: cur && cur.meta, updatedAt: state.updatedAt });
     }
-    state.updatedAt = Date.now();
-    await writeStateText(env, key, JSON.stringify(state), { keepCompressed: !!(cur && cur.gz), prevMeta: cur && cur.meta, updatedAt: state.updatedAt });
+    if (!wroteBack) return json({ error: 'The shop was busy syncing — nothing was changed. Try again in a moment.' }, 409);
     await removeFromArchiveIndex(env, clientId, archive.fields || {});   // devices may now send these records again
     return json({ clientId, restored });
   }

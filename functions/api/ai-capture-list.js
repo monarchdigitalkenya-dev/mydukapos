@@ -567,6 +567,42 @@ Respond with a JSON object matching the schema exactly — no commentary.`;
     return jsonResponse({ mapping, header_is_data: !!result.data.header_is_data });
   }
 
+  // Mode 3b (zip 161) — AI type SUGGESTIONS for the hotel/hospitality import's "All types" mode. The client sends ONLY the rows whose type is
+  // still open: { inventoryTypes: { types: [{id, label}], rows: [{ n, name, category, price }] } } — at most 200 rows, no personal data. The reply is
+  // { types: [{ n, type }] } where `type` is one of the ids it was given; anything else is dropped. The client only fills a dropdown with it.
+  if (body.inventoryTypes && typeof body.inventoryTypes === 'object') {
+    const MAX_TYPE_ROWS = 200;
+    const typesRaw = Array.isArray(body.inventoryTypes.types) ? body.inventoryTypes.types : [];
+    const rowsRaw = Array.isArray(body.inventoryTypes.rows) ? body.inventoryTypes.rows : [];
+    const allowed = typesRaw.slice(0, 12)
+      .map(t => ({ id: String(t && t.id != null ? t.id : '').slice(0, 30), label: String(t && t.label != null ? t.label : '').slice(0, 40) }))
+      .filter(t => /^[A-Za-z0-9_-]+$/.test(t.id));
+    const rows = rowsRaw.slice(0, MAX_TYPE_ROWS)
+      .map(r => ({ n: Number(r && r.n), name: String(r && r.name != null ? r.name : '').slice(0, 80), category: String(r && r.category != null ? r.category : '').slice(0, 60), price: Number.isFinite(Number(r && r.price)) ? Number(r.price) : null }))
+      .filter(r => Number.isInteger(r.n) && r.name);
+    if (allowed.length === 0 || rows.length === 0) {
+      return jsonResponse({ error: 'No rows or no types were provided.' }, 400);
+    }
+    const SYSTEM_PROMPT = `You help a hotel / restaurant / bar point-of-sale shop sort a spreadsheet list into inventory types. Each row has a number n, a name, a category and a price (KES). Choose exactly one type id per row from this list only:
+${allowed.map(t => `- ${t.id}: ${t.label || t.id}`).join('\n')}
+Guidance: something sold to guests that is cooked or served (a meal, a drink poured or mixed) is usually a dish; a packaged product sold as it is (a bottled soda, a snack) is an item; raw goods used to cook are ingredients; plates, glasses, cutlery and other reusable equipment are utensils; rooms, hire or labour are services; bottles and kegs poured by the shot belong to the bar type when that type exists. If a row really cannot be decided, leave it out. Respond with JSON matching the schema — no commentary.`;
+    const RESPONSE_SCHEMA = {
+      type: 'OBJECT',
+      properties: { types: { type: 'ARRAY', items: { type: 'OBJECT', properties: { n: { type: 'NUMBER' }, type: { type: 'STRING' } }, required: ['n', 'type'] } } },
+      required: ['types'],
+    };
+    const userParts = [{ text: 'Rows:\n' + rows.map(r => `${r.n} | ${r.name} | ${r.category} | ${r.price === null ? '' : r.price}`).join('\n') }];
+    const result = await callGeminiForJson({ keys, systemPrompt: SYSTEM_PROMPT, userParts, responseSchema: RESPONSE_SCHEMA, maxOutputTokens: 4096, contextLabel: 'type suggestions' });
+    if (!result.ok) return result.response;
+    const okIds = new Set(allowed.map(t => t.id));
+    const okN = new Set(rows.map(r => r.n));
+    const seen = new Set();
+    const types = (Array.isArray(result.data && result.data.types) ? result.data.types : [])
+      .map(x => ({ n: Number(x && x.n), type: String(x && x.type != null ? x.type : '') }))
+      .filter(x => okN.has(x.n) && okIds.has(x.type) && !seen.has(x.n) && seen.add(x.n));
+    return jsonResponse({ types });
+  }
+
   // Mode 4 — AI-powered "Business Data Import" (Settings → 📥 Data
   // Import). Reads a single, often messy, multi-category spreadsheet —
   // exactly the shape of a typical shop/bar day-sheet, which mixes a

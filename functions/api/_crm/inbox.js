@@ -1,5 +1,5 @@
 // functions/api/_crm/inbox.js — WhatsApp conversations: inbound ingest (called by whatsapp-webhook.js), inbox API, outbound via the Cloud API (NOT a route).
-import { E, HttpError, json, all, first, st, now, newId, text, phoneNorm, phoneDisplay, auditSt, activitySt, notifySt, emitSt, like, jstr } from './core.js';
+import { E, HttpError, json, all, first, st, many, changes, now, newId, text, phoneNorm, phoneDisplay, auditSt, activitySt, notifySt, emitSt, like, jstr } from './core.js';
 import { leadScope, canWriteLead } from './scope.js';
 import { notifyMany, managers } from './notify.js';
 import { createLeadCore, recordTouch, findDuplicates, LEAD_SELECT, PRE_CONTACT, inList } from './leads.js';
@@ -38,6 +38,11 @@ async function convFor(ctx, id, { write = false } = {}) {
   return c;
 }
 
+// the number of chats with something unread that THIS user may open (the Inbox badge). One COUNT, served by the partial index ix_crm_conv_unread.
+export function unreadConversationsSt(db, actor) {
+  const sc = convScope(actor);
+  return st(db, `SELECT COUNT(*) n FROM crm_conversations c LEFT JOIN crm_leads l ON l.id = c.lead_id AND l.deleted_at IS NULL WHERE c.unread_count > 0 AND ${sc.sql}`, ...sc.args);
+}
 export async function listConversations(ctx) {
   const { db, actor, query } = ctx; actor.require('inbox.view');
   const sc = convScope(actor), where = [sc.sql], args = [...sc.args];
@@ -49,21 +54,37 @@ export async function listConversations(ctx) {
     where.push(`(c.contact_name LIKE ? ESCAPE '\\' OR c.last_message_text LIKE ? ESCAPE '\\' OR l.name LIKE ? ESCAPE '\\'${digits.length >= 3 ? ' OR c.wa_id LIKE ?' : ''})`);
     args.push(like(q), like(q), like(q), ...(digits.length >= 3 ? ['%' + digits + '%'] : []));
   }
-  const rows = await all(db, `${C_SELECT} WHERE ${where.join(' AND ')} ORDER BY c.last_message_at DESC, c.id LIMIT 200`, ...args);
-  return { items: rows.map(convOut), apiConfigured: whatsappConfigured(ctx.env) };
+  // zip 161: keyset paging. `limit` (default and maximum 200, as before) and `before` (the nextCursor of the previous page: "<last_message_at>:<id>"); newest chat first.
+  const limit = Math.min(200, Math.max(1, parseInt(query.get('limit'), 10) || 200));
+  const cur = /^(\d{1,15}):(.{1,64})$/.exec(query.get('before') || '');
+  if (cur) { where.push('(c.last_message_at < ? OR (c.last_message_at = ? AND c.id > ?) OR c.last_message_at IS NULL)'); args.push(Number(cur[1]), Number(cur[1]), cur[2]); }
+  const rows = await all(db, `${C_SELECT} WHERE ${where.join(' AND ')} ORDER BY c.last_message_at DESC, c.id LIMIT ?`, ...args, limit + 1);
+  const more = rows.length > limit; if (more) rows.length = limit;
+  const last = rows[rows.length - 1];
+  return { items: rows.map(convOut), apiConfigured: whatsappConfigured(ctx.env), nextCursor: more && last ? `${last.last_message_at ?? 0}:${last.id}` : null };
 }
 export async function conversationMessages(ctx) {
-  const { db, actor } = ctx; actor.require('inbox.view');
-  const c = await convFor(ctx, ctx.params.id);
-  // the newest 500, returned oldest-first (ordering done in JS: no sub-select, so it cannot depend on how the engine treats rowid in a derived table)
-  const rows = await all(db, `SELECT * FROM crm_messages WHERE conversation_id = ? ORDER BY at DESC, rowid DESC LIMIT 500`, c.id);
-  return { conversation: convOut(c), items: rows.reverse().map(msgOut) };
+  const { db, actor, query } = ctx; actor.require('inbox.view');
+  const id = ctx.params.id, sc = convScope(actor);
+  // zip 161: the conversation (with the access check) and its messages in ONE round trip. `limit` (default 500, as before) and `before` (a message time: only older ones)
+  // page through long threads; `hasMore` says whether older messages exist.
+  const limit = Math.min(500, Math.max(1, parseInt(query.get('limit'), 10) || 500));
+  const before = Number(query.get('before')) > 0 ? Number(query.get('before')) : null;
+  const [cs, ms] = typeof id === 'string' ? await many(db, [
+    st(db, `${C_SELECT} WHERE c.id = ? AND ${sc.sql}`, id, ...sc.args),
+    st(db, `SELECT * FROM crm_messages WHERE conversation_id = ? ${before ? 'AND at < ?' : ''} ORDER BY at DESC, rowid DESC LIMIT ?`, id, ...(before ? [before] : []), limit + 1),
+  ]) : [[], []];
+  if (!cs[0]) throw E.notFound('Conversation not found', 'conversation_not_found');
+  const hasMore = ms.length > limit; if (hasMore) ms.length = limit;
+  return { conversation: convOut(cs[0]), items: ms.reverse().map(msgOut), hasMore };
 }
 export async function inboxStatus(ctx) { return { apiConfigured: whatsappConfigured(ctx.env) }; }
 export async function markRead(ctx) {
   ctx.actor.require('inbox.view');
-  const c = await convFor(ctx, ctx.params.id);
-  await st(ctx.db, `UPDATE crm_conversations SET unread_count = 0 WHERE id = ?`, c.id).run();
+  // zip 161: the access check and the update are ONE statement (it was a lookup, then an update)
+  const sc = convScope(ctx.actor);
+  const r = await st(ctx.db, `UPDATE crm_conversations SET unread_count = 0 WHERE id = ? AND EXISTS (SELECT 1 FROM crm_conversations c LEFT JOIN crm_leads l ON l.id = c.lead_id AND l.deleted_at IS NULL WHERE c.id = ? AND ${sc.sql})`, ctx.params.id, ctx.params.id, ...sc.args).run();
+  if (changes(r) !== 1) throw E.notFound('Conversation not found', 'conversation_not_found');
   return { ok: true };
 }
 export async function addNote(ctx) {

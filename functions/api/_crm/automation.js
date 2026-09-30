@@ -5,15 +5,18 @@
 //   * "A new lead nobody has taken for N minutes"  -> notify the managers (once per lead).            Setting: autoUnassignedLeadMinutes (0 = off)
 //   * "A follow-up is overdue by N minutes"        -> notify its owner (managers after a day) once.   Setting: autoFollowupOverdueMinutes (0 = off)
 //     (the second one is executed by sweepReminders in followups.js, which reads the setting.)
-import { all, first, run, changes, now, notifySt, emitSt, jparse } from './core.js';
+import { all, first, run, st, many, changes, now, notifySt, emitSt, jparse } from './core.js';
 import { readSettings } from './config.js';
 import { managers } from './notify.js';
 
 export const RULE_EVENT = 'automation.unassigned_lead_escalated';
 const WINDOW_MS = 14 * 24 * 3600000;                      // only leads created in the last two weeks are escalated (no flood when the rule is first switched on)
 
-export async function runAutomation(db) {
+// `seen` = the value of crm_meta 'auto' that THIS request already read in its first round trip (auth.js). When it is younger than a minute somebody ran the rules
+// already and there is nothing to ask the database (zip 161: that write used to be a round trip on every request). No `seen` = decide with the conditional upsert alone.
+export async function runAutomation(db, seen) {
   const t = now();
+  if (seen && Number.isFinite(seen.auto) && seen.auto >= t - 60000) return { ran: false, escalated: 0 };
   const r = await run(db, `INSERT INTO crm_meta (k, v) VALUES ('auto', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE CAST(crm_meta.v AS INTEGER) < ?`, String(t), t - 60000);
   if (changes(r) !== 1) return { ran: false, escalated: 0 };
   const s = await readSettings(db);
@@ -45,8 +48,8 @@ export async function automationOverview(ctx) {
   const { db, actor } = ctx;
   if (!actor.has('settings.manage') && !actor.has('settings.integrations')) actor.require('settings.manage');
   const s = await readSettings(db);
-  const rows = await all(db, `SELECT * FROM crm_events ORDER BY id DESC LIMIT 60`);
-  const pending = (await first(db, `SELECT COUNT(*) n FROM crm_events WHERE processed_at IS NULL`)).n;
+  const [rows, [pc]] = await many(db, [st(db, `SELECT * FROM crm_events ORDER BY id DESC LIMIT 60`), st(db, `SELECT COUNT(*) n FROM crm_events WHERE processed_at IS NULL`)]);   // zip 161: one trip
+  const pending = pc.n;
   return {
     rules: [
       { key: 'autoUnassignedLeadMinutes', label: 'A new lead nobody has taken', action: 'Notify the managers', unit: 'minutes', value: s.autoUnassignedLeadMinutes, off: s.autoUnassignedLeadMinutes === 0 },

@@ -50,7 +50,8 @@ function makeStale(server, r) {
 }
 
 for (const [seed, steps, stale] of [[152, 48, false], [7, 70, false], [2026, 70, true], [99, 90, true]]) test(`4 devices, random sales / offline / restarts (seed ${seed}, ${steps} steps${stale ? ', stale reads from the store' : ''}): every device ends with every sale, same references, exact stock, no duplicates`, async () => {
-  const server = makeServer();
+  // zip 159: the stale-read runs have the transaction database every real shop has: it hosts the write fence that closes the lost-sale race (KV has no compare-and-set)
+  const server = makeServer({ d1: !!stale });
   const staleCtl = stale ? makeStale(server, rng(seed + 1)) : null;
   const lines = [];
   const devs = [];

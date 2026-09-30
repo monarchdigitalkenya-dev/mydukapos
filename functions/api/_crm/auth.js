@@ -42,17 +42,22 @@ export async function issueToken(env, user) {
 }
 
 // ---------- permissions ----------
+const rolesFromRows = (rows) => {
+  const m = new Map();
+  for (const r of rows) m.set(r.key, new Set((jparse(r.perms, []) || []).filter((p) => PERM_KEYS.includes(p))));
+  return m;
+};
 export async function rolePerms(db) {
   const rows = await all(db, `SELECT key, perms FROM crm_roles`);
   const m = new Map();
   for (const r of rows) m.set(r.key, new Set((jparse(r.perms, []) || []).filter((p) => PERM_KEYS.includes(p))));
   return m;
 }
-export async function userPerms(db, user, roles) {
+export async function userPerms(db, user, roles, overrides) {
+  if (user.role === 'owner') return new Set(PERM_KEYS);              // the owner can never lose a permission (and needs no lookup to know it)
   roles = roles || await rolePerms(db);
-  if (user.role === 'owner') return new Set(PERM_KEYS);              // the owner can never lose a permission
   const set = new Set(roles.get(user.role) || []);
-  for (const o of await all(db, `SELECT perm, effect FROM crm_user_perms WHERE user_id = ?`, user.id)) {
+  for (const o of (overrides || await all(db, `SELECT perm, effect FROM crm_user_perms WHERE user_id = ?`, user.id))) {
     if (!PERM_KEYS.includes(o.perm)) continue;
     if (o.effect === 'grant') set.add(o.perm); else set.delete(o.perm);
   }
@@ -70,10 +75,13 @@ export async function actorFor(db, userId, request) {
 }
 // every active user that currently holds `perm` (for notifications)
 export async function usersWith(db, perm, exceptId) {
-  const roles = await rolePerms(db);
-  const users = await all(db, `SELECT * FROM crm_users WHERE status = 'active' AND archived = 0`);
+  // zip 161: users, roles and EVERY user's overrides in one round trip (it used to be 2 + one per user)
+  const [ru, rr, ro] = await db.batch([st(db, `SELECT * FROM crm_users WHERE status = 'active' AND archived = 0`), st(db, `SELECT key, perms FROM crm_roles`), st(db, `SELECT user_id, perm, effect FROM crm_user_perms`)]);
+  const roles = rolesFromRows(rr.results || []);
+  const byUser = new Map();
+  for (const o of ro.results || []) { if (!byUser.has(o.user_id)) byUser.set(o.user_id, []); byUser.get(o.user_id).push(o); }
   const out = [];
-  for (const u of users) if (u.id !== exceptId && (await userPerms(db, u, roles)).has(perm)) out.push(u);
+  for (const u of ru.results || []) if (u.id !== exceptId && (await userPerms(db, u, roles, byUser.get(u.id) || [])).has(perm)) out.push(u);
   return out;
 }
 
@@ -88,6 +96,11 @@ export async function ensureOwnerUser(env, db) {
   return first(db, `SELECT * FROM crm_users WHERE owner_ref = 'owner'`);
 }
 
+// zip 161: the "prelude" of every request is ONE round trip: the user, the roles table, this user's overrides and the two lazy-job throttle rows (crm_meta
+// 'auto' / 'sweep', see automation.js / followups.js) travel in one db.batch. The throttle rows used to cost two extra WRITE round trips on every request.
+// Status and permissions are still read from D1 on every request, so a suspension or a permission change bites at once.
+const META_ROWS = `SELECT k, v FROM crm_meta WHERE k IN ('auto', 'sweep')`;
+const metaOf = (rows) => { const m = { auto: null, sweep: null }; for (const r of rows || []) if (r.k === 'auto' || r.k === 'sweep') m[r.k] = Number(r.v); return m; };
 export async function authenticate(context, db) {
   const { request, env } = context;
   const token = tokenFromRequest(request);
@@ -95,18 +108,24 @@ export async function authenticate(context, db) {
   if (token.startsWith('c1.')) {
     const p = token.split('.');
     if (p.length !== 4 || !/^[0-9a-z]{1,12}$/.test(p[2]) || !/^[0-9a-f]{64}$/.test(p[3])) throw E.unauthorized();
-    const user = await first(db, `SELECT * FROM crm_users WHERE id = ?`, p[1]);
+    const [ru, rr, rp, rm] = await db.batch([st(db, `SELECT * FROM crm_users WHERE id = ?`, p[1]), st(db, `SELECT key, perms FROM crm_roles`), st(db, `SELECT perm, effect FROM crm_user_perms WHERE user_id = ?`, p[1]), st(db, META_ROWS)]);
+    const user = (ru.results && ru.results[0]) || null;
     if (!user || user.login_disabled || user.archived || user.status !== 'active') throw E.unauthorized('This account cannot sign in', 'account_disabled');
     const iat = parseInt(p[2], 36);
     if (!Number.isFinite(iat) || Date.now() - iat > TOKEN_MAX_AGE || iat > Date.now() + 60000) throw E.unauthorized('Session expired', 'session_expired');
     if (!same(await hmac(await tokenKey(env, user), user.id + '.' + p[2]), p[3])) throw E.unauthorized('Session ended, sign in again', 'session_revoked');
-    return makeActor(user, await userPerms(db, user), request);
+    const actor = makeActor(user, await userPerms(db, user, rolesFromRows(rr.results || []), rp.results || []), request);
+    actor.meta = metaOf(rm.results);
+    return actor;
   }
   let ok = false;
   try { ok = await requireOwnerAuth(context); } catch (e) { ok = false; }
   if (!ok) throw E.unauthorized();
-  const owner = await ensureOwnerUser(env, db);
-  return makeActor(owner, await userPerms(db, owner), request);
+  const [ru, rm] = await db.batch([st(db, `SELECT * FROM crm_users WHERE owner_ref = 'owner'`), st(db, META_ROWS)]);
+  const owner = (ru.results && ru.results[0]) || await ensureOwnerUser(env, db);
+  const actor = makeActor(owner, await userPerms(db, owner), request);       // the owner holds every permission: nothing to look up
+  actor.meta = metaOf(rm.results);
+  return actor;
 }
 export async function requireOwnerOnly(context, db) {
   const actor = await authenticate(context, db);

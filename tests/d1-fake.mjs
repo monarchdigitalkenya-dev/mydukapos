@@ -13,6 +13,7 @@ export function makeD1(opts = {}) {
   const norm = (v) => (v === undefined ? null : typeof v === 'boolean' ? (v ? 1 : 0) : v);
   const run1 = (sql, args) => {
     maybeFail(sql); st.calls++;
+    if (globalThis.__D1_SQL_LOG) globalThis.__D1_SQL_LOG.push({ sql, args });      // tools/audit-d1-queries.mjs --live: the statements a real request sent, with their real bindings
     const s = db.prepare(sql);
     const a = args.map(norm);
     if (/^\s*(select|with|pragma)/i.test(sql) || /\breturning\b/i.test(sql)) { const rows = s.all(...a); return { rows, meta: { changes: 0, rows_read: rows.length } }; }

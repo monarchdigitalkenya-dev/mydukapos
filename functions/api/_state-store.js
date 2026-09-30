@@ -24,6 +24,8 @@
 // These defaults are conservative; measure on staging (STAGING_SETUP.md, step 4) and raise them if you can.
 
 import { mergeIncomingState, CLOCK_DRIFT_MIN_MS } from './_merge.js';
+import { withRetry } from './_retry.js';
+import { fenceOpen, fenceWaitVisible, fenceClaim, fenceRelease } from './_write-fence.js';
 
 export const GZ_PREFIX = 'gz1:';
 export const MIB = 1024 * 1024;
@@ -126,10 +128,30 @@ export async function readStateRaw(env, key) {
 // ---- Storage mode: 'kv' (one JSON blob per shop — the default) or 'do' (per-shop SQLite database, see wildcard-router/shop-store.js).
 // Per shop, opt-in, and only when the SHOP_STORE binding exists. Flag key: pos-data:mode:<id> = 'do'.
 export const MODE_PREFIX = 'pos-data:mode:';
+// zip 159 — every request to a shop endpoint asked KV "is this shop in its database?" (one read per request, several per push). Only the answer 'do' is
+// kept, and only for MODE_CACHE_MS in the memory of the Worker instance that read it: a shop leaves the database only by the owner's explicit
+// "move back" (owner-storage 'unmigrate'), which flags the shop 'migrating' first and then waits out this window before it copies anything (see
+// settleModeCache), so no instance can still be sending pushes to the database while the shop is being moved out. 'kv' and 'migrating' are never
+// kept: an instance must notice the start of a move on its very next request. SHOP_MODE_CACHE_MS = 0 (environment variable) switches this off.
+export const MODE_CACHE_MS = 10000;
+const modeCaches = new WeakMap();                            // KV binding -> Map(clientId -> time it was read as 'do')
+const modeCacheMs = (env) => { const n = env && env.SHOP_MODE_CACHE_MS != null && env.SHOP_MODE_CACHE_MS !== '' ? Number(env.SHOP_MODE_CACHE_MS) : MODE_CACHE_MS; return Number.isFinite(n) && n >= 0 ? n : MODE_CACHE_MS; };
+function modeMap(env) { const kv = env && env.mydukapos_kv; if (!kv || typeof kv !== 'object') return null; let m = modeCaches.get(kv); if (!m) { m = new Map(); modeCaches.set(kv, m); } return m; }
+// Call after this instance writes or deletes a shop's mode flag.
+export function forgetShopMode(env, clientId) { const m = modeMap(env); if (m) m.delete(clientId); }
+// After flagging a shop 'migrating' to move it OUT of the database: let every other instance's cached 'do' expire before reading its data.
+export async function settleModeCache(env) {
+  const ms = env && env.MIGRATE_SETTLE_MS != null ? Number(env.MIGRATE_SETTLE_MS) : modeCacheMs(env) + 250;
+  if (ms > 0) await new Promise((r) => setTimeout(r, ms));
+}
 export async function shopMode(env, clientId) {
   if (!env.SHOP_STORE || !clientId) return 'kv';
-  const v = await env.mydukapos_kv.get(MODE_PREFIX + clientId);
-  return v === 'do' || v === 'migrating' ? v : 'kv';      // 'migrating' = the owner is moving the shop; pushes wait a moment
+  const m = modeMap(env), ttl = modeCacheMs(env);
+  if (m && ttl > 0) { const at = m.get(clientId); if (at && Date.now() - at < ttl) return 'do'; }
+  const v = await withRetry(() => env.mydukapos_kv.get(MODE_PREFIX + clientId), { tries: 2, baseMs: 30, env });
+  const mode = v === 'do' || v === 'migrating' ? v : 'kv';      // 'migrating' = the owner is moving the shop; pushes wait a moment
+  if (m) { if (mode === 'do' && ttl > 0) m.set(clientId, Date.now()); else m.delete(clientId); }
+  return mode;
 }
 export const migratingResponse = (cors = {}) => new Response(JSON.stringify({ error: 'This shop is being upgraded — please try again in a moment.', code: 'migrating' }), { status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '5', ...cors } });
 export function shopCall(env, clientId, op, payload) {
@@ -160,6 +182,7 @@ export async function readState(env, key, fallback = null) {
 //   keepCompressed: boolean         the previous value was gzipped -> stay gzipped
 //   writer: { ip, cc }              who pushed (forensics) — appended to a short ring in the metadata
 //   prevMeta                        previous metadata (for the writer ring)
+//   ver                             explicit version to stamp (the D1 write fence, zip 159); default prevMeta.ver + 1
 // Returns the metadata written.
 export async function writeStateText(env, key, jsonText, opts = {}) {
   const bytes = opts.bytes != null ? opts.bytes : byteLength(jsonText);
@@ -171,7 +194,7 @@ export async function writeStateText(env, key, jsonText, opts = {}) {
 
   const value = gz ? await gzipText(jsonText) : jsonText;
   const now = Date.now();
-  const meta = { bytes, stored: value.length, gz, at: now, ver: (Number(opts.prevMeta && opts.prevMeta.ver) || 0) + 1 };
+  const meta = { bytes, stored: value.length, gz, at: now, ver: opts.ver != null ? Number(opts.ver) : (Number(opts.prevMeta && opts.prevMeta.ver) || 0) + 1 };
   if (opts.updatedAt) meta.ua = opts.updatedAt;
   if (opts.writer && (opts.writer.ip || opts.writer.cc)) {
     const prev = (opts.prevMeta && Array.isArray(opts.prevMeta.writers)) ? opts.prevMeta.writers : [];
@@ -186,6 +209,30 @@ export async function writeStateText(env, key, jsonText, opts = {}) {
   return meta;
 }
 
+// zip 160 - THE SAME D1 WRITE FENCE FOR EVERY OTHER WRITER OF A SINGLE-RECORD SHOP (owner restore / archive / compress / migrate-back / password
+// reset / the demo seed). Before, only pos-sync and kvMergeUpdate claimed a slot in the fence; these writers stamped `prev.ver + 1` from their own read,
+// which can be LOWER than the version the fence expects when that read was stale, so the next fenced push waited and answered 503 "busy".
+//   const meta = await writeStateFenced(env, key, text, { keepCompressed, prevMeta: cur && cur.meta, updatedAt, ... });   // same opts as writeStateText
+//   meta === null  -> somebody else wrote since the caller read `cur` (or the fence says the copy it read is stale): NOTHING was written; the caller
+//                     re-reads and builds again (or answers "busy", as its own compare-then-write always did).
+// No D1 / WRITE_FENCE=0 / a failing fence query -> exactly writeStateText (the caller's own compare-then-write checks still apply).
+export async function writeStateFenced(env, key, jsonText, opts = {}) {
+  const cid = idFromStateKey(key);
+  const fence = cid ? await fenceOpen(env, cid) : null;
+  if (!fence) return writeStateText(env, key, jsonText, opts);
+  let cur;
+  try { cur = await fenceWaitVisible(env, fence, () => readStateRaw(env, key)); }
+  catch (e) { if (e && e.code === 'fence_busy') return null; throw e; }
+  const pm = opts.prevMeta || null, cm = (cur && cur.meta) || null;
+  // the record the caller built from must still be the record that is there now (same version, same write time)
+  if (Number((pm && pm.ver) || 0) !== Number((cm && cm.ver) || 0) || Number((pm && pm.at) || 0) !== Number((cm && cm.at) || 0)) return null;
+  const claim = await fenceClaim(env, fence, cur);
+  if (claim === false) return null;
+  if (claim !== true) return writeStateText(env, key, jsonText, opts);            // D1 failed at the claim: legacy behaviour
+  try { return await withRetry(() => writeStateText(env, key, jsonText, { ...opts, ver: fence.nextVer }), { tries: 4, baseMs: 600, maxMs: 1600, env }); }
+  catch (e) { await fenceRelease(env, fence); throw e; }
+}
+
 // Convenience for callers that just have an object (owner-lock, branches, cross-branch-sale, restore).
 // Keeps a compressed shop compressed.
 export async function writeState(env, key, obj, opts = {}) {
@@ -195,9 +242,11 @@ export async function writeState(env, key, obj, opts = {}) {
     return { db: true };
   }
   const cur = await getWithMeta(env, key);
-  return writeStateText(env, key, JSON.stringify(obj), {
+  const meta = await writeStateFenced(env, key, JSON.stringify(obj), {
     keepCompressed: isCompressed(cur.raw), prevMeta: cur.meta, updatedAt: obj && obj.updatedAt, ...opts,
   });
+  if (!meta) { const e = new Error('the shop was busy syncing - nothing was changed'); e.code = 'fence_busy'; throw e; }      // zip 160: the caller retries from a fresh read
+  return meta;
 }
 
 // zip 156 — A SERVER-SIDE CHANGE TO A SINGLE-RECORD SHOP THAT GOES THROUGH THE SAME MERGE AS A DEVICE'S PUSH (cross-branch sales).
@@ -209,18 +258,28 @@ export async function kvMergeUpdate(env, key, build, { maxAttempts = 5, verifyFi
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let contended = false;
   for (let attempt = 0; ; attempt++) {
-    const stored = await readStateRaw(env, key);
+    const cid = idFromStateKey(key);
+    const fence = cid ? await fenceOpen(env, cid) : null;                      // zip 159: the D1 write fence (see _write-fence.js); null = legacy behaviour
+    let stored = await readStateRaw(env, key);
+    if (fence) stored = await fenceWaitVisible(env, fence, () => readStateRaw(env, key), stored);
     const existing = stored ? JSON.parse(stored.text) : {};
     const built = await build(stored ? existing : null);
     if (built && built.abort !== undefined) return { aborted: built.abort };
     const body = built.body;
     const now = Date.now();
     const record = { ...mergeIncomingState(existing, structuredClone(body)), updatedAt: now };
-    if (attempt < maxAttempts - 1 && (await readStateStamp(env, key)) !== stateStamp(stored && stored.meta)) {
+    let fenced = false;
+    if (fence) {
+      const claim = await fenceClaim(env, fence, stored);
+      if (claim === true) fenced = true;
+      else if (claim === false) { contended = true; if (attempt < maxAttempts + 3) { await sleep(15 + Math.floor(Math.random() * 60)); continue; } throw new Error('shop write slot kept changing'); }
+    }
+    if (!fenced && attempt < maxAttempts - 1 && (await readStateStamp(env, key)) !== stateStamp(stored && stored.meta)) {
       contended = true; await sleep(20 + Math.floor(Math.random() * 80)); continue;             // another save landed since the read: merge again
     }
-    await writeStateText(env, key, JSON.stringify(record), { keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, updatedAt: now });
-    if (attempt < maxAttempts - 1 && env.SYNC_VERIFY_WRITE !== '0') {
+    const put = () => writeStateText(env, key, JSON.stringify(record), { keepCompressed: !!(stored && stored.gz), prevMeta: stored && stored.meta, updatedAt: now, ver: fenced ? fence.nextVer : undefined });
+    if (fenced) { try { await withRetry(put, { tries: 4, baseMs: 600, maxMs: 1600, env }); } catch (e) { await fenceRelease(env, fence); throw e; } } else await put();
+    if (!fenced && attempt < maxAttempts - 1 && env.SYNC_VERIFY_WRITE !== '0') {
       await sleep(120 + Math.floor(Math.random() * 180));
       const after = await readStateRaw(env, key);
       const cur = after ? JSON.parse(after.text) : {};

@@ -17,6 +17,7 @@
 //  * Webhooks (M-Pesa, cards) that cannot be retried by the sender are parked in a KV outbox if D1 is briefly down and replayed on
 //    the next request — the provider gets its answer, the money is still recorded exactly once.
 import { LEDGER_SCHEMA, LEDGER_SCHEMA_VERSION } from './_ledger-schema.js';
+import { withRetry } from './_retry.js';
 
 export const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const str = (v, n = 120) => (v == null ? null : String(v).slice(0, n));
@@ -110,6 +111,29 @@ ON CONFLICT (client_id, kind, rec_id) DO UPDATE SET version = excluded.version, 
   status = excluded.status, actor = excluded.actor, source = excluded.source, data = excluded.data, updated_at = excluded.updated_at
 WHERE excluded.version >= ledger_records.version AND excluded.data <> ledger_records.data`;
 
+// ---------- "already written" memory (zip 159) ----------
+// A push carries the WHOLE of every list that is not a slimmed log (open tabs, bills, debts, cash shifts, purchase orders ...), every time, changed or not
+// (measured: 40 open tabs + 100 bills = 180 SQL statements in 3 D1 round trips on EVERY push, of which nothing was new). Each such statement was
+// a no-op in D1 (the upsert's WHERE finds the data equal), but it still costs a round trip and a row read. This instance remembers, per record, the
+// fingerprint of what it last got D1 to commit (only after the batch really committed), and leaves an unchanged record out of the next push.
+// Safe because a record only moves forward in D1: writing the same content again is, by construction, a no-op. The memory lives 5 minutes
+// (LEDGER_SEEN_MS; 0 = off) and only in this instance, so a D1 restore or another instance's write is never hidden for longer than that.
+// The fingerprint is two independent 53-bit hashes of the record's canonical JSON plus its length (about 106 bits: an accidental collision needs
+// ~10^15 records).
+const cyrb53 = (str, seed) => {
+  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+  for (let i = 0; i < str.length; i++) { const ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+};
+export const fingerprint = (str) => str.length.toString(36) + '.' + cyrb53(str, 0).toString(36) + '.' + cyrb53(str, 7).toString(36);
+const SEEN_MS = 5 * 60000, SEEN_MAX = 30000;
+const seenByDb = new WeakMap();                                       // D1 binding -> Map("client|kind|id" -> { sig, at })
+const seenMs = (env) => { const n = env && env.LEDGER_SEEN_MS != null && env.LEDGER_SEEN_MS !== '' ? Number(env.LEDGER_SEEN_MS) : SEEN_MS; return Number.isFinite(n) && n >= 0 ? n : SEEN_MS; };
+const seenMap = (db) => { let m = seenByDb.get(db); if (!m) { m = new Map(); seenByDb.set(db, m); } return m; };
+export function clearLedgerSeen(db) { seenByDb.delete(db); }
+
 // Build ALL statements for one incoming push, grouped per record (a group is executed as one atomic batch).
 export function buildGroups(db, clientId, body, opt = {}) {
   const now = opt.now || Date.now();
@@ -117,7 +141,9 @@ export function buildGroups(db, clientId, body, opt = {}) {
   const app = str((body && body._dev && body._dev.app) || opt.app, 20);
   const source = str(opt.source || 'sync', 40);
   const groups = [];
-  const rec = (kind, id, version, ts, amount, status, actor, data) => db.prepare(UPSERT_RECORD).bind(clientId, kind, id, version, ts, bizDate(ts, off), round2(amount), str(status, 30), str(actor, 60), source, canon(data), now, now);
+  let lastCanon = '';                                                   // the canonical text of the record last passed to rec(): its fingerprint says whether a group changed
+  const rec = (kind, id, version, ts, amount, status, actor, data) => { lastCanon = canon(data); return db.prepare(UPSERT_RECORD).bind(clientId, kind, id, version, ts, bizDate(ts, off), round2(amount), str(status, 30), str(actor, 60), source, lastCanon, now, now); };
+  const tag = (g, kind, id) => { g.key = clientId + '|' + kind + '|' + id; g.sig = fingerprint(lastCanon + '|' + off + '|' + app + '|' + source); return g; };
 
   // --- sales (+ lines + payments) ---
   for (const s of Array.isArray(body && body.salesLog) ? body.salesLog : []) {
@@ -161,7 +187,7 @@ export function buildGroups(db, clientId, body, opt = {}) {
       st.push(db.prepare(`UPDATE ledger_payments SET status = 'DUPLICATE' WHERE client_id = ? AND sale_id = ? AND status = 'CONFIRMED' AND EXISTS (SELECT 1 FROM ledger_sales x WHERE x.client_id = ? AND x.sale_id = ? AND x.status = 'DUPLICATE')`)
         .bind(clientId, id, clientId, id));
     }
-    groups.push(st);
+    groups.push(tag(st, 'sale', id));
   }
 
   // --- tabs / bills: identity + owner; what is paid is the sum of payments (view), never stored ---
@@ -171,15 +197,16 @@ export function buildGroups(db, clientId, body, opt = {}) {
     const ts = tsOf(t.openedAt, now), version = num(t.updatedAt) || ts;
     const due = round2(t.due != null ? t.due : (t.orders || []).reduce((n, o) => n + (o.entries || []).reduce((s, l) => s + num(l.price) * num(l.qty), 0), 0));
     const status = t.status === 'VOID' ? 'VOID' : t.status === 'CLOSED' ? 'CLOSED' : t.status === 'MOVED' ? 'MOVED' : 'OPEN';
-    groups.push([
-      rec('tab', id, version, ts, due, status, t.owner || t.waiter || t.openedBy, t),
+    const tabRec = rec('tab', id, version, ts, due, status, t.owner || t.waiter || t.openedBy, t);
+    groups.push(tag([
+      tabRec,
       db.prepare(`INSERT INTO ledger_bills (client_id, bill_id, tab_id, location_id, location, owner, total, status, opened_at, closed_at, version, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (client_id, bill_id) DO UPDATE SET location = excluded.location, location_id = COALESCE(excluded.location_id, ledger_bills.location_id), owner = COALESCE(excluded.owner, ledger_bills.owner),
           total = excluded.total, status = excluded.status, closed_at = excluded.closed_at, version = excluded.version, updated_at = excluded.updated_at
         WHERE excluded.version >= ledger_bills.version`)
         .bind(clientId, billId, id, str(t.locId, 60), str(t.label, 80), str(t.owner || t.waiter, 60), due, status, ts, t.closedAt ? tsOf(t.closedAt, now) : null, version, now),
-    ]);
+    ], 'tab', id));
   }
 
   // --- every other money collection: one ledger_records row per record (+ payments carried inside bills / debts) ---
@@ -198,41 +225,65 @@ export function buildGroups(db, clientId, body, opt = {}) {
           VALUES (?, ?, NULL, ?, ?, ?, ?, 'CONFIRMED', ?, ?, ?, ?, ?) ON CONFLICT (client_id, payment_id) DO NOTHING`)
           .bind(clientId, `${spec.kind}:${id}:${p.id || i}`, `${spec.kind}:${id}`, m, amt, str(p.reference || p.code, 40), str(p.by || p.servedBy, 60), source, pts, bizDate(pts, off), now));
       });
-      groups.push(st);
+      groups.push(tag(st, spec.kind, id));
     }
   }
   return groups;
 }
 
-// Group the statements into batches of at most `max` statements without ever splitting one record's statements.
+// Group the statements into batches of at most `max` statements without ever splitting one record's statements. Returns arrays of GROUPS.
 function packBatches(groups, max = 80) {
-  const out = []; let cur = [];
+  const out = []; let cur = []; let n = 0;
   for (const g of groups) {
-    if (cur.length && cur.length + g.length > max) { out.push(cur); cur = []; }
-    cur = cur.concat(g);
+    if (cur.length && n + g.length > max) { out.push(cur); cur = []; n = 0; }
+    cur.push(g); n += g.length;
   }
   if (cur.length) out.push(cur);
   return out;
 }
 
+// The outbox (money events parked while D1 was down) used to be read from KV on EVERY push. It can only be non-empty after a D1 failure, so once a
+// check has found it empty it is not read again for OUTBOX_CHECK_MS in this instance; parking something here re-arms the check at once.
+const OUTBOX_CHECK_MS = 20000;
+const outboxEmptyAt = new WeakMap();                                  // KV binding -> Map(clientId -> time the outbox was last found empty)
+const outboxMap = (env) => { const kv = env && env.mydukapos_kv; if (!kv || typeof kv !== 'object') return null; let m = outboxEmptyAt.get(kv); if (!m) { m = new Map(); outboxEmptyAt.set(kv, m); } return m; };
+async function drainOutboxThrottled(env, clientId, db) {
+  const m = outboxMap(env);
+  const gap = env && env.LEDGER_OUTBOX_CHECK_MS != null && env.LEDGER_OUTBOX_CHECK_MS !== '' ? Number(env.LEDGER_OUTBOX_CHECK_MS) : OUTBOX_CHECK_MS;
+  if (m && gap > 0) { const at = m.get(clientId); if (at && Date.now() - at < gap) return 0; }
+  const found = await drainOutbox(env, clientId, db, { emptyAsMinusOne: true });        // -1 = there was nothing to drain
+  if (m) { if (found === -1) m.set(clientId, Date.now()); else m.delete(clientId); }
+  return found === -1 ? 0 : found;
+}
+
 // Write a push's money records. Returns { ok:true, records } | { ok:true, skipped:'no_db' } | { ok:false, error }.
+// Reliability (zip 159): each batch is an atomic transaction of idempotent upserts, so a transient D1 failure (network blip, overloaded primary) is
+// retried twice with backoff + jitter before the push is refused (503, the till keeps the sale and sends it again — unchanged).
 export async function recordPush(env, clientId, body, opt = {}) {
   const db = ledgerDb(env);
   if (!db) return { ok: true, skipped: 'no_db' };
   try {
     await ensureLedgerSchema(db);
-    await drainOutbox(env, clientId, db).catch(() => {});
+    await drainOutboxThrottled(env, clientId, db).catch(() => {});
     const groups = buildGroups(db, clientId, body, opt);
     if (!groups.length) return { ok: true, records: 0 };
-    for (const batch of packBatches(groups)) await db.batch(batch);
+    const ttl = seenMs(env), now = Date.now(), seen = ttl > 0 ? seenMap(db) : null;
+    const todo = seen ? groups.filter((g) => { const h = g.key && seen.get(g.key); return !(h && h.sig === g.sig && now - h.at < ttl); }) : groups;
+    let batches = 0;
+    for (const batch of packBatches(todo)) {
+      await withRetry(() => db.batch(batch.flat()), { tries: 3, baseMs: 40, env });
+      batches++;
+      if (seen) for (const g of batch) if (g.key) { seen.delete(g.key); seen.set(g.key, { sig: g.sig, at: Date.now() }); }
+    }
+    if (seen && seen.size > SEEN_MAX) for (const k of seen.keys()) { seen.delete(k); if (seen.size <= SEEN_MAX * 0.8) break; }
     // tell the till if any sale it just sent turned out to be a second settlement of a bill somebody else already settled
     let duplicates;
     const ids = (Array.isArray(body && body.salesLog) ? body.salesLog : []).filter((s) => s && s.tabId && s.tabOrderCount != null).map(idOf).filter(Boolean).slice(0, 50);
     if (ids.length) {
-      const rows = ((await db.prepare(`SELECT sale_id, bill_id, total FROM ledger_sales WHERE client_id = ? AND status = 'DUPLICATE' AND sale_id IN (${ids.map(() => '?').join(',')})`).bind(clientId, ...ids).all()).results) || [];
+      const rows = ((await withRetry(() => db.prepare(`SELECT sale_id, bill_id, total FROM ledger_sales WHERE client_id = ? AND status = 'DUPLICATE' AND sale_id IN (${ids.map(() => '?').join(',')})`).bind(clientId, ...ids).all(), { tries: 2, baseMs: 40, env })).results) || [];
       if (rows.length) duplicates = rows;
     }
-    return { ok: true, records: groups.length, ...(duplicates ? { duplicates } : {}) };
+    return { ok: true, records: groups.length, written: todo.length, batches, ...(duplicates ? { duplicates } : {}) };
   } catch (e) {
     try { console.error('ledger write failed:', e && e.message); } catch (x) { /* logging only */ }
     return { ok: false, error: String((e && e.message) || e).slice(0, 200) };
@@ -295,6 +346,7 @@ function gatewayStatements(db, clientId, ev, now) {
 }
 const outboxKey = (c) => `ledger-outbox:${c}`;
 async function parkInOutbox(env, clientId, item) {
+  try { const m = outboxMap(env); if (m) m.delete(clientId); } catch (e) { /* re-arms the outbox check */ }
   try {
     const raw = await env.mydukapos_kv.get(outboxKey(clientId));
     const list = raw ? JSON.parse(raw) : [];
@@ -302,10 +354,10 @@ async function parkInOutbox(env, clientId, item) {
     await env.mydukapos_kv.put(outboxKey(clientId), JSON.stringify(list.slice(-500)), { expirationTtl: 30 * 86400 });
   } catch (e) { /* nothing more can be done */ }
 }
-export async function drainOutbox(env, clientId, db) {
+export async function drainOutbox(env, clientId, db, opts) {
   if (!env || !env.mydukapos_kv) return 0;
   const raw = await env.mydukapos_kv.get(outboxKey(clientId));
-  if (!raw) return 0;
+  if (!raw) return opts && opts.emptyAsMinusOne ? -1 : 0;
   const list = JSON.parse(raw); let done = 0; const left = [];
   for (const item of list) {
     try {

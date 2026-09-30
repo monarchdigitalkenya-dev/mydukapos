@@ -17,7 +17,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { getLicense, evaluateLicense, resolveClientId } from './_license.js';
+import { evaluateLicense, resolveLicense } from './_license.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -40,8 +40,7 @@ export async function onRequestGet(context) {
   const { request, env } = context;
   let clientId, record, result;
   try {
-    clientId = await resolveClientId(request, env);
-    record = await getLicense(env, clientId);
+    ({ clientId, record } = await resolveLicense(request, env));          // zip 159: one cached lookup, not three KV reads every 30 s per device
     result = evaluateLicense(record);
   } catch (e) {
     // zip 143: storage briefly failing is "try again", never an answer about the licence (no `valid` field on purpose)

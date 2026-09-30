@@ -4,11 +4,14 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { boot, ROOT } from './helpers.mjs';
 import { makeKV, seedShop } from './kv-fake.mjs';
+import { makeD1 } from './d1-fake.mjs';
 
-export function makeServer() {
+// `{ d1: true }` gives the server the transaction database every real shop has (the ledger, and the zip 159 KV write fence).
+export function makeServer(opts = {}) {
   const kv = makeKV(); seedShop(kv, 'C1');
   const state = { down: false, status: null, log: [] };
   const env = { mydukapos_kv: kv };
+  if (opts.d1) env.LEDGER_DB = makeD1();
   const handler = async (url, opts = {}) => {
     const u = new URL(String(url), 'https://shop.mydukapos.store');
     if (state.down) throw new Error('offline');

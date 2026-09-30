@@ -1,6 +1,6 @@
 // functions/api/_crm/campaigns.js — campaigns / ad sets / ads / spend and their metrics (NOT a route).
 // CPL / CPA / ROAS are computed ONLY when spend > 0 (otherwise null): nothing is ever divided by a made-up number.
-import { E, json, all, first, st, now, text, oneOf, money, isDay, nairobiDay, dayStart, addDays, round2, auditSt, optRange, newId } from './core.js';
+import { E, json, all, first, st, many, now, text, oneOf, money, isDay, nairobiDay, dayStart, addDays, round2, auditSt, optRange, newId } from './core.js';
 
 const STATUSES = ['active', 'paused', 'ended'];
 const campOut = (c) => ({ id: c.id, name: c.name, platform: c.platform, source: c.source_key, externalId: c.external_id, objective: c.objective, status: c.status, budget: c.budget, startsOn: c.starts_on, endsOn: c.ends_on, createdAt: c.created_at });
@@ -14,7 +14,10 @@ export function metricsOf(spend, leads, wonLeads, sales, revenue, collected, can
     cpl: ratio(sp, leads), cpa: ratio(sp, wonLeads), roas: canRevenue && sp > 0 ? round2((revenue || 0) / sp) : null };
 }
 // { campaign: Map, adset: Map, ad: Map } id -> metrics for the range (ms, `to` exclusive; either may be null)
-export async function campaignMetrics(db, r, canRevenue) {
+// zip 161: the nine GROUP BY queries (spend, leads, sales for campaign / ad set / ad) are built by metricsStatements() and can travel in ONE round trip, alone
+// (campaignMetrics) or together with a screen's other queries (the dashboard); metricsFrom() turns their rows into the maps.
+const KINDS = [['campaign', 'campaign_id', 'first_campaign_id', 'campaign_id'], ['adset', 'adset_id', 'first_adset_id', 'adset_id'], ['ad', 'ad_id', 'first_ad_id', 'ad_id']];
+export function metricsStatements(db, r) {
   const fromDay = r.from != null ? nairobiDay(r.from) : null, toDay = r.to != null ? nairobiDay(r.to - 1) : null;
   const sw = [], sa = [];
   if (fromDay) { sw.push('date >= ?'); sa.push(fromDay); } if (toDay) { sw.push('date <= ?'); sa.push(toDay); }
@@ -23,30 +26,40 @@ export async function campaignMetrics(db, r, canRevenue) {
   const vw = [], va = [];
   if (r.from != null) { vw.push('sold_at >= ?'); va.push(r.from); } if (r.to != null) { vw.push('sold_at < ?'); va.push(r.to); }
   const W = (a) => (a.length ? ' AND ' + a.join(' AND ') : '');
+  const out = [];
+  for (const [, spendCol, leadCol, saleCol] of KINDS) {
+    out.push(st(db, `SELECT ${spendCol} k, SUM(amount) v FROM crm_spend WHERE ${spendCol} IS NOT NULL${W(sw)} GROUP BY ${spendCol}`, ...sa));
+    out.push(st(db, `SELECT ${leadCol} k, COUNT(*) n, SUM(CASE WHEN converted_at IS NOT NULL THEN 1 ELSE 0 END) won FROM crm_leads WHERE deleted_at IS NULL AND ${leadCol} IS NOT NULL${W(lw)} GROUP BY ${leadCol}`, ...la));
+    out.push(st(db, `SELECT ${saleCol} k, COUNT(*) n, SUM(total) rev, SUM(amount_paid) paid FROM crm_sales WHERE ${saleCol} IS NOT NULL${W(vw)} GROUP BY ${saleCol}`, ...va));
+  }
+  return out;
+}
+export function metricsFrom(rows, canRevenue) {                                     // rows = the results of metricsStatements(), same order
   const out = {};
-  for (const [kind, spendCol, leadCol, saleCol] of [['campaign', 'campaign_id', 'first_campaign_id', 'campaign_id'], ['adset', 'adset_id', 'first_adset_id', 'adset_id'], ['ad', 'ad_id', 'first_ad_id', 'ad_id']]) {
-    const spend = new Map((await all(db, `SELECT ${spendCol} k, SUM(amount) v FROM crm_spend WHERE ${spendCol} IS NOT NULL${W(sw)} GROUP BY ${spendCol}`, ...sa)).map((x) => [x.k, x.v]));
-    const leads = new Map((await all(db, `SELECT ${leadCol} k, COUNT(*) n, SUM(CASE WHEN converted_at IS NOT NULL THEN 1 ELSE 0 END) won FROM crm_leads WHERE deleted_at IS NULL AND ${leadCol} IS NOT NULL${W(lw)} GROUP BY ${leadCol}`, ...la)).map((x) => [x.k, x]));
-    const sales = new Map((await all(db, `SELECT ${saleCol} k, COUNT(*) n, SUM(total) rev, SUM(amount_paid) paid FROM crm_sales WHERE ${saleCol} IS NOT NULL${W(vw)} GROUP BY ${saleCol}`, ...va)).map((x) => [x.k, x]));
+  KINDS.forEach(([kind], i) => {
+    const spend = new Map(rows[i * 3].map((x) => [x.k, x.v]));
+    const leads = new Map(rows[i * 3 + 1].map((x) => [x.k, x]));
+    const sales = new Map(rows[i * 3 + 2].map((x) => [x.k, x]));
     const m = new Map();
     for (const k of new Set([...spend.keys(), ...leads.keys(), ...sales.keys()])) { const l = leads.get(k) || {}, s = sales.get(k) || {}; m.set(k, metricsOf(spend.get(k), l.n, l.won, s.n, s.rev, s.paid, canRevenue)); }
     out[kind] = m;
-  }
+  });
   out.empty = metricsOf(0, 0, 0, 0, 0, 0, canRevenue);
   return out;
 }
+export async function campaignMetrics(db, r, canRevenue) { return metricsFrom(await many(db, metricsStatements(db, r)), canRevenue); }
 
 export async function listCampaigns(ctx) {
   const { db, actor, query } = ctx;
   if (query.get('lite') === '1') {                                      // names only (filters in the lead list): no figures
     actor.require('leads.view');
-    const [c, s, a] = await Promise.all([all(db, `SELECT * FROM crm_campaigns ORDER BY created_at DESC`), all(db, `SELECT * FROM crm_adsets ORDER BY name`), all(db, `SELECT * FROM crm_ads ORDER BY name`)]);
+    const [c, s, a] = await many(db, [st(db, `SELECT * FROM crm_campaigns ORDER BY created_at DESC`), st(db, `SELECT * FROM crm_adsets ORDER BY name`), st(db, `SELECT * FROM crm_ads ORDER BY name`)]);
     return { campaigns: c.map((x) => ({ ...campOut(x), adsets: s.filter((y) => y.campaign_id === x.id).map((y) => ({ ...adsetOut(y), ads: a.filter((z) => z.adset_id === y.id).map(adOut) })) })), unlinkedAds: a.filter((z) => !z.campaign_id).map(adOut) };
   }
   actor.require('campaigns.view');
   const r = optRange(query.get('from'), query.get('to'));
-  const m = await campaignMetrics(db, r, actor.has('campaigns.revenue'));
-  const [c, s, a] = await Promise.all([all(db, `SELECT * FROM crm_campaigns ORDER BY created_at DESC`), all(db, `SELECT * FROM crm_adsets ORDER BY name`), all(db, `SELECT * FROM crm_ads ORDER BY name`)]);
+  const [c, s, a, ...mrows] = await many(db, [st(db, `SELECT * FROM crm_campaigns ORDER BY created_at DESC`), st(db, `SELECT * FROM crm_adsets ORDER BY name`), st(db, `SELECT * FROM crm_ads ORDER BY name`), ...metricsStatements(db, r)]);
+  const m = metricsFrom(mrows, actor.has('campaigns.revenue'));
   const adNode = (z) => ({ ...adOut(z), metrics: m.ad.get(z.id) || m.empty });
   return {
     campaigns: c.map((x) => ({ ...campOut(x), metrics: m.campaign.get(x.id) || m.empty, adsets: s.filter((y) => y.campaign_id === x.id).map((y) => ({ ...adsetOut(y), metrics: m.adset.get(y.id) || m.empty, ads: a.filter((z) => z.adset_id === y.id).map(adNode) })) })),
