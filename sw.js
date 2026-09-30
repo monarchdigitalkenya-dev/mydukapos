@@ -27,7 +27,7 @@ const NAVIGATION_NETWORK_TIMEOUT_MS = 3500;
 // zip 145 — BUMP THIS WITH EVERY RELEASE. A service worker only updates when THIS file changes; it had not changed for many releases,
 // so installed apps kept the service worker (and the old cached page) they were installed with. A new version here makes every
 // installed app install this worker, which re-downloads the whole shell (refreshShell) — the stuck phones catch up by themselves.
-const SW_VERSION = 'zip-156';
+const SW_VERSION = 'zip-158';
 
 // Paths are relative to the service worker's own location, not the site root.
 // Using absolute '/index.html' style paths silently breaks on any deployment
@@ -192,6 +192,7 @@ self.addEventListener('fetch', (event) => {
   // device after its first load and shown from there — also offline. Only product photos (k=p): clinical images are never cached here.
   if (url.pathname.endsWith('/api/media') && url.searchParams.get('k') === 'p') { event.respondWith(mediaCacheFirst(req)); return; }
   if (url.pathname.includes('/api/')) return;        // never cache API calls
+  if (url.pathname === '/crm' || url.pathname.startsWith('/crm/')) return;   // zip 157: the CRM is its own app — the shop's offline shell must never answer for it
 
   // A navigation is anything that opens the app (typing the URL, tapping the
   // home-screen icon, a bookmarked ?staff= link). Those must be served from

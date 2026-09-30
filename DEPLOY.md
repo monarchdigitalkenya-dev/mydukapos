@@ -33,3 +33,15 @@ Nothing new to apply on D1 or KV. Use the usual steps above (`npm run deploy`). 
 `wildcard-router/shop-store.js` changed, so in `C:\dev\mydukapos` run **`npm run deploy:router`** BEFORE `npm run deploy`. No new D1/KV migration.
 Every permanent shop now moves to the database store on its first push (about 1.5 s extra, once). Demo links stay on KV.
 Rebuild the APK and EXE via GitHub Actions: the Windows build is now a parallel matrix (8 apps, 16 installers).
+
+## Zip 157 — MyDuka CRM (new) — Windows cmd, in `C:\dev\mydukapos`
+1. `npm run deploy:router` is NOT needed this time (the router did not change).
+2. Create the CRM tables once (safe to repeat; the server also creates missing tables by itself):  `npx wrangler d1 migrations apply mydukapos-ledger --remote`
+3. `npm run deploy`, then open `https://mydukapos.store/crm/` and choose **Continue as owner** (you must be signed in to the Owner Console in the same browser first).
+4. Move your old leads: CRM -> Settings -> **Import previous leads** -> *Check what will be moved* -> *Import now* -> *Verify counts*. The old data stays in KV untouched; the Owner Console Leads tab is gone.
+5. Optional Cloudflare secrets (Pages -> Settings -> Variables and secrets), only for the features you use: `CRM_SESSION_SECRET` (long random text), `CRM_BASE_URL` (https://mydukapos.store), `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` (reply from the CRM inbox), `META_APP_SECRET` + `META_PAGE_TOKEN` + `META_VERIFY_TOKEN` (Meta Lead Ads). Inbound WhatsApp keeps using the existing `WHATSAPP_APP_SECRET` / `WHATSAPP_VERIFY_TOKEN`.
+6. Website capture: POST JSON to `https://mydukapos.store/api/crm-lead` (see CRM_ARCHITECTURE.md).
+
+## Zip 158 — receipt size + leftovers — Windows cmd, in `C:\dev\mydukapos`
+No new migration and the router did not change: `npm run check`, then `npm run deploy` (no `deploy:router`). Rebuild the APK/EXE (GitHub Actions) to get the new receipt size screen on the native apps.
+Then on each till: Settings -> Receipt -> **Adjust receipt size** -> pick 58 / 80 / Custom, set the letter size, check the sample, **Print test receipt**, **Save**.

@@ -65,7 +65,7 @@ function setup(M) {
     intro: 'Do these once, in this order, as the Admin:',
     steps: [
       '**⚙️ Settings ▸ General** — business name, logo, phone and address. They print on every receipt.',
-      '**Settings ▸ 🧾 Receipt Settings** — header and footer lines, paper width (58 mm or 80 mm), how many copies, whether to print the reference number and its barcode.',
+      '**Settings ▸ 🧾 Receipt Settings** — header and footer lines, **🔠 Adjust receipt size** (paper 58 mm, 80 mm or custom, and how big the letters are), how many copies, whether to print the reference number and its barcode.',
       '**Settings ▸ 🧾 Tax & Alerts** — VAT rates, and the **low-stock level** (items at or below it are flagged and offered as buttons when you restock).',
       '**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Paystack, or Safaricom Daraja with your Till/Paybill) so you can send payment prompts to customers.',
       '**Settings ▸ 🖨️ Hardware** — connect your receipt printer (see the **Printers & hardware** chapter).',
@@ -182,7 +182,7 @@ function hardware(M) {
       { title: '1. System print dialog (works with any installed printer)', steps: ['Set **Printer mode** to **System print dialog**.', 'Print a receipt: the device\u2019s print window opens — choose your receipt printer once. The receipt prints on a slip only as long as its lines (paper is not wasted).', 'Browsers never allow silent printing, so this mode always shows that window. Use Bluetooth or USB to avoid it.'] },
       { title: '2. USB thermal printer (computer or Android)', steps: ['Plug the printer in and switch it on.', 'Set **Printer mode** to **USB**, tap **Connect USB Printer**, choose your printer and allow access.', 'From then on the app **reconnects by itself** whenever the printer is switched off and on, unplugged and replugged, or the app is reopened — it keeps checking every few seconds and prints the moment the printer is back. You do not go back to Settings.'] },
       { title: '3. Bluetooth thermal printer (phones and tablets)', steps: ['Switch the printer on and pair it in the phone\u2019s Bluetooth settings if it asks.', 'Set **Printer mode** to **Bluetooth**, tap **Connect Bluetooth Printer** and pick it from the list (once).', 'After a power cut or the printer going out of range, the app reopens the same printer by itself (no chooser). Some browsers cannot reopen a remembered Bluetooth printer after the page reloads — the screen then says **Tap Connect once**.'] },
-      { title: 'Paper, copies and the cash drawer', steps: ['**Receipt Settings** sets the paper width (58 or 80 mm) and the number of copies.', 'Each till can have a different printer: under **THIS device\'s printer paper** choose 58 mm or 80 mm for the printer on this device (or tap **58 mm / 80 mm** at the top of any receipt). **If words break or numbers jump to the next line, the printer is 58 mm on an 80 mm setting — choose 58 mm.** The receipt preview is exactly what will print.', '**📏 Print a width test** (USB / Bluetooth) prints a 32- and a 48-character line: if the 48 one breaks in two, the printer is 58 mm.', 'The **cash drawer** plugs into the **printer** (RJ11/RJ12 port), not the computer; turn on "open drawer on print" in Hardware settings.', 'To check paper width and the drawer, print a small sale receipt, or reprint one from Daily Sales.'] },
+      { title: 'Paper, copies and the cash drawer', steps: ['**Receipt Settings ▸ 🔠 Adjust receipt size** opens a window where you choose the paper (58 mm, 80 mm or custom) and the letter size in points (7 is the standard; try 9, 10, 11 if receipts look too small). A sample receipt with items changes as you tap **−** or **+**; press **🖨️ Print test receipt** to check it on your printer, then **Save** — that is how every receipt will print. **Cancel** throws the changes away, **Reset to standard** goes back to 7 pt. The number of copies is set in Receipt Settings too.', 'Each till can have a different printer: under **THIS device\'s printer paper** choose 58 mm or 80 mm for the printer on this device (or tap **58 mm / 80 mm** at the top of any receipt). **If words break or numbers jump to the next line, the printer is 58 mm on an 80 mm setting — choose 58 mm.** The receipt preview is exactly what will print.', '**📏 Print a width test** (USB / Bluetooth) prints a 32- and a 48-character line: if the 48 one breaks in two, the printer is 58 mm.', 'The **cash drawer** plugs into the **printer** (RJ11/RJ12 port), not the computer; turn on "open drawer on print" in Hardware settings.', 'To check paper width and the drawer, print a small sale receipt, or reprint one from Daily Sales.'] },
       { title: 'Barcode scanners', steps: ['A USB or Bluetooth **scanner** works like a keyboard: click the search box on the Sales Counter and scan.', 'The 📷 button next to search scans with the phone camera.'] },
     ],
     tips: ['Printing waits up to 4 seconds for a printer that has just been switched on before saying it is not connected.', 'If a print fails half-way the receipt is **not** sent again automatically (so you never get a doubled half-receipt) — reprint from Daily Sales.'],
@@ -672,7 +672,7 @@ MODS.owner = {
   name: 'Owner Console', title: 'Owner Console — User Guide', tagline: 'For the owner of the software business — create and manage client links, watch their health, and run your own shop.',
   itemsPlural: 'items', itemWord: 'item', addTab: 'the Inventory', restockTab: 'Restock', noPastSale: true,
   overrides: { offline: 'ownerOffline', trouble: 'ownerTrouble', hardware: false },
-  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '📋 Leads', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '🩺 Health', '📣 Messages', '📦 Apps & Versions', '⚙️ Settings', '☰ More'],
+  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '🤝 CRM', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '🩺 Health', '📣 Messages', '📦 Apps & Versions', '⚙️ Settings', '☰ More'],
   tabText: {
     'Messages': 'Send announcements, app updates, installation offers, maintenance or security notices to all shops, chosen apps or chosen shops — optionally only on the browser, Android or Windows app and certain app versions, from / until a date. Shops see them in their app (one at a time, and under Settings ▸ Install App); a device that is offline gets them when it reconnects.',
     'Apps & Versions': 'The Android (APK) and Windows (EXE / MSI) apps of each product: add a version, upload the real file (the server records its size and SHA-256), publish, withdraw. A shop is offered only its own app under Settings ▸ Install App.',
@@ -683,7 +683,7 @@ MODS.owner = {
     'Permanent': 'Every permanent (paid) client: manage, record income, remind, storage.',
     'Trash': 'Deleted links, restorable for 30 days before they\u2019re removed for good.',
     'Website': 'Edit the public website, pricing, payment methods and testimonials.',
-    'Leads': 'Prospects: daily sheets, meetings, website leads and WhatsApp ad leads.',
+    'CRM': 'Opens the separate MyDuka CRM (leads, follow-ups, meetings, WhatsApp, revenue by campaign).',
     'Bills': 'What clients owe you (permanent-link balances) — settle or remind.',
     'Daily Sales': 'Your own sales and income records.',
     'Profits & Expenses': 'Your expenses and profit.',
@@ -714,11 +714,11 @@ MODS.owner = {
     ch('website', '🌐', 'The public website', {
       steps: ['Open **🌐 Website** to change the logo, headline, feature cards, showcase photos, **price** and **payment methods**, and testimonials. **Save & Publish Changes** updates the public site and the upgrade prompt every demo shows when its trial ends.'],
     }),
-    ch('leads', '📋', 'Leads, meetings and WhatsApp ad leads', {
+    ch('leads', '🤝', 'CRM: leads, follow-ups, meetings and WhatsApp', {
       steps: [
-        'Open **📋 Leads**. A new sheet is created each day; **only leads not yet contacted carry forward**. Use **+ Add lead** or **+ Bulk add**, mark leads contacted, schedule a **meeting** (it moves to 🗓️ Meetings) or generate a client link straight from a lead.',
-        '**WhatsApp ad leads:** with the WhatsApp connection set up (see WHATSAPP_SETUP.md), everyone who starts a chat by clicking your **Meta Click-to-WhatsApp ad** becomes a lead automatically, with the ad headline and their message. Ordinary texts to your number are ignored.',
-        '**🌐 Website Leads** shows enquiries from the public site.',
+        'Leads are now managed in the separate **MyDuka CRM** at **/crm/** (open it from **🤝 CRM** in the Owner Console; the same owner sign-in works there). The old Leads tab is gone; its leads, meetings and WhatsApp ad chats were moved into the CRM (CRM ▸ Settings ▸ Import previous leads, then check the counts).',
+        'In the CRM you add team members (they get an invitation link and set their own password), give each a role and permissions, and they claim or are assigned leads, call or WhatsApp them, add notes, set follow-ups and meetings, and convert a lead into a sale. Revenue is tracked back to the campaign, ad and staff member.',
+        '**WhatsApp ad leads (people who start a chat from your Meta Click-to-WhatsApp ad) and website sign-ups** arrive in the CRM automatically (see WHATSAPP_SETUP.md and CRM_MIGRATION.md).',
       ],
     }),
     ch('health', '🐞', 'Errors and Storage', {

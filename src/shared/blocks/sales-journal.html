@@ -53,6 +53,23 @@
         function idOf(r) { return r && typeof r === 'object' && r.id != null && r.id !== '' ? String(r.id) : null; }
         // What makes two copies of a record "the same version" (never the server's bookkeeping fields such as updatedAt, which the
         // server may shift for clock drift): the business content.
+        // zip 158: ends with a hash of the WHOLE record (less SIG_IGNORED) - the fields listed before it are only the ones the screens
+        // care about, so an edit to any other field (customer name, payment method, note, a line's item) used to keep the same version and
+        // was taken for "already on the server". Keep identical to businessSig in functions/api/_merge.js.
+        var SIG_IGNORED = { updatedAt: 1, tries: 1, dev: 1, till: 1, stn: 1, ctx: 1, _srv: 1 };
+        function stableJson(v) {
+            if (v === null || typeof v !== 'object') { var j = JSON.stringify(v); return j === undefined ? 'null' : j; }
+            if (Array.isArray(v)) return '[' + v.map(stableJson).join(',') + ']';
+            var keys = Object.keys(v).filter(function (k) { return v[k] !== undefined && typeof v[k] !== 'function'; }).sort();
+            return '{' + keys.map(function (k) { return JSON.stringify(k) + ':' + stableJson(v[k]); }).join(',') + '}';
+        }
+        function contentHash(r) {
+            var top = {}; Object.keys(r).forEach(function (k) { if (!SIG_IGNORED[k]) top[k] = r[k]; });
+            var j = stableJson(top), h = 0x811c9dc5;
+            for (var i = 0; i < j.length; i++) { h ^= j.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+            return (h >>> 0).toString(36) + '.' + j.length.toString(36);
+        }
+        var SIG_NEW = /\|c[0-9a-z]+\.[0-9a-z]+$/;
         function sigOf(r) {
             if (!r || typeof r !== 'object') return '';
             var items = r.items, n = 0, sum = 0;
@@ -61,7 +78,8 @@
                 + '|' + (r.amountPaid == null ? '' : r.amountPaid) + '|' + n + '|' + Math.round(sum * 100) + '|' + (r.qty == null ? '' : r.qty)
                 + '|' + (r.amount == null ? '' : r.amount) + '|' + (r.removed ? 1 : 0) + '|' + (r._deleted ? 1 : 0)
                 // zip 141: a sale signed later (staff session) or M-Pesa-checked later is a new version the server must receive
-                + (r.staffAuth && r.staffAuth.m ? '|a' + r.staffAuth.m : '') + (r.mpesaCheck && r.mpesaCheck.status ? '|m' + r.mpesaCheck.status : '');
+                + (r.staffAuth && r.staffAuth.m ? '|a' + r.staffAuth.m : '') + (r.mpesaCheck && r.mpesaCheck.status ? '|m' + r.mpesaCheck.status : '')
+                + '|c' + contentHash(r);
         }
         window.salesJournalSig = sigOf;
         function deviceId() { try { return typeof getOrCreateDeviceId === 'function' ? getOrCreateDeviceId() : (localStorage.getItem('pos_device_id') || ''); } catch (e) { return ''; } }
@@ -201,7 +219,7 @@
             if (!Array.isArray(a)) return;
             capturing = true;
             try {
-                var m = meta[f], out = [], now = Date.now(), off = f === 'salesLog' ? clockOffset() : 0, fixed = false;
+                var m = meta[f], out = [], upgraded = [], now = Date.now(), off = f === 'salesLog' ? clockOffset() : 0, fixed = false;
                 // Speed: a stock movement never changes once written, so only the newest end of that (long) list is looked at — the scan
                 // stops after 300 records in a row that are already known. Sales, returns and expenses can be changed (a void, a
                 // settlement), so those lists are looked at whole — a few milliseconds even for a year of sales.
@@ -229,7 +247,14 @@
                         m.set(id, e); out.push(r);
                     } else {
                         var sg = sigOf(r);
-                        if (sg !== e.sig) {
+                        if (sg !== e.sig && e.sig && !SIG_NEW.test(e.sig) && sg.replace(SIG_NEW, '') === e.sig) {
+                            // zip 158: the record is unchanged - only the way a version is written grew (it now covers the whole record). What
+                            // an older release wrote as "synced" was proved against the narrow version only: it is not trusted any more, the
+                            // server is asked again (syncHaveCheck) and it goes back to "synced" when it holds this exact copy. Not a new
+                            // sale, so nothing is announced and it does not show as "not sent yet".
+                            e.sig = sg;
+                            if (e.st === 'synced') { e.st = 'unconfirmed'; upgraded.push(r); }
+                        } else if (sg !== e.sig) {
                             e.sig = sg; e.ls = lsOk;
                             if (e.st !== 'removed') { e.st = 'pending'; out.push(r); }
                         } else if (e.st === 'pending' || e.st === 'unconfirmed') e.ls = lsOk;
@@ -263,6 +288,7 @@
                         if (isFinite(t0) && Math.abs(now - t0) >= 2 * 86400000 && !r.recordedLate) m.get(idOf(r)).st = 'unconfirmed';
                     });
                 }
+                if (upgraded.length) putRecords(upgraded.map(function (r) { return recordFor(f, r, 'unconfirmed', lsOk); }).filter(Boolean));
                 if (out.length) {
                     stats.captured += out.length;
                     var recs = out.map(function (r) { var me0 = m.get(idOf(r)); return recordFor(f, r, me0 && me0.st === 'unconfirmed' ? 'unconfirmed' : 'pending', lsOk); }).filter(Boolean);
@@ -304,6 +330,7 @@
             list.forEach(function (pair) {
                 var id = pair[0], sg = pair[1], e = m.get(id);
                 if (!e) { m.set(id, { st: 'synced', sig: sg, at: now, syncedAt: now }); return; }
+                if (how === 'push' && e.sig !== sg && e.sig && !SIG_NEW.test(e.sig) && sg.replace(SIG_NEW, '') === e.sig && e.st !== 'synced') e.sig = sg;     // zip 158: what this device just sent, still filed under the older way of writing its version
                 if (e.st === 'removed' || e.st === 'synced' || e.sig !== sg) return;
                 if (e.st === 'pending') newly.push(id);
                 e.st = 'synced'; e.syncedAt = now; ids.push(id);
@@ -511,6 +538,8 @@
         var readyResolve, ready = new Promise(function (r) { readyResolve = r; });
         window.salesJournalReady = ready;
         function start() {
+            // zip 158: payments taken on a bill before zip 156 are linked to their bill once, when it is unambiguous (see repairLegacyBillPayments)
+            setTimeout(function () { try { if (typeof repairLegacyBillPayments === 'function') repairLegacyBillPayments(); } catch (e) { /* the payment stays unlinked; voiding the bill still warns */ } }, window.__legacyBillRepairDelayMs != null ? window.__legacyBillRepairDelayMs : 5000);
             if (!hasIDB()) { dbBroken = true; loaded = true; readyResolve(0); return; }
             readAll().then(function (rows) {
                 rows.forEach(function (row) {
@@ -526,7 +555,9 @@
             }).catch(function (e) {
                 dbBroken = true; loaded = true; readyResolve(0);
                 try { console.warn('sales journal unavailable', e); } catch (e2) {}
-            }).then(function () { tidy(); decorateSoon(); setTimeout(function () { window.salesJournalRecoverHidden(); }, window.__hiddenRecoveryDelayMs != null ? window.__hiddenRecoveryDelayMs : 12000); });
+            }).then(function () {
+                tidy(); decorateSoon(); setTimeout(function () { window.salesJournalRecoverHidden(); }, window.__hiddenRecoveryDelayMs != null ? window.__hiddenRecoveryDelayMs : 12000);
+            });
         }
 
         /* ---- the receipt: "saved" line; closing it never cancels the sale ---- */

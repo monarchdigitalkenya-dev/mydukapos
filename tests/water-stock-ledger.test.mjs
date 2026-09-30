@@ -112,6 +112,8 @@ test('Aqua Stock Take: counts one site (goods, bottle-tracked bales in bottles, 
   for (let i = 0; i < 3; i++) await b.w.eval('doPush()');       // re-sent: nothing more happens
   assert.equal(s.serverState().products[0].stock['site-shop-1'], 12);
   await b.w.eval('pullFromServer()');
+  await new Promise((r) => setTimeout(r, 900));   // zip 156: a pull that lands while a push is still settling is applied right after it
+  await b.w.eval('pullFromServer()'); await settled(b);
   b.w.eval('renderAquaStockTake()');
   assert.match(b.d.getElementById('stock-take-history').textContent, /2 updated of 2 counted/);
   assert.match(b.d.getElementById('stock-take-history').textContent, /applied/);

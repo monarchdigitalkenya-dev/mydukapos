@@ -1,12 +1,12 @@
-// functions/api/_whatsapp.js — the rules for turning WhatsApp messages (sent to the business number) into entries on the Owner Console's Leads tab.
+// functions/api/_whatsapp.js — the rules for reading WhatsApp messages (sent to the business number): signature check, message extraction, the Meta-ad-only filter and the small KV inbox.
 // Kept apart from the endpoint so they can be tested without WhatsApp. See WHATSAPP_SETUP.md.
 //
 // Flow: Meta calls /api/whatsapp-webhook for every message sent to the number -> the message is checked (signature) -> ONLY people who started the chat
 // from a Meta (Facebook / Instagram) Click-to-WhatsApp AD become leads: Meta marks such a message with a `referral` object (the ad, its headline, its id).
 // Ordinary texts from anyone else are dropped and never stored. A person who came from an ad and then writes again (no `referral` on the follow-ups) stays a
 // lead: their number is remembered (KV 'leads-whatsapp-ad-numbers'). Kept messages go to a small INBOX (KV 'leads-whatsapp-inbox'); the next time the Leads
-// tab loads its sheet, leads.js merges the inbox into it (getSheet), so the daily carry-forward of uncontacted leads keeps working exactly as before.
-// A number that messages again is not added twice: the existing lead gets the new message.
+// tab loaded its sheet, the old leads.js merged the inbox into it. That endpoint is gone: the CRM (functions/api/_crm/inbox.js, fed by the same webhook) is
+// the lead store now, and the KV inbox is kept only so _crm/legacy.js can still migrate what was in it.
 
 export const INBOX_KEY = 'leads-whatsapp-inbox';
 export const AD_NUMBERS_KEY = 'leads-whatsapp-ad-numbers';
@@ -49,12 +49,17 @@ export function extractInboundMessages(payload) {
         else if (m.type === 'interactive' && m.interactive) text = (m.interactive.button_reply && m.interactive.button_reply.title) || (m.interactive.list_reply && m.interactive.list_reply.title) || '';
         else if (m.image && m.image.caption) text = '📷 ' + m.image.caption;
         else text = `[${m.type || 'message'}]`;
+        // zip 158: what the CRM inbox needs to show an attachment: the type (an audio with voice:true is a voice note), the caption, and the media id / mime
+        // / file name Meta gives (the file itself is fetched later, only when WHATSAPP_TOKEN is set)
+        const med = ['image', 'video', 'audio', 'document', 'sticker'].includes(m.type) && m[m.type] && typeof m[m.type] === 'object' ? m[m.type] : null;
+        const media = med ? { type: m.type === 'audio' && med.voice === true ? 'voice' : m.type, mediaId: med.id ? String(med.id).slice(0, 200) : null, mediaMime: med.mime_type ? String(med.mime_type).slice(0, 100) : null, mediaName: med.filename ? String(med.filename).slice(0, 200) : null, caption: med.caption ? String(med.caption).slice(0, 1000) : '' } : null;
         out.push({
           id: m.id || '',
           from: String(m.from),
           name: names[m.from] || '',
           text: String(text).slice(0, 500),
-          type: m.type || 'text',
+          type: media ? media.type : (m.type || 'text'),
+          ...(media ? { mediaId: media.mediaId, mediaMime: media.mediaMime, mediaName: media.mediaName, caption: media.caption } : {}),
           at: m.timestamp ? new Date(Number(m.timestamp) * 1000).toISOString() : new Date().toISOString(),
           ...adInfo(m.referral),
         });
@@ -69,7 +74,7 @@ function adInfo(ref) {
   if (!ref || typeof ref !== 'object') return {};
   const type = String(ref.source_type || '').toLowerCase();
   if (!(type === 'ad' || type === 'post' || ref.ctwa_clid)) return {};
-  return { fromAd: true, adId: String(ref.source_id || '').slice(0, 60), adUrl: String(ref.source_url || '').slice(0, 300), adHeadline: String(ref.headline || '').slice(0, 200), adBody: String(ref.body || '').slice(0, 300) };
+  return { fromAd: true, adId: String(ref.source_id || '').slice(0, 60), adUrl: String(ref.source_url || '').slice(0, 300), adHeadline: String(ref.headline || '').slice(0, 200), adBody: String(ref.body || '').slice(0, 300), ctwaClid: String(ref.ctwa_clid || '').slice(0, 200), adSourceType: type };
 }
 
 // Keeps only what the Leads tab wants: messages that came from an ad, and follow-ups from a number that came from an ad before.
@@ -108,42 +113,4 @@ export async function addToInbox(env, messages) {
   }
   if (added) await env.mydukapos_kv.put(INBOX_KEY, JSON.stringify(inbox.slice(-MAX_INBOX)));
   return added;
-}
-
-// Merges inbox messages into a sheet's lead list. Returns { leads, changed }.
-export function mergeInboxIntoLeads(leads, inbox, nowIso) {
-  let changed = false;
-  const list = Array.isArray(leads) ? leads.slice() : [];
-  for (const m of inbox) {
-    const key = normalizePhone(m.from);
-    if (!key) continue;
-    let lead = list.find((l) => normalizePhone(l.phone) === key);
-    if (lead) {
-      if ((lead.waMessageIds || []).includes(m.id)) continue;
-      lead.lastMessage = m.text; lead.lastMessageAt = m.at; lead.updatedAt = nowIso;
-      lead.waMessageIds = ((lead.waMessageIds || []).concat(m.id || [])).slice(-20);
-      const line = `WhatsApp ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`;
-      lead.notes = lead.notes ? `${lead.notes}\n${line}`.slice(-1500) : line;
-      if (lead.dead) lead.dead = false;                                    // they wrote again: not dead
-      if (!lead.name && m.name) lead.name = m.name;
-    } else {
-      if (!m.fromAd) continue;                          // a follow-up from someone who is not on this sheet: no new lead (they are already being handled)
-      list.push({
-        id: crypto.randomUUID(),
-        name: m.name || `+${m.from}`,
-        phone: `+${m.from.replace(/^\+/, '')}`,
-        product: 'shop',
-        source: 'Meta ad',
-        adId: m.adId || '', adHeadline: m.adHeadline || '',
-        contacted: false, scheduled: false, meetingDate: '', closed: false, dead: false,
-        clientId: null, clientLink: null, assignedTo: '',
-        agreedAmount: 0, paidAmount: 0, balanceOwed: 0,
-        notes: `${m.adHeadline ? `From the ad "${m.adHeadline}"\n` : 'From a Meta ad\n'}WhatsApp ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`,
-        lastMessage: m.text, lastMessageAt: m.at, waMessageIds: m.id ? [m.id] : [],
-        createdAt: nowIso, updatedAt: nowIso,
-      });
-    }
-    changed = true;
-  }
-  return { leads: list, changed };
 }

@@ -485,6 +485,13 @@
         };
 
         /* ---- the archive itself ---- */
+        var JOURNALED = ['salesLog', 'stockMovementLog', 'returns', 'expenses'];      // the ones the sales journal knows the sync state of
+        function isOpen(f, r) {
+            if (!r || typeof r !== 'object') return false;
+            if (f === 'tradeCredits') return !r._deleted && r.status !== 'settled' && !r.settledAt;
+            if (f === 'attendanceLog') return !r._deleted && r.clockIn != null && (r.clockOut == null || r.clockOut === '');
+            return false;
+        }
         function splitOld(cutoff) {
             var out = {}, moved = 0;
             FIELDS.forEach(function (f) {
@@ -493,6 +500,13 @@
                 for (var i = 0; i < a.length; i++) {
                     var t = recordTime(a[i]);
                     if (!isFinite(t) || t >= cutoff) continue;
+                    // zip 158: still open (a trade credit nobody settled, a staff member still clocked in) = live data, whatever its date
+                    if (isOpen(f, a[i])) continue;
+                    // zip 158: the lists the sales journal does not track (trade credits, attendance, admin activity, dispatches) are archived only once the
+                    // server has acknowledged this exact version of the record - an unsent one (recorded offline, back-dated) would otherwise leave the
+                    // list, and with it the only copy that was ever going to be sent. A record that cannot be identified is never moved.
+                    if (JOURNALED.indexOf(f) === -1 && !(typeof pushIsAcked === 'function' && pushIsAcked(f, a[i]))) continue;
+                    if (JOURNALED.indexOf(f) !== -1 && (!a[i] || a[i].id == null)) continue;
                     // never move a record the server has not got yet: it stays in the list (and is sent) until it is on the server (zip 127)
                     // ...nor one the server has not CONFIRMED yet (an older record from before the journal): zip 131
                     if (a[i] && a[i].id != null && typeof window.salesJournalNotOnServer === 'function' && window.salesJournalNotOnServer(f, a[i].id)) continue;

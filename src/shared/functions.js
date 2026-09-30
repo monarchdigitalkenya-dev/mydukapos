@@ -190,6 +190,7 @@ function advanceDeliveryStatus(saleId, source) {
             const record = findDeliveryRecord(saleId, source);
             if (!record) { showToast('Could not find that order.', true); renderDeliveriesTab(); return; }
             record.deliveryStatus = nextDeliveryStatus(record.deliveryStatus || 'assigned');
+            record.updatedAt = Date.now();      // zip 158: the edit is newer than any older copy of the sale another till still holds (the server keeps the newer one)
             queuePush();
             renderDeliveriesTab();
             showToast(`Order ${record.refNumber} marked ${statusLabelFor(record.deliveryStatus)}.`);
@@ -1181,6 +1182,42 @@ function computeStaffStats(id) {
                 totalHours: totalMs / 3600000,
                 daysWorked: daysSet.size,
             };
+        }
+
+//@fn awardTokensToCustomer
+// zip 158: credits loyalty tokens to a customer record in a way that survives two tills awarding at the same time. Each device raises only ITS OWN entry in
+// `tokenLedger` (on top of `tokenBase`, the balance before the ledger began); `tokens` stays the total, so every screen keeps reading it. The server
+// (mergeLoyaltyFields in functions/api/_merge.js) and pullState (mergeLoyaltyFields below) add the devices' entries up instead of letting the last write win.
+function awardTokensToCustomer(customer, n) {
+            const add = Number(n) || 0;
+            if (!customer || add <= 0) return false;
+            let dev = 'device'; try { dev = getOrCreateDeviceId() || dev; } catch (e) { /* the entry is then shared by devices without an id */ }
+            if (!customer.tokenLedger || typeof customer.tokenLedger !== 'object') {
+                customer.tokenLedger = {};
+                customer.tokenBase = Number(customer.tokens) || 0;
+            }
+            customer.tokenLedger[dev] = (Number(customer.tokenLedger[dev]) || 0) + add;
+            customer.tokens = (Number(customer.tokenBase) || 0) + Object.values(customer.tokenLedger).reduce((t, v) => t + (Number(v) || 0), 0);
+            return true;
+        }
+
+//@fn mergeLoyaltyFields
+// The token fields two copies of the same customer should end with ({ tokens, tokenBase, tokenLedger }), or null when there is nothing to merge.
+// Same rule, line for line, as mergeLoyaltyFields in functions/api/_merge.js (see the reasoning there).
+function mergeLoyaltyFields(a, b) {
+            const la = a && a.tokenLedger && typeof a.tokenLedger === 'object' ? a.tokenLedger : null;
+            const lb = b && b.tokenLedger && typeof b.tokenLedger === 'object' ? b.tokenLedger : null;
+            const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+            if (!la && !lb) {
+                if ((!a || a.tokens === undefined) && (!b || b.tokens === undefined)) return null;
+                return { tokens: Math.max(num(a && a.tokens), num(b && b.tokens)) };
+            }
+            const ledger = {};
+            [la, lb].forEach((l) => { if (l) Object.keys(l).forEach((dev) => { ledger[dev] = Math.max(num(ledger[dev]), num(l[dev])); }); });
+            const sum = Object.keys(ledger).reduce((n, k) => n + ledger[k], 0);
+            let base = Math.max(la ? num(a.tokenBase) : 0, lb ? num(b.tokenBase) : 0);
+            [[a, la], [b, lb]].forEach(([side, l]) => { if (!l && side && side.tokens !== undefined) base += Math.max(0, num(side.tokens) - (base + sum)); });
+            return { tokens: base + sum, tokenBase: base, tokenLedger: ledger };
         }
 
 //@fn computeTokensEarned
@@ -2394,7 +2431,7 @@ function returnSelectionFromSaleItem(item, sale) {
 function restockReturnedItem(product, qty, sel, reason) {
             if (!product || !(qty > 0)) return false;
             sel = sel || {};
-            const saved = () => { try { if (typeof stockMovementLog !== 'undefined') safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog)); } catch (e) { /* the ledger is saved by the next stock change at the latest */ } return true; };
+            const saved = () => { try { if (typeof stockMovementLog !== 'undefined') safeSetItem(appStoreKey('pos_stock_movement_log'), JSON.stringify(stockMovementLog)); } catch (e) { /* the ledger is saved by the next stock change at the latest */ } return true; };
             if (sel.variantId && Array.isArray(product.variants)) {
                 const variant = product.variants.find(v => v && v.id === sel.variantId);
                 if (variant) {
@@ -2432,7 +2469,7 @@ function cartStockShortfall(entries) {
             });
             for (const g of Object.values(groups)) {
                 const p = inventory.find(x => x && x.code === g.code);
-                if (!p || p.type === 'service' || p.pourOf || p.kegServe || (Array.isArray(p.recipe) && p.recipe.length) || (Array.isArray(p.comboItems) && p.comboItems.length)) continue;   // made-to-order / poured items keep their stock elsewhere
+                if (!p || p.type === 'service' || p.pourOf || p.kegServe || (Array.isArray(p.recipe) && p.recipe.length) || (Array.isArray(p.comboItems) && p.comboItems.length) || (Array.isArray(p.productionRecipe) && p.productionRecipe.length) || p.type === 'set') continue;   // made-to-order / poured / produced items keep their stock elsewhere (produced items and sets: in their components, checked below)
                 const label = p.name || g.name;
                 if (g.variantId) {
                     const v = (p.variants || []).find(x => x && x.id === g.variantId);
@@ -2450,6 +2487,26 @@ function cartStockShortfall(entries) {
                 } else if (g.box + g.piece > whole + 1e-9) {
                     return `Not enough "${label}" in stock: the cart has ${g.box + g.piece} (all lines together), only ${Math.max(0, whole)} available.`;
                 }
+            }
+            // zip 158: a produced item (productionRecipe) or a Set has no stock of its own: its COMPONENTS are what leaves the shelf. Two of them in
+            // one cart that share a material (each fine alone) must fit together, or the material was silently floored at 0 and the short part
+            // came back on a void. Lines of the material itself in the same cart count too.
+            const need = {}, who = {};
+            (entries || []).forEach(l => {
+                if (!l || l.isService || l.isCrossBranch || l.isAdhoc || !l.code || l.variantId) return;
+                const p = inventory.find(x => x && x.code === l.code);
+                if (!p) return;
+                const recipe = l.componentsRecipe || (Array.isArray(p.productionRecipe) && p.productionRecipe.length ? p.productionRecipe : (p.type === 'set' ? p.setComponents : null));
+                if (!Array.isArray(recipe) || !recipe.length) return;
+                if (l.isHire && l.hireCategory !== 'general') return;
+                recipe.forEach(r => { if (!r || !r.code) return; need[r.code] = (need[r.code] || 0) + (Number(r.qty) || 0) * (Number(l.qty) || 0); if (!who[r.code]) who[r.code] = l.name || p.name; });
+            });
+            for (const code of Object.keys(need)) {
+                const c = inventory.find(x => x && x.code === code);
+                if (!c || c.qty === undefined || c.qty === null || !isFinite(Number(c.qty))) continue;
+                let total = need[code];
+                Object.values(groups).forEach(g => { if (g.code === code && !g.variantId) total += g.box + g.piece; });
+                if (total > (Number(c.qty) || 0) + 1e-9) return `Not enough "${c.name || code}" in stock: "${who[code]}" and the rest of the cart need ${Math.round(total * 1e6) / 1e6}, only ${Math.max(0, Number(c.qty) || 0)} available.`;
             }
             return '';
         }
@@ -2827,12 +2884,21 @@ function generateBillNo() {
 
 //@fn getPaperCols
 function getPaperCols() {
-            // Characters per line = what the print head holds in the printer's standard font (Font A: 12 dots = 1.5 mm a character):
-            // 58 mm paper -> 48 mm printable -> 32; 80 mm -> 72 mm -> 48. Follows THIS device's printer (see receiptPaperMm). (zip 144)
-            const mm = receiptPaperMm();
-            if (mm >= 56 && mm <= 58) return 32;
-            if (mm >= 80 && mm < 100) return 48;
-            return Math.max(20, Math.min(64, Math.floor(receiptPrintableMm(mm) / 1.5)));
+            // Characters per line = what fits across the printable width at the chosen letter size (zip 158): a monospaced character is 0.6 em wide, so
+            // cols = floor(printable width / (0.6 x letter size x 1.005)). 7 pt (the standard) gives 32 on 58 mm paper and 48 on 80 mm; bigger letters
+            // simply wrap at fewer characters, smaller ones fit more. Follows THIS device's printer (see receiptPaperMm). The 0.5% margin keeps a
+            // font that is a hair wider than Courier New inside the paper. (There is no minimum: a huge size on a narrow roll wraps early, it never overflows.)
+            const printableMm = receiptPrintableMm();
+            const pt = receiptFontPtNow();
+            let cols = Math.floor((printableMm * 96 / 25.4) / (0.6 * (pt * 96 / 72) * 1.005));
+            if (Math.abs(pt - 7) < 0.01) {
+                // the standard size is the printer's own text font (Font A: 12 dots = 1.5 mm a character): a text-mode printer never holds more than
+                // that, so a custom roll keeps exactly the count it always had (58 mm -> 32, 80 mm -> 48) when it is smaller than the maths above says
+                const mm = receiptPaperMm();
+                const native = (mm >= 56 && mm <= 58) ? 32 : (mm >= 80 && mm < 100) ? 48 : Math.floor(printableMm / 1.5);
+                cols = Math.min(cols, native);
+            }
+            return Math.max(1, cols);
         }
 
 //@fn getServiceAvailableQty
@@ -4798,7 +4864,6 @@ function printOneBarcode(id) {
 //@fn printReceiptInNewWindow
 function printReceiptInNewWindow() {
             return new Promise((resolve) => {
-                try { fitReceiptGrids(); } catch (e) { /* the estimate stands */ }   // zip 144: exactly `cols` characters across the printable width
                 buildSystemPrintCopies();
                 setPrintMode('receipt');
                 let finished = false;
@@ -4891,13 +4956,17 @@ async function printViaSystemDialog() {
                 const relayCopies = (typeof receiptIsDelivery === 'function' && receiptIsDelivery(currentReceiptSale) && typeof receiptCopiesFor === 'function') ? receiptCopiesFor() : 1;
                 for (let i = 0; i < relayCopies; i++) {                                  // zip 155: a delivery order sends one job per signed copy
                     try { if (typeof receiptCopyPrep === 'function') receiptCopyPrep(i); } catch (e) { /* label only */ }
-                    let relayBytes = null;
+                    let jobs = [null];
                     try {                                                       // zip 156: the printer device gets the finished bytes, so it prints the logo and the stamp too
                         if (typeof buildSectionedReceiptBytes === 'function' && typeof lastReceiptHeader === 'string' && typeof lastReceiptItemSection === 'string') {
-                            relayBytes = buildSectionedReceiptBytes(lastReceiptHeader, lastReceiptItemSection, lastReceiptFooter || '');
+                            // zip 158: a chosen letter size is a picture and can be bigger than one relay job carries - it is sent as several jobs in order (never cut short)
+                            jobs = receiptRelayByteJobs(lastReceiptHeader, lastReceiptItemSection, lastReceiptFooter || '');
                         }
-                    } catch (e) { relayBytes = null; }
-                    sent = await submitPrintRelayJob('receipt', lastReceiptText, relayBytes);
+                    } catch (e) { jobs = [null]; }
+                    for (const relayBytes of jobs) {
+                        sent = await submitPrintRelayJob('receipt', lastReceiptText, relayBytes);
+                        if (!sent) break;
+                    }
                     if (!sent) break;
                 }
                 try { if (typeof receiptCopyPrep === 'function') receiptCopyPrep(0); } catch (e) { /* label only */ }
@@ -5176,6 +5245,7 @@ function preparePulledPayload(data) {
                 if (!data || typeof data !== 'object') return data;
                 try { if (typeof window.salesJournalSeen === 'function') window.salesJournalSeen(data); } catch (e) { /* housekeeping */ }
                 try { if (Array.isArray(data.salesLog)) repairInstallmentSales(data.salesLog); } catch (e) { /* the sale keeps its old shape */ }   // zip 156
+                try { if (Array.isArray(data.salesLog) && (Array.isArray(data.bills) || typeof bills !== 'undefined')) repairLegacyBillPayments(data.salesLog, Array.isArray(data.bills) ? data.bills : bills); } catch (e) { /* the payment stays unlinked */ }   // zip 158
                 if (data._hotFrom) window.__lastHotFrom = data._hotFrom;
                 // what the server just sent, it has: those records are not sent back (zip 129)
                 ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'].forEach((f) => { if (Array.isArray(data[f]) && data[f].length) ackServerRecords(f, data[f]); });
@@ -5201,6 +5271,19 @@ function preparePulledPayload(data) {
                 }
                 setTimeout(ackLocalFields, 0);              // once the app has applied this payload, the settings are in agreement with the server
                 if (data._hotFrom) setTimeout(() => { hydrateOlderHistory(data._hotFrom); }, 4000);     // fetch the older history in the background
+                // zip 158: loyalty tokens awarded on THIS device and not yet on the server are added to the server's copy of the customer, not replaced by it
+                try {
+                    if (Array.isArray(data.customers) && typeof customers !== 'undefined' && Array.isArray(customers) && customers.length) {
+                        const mineById = new Map();
+                        customers.forEach((c) => { if (c && c.id != null) mineById.set(String(c.id), c); });
+                        out.customers = data.customers.map((c) => {
+                            const m = c && c.id != null ? mineById.get(String(c.id)) : null;
+                            if (!m || m === c) return c;
+                            const lf = mergeLoyaltyFields(m, c);
+                            return lf ? { ...c, ...lf } : c;
+                        });
+                    }
+                } catch (e) { /* the server's customers are applied as they are */ }
                 Object.keys(local).forEach((f) => {
                     const mine = local[f];
                     const theirs = data[f];
@@ -6685,7 +6768,6 @@ function runQueuedSystemPrint(setupAndPrintFn) {
                 // Some phones never fire 'afterprint': without a limit the next receipt in the queue waited behind this one for ever.
                 const safety = setTimeout(finish, window.__printSafetyMs || 20000);
                 window.addEventListener('afterprint', finish);
-                try { fitReceiptGrids(); } catch (e) { /* the estimate stands */ }
                 setupAndPrintFn();
             });
         }
@@ -6734,6 +6816,18 @@ function safeJSONParse(key, fallback) {
                 corruptedStorageKeys.push(key);
                 return fallback;
             }
+        }
+
+//@fn appStoreKey
+// zip 158: the localStorage key this app really uses for a list the shared code names the shop way ('pos_sales_log', 'pos_bills', ...). Aqua POS keeps the same
+// lists under aqua_* (see window.__LOG_KEYS): shared code that saved to 'pos_*' there wrote a stray copy nothing ever read, so what it changed (a receipt marked
+// printed, a customer number, a bill payment voided with its bill, re-keyed stock movements) was kept in memory only and was gone after a reload.
+function appStoreKey(posKey) {
+            try {
+                const k = (window.__LOG_KEYS && window.__LOG_KEYS.salesLog) || 'pos_sales_log';
+                const prefix = String(k).replace(/_sales_log$/, '');
+                return !prefix || prefix === 'pos' ? posKey : String(posKey).replace(/^pos_/, prefix + '_');
+            } catch (e) { return posKey; }
         }
 
 //@fn safeSetItem
@@ -8166,6 +8260,18 @@ function pushSigOf(r) {
             return (h >>> 0) + ':' + j.length;
         }
 
+//@fn pushIsAcked
+// zip 158: has the server acknowledged exactly THIS version of the record in this session (pushed and answered OK, or received from it in a pull)?
+// The automatic archive asks this for the lists the sales journal does not track (trade credits, attendance, admin activity, dispatches): it moves
+// only what the server holds. A record that has no id / code / token cannot be matched, so it is never treated as acknowledged.
+function pushIsAcked(field, r) {
+            try {
+                const k = pushKeyOf(r);
+                if (k == null || !window.__pushAck || !window.__pushAck[field]) return false;
+                return window.__pushAck[field].get(k) === pushSigOf(r);
+            } catch (e) { return false; }
+        }
+
 //@fn ackServerRecords
 function ackServerRecords(field, records) {
             // Records that CAME FROM the server (a pull, or older history fetched on demand) are already there: mark them
@@ -9035,7 +9141,7 @@ function reconcileLocalStockChanges() {
                 }
                 check(it, it.name);
             });
-            if (made) safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+            if (made) safeSetItem(appStoreKey('pos_stock_movement_log'), JSON.stringify(stockMovementLog));
             return made;
         }
 
@@ -9081,7 +9187,7 @@ function voidBillPayments(bill, voiding) {
                 if (voiding && !x.voided) { x.voided = true; x.voidedWithBill = true; x.voidReason = 'Bill voided'; x.voidedBy = (typeof activeServerName === 'function' ? activeServerName() : ''); x.voidedAt = at; x.updatedAt = at; n++; }
                 else if (!voiding && x.voided && x.voidedWithBill) { x.voided = false; delete x.voidedWithBill; x.unvoidedAt = at; x.updatedAt = at; n++; }
             });
-            if (n) safeSetItem('pos_sales_log', JSON.stringify(salesLog));
+            if (n) safeSetItem(appStoreKey('pos_sales_log'), JSON.stringify(salesLog));
             return n;
         }
 
@@ -9101,7 +9207,10 @@ function voidRestoreItems(sale) {
                 for (let i = items.length - 1; i >= 0 && left > 1e-9; i--) {
                     if (String(items[i].code) !== String(code)) continue;
                     const take = Math.min(Number(items[i].qty) || 0, left);
-                    items[i].qty = Math.round(((Number(items[i].qty) || 0) - take) * 1000) / 1000;
+                    const was = Number(items[i].qty) || 0;
+                    items[i].qty = Math.round((was - take) * 1000) / 1000;
+                    // zip 158: a produced item / set remembers the materials it used; only the un-returned share of them goes back on a void
+                    if (Array.isArray(items[i].componentsUsed) && was > 0) { const k = items[i].qty / was; items[i].componentsUsed = items[i].componentsUsed.map((c) => ({ ...c, qty: Math.round((Number(c.qty) || 0) * k * 1e6) / 1e6 })); }
                     left -= take;
                 }
             });
@@ -9121,7 +9230,7 @@ function stockKeyMoves(fromLen, key) {
                 m.id = `${key}:${m.code}:${m.unit === 'pieceQty' ? 'p' : 'q'}:${n}`;
                 n++;
             }
-            if (n) safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+            if (n) safeSetItem(appStoreKey('pos_stock_movement_log'), JSON.stringify(stockMovementLog));
             return n;
         }
 
@@ -10200,9 +10309,9 @@ function checkoutGuardFailed(g, e) {
                             });
                             restored++;
                         });
-                        safeSetItem('pos_stock_movement_log', JSON.stringify(stockMovementLog));
+                        safeSetItem(appStoreKey('pos_stock_movement_log'), JSON.stringify(stockMovementLog));
                     }
-                    if (typeof inventory !== 'undefined') safeSetItem('pos_inventory', JSON.stringify(inventory));
+                    if (typeof inventory !== 'undefined') safeSetItem(appStoreKey('pos_inventory'), JSON.stringify(inventory));
                     try { queuePush(); } catch (x) { /* the poll sends it */ }
                     try { if (typeof renderAllViews === 'function') renderAllViews(); } catch (x) { /* cosmetic */ }
                 }
@@ -10855,8 +10964,8 @@ function thermalFitLegacyWidth(line, cols) {
         }
 
 //@fn thermalPrepareText
-function thermalPrepareText(text) {
-            const cols = (typeof getPaperCols === 'function') ? getPaperCols() : 32;
+function thermalPrepareText(text, colsOverride) {
+            const cols = colsOverride > 0 ? colsOverride : ((typeof getPaperCols === 'function') ? getPaperCols() : 32);
             const out = [];
             String(text).replace(/\r/g, '').split('\n').forEach((raw) => {
                 const fitted = thermalFitLegacyWidth(thermalAscii(raw), cols);
@@ -10877,6 +10986,7 @@ function thermalLayout(cols) {
 function thermalItemHeader(cols) {
             // The column header row for raw (USB / Bluetooth) receipts. Until now only the on-screen
             // and system-dialog receipts had column headings.
+            if (cols < 30) return ['ITEM', '-'.repeat(cols)];             // zip 158: big letters on a narrow roll - each item stacks (see thermalItemRow)
             const L = thermalLayout(cols);
             const nameW = cols - (L.qty + L.price + L.amt);
             return [
@@ -10896,7 +11006,7 @@ function thermalItemRow(cols, name, code, qtyStr, priceStr, amountStr, tag) {
             const amt = tag ? amountStr + ' ' + tag : amountStr;
             const out = thermalWrapLine(String(name), cols).slice();
             const codeStr = code ? '#' + code : '';
-            if (qtyStr.length < L.qty && priceStr.length < L.price && amt.length <= L.amt) {
+            if (cols >= 30 && qtyStr.length < L.qty && priceStr.length < L.price && amt.length <= L.amt) {
                 const left = codeStr.length <= nameW - 1 ? codeStr : '';
                 if (codeStr && !left) out.push(codeStr);
                 out.push(left.padEnd(nameW) + qtyStr.padStart(L.qty) + priceStr.padStart(L.price) + amt.padStart(L.amt));
@@ -10912,12 +11022,14 @@ function thermalItemRow(cols, name, code, qtyStr, priceStr, amountStr, tag) {
 function thermalVatHeader(cols) {
             // The standard header is 33 characters - one more than a 58mm roll holds, so the last
             // letter wrapped onto its own line. Compact form for narrow paper.
+            if (cols < 32) return 'CODE RATE VATABLE VAT';                 // zip 158: narrow roll / big letters - single spaces (wrapped by word if still too wide)
             if (cols >= 34) { const vw = Math.floor((cols - 12) / 2); return 'CODE'.padEnd(6) + 'RATE'.padEnd(6) + 'VATABLE AMT'.padStart(cols - 12 - vw) + 'VAT AMT'.padStart(vw); }   // amounts on the right edge (zip 144)
             return 'CODE'.padEnd(5) + 'RATE'.padEnd(5) + 'VATABLE'.padStart(12) + 'VAT'.padStart(10);
         }
 
 //@fn thermalVatRow
 function thermalVatRow(cat, g, cols) {
+            if (cols < 32) return `${cat} ${g.rate}% ${g.net.toFixed(2)} ${g.vat.toFixed(2)}`;
             if (cols >= 34) { const vw = Math.floor((cols - 12) / 2); return cat.padEnd(6) + `${g.rate}%`.padEnd(6) + g.net.toFixed(2).padStart(cols - 12 - vw) + g.vat.toFixed(2).padStart(vw); }
             return cat.padEnd(5) + `${g.rate}%`.padEnd(5) + g.net.toFixed(2).padStart(12) + g.vat.toFixed(2).padStart(10);
         }
@@ -10937,9 +11049,15 @@ function receiptSectionsFor(text) {
         }
 
 //@fn buildSectionedReceiptBytes
-function buildSectionedReceiptBytes(headerText, itemsText, footerText, cutBytes) {
+function buildSectionedReceiptBytes(headerText, itemsText, footerText, cutBytes, forceText) {
             // ESC/POS bytes for a receipt whose header and footer print centred (business name bold),
             // the item table follows the alignment setting, and the column-header and TOTAL rows are bold.
+            // zip 158: at any letter size but the standard 7 pt the receipt is drawn as a picture (buildReceiptRasterParts); 7 pt keeps the text bytes below.
+            if (!forceText && receiptRasterWanted()) {
+                const parts = buildReceiptRasterParts(headerText, itemsText, footerText, cutBytes);
+                if (parts) return receiptConcatBytes(parts);
+                receiptRasterNotice();
+            }
             const enc = new TextEncoder();
             const b = (arr) => new Uint8Array(arr);
             const concat = (chunks) => {
@@ -10968,6 +11086,190 @@ function buildSectionedReceiptBytes(headerText, itemsText, footerText, cutBytes)
                 // can slice through the last printed line — which is the Ref number.
                 cutBytes || b([0x1D, 0x56, 0x42, 0x00]),
             ]);
+        }
+
+//@fn receiptPrintDots
+function receiptPrintDots() {
+            // The printable width of THIS device's roll in printer dots at 203 dpi (8 dots a millimetre): 58 mm paper prints 48 mm = 384 dots, 80 mm
+            // prints 72 mm = 576. A multiple of 8 (one byte = 8 dots), the same margins as receiptPrintableMm.
+            const dots = Math.round(receiptPrintableMm() * 8);
+            return Math.floor(Math.min(Math.max(dots, 192), 2432) / 8) * 8;
+        }
+
+//@fn receiptRasterWanted
+function receiptRasterWanted() {
+            // Letters at any size but the standard 7 pt are drawn as a picture (the printer's own font has one size); 7 pt keeps today's text bytes.
+            return Math.abs(receiptFontPtNow() - 7) > 0.01;
+        }
+
+//@fn receiptRasterMeasure
+function receiptRasterMeasure(fontPx) {
+            // Draws nothing: asks the browser how wide ONE monospace character really is at this size (Courier New on Windows, another mono font on
+            // Android), so the columns of the printed picture come from the real font. null when this browser cannot draw.
+            try {
+                const c = document.createElement('canvas'); c.width = 8; c.height = 8;
+                const ctx = c.getContext('2d');
+                if (!ctx || typeof ctx.measureText !== 'function') return null;
+                ctx.font = `${fontPx}px "Courier New", Courier, "Liberation Mono", "DejaVu Sans Mono", monospace`;
+                const cw = ctx.measureText('M'.repeat(20)).width / 20;
+                return cw > 0 ? { cw } : null;
+            } catch (e) { return null; }
+        }
+
+//@fn receiptRasterFromRgba
+function receiptRasterFromRgba(rgba, W, h, maxRows, asList) {
+            // The pure half of "text as dots": an RGBA picture W wide (W a multiple of 8) and h tall -> GS v 0 raster bands of at most maxRows rows
+            // (default 200; some printers reject one very tall image), a pixel darker than mid-grey printing black. Returns one Uint8Array.
+            W = Math.floor(W / 8) * 8;
+            if (!(W > 0 && h > 0)) return asList ? [] : new Uint8Array(0);
+            const bpr = W / 8, step = Math.max(1, Math.min(255, maxRows || 200));
+            const bands = [];
+            for (let y0 = 0; y0 < h; y0 += step) {
+                const bh = Math.min(step, h - y0);
+                const band = new Uint8Array(8 + bpr * bh);
+                band.set([0x1D, 0x76, 0x30, 0x00, bpr & 0xFF, bpr >> 8, bh & 0xFF, bh >> 8], 0);   // GS v 0 m xL xH yL yH
+                for (let y = 0; y < bh; y++) {
+                    for (let x = 0; x < W; x++) {
+                        const i = ((y0 + y) * W + x) * 4;
+                        const a = (rgba[i + 3] == null ? 255 : rgba[i + 3]) / 255;
+                        const lum = 0.299 * (rgba[i] * a + 255 * (1 - a)) + 0.587 * (rgba[i + 1] * a + 255 * (1 - a)) + 0.114 * (rgba[i + 2] * a + 255 * (1 - a));
+                        if (lum < 150) band[8 + y * bpr + (x >> 3)] |= 0x80 >> (x & 7);
+                    }
+                }
+                bands.push(band);
+            }
+            if (asList) return bands;                                      // one piece per band: a long receipt can be split between print jobs on a band boundary
+            const out = new Uint8Array(bands.reduce((n, c) => n + c.length, 0));
+            let o = 0; bands.forEach((c) => { out.set(c, o); o += c.length; });
+            return out;
+        }
+
+//@fn receiptRasterLines
+function receiptRasterLines(lines, W, fontPx, cw) {
+            // lines: [{ text, bold, align: 'left' | 'center' | 'right' }] -> an array of Uint8Array (raster bands), or null when this browser cannot draw.
+            // Every character is put on a grid `cw` dots wide, so columns line up exactly as in the preview whatever the font's own spacing is.
+            const list = Array.isArray(lines) ? lines : [];
+            const out = [];
+            const lh = Math.max(8, Math.round(fontPx * 1.25));
+            const face = `"Courier New", Courier, "Liberation Mono", "DejaVu Sans Mono", monospace`;
+            for (let i0 = 0; i0 < list.length; i0 += 80) {                 // 80 lines a picture: a long receipt never becomes one enormous canvas
+                const chunk = list.slice(i0, i0 + 80);
+                const H = lh * chunk.length;
+                const c = document.createElement('canvas'); c.width = W; c.height = H;
+                const ctx = c.getContext('2d');
+                if (!ctx) return null;
+                ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+                ctx.fillStyle = '#000000'; ctx.textBaseline = 'top';
+                chunk.forEach((ln, k) => {
+                    let t = String(ln.text == null ? '' : ln.text).replace(/\s+$/, '');
+                    if (ln.align === 'center' || ln.align === 'right') t = t.replace(/^\s+/, '');
+                    if (!t) return;
+                    const lineW = t.length * cw;
+                    const x0 = ln.align === 'center' ? Math.max(0, Math.floor((W - lineW) / 2)) : ln.align === 'right' ? Math.max(0, Math.floor(W - lineW)) : 0;
+                    const y = k * lh + Math.max(0, Math.floor((lh - fontPx) / 2));
+                    ctx.font = `${ln.bold ? 'bold ' : ''}${fontPx}px ${face}`;
+                    let real = lineW;
+                    try { real = ctx.measureText(t).width; } catch (e) { real = lineW; }
+                    if (Math.abs(real - lineW) <= 1) ctx.fillText(t, x0, y);
+                    else for (let j = 0; j < t.length; j++) if (t[j] !== ' ') ctx.fillText(t[j], x0 + j * cw, y);   // a font that is not truly monospaced: one character per column
+                });
+                const img = ctx.getImageData(0, 0, W, H);
+                receiptRasterFromRgba(img.data, W, H, 200, true).forEach((band) => out.push(band));
+            }
+            return out;
+        }
+
+//@fn receiptRasterNotice
+function receiptRasterNotice() {
+            if (window.__rasterNoticeShown) return;
+            window.__rasterNoticeShown = true;
+            try { if (typeof showToast === 'function') showToast('This device cannot draw the chosen letter size for the printer - the receipt prints at the printer\'s standard size instead.', true); } catch (e) { /* the print goes on */ }
+        }
+
+//@fn buildReceiptRasterParts
+function buildReceiptRasterParts(headerText, itemsText, footerText, cutBytes) {
+            // The receipt for a thermal printer at the CHOSEN letter size: header / items / footer drawn as pictures (bold header and TOTAL rows, the
+            // header and footer centred, the items aligned as set) between the logo, the stamp and the barcode, then the cut. Returns an array of
+            // byte pieces (each a whole raster band or command, so a long receipt can be split between print jobs), or null when it cannot be drawn.
+            const b = (arr) => new Uint8Array(arr);
+            const W = receiptPrintDots();
+            const fontPx = receiptFontPtNow() * 203 / 72;
+            const m = receiptRasterMeasure(fontPx);
+            if (!m) return null;
+            const cols = Math.max(1, Math.min(getPaperCols(), Math.floor(W / m.cw)));       // the picture's own columns, from the real font
+            const prep = (t) => thermalPrepareText(t, cols).split('\n');
+            const itemAlign = receiptItemAlign === 'center' ? 'center' : receiptItemAlign === 'right' ? 'right' : 'left';
+            const boldItem = (l) => /^\s*(?:(?:TOTAL|AMOUNT DUE TODAY|DUE NOW|ITEM\s+QTY)\b|Payment Method:|Paid by )/.test(l);
+            const head = receiptRasterLines(prep(headerText).map((t, i) => ({ text: t, bold: i === 0, align: 'center' })), W, fontPx, m.cw);
+            const items = receiptRasterLines(prep(itemsText).map((t) => ({ text: t, bold: boldItem(t), align: itemAlign })), W, fontPx, m.cw);
+            const foot = receiptRasterLines(prep(footerText).map((t) => ({ text: t, bold: false, align: 'center' })), W, fontPx, m.cw);
+            if (!head || !items || !foot) return null;
+            const logoRaster = receiptLogoRasterBytes();
+            const stampRaster = (typeof receiptStampRasterBytes === 'function') ? receiptStampRasterBytes() : null;
+            const refBarcode = receiptRefBarcodeBytes(footerText);
+            return [
+                b([0x1B, 0x40, 0x1B, 0x4D, 0x00]),
+                ...(logoRaster ? [logoRaster] : []),
+                ...head,
+                ...(stampRaster ? [stampRaster] : []),
+                ...items,
+                ...foot,
+                ...(refBarcode ? [b([0x0A]), refBarcode] : []),
+                b([0x1B, 0x64, 0x03]),
+                cutBytes || b([0x1D, 0x56, 0x42, 0x00]),
+            ];
+        }
+
+//@fn receiptConcatBytes
+function receiptConcatBytes(parts) {
+            const out = new Uint8Array(parts.reduce((n, c) => n + c.length, 0));
+            let o = 0;
+            parts.forEach((c) => { out.set(c, o); o += c.length; });
+            return out;
+        }
+
+//@fn receiptRasterTextBytes
+function receiptRasterTextBytes(text) {
+            // Any plain document (kitchen ticket, report, order slip) for a thermal printer at the chosen letter size: null at the standard 7 pt
+            // (the caller then sends its ordinary text bytes) or when this browser cannot draw.
+            if (!receiptRasterWanted()) return null;
+            try {
+                const W = receiptPrintDots();
+                const fontPx = receiptFontPtNow() * 203 / 72;
+                const m = receiptRasterMeasure(fontPx);
+                if (!m) { receiptRasterNotice(); return null; }
+                const cols = Math.max(1, Math.min(getPaperCols(), Math.floor(W / m.cw)));
+                const align = receiptItemAlign === 'center' ? 'center' : receiptItemAlign === 'right' ? 'right' : 'left';
+                const bands = receiptRasterLines(thermalPrepareText(text, cols).split('\n').map((t) => ({ text: t, bold: false, align })), W, fontPx, m.cw);
+                if (!bands) { receiptRasterNotice(); return null; }
+                return receiptConcatBytes([new Uint8Array([0x1B, 0x40, 0x1B, 0x4D, 0x00]), ...bands, new Uint8Array([0x1B, 0x64, 0x03]), new Uint8Array([0x1D, 0x56, 0x42, 0x00])]);
+            } catch (e) { receiptRasterNotice(); return null; }
+        }
+
+//@fn receiptRelayByteJobs
+function receiptRelayByteJobs(headerText, itemsText, footerText, limit) {
+            // What to send the print relay for one receipt: an array of byte blocks, each at most `limit` bytes (the relay carries about 150 KB a job).
+            // The standard letter size is one small block of text bytes; a chosen size is a picture and a long receipt is cut BETWEEN raster bands into
+            // several blocks (sent in order, the cut only in the last) - never truncated. [null] = send text only (the printer builds it itself).
+            limit = limit || 140000;
+            try {
+                if (receiptRasterWanted()) {
+                    const parts = buildReceiptRasterParts(headerText, itemsText, footerText);
+                    if (parts) {
+                        const jobs = [];
+                        let cur = [], size = 0;
+                        parts.forEach((p) => {
+                            if (size + p.length > limit && cur.length) { jobs.push(receiptConcatBytes(cur)); cur = []; size = 0; }
+                            cur.push(p); size += p.length;
+                        });
+                        if (cur.length) jobs.push(receiptConcatBytes(cur));
+                        return jobs;
+                    }
+                    receiptRasterNotice();
+                }
+                if (typeof buildSectionedReceiptBytes === 'function') return [buildSectionedReceiptBytes(headerText, itemsText, footerText, undefined, true)];
+            } catch (e) { /* text only */ }
+            return [null];
         }
 
 //@fn usbPrinterNameKey
@@ -11464,7 +11766,7 @@ function buildCode39RasterBytes(value, maxDots) {
 //@fn receiptLogoDots
 function receiptLogoDots() {
             // Printable width of THIS device's roll in printer dots (58 mm head = 384, 80 mm = 576) - the same figure the reference barcode uses.
-            return Math.floor(Math.min(Math.max(getPaperCols() * 12, 192), 576) / 8) * 8;
+            return Math.min(receiptPrintDots(), 576);
         }
 
 //@fn receiptLogoRasterKey
@@ -11575,7 +11877,7 @@ function receiptRefBarcodeBytes(footerText) {
             if (!m) return null;
             if (typeof receiptShowRefNumber !== 'undefined' && !receiptShowRefNumber) return null;
             if (typeof receiptShowBarcode !== 'undefined' && !receiptShowBarcode) return null;
-            try { return buildCode39RasterBytes(m[1], getPaperCols() * 12); } catch (e) { return null; }
+            try { return buildCode39RasterBytes(m[1], receiptPrintDots()); } catch (e) { return null; }
         }
 
 //@fn poState
@@ -12386,6 +12688,11 @@ function buildBillOwedMessage(customerName, owedAmount) {
 
 //@fn buildReceiptEscPosBytes
 function buildReceiptEscPosBytes(headerText, itemsText, footerText) {
+            if (receiptRasterWanted()) {                                              // zip 158: a chosen letter size prints as a picture
+                const parts = buildReceiptRasterParts(headerText, itemsText, footerText);
+                if (parts) return receiptConcatBytes(parts);
+                receiptRasterNotice();
+            }
             const itemAlignByte = receiptItemAlign === 'center' ? 1 : receiptItemAlign === 'right' ? 2 : 0; // justified -> left, same reasoning as buildEscPosBytes above
 
             const headerLines = headerText.replace(/\r/g, '').split('\n');
@@ -13043,8 +13350,8 @@ function markReceiptPrinted(sale) {
             const now = new Date().toISOString();
             stored.printedAt = now; stored.printCount = (stored.printCount || 0) + 1;
             sale.printedAt = now; sale.printCount = stored.printCount;
-            if (typeof salesLog !== 'undefined' && salesLog.includes(stored)) safeSetItem('pos_sales_log', JSON.stringify(salesLog));
-            else if (typeof bills !== 'undefined') safeSetItem('pos_bills', JSON.stringify(bills));
+            if (typeof salesLog !== 'undefined' && salesLog.includes(stored)) safeSetItem(appStoreKey('pos_sales_log'), JSON.stringify(salesLog));
+            else if (typeof bills !== 'undefined') safeSetItem(appStoreKey('pos_bills'), JSON.stringify(bills));
             queuePush();
         }
 
@@ -14745,7 +15052,6 @@ function setKitchenPrintPage() {
             const w = receiptPaperMm();
             if (pageStyle) pageStyle.textContent = receiptPageRule(w, document.getElementById('kitchen-ticket-paper'));
             document.body.style.setProperty('--receipt-print-width', `${w}mm`);
-            document.body.style.setProperty('--receipt-print-zoom', String(((typeof receiptScale !== 'undefined' && Number(receiptScale)) || 100) / 100));
         }
 
 //@fn pruneClosedBills
@@ -14877,8 +15183,8 @@ function assignCustomerNo(sale) {
             scan(salesLog); if (typeof bills !== 'undefined') scan(bills);
             stored.customerNo = max + 1;
             sale.customerNo = stored.customerNo;
-            safeSetItem('pos_sales_log', JSON.stringify(salesLog));
-            if (inBills) safeSetItem('pos_bills', JSON.stringify(bills));
+            safeSetItem(appStoreKey('pos_sales_log'), JSON.stringify(salesLog));
+            if (inBills) safeSetItem(appStoreKey('pos_bills'), JSON.stringify(bills));
             queuePush();
             return sale.customerNo;
         }
@@ -16113,15 +16419,38 @@ function devicePaperWidth() {
             try { return localStorage.getItem('pos_device_paper_mm') || ''; } catch (e) { return ''; }
         }
 
+//@fn receiptFontPtNow
+function receiptFontPtNow() {
+            // The letter size (points) every receipt, bill, ticket and report is laid out and printed at: the shop's saved size, or - only while
+            // the "Adjust receipt size" window draws or test-prints - the size being tried (window.__receiptTrial, see receiptTrialRun). 7 pt = standard.
+            let v = NaN;
+            const t = window.__receiptTrial;
+            if (t && Number.isFinite(t.pt)) v = t.pt;
+            else { try { if (typeof receiptFontPtSaved === 'function') v = Number(receiptFontPtSaved()); } catch (e) { v = NaN; } }
+            if (!Number.isFinite(v)) v = 7;
+            return Math.max(5, Math.min(20, Math.round(v * 2) / 2));
+        }
+
+//@fn receiptTrialRun
+function receiptTrialRun(trial, fn) {
+            // Runs fn with an UNSAVED paper width / letter size in force ({ mm, pt }), then puts the real ones back - nothing tried here is stored or synced.
+            const prev = window.__receiptTrial;
+            window.__receiptTrial = trial || null;
+            try { receiptApplyPaperVars(); return fn(); }
+            finally { window.__receiptTrial = prev || null; try { receiptApplyPaperVars(); } catch (e) { /* cosmetic */ } }
+        }
+
 //@fn receiptPaperMm
 function receiptPaperMm() {
             // The paper width every receipt, bill, ticket and report on this device is laid out for (mm).
+            const t = window.__receiptTrial;
+            if (t && t.mm >= 30 && t.mm <= 300) return t.mm;
             const dev = parseFloat(devicePaperWidth());
-            if (dev >= 30 && dev <= 120) return dev;
+            if (dev >= 30 && dev <= 300) return dev;
             const rw = typeof receiptWidth !== 'undefined' ? receiptWidth : '80';
             const cw = typeof receiptCustomWidth !== 'undefined' ? receiptCustomWidth : '';
             const mm = rw === 'custom' ? (parseFloat(cw) || 80) : (parseFloat(rw) || 80);
-            return Math.max(30, Math.min(120, mm));
+            return Math.max(30, Math.min(300, mm));
         }
 
 //@fn receiptPrintableMm
@@ -16134,17 +16463,9 @@ function receiptPrintableMm(paperMm) {
             return Math.round((48 + (mm - 58) * (24 / 22)) * 10) / 10;
         }
 
-//@fn setDevicePaperWidth
-function setDevicePaperWidth(value) {
-            // '' = use the shop's setting; '58' / '80' / a width in mm = this device's printer. Kept on this device only (never synced).
-            const v = String(value == null ? '' : value).trim();
-            const n = parseFloat(v);
-            try {
-                if (!v || !(n >= 30 && n <= 120)) localStorage.removeItem('pos_device_paper_mm');
-                else localStorage.setItem('pos_device_paper_mm', String(n));
-            } catch (e) { /* private mode: this session only */ }
-            if (typeof syncDevicePaperWidthUI === 'function') syncDevicePaperWidthUI();
-            // an open receipt is laid out again for the new paper at once (the preview is always what will print)
+//@fn receiptRelayoutOpen
+function receiptRelayoutOpen() {
+            // an open receipt is laid out again for the new paper / letter size at once (the preview is always what will print)
             try {
                 const modal = document.getElementById('receipt-modal');
                 if (modal && modal.style.display === 'flex' && typeof currentReceiptSale !== 'undefined' && currentReceiptSale
@@ -16153,8 +16474,21 @@ function setDevicePaperWidth(value) {
                     try { renderReceipt(currentReceiptSale); } finally { window.__receiptRelayoutOnly = false; }
                 }
             } catch (e) { /* the next receipt uses it */ }
+        }
+
+//@fn setDevicePaperWidth
+function setDevicePaperWidth(value, quiet) {
+            // '' = use the shop's setting; '58' / '80' / a width in mm = this device's printer. Kept on this device only (never synced).
+            const v = String(value == null ? '' : value).trim();
+            const n = parseFloat(v);
+            try {
+                if (!v || !(n >= 30 && n <= 300)) localStorage.removeItem('pos_device_paper_mm');
+                else localStorage.setItem('pos_device_paper_mm', String(n));
+            } catch (e) { /* private mode: this session only */ }
+            if (typeof syncDevicePaperWidthUI === 'function') syncDevicePaperWidthUI();
+            receiptRelayoutOpen();
             receiptApplyPaperVars();
-            if (typeof showToast === 'function') showToast(`This device's printer: ${receiptPaperMm()} mm paper (${getPaperCols()} characters a line).`);
+            if (!quiet && typeof showToast === 'function') showToast(`This device's printer: ${receiptPaperMm()} mm paper (${getPaperCols()} characters a line).`);
         }
 
 //@fn syncDevicePaperWidthUI
@@ -16167,6 +16501,10 @@ function syncDevicePaperWidthUI() {
             });
             document.querySelectorAll('.device-paper-now').forEach((el) => {
                 el.textContent = `${receiptPaperMm()} mm paper · ${getPaperCols()} characters a line${dev ? '' : ' (shop setting)'}`;
+            });
+            document.querySelectorAll('.receipt-size-now').forEach((el) => {
+                const pt = receiptFontPtNow();
+                el.textContent = `${receiptPaperMm()} mm paper · ${pt} pt letters${pt === 7 ? ' (standard)' : ''} · ${getPaperCols()} characters a line${dev ? " · this device's printer" : ''}`;
             });
         }
 
@@ -16249,12 +16587,15 @@ function receiptGridLines(lines, align, cols) {
 //@fn receiptGridHtml
 function receiptGridHtml(blocks, opts) {
             // blocks: [{ lines, align: 'left'|'center'|'right', bold(line, index) }]. Returns the grid, cols characters wide.
+            // zip 158: the letter size is CHOSEN (Settings > Adjust receipt size) and drives the columns - the grid is drawn at exactly that size,
+            // it is no longer scaled to fill the paper.
             opts = opts || {};
             const cols = opts.cols || getPaperCols();
             ensureReceiptGridCss();
             receiptApplyPaperVars();
-            const fontPx = (receiptPrintableMm() * 96 / 25.4) / (cols * 0.6);   // refined by fitReceiptGrids() once measurable
-            let html = `<div class="receipt-grid" data-cols="${cols}" style="--rg-cols:${cols}; --rg-font:${fontPx.toFixed(2)}px;">`;
+            const pt = receiptFontPtNow();
+            const fontPx = pt * 96 / 72;
+            let html = `<div class="receipt-grid" data-cols="${cols}" data-pt="${pt}" style="--rg-cols:${cols}; --rg-font:${fontPx.toFixed(3)}px;">`;
             (blocks || []).forEach((b) => {
                 if (!b) return;
                 if (typeof b.html === 'string') { html += b.html; return; }                       // zip 155: a picture (the receipt stamp) between the text blocks
@@ -16264,29 +16605,7 @@ function receiptGridHtml(blocks, opts) {
                 });
             });
             html += '</div>';
-            if (!window.__rgFitScheduled) {
-                window.__rgFitScheduled = true;
-                const run = () => { window.__rgFitScheduled = false; fitReceiptGrids(); };
-                if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run); else setTimeout(run, 0);
-            }
             return html;
-        }
-
-//@fn fitReceiptGrids
-function fitReceiptGrids(root) {
-            // Fonts differ between devices (Courier New on Windows, another monospace on Android): measure the real character width
-            // and size the text so that exactly `cols` characters fill the printable width. Nothing to measure while hidden (the
-            // first estimate, 0.6 em per character, then stands) — it runs again on every print.
-            try {
-                const target = receiptPrintableMm() * 96 / 25.4;
-                (root || document).querySelectorAll('.receipt-grid').forEach((g) => {
-                    const w = g.getBoundingClientRect ? g.getBoundingClientRect().width : 0;
-                    if (!(w > 0)) return;
-                    const cur = parseFloat(g.style.getPropertyValue('--rg-font')) || 11;
-                    const next = cur * (target * 0.995) / w;
-                    if (Math.abs(next - cur) > 0.01) g.style.setProperty('--rg-font', next.toFixed(3) + 'px');
-                });
-            } catch (e) { /* the estimate stands */ }
         }
 
 //@fn setPrintBodyText
@@ -16377,6 +16696,7 @@ function receiptIsDelivery(sale) {
 //@fn receiptCopiesFor
 function receiptCopiesFor() {
             // How many copies a print makes: the shop's setting, but never fewer than 2 for a delivery order.
+            if (window.__receiptTestPrint) return 1;                       // zip 158: the "Print test receipt" of Adjust receipt size is one copy
             const n = (typeof receiptCopies === 'number' && receiptCopies > 0) ? receiptCopies : 1;
             let sale = null;
             try { sale = currentReceiptSale; } catch (e) { /* no receipt open */ }
@@ -16444,7 +16764,52 @@ function repairInstallmentSales(list) {
                 n++;
             });
             if (n && !Array.isArray(list)) {
-                try { safeSetItem('pos_sales_log', JSON.stringify(salesLog)); } catch (e) { /* stays in memory; the next save writes it */ }
+                try { safeSetItem(appStoreKey('pos_sales_log'), JSON.stringify(salesLog)); } catch (e) { /* stays in memory; the next save writes it */ }
+                try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll sends it */ }
+            }
+            return n;
+        }
+
+//@fn repairLegacyBillPayments
+// zip 158: payments taken on a bill BEFORE zip 156 are ordinary sales ("Bill Payment - This Installment", "Partial payment - Bill (name)") that carry no
+// `billId`, so voiding the bill could not void them (it only warned). This links such a payment to its bill - once, and only when it can be told
+// apart from every other bill: the same customer (name, and phone when both have one), a bill payment line, and a payment recorded on exactly ONE
+// bill (in its paymentHistory) for the same amount within a minute of the sale. Two bills that fit, or none: it is left alone (nothing is guessed);
+// a payment already voided is left alone too. Nothing about money changes - only the link is added. Safe to repeat. Returns how many it linked.
+function repairLegacyBillPayments(salesList, billList) {
+            const sales = Array.isArray(salesList) ? salesList : (typeof salesLog !== 'undefined' ? salesLog : null);
+            const bl = Array.isArray(billList) ? billList : (typeof bills !== 'undefined' ? bills : null);
+            if (!Array.isArray(sales) || !Array.isArray(bl) || !bl.length) return 0;
+            const norm = (v) => String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g, ' ');
+            const digits = (v) => String(v == null ? '' : v).replace(/\D/g, '').slice(-9);
+            const nameOfBill = (b) => norm(b.customerName) || 'walk-in customer';
+            const isPaymentLine = (s) => !!(s && Array.isArray(s.items) && s.items.length && s.items.some((l) => l && /^(Bill Payment|Partial payment)/i.test(String(l.name || ''))));
+            const cands = sales.filter((x) => x && !x._deleted && !x.voided && x.billId == null && isPaymentLine(x));
+            if (!cands.length) return 0;
+            const byName = new Map();
+            bl.forEach((b) => { if (b && b.id != null && !b._deleted && Array.isArray(b.paymentHistory) && b.paymentHistory.length) { const k = nameOfBill(b); (byName.get(k) || byName.set(k, []).get(k)).push(b); } });
+            const paidOf = (x) => {
+                if (x.installment && Number(x.installment.thisInstallment) > 0) return Number(x.installment.thisInstallment);
+                const line = x.items.find((l) => l && /^(This Installment|Bill Payment|Partial payment)/i.test(String(l.name || '')));
+                return line ? (Number(line.price) || 0) * (Number(line.qty) || 1) : 0;
+            };
+            let n = 0;
+            const at = Date.now();
+            cands.forEach((x) => {
+                const amount = paidOf(x), t = Date.parse(x.timestamp);
+                if (!(amount > 0) || !Number.isFinite(t)) return;
+                const pool = byName.get(norm(x.customerName) || 'walk-in customer') || [];
+                const hits = pool.filter((b) => {
+                    if (digits(x.customerPhone) && digits(b.customerPhone || b.mpesaPhone) && digits(x.customerPhone) !== digits(b.customerPhone || b.mpesaPhone)) return false;
+                    return b.paymentHistory.some((p) => p && Math.abs((Number(p.amount) || 0) - amount) < 0.005 && Math.abs(Date.parse(p.timestamp) - t) <= 60000);
+                });
+                if (hits.length !== 1) return;
+                x.billId = hits[0].id;
+                x.updatedAt = at;
+                n++;
+            });
+            if (n && !Array.isArray(salesList)) {
+                try { safeSetItem(appStoreKey('pos_sales_log'), JSON.stringify(salesLog)); } catch (e) { /* stays in memory; the next save writes it */ }
                 try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll sends it */ }
             }
             return n;
@@ -16504,4 +16869,293 @@ function receiptDeliverySignLines(sale, ctx) {
             out.push('');
             out.push(blank);
             return out;
+        }
+
+//@fn receiptFontPtSave
+function receiptFontPtSave(pt) {
+            // Saves the shop's letter size (points): kept on this device, sent to the shop's other devices with the other receipt settings, and carried in
+            // the shared receipt settings of a branch group. Returns the size saved.
+            let v = Number(pt);
+            if (!Number.isFinite(v)) v = 7;
+            v = Math.max(5, Math.min(20, Math.round(v * 2) / 2));
+            try { if (typeof receiptFontPtStore === 'function') receiptFontPtStore(v); } catch (e) { /* kept for this session */ }
+            try { receiptApplyPaperVars(); } catch (e) { /* cosmetic */ }
+            try { if (typeof syncDevicePaperWidthUI === 'function') syncDevicePaperWidthUI(); } catch (e) { /* cosmetic */ }
+            receiptRelayoutOpen();
+            try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the next change sends it */ }
+            try { if (typeof pushSharedReceiptSettingsIfNeeded === 'function') pushSharedReceiptSettingsIfNeeded(); } catch (e) { /* a branch group only */ }
+            return v;
+        }
+
+//@fn receiptSizeDummySale
+function receiptSizeDummySale() {
+            // The sample receipt of "Adjust receipt size": short and long names, quantities and prices, VAT, a total, cash and change, a reference and its barcode.
+            return {
+                id: '__receipt_size_sample__', timestamp: Date.now(), paymentMethod: 'cash', amountTendered: 1000, change: 108.5,
+                refNumber: 'SAMPLE-0001', servedBy: 'Sample', customerNo: 1, orderType: 'walkin', isSample: true,
+                items: [
+                    { code: '00012', name: 'Bread 400g', qty: 2, price: 65, unit: 'pcs', vatCategory: 'A' },
+                    { code: '00420', name: 'Milk 500ml', qty: 1, price: 60, unit: 'pcs', vatCategory: 'A' },
+                    { code: '00777', name: 'Extra Long Product Name Example 1kg Family Pack', qty: 3, price: 120.5, unit: 'pcs', vatCategory: 'B' },
+                    { code: '00901', name: 'Sugar 2kg', qty: 1, price: 340, unit: 'pcs', vatCategory: 'A' },
+                ],
+            };
+        }
+
+//@fn receiptSizeTrial
+function receiptSizeTrial() {
+            // The paper and letter size being tried in the window ({ mm, pt }), or null while the custom width is not a usable number yet.
+            const st = window.__rsz;
+            if (!st) return null;
+            const mm = st.kind === 'custom' ? parseFloat(st.customMm) : Number(st.kind);
+            if (!(mm >= 30 && mm <= 300)) return null;
+            return { mm, pt: Math.max(5, Math.min(20, Math.round(Number(st.pt) * 2) / 2)) };
+        }
+
+//@fn receiptSizeHooks
+function receiptSizeHooks() {
+            return { defaultName: 'Your Business', docLabel: () => 'TEST RECEIPT', autoPrint: false };
+        }
+
+//@fn receiptSizeRender
+function receiptSizeRender() {
+            // Draws the window: the buttons, the letter size, and the sample receipt made by the REAL receipt builder at the size being tried.
+            const st = window.__rsz;
+            const modal = document.getElementById('receipt-size-modal');
+            if (!st || !modal) return;
+            modal.querySelectorAll('[data-rsz-paper]').forEach((b) => {
+                const on = b.dataset.rszPaper === st.kind;
+                b.classList.toggle('active', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+            const customWrap = document.getElementById('rsz-custom-wrap');
+            if (customWrap) customWrap.style.display = st.kind === 'custom' ? 'flex' : 'none';
+            const customIn = document.getElementById('rsz-custom-mm');
+            if (customIn && document.activeElement !== customIn) customIn.value = st.customMm;
+            const ptIn = document.getElementById('rsz-pt');
+            if (ptIn && document.activeElement !== ptIn) ptIn.value = String(st.pt);
+            modal.querySelectorAll('[data-rsz-pt]').forEach((b) => {
+                const on = Math.abs(Number(b.dataset.rszPt) - st.pt) < 0.01;
+                b.classList.toggle('active', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+            const note = document.getElementById('rsz-paper-note');
+            if (note) note.textContent = st.deviceMode ? "This is THIS device's printer paper (this till only - other tills keep their own)." : "This is the paper width for the whole shop (every till without its own printer setting).";
+            const box = document.getElementById('rsz-paper');
+            const colsEl = document.getElementById('rsz-cols');
+            const saveBtn = document.getElementById('rsz-save-btn');
+            const printBtn = document.getElementById('rsz-print-btn');
+            const trial = receiptSizeTrial();
+            if (!trial) {
+                if (colsEl) { colsEl.textContent = 'Type a paper width between 30 and 300 mm.'; colsEl.className = 'rsz-cols rsz-warn'; }
+                if (saveBtn) saveBtn.disabled = true;
+                if (printBtn) printBtn.disabled = true;
+                return;
+            }
+            if (saveBtn) saveBtn.disabled = false;
+            if (printBtn) printBtn.disabled = !!st.printing;
+            let html = '', cols = 0;
+            try {
+                receiptTrialRun(trial, () => {
+                    const doc = buildReceiptDoc(receiptSizeDummySale(), receiptSizeHooks());
+                    html = doc.html; cols = getPaperCols();
+                });
+            } catch (e) { html = '<div style="padding:10px;color:#b00;">The sample receipt could not be drawn.</div>'; }
+            let top = '', bottom = '';
+            try { if (typeof receiptShowLogo !== 'undefined' && receiptShowLogo && receiptLogoData) top = `<div class="rsz-brand"><img alt="" src="${escapeHtml(receiptLogoData)}"></div>`; } catch (e) { /* no logo */ }
+            try { if (typeof receiptShowQr !== 'undefined' && receiptShowQr && receiptQrData) bottom = `<div class="rsz-brand"><img alt="" src="${escapeHtml(receiptQrData)}">${receiptQrCaption ? `<div style="font-size:11px;">${escapeHtml(receiptQrCaption)}</div>` : ''}</div>`; } catch (e) { /* no QR */ }
+            if (box) {
+                const side = (trial.mm - receiptPrintableMm(trial.mm)) / 2;
+                box.style.width = trial.mm + 'mm';
+                box.style.paddingLeft = box.style.paddingRight = side.toFixed(2) + 'mm';
+                box.dataset.mm = String(trial.mm); box.dataset.pt = String(trial.pt); box.dataset.cols = String(cols);
+                box.innerHTML = top + html + bottom;
+            }
+            const cap = document.getElementById('rsz-preview-cap');
+            if (cap) cap.textContent = `${trial.mm} mm paper · ${trial.pt} pt letters`;
+            if (colsEl) {
+                colsEl.textContent = `${cols} characters per line`;
+                colsEl.className = 'rsz-cols' + (cols < 16 ? ' rsz-warn' : '');
+                if (cols < 16) colsEl.textContent += ' - very big for this paper: long words will break';
+            }
+        }
+
+//@fn receiptSizeOpen
+function receiptSizeOpen() {
+            const modal = document.getElementById('receipt-size-modal');
+            if (!modal) return;
+            const dev = parseFloat(devicePaperWidth());
+            const deviceMode = dev >= 30 && dev <= 300;
+            const mm = receiptPaperMm();
+            const kind = mm === 58 ? '58' : mm === 80 ? '80' : 'custom';
+            const saved = typeof receiptCustomWidth !== 'undefined' ? parseFloat(receiptCustomWidth) : NaN;
+            window.__rsz = {
+                kind, deviceMode, pt: receiptFontPtNow(), printing: false,
+                customMm: kind === 'custom' ? String(mm) : (saved >= 30 && saved <= 300 ? String(saved) : '70'),
+            };
+            modal.style.display = 'block';
+            try { document.body.style.overflow = 'hidden'; } catch (e) { /* cosmetic */ }
+            window.__rszKey = (ev) => { if (ev && ev.key === 'Escape') receiptSizeCancel(); };
+            document.addEventListener('keydown', window.__rszKey);
+            receiptSizeRender();
+            try { modal.scrollTop = 0; } catch (e) { /* cosmetic */ }
+        }
+
+//@fn receiptSizeClose
+function receiptSizeClose() {
+            const modal = document.getElementById('receipt-size-modal');
+            if (modal) modal.style.display = 'none';
+            try { document.body.style.overflow = ''; } catch (e) { /* cosmetic */ }
+            try { document.removeEventListener('keydown', window.__rszKey); } catch (e) { /* cosmetic */ }
+            window.__rsz = null;
+        }
+
+//@fn receiptSizeCancel
+function receiptSizeCancel() {
+            // Nothing tried in the window was ever saved, so cancelling only closes it.
+            receiptSizeClose();
+        }
+
+//@fn receiptSizeSetPaper
+function receiptSizeSetPaper(kind) {
+            const st = window.__rsz;
+            if (!st) return;
+            st.kind = kind === '58' || kind === '80' ? kind : 'custom';
+            receiptSizeRender();
+            if (st.kind === 'custom') { const el = document.getElementById('rsz-custom-mm'); try { if (el) el.focus(); } catch (e) { /* cosmetic */ } }
+        }
+
+//@fn receiptSizeSetCustom
+function receiptSizeSetCustom(v) {
+            const st = window.__rsz;
+            if (!st) return;
+            st.customMm = String(v == null ? '' : v).trim();
+            receiptSizeRender();
+        }
+
+//@fn receiptSizeSetPt
+function receiptSizeSetPt(v, final) {
+            // typed or chosen letter size; while typing a half-typed number is left alone, and it is tidied (5-20, steps of 0.5) when the box is left
+            const st = window.__rsz;
+            if (!st) return;
+            const n = parseFloat(v);
+            if (!Number.isFinite(n)) { if (final) { const el = document.getElementById('rsz-pt'); if (el) el.value = String(st.pt); } return; }
+            if (!final && (n < 5 || n > 20)) return;
+            st.pt = Math.max(5, Math.min(20, Math.round(n * 2) / 2));
+            if (final) { const el = document.getElementById('rsz-pt'); if (el) el.value = String(st.pt); }
+            receiptSizeRender();
+        }
+
+//@fn receiptSizeStep
+function receiptSizeStep(delta) {
+            const st = window.__rsz;
+            if (!st) return;
+            st.pt = Math.max(5, Math.min(20, Math.round((Number(st.pt) + Number(delta)) * 2) / 2));
+            const el = document.getElementById('rsz-pt'); if (el) el.value = String(st.pt);
+            receiptSizeRender();
+        }
+
+//@fn receiptSizeReset
+function receiptSizeReset() {
+            const st = window.__rsz;
+            if (!st) return;
+            st.pt = 7;
+            const el = document.getElementById('rsz-pt'); if (el) el.value = '7';
+            receiptSizeRender();
+        }
+
+//@fn receiptSizeSave
+function receiptSizeSave() {
+            // Stores what the window shows: the paper (this device's printer when it has its own, otherwise the shop's) and the letter size.
+            const st = window.__rsz;
+            const trial = receiptSizeTrial();
+            if (!st || !trial) { try { showToast('Type a paper width between 30 and 300 mm first.', true); } catch (e) { /* cosmetic */ } return; }
+            if (st.deviceMode) {
+                setDevicePaperWidth(String(trial.mm), true);
+            } else {
+                const kind = st.kind;
+                if (typeof updateReceiptSizeField === 'function') {
+                    if (kind === 'custom') updateReceiptSizeField('customWidth', String(trial.mm));
+                    updateReceiptSizeField('width', kind);
+                }
+            }
+            const pt = receiptFontPtSave(trial.pt);
+            try { syncReceiptBrandingUI(); } catch (e) { /* the settings page may not be open */ }
+            try { if (typeof syncDevicePaperWidthUI === 'function') syncDevicePaperWidthUI(); } catch (e) { /* cosmetic */ }
+            receiptRelayoutOpen();
+            const mm = receiptPaperMm();
+            receiptSizeClose();
+            try { showToast(`Receipts will now print at ${pt} pt on ${mm} mm paper`); } catch (e) { /* cosmetic */ }
+        }
+
+//@fn receiptSizeTestJob
+async function receiptSizeTestJob() {
+            // The real print path for the sample receipt, one copy: Bluetooth, USB, or (system dialog / the shop's print relay). No cash drawer, no "printed" mark.
+            const sections = { header: lastReceiptHeader, items: lastReceiptItemSection, footer: lastReceiptFooter };
+            if (printerMode === 'bluetooth' && (btPrinterCharacteristic || (window.nativeBytePrinter && window.nativeBytePrinter()))) {
+                await printViaBluetooth(lastReceiptText, sections);
+                return;
+            }
+            if (printerMode === 'usb' && usbPrinterDevice && usbPrinterEndpoint !== null) {
+                await printViaUSB(lastReceiptText, sections);
+                return;
+            }
+            await printViaSystemDialog();
+        }
+
+//@fn receiptSizeTestPrint
+async function receiptSizeTestPrint() {
+            // "Print test receipt": prints the sample through the real print path using the UNSAVED paper and letter size of the window. The saved settings are
+            // never touched: the size is in force only while this print runs, and whatever receipt was on screen is put back afterwards.
+            const st = window.__rsz;
+            if (!st || st.printing) return;
+            const trial = receiptSizeTrial();
+            if (!trial) { try { showToast('Type a paper width between 30 and 300 mm first.', true); } catch (e) { /* cosmetic */ } return; }
+            st.printing = true;
+            const printBtn = document.getElementById('rsz-print-btn'); if (printBtn) printBtn.disabled = true;
+            const bodyEl = document.getElementById('receipt-body');
+            const modalEl = document.getElementById('receipt-modal');
+            const logoBlock = document.getElementById('receipt-logo-block'), qrBlock = document.getElementById('receipt-qr-block');
+            const snap = {
+                html: bodyEl ? bodyEl.innerHTML : '', display: modalEl ? modalEl.style.display : '', saleId: modalEl ? modalEl.dataset.saleId : '',
+                text: lastReceiptText, header: lastReceiptHeader, items: lastReceiptItemSection, footer: lastReceiptFooter, sale: currentReceiptSale,
+                logo: logoBlock ? logoBlock.style.display : '', qr: qrBlock ? qrBlock.style.display : '',
+            };
+            window.__receiptTestPrint = true;
+            window.__receiptTrial = trial;
+            try {
+                receiptApplyPaperVars();
+                const sale = receiptSizeDummySale();
+                const doc = buildReceiptDoc(sale, receiptSizeHooks());
+                if (bodyEl) bodyEl.innerHTML = doc.html;
+                lastReceiptText = doc.text; lastReceiptHeader = doc.header; lastReceiptItemSection = doc.items; lastReceiptFooter = doc.footer; currentReceiptSale = sale;
+                try { if (typeof applyReceiptAlignToPaper === 'function') applyReceiptAlignToPaper(); } catch (e) { /* cosmetic */ }
+                if (logoBlock) {
+                    if (typeof receiptShowLogo !== 'undefined' && receiptShowLogo && receiptLogoData) { const im = document.getElementById('receipt-logo-img'); if (im) im.src = receiptLogoData; logoBlock.style.display = 'block'; }
+                    else logoBlock.style.display = 'none';
+                }
+                if (qrBlock) {
+                    if (typeof receiptShowQr !== 'undefined' && receiptShowQr && receiptQrData) { const im = document.getElementById('receipt-qr-img'); if (im) im.src = receiptQrData; const cp = document.getElementById('receipt-qr-caption'); if (cp) cp.textContent = receiptQrCaption || ''; qrBlock.style.display = 'block'; }
+                    else qrBlock.style.display = 'none';
+                }
+                if (modalEl) modalEl.style.display = 'flex';
+                try { await prepareReceiptLogoRaster(); } catch (e) { /* prints without the logo (and says so) */ }
+                try { if (typeof prepareReceiptStampRaster === 'function') await prepareReceiptStampRaster(); } catch (e) { /* prints without the stamp */ }
+                window.__lastPrintOk = null;
+                await queuePrintJob(receiptSizeTestJob);
+                if (window.__lastPrintOk !== false) { try { showToast(`Test receipt sent: ${trial.pt} pt on ${trial.mm} mm paper.`); } catch (e) { /* cosmetic */ } }
+            } catch (e) {
+                try { showToast('The test receipt could not be printed. Try again.', true); } catch (e2) { /* cosmetic */ }
+            } finally {
+                window.__receiptTestPrint = false;
+                window.__receiptTrial = null;
+                if (bodyEl) bodyEl.innerHTML = snap.html;
+                if (modalEl) { modalEl.style.display = snap.display; modalEl.dataset.saleId = snap.saleId; }
+                if (logoBlock) logoBlock.style.display = snap.logo;
+                if (qrBlock) qrBlock.style.display = snap.qr;
+                lastReceiptText = snap.text; lastReceiptHeader = snap.header; lastReceiptItemSection = snap.items; lastReceiptFooter = snap.footer; currentReceiptSale = snap.sale;
+                try { receiptApplyPaperVars(); } catch (e) { /* cosmetic */ }
+                st.printing = false;
+                if (printBtn) printBtn.disabled = false;
+            }
         }

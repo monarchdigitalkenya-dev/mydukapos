@@ -283,6 +283,16 @@ export function recordTime(r) {
   return NaN;
 }
 
+// zip 158: a record that is still OPEN is live data, not history, whatever its date: a trade credit nobody has settled (it is what the Trade
+// Credits tab lists and what the shop still owes / is owed), a staff member still clocked in. Archiving one made it vanish from every device
+// while the money / the shift was still running. Shared by the client's own archive (src/shared/blocks/storage-and-photos.html).
+export function isOpenRecord(field, r) {
+  if (!r || typeof r !== 'object') return false;
+  if (field === 'tradeCredits') return !r._deleted && r.status !== 'settled' && !r.settledAt;
+  if (field === 'attendanceLog') return !r._deleted && r.clockIn != null && (r.clockOut == null || r.clockOut === '');
+  return false;
+}
+
 // Splits a state object into { keep, old } where `old` holds { field: [records older than cutoff] }.
 export function splitOldHistory(state, cutoffMs) {
   const keep = { ...state };
@@ -292,7 +302,7 @@ export function splitOldHistory(state, cutoffMs) {
     const arr = state[f];
     if (!Array.isArray(arr) || arr.length === 0) continue;
     const stay = [], go = [];
-    for (const r of arr) { const t = recordTime(r); (Number.isFinite(t) && t < cutoffMs ? go : stay).push(r); }
+    for (const r of arr) { const t = recordTime(r); (Number.isFinite(t) && t < cutoffMs && !isOpenRecord(f, r) ? go : stay).push(r); }
     if (go.length) { keep[f] = stay; old[f] = go; moved += go.length; }
   }
   return { keep, old, moved };
@@ -380,6 +390,22 @@ export async function writeArchive(env, clientId, { old, keepDays, cutoff, auto 
   return { archiveId, counts };
 }
 
+// zip 158: the latest time this record says anything happened at (ms), whatever field carried it. A trade credit settled, a shift clocked out, a
+// delivery marked delivered carry no `updatedAt` (only a handful of lists are stamped on edit), so "edited after it was archived" had no answer for
+// them and the edit was dropped with a 200. Numbers that look like epoch milliseconds and ISO date strings count; amounts and quantities never do.
+export function latestTouchMs(r) {
+  if (!r || typeof r !== 'object') return 0;
+  let best = 0;
+  for (const [k, v] of Object.entries(r)) {
+    if (v == null) continue;
+    let t = NaN;
+    if (typeof v === 'number') { if (v >= 1e12 && v < 4e12) t = v; }
+    else if (typeof v === 'string' && /^\d{4}-\d\d-\d\d(T|\s|$)/.test(v)) t = Date.parse(v);
+    if (Number.isFinite(t) && t > best) best = t;
+  }
+  return best;
+}
+
 // Drops incoming log records that were already archived (see above). Reads the index only when there is something old to check.
 // zip 156: a record that IS in the archive but carries an edit made AFTER it was archived (an old credit sale being paid, say) is a real
 // change: it goes through (and lives in the shop again; the next archive moves it out again). Only copies that are as old as the archive are
@@ -405,7 +431,11 @@ export async function dropArchivedIncoming(env, clientId, body, cutoff, opts = {
       const t = recordTime(r), k = recordKeyOf(r);
       if (!(Number.isFinite(t) && t < cutoff && k && known.has(k))) return true;
       const archivedAt = Number(times[k]) || Number(opts.lastArchiveAt) || 0;
-      return !!archivedAt && typeof r.updatedAt === 'number' && r.updatedAt + offset >= archivedAt;     // edited after it was archived: keep
+      if (!archivedAt) return false;
+      if (typeof r.updatedAt === 'number') return r.updatedAt + offset >= archivedAt;     // edited after it was archived: keep
+      // zip 158: a record that carries no `updatedAt` at all (trade credit settled, shift clocked out...) is judged by the latest time written on it. Those times
+      // are the device's own clock, so they are moved onto the server's clock the same way; an old copy has none at or after the archive time.
+      return latestTouchMs(r) + offset >= archivedAt;
     });
     if (kept.length !== arr.length) out = { ...out, [f]: kept };
   }

@@ -21,7 +21,7 @@
 
 import {
   businessSig, bookingConflict, MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
-  allocateTill, noteDevice, NESTED_MERGE, mergeBillRecords, mergeDebtRecords, mergeInventoryRecord, SETTINGS_NEED_STAMP_FIELDS, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
+  allocateTill, noteDevice, NESTED_MERGE, mergeBillRecords, mergeDebtRecords, mergeProgressRecord, PROGRESS_FIELDS, mergeLoyaltyFields, mergeInventoryRecord, SETTINGS_NEED_STAMP_FIELDS, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
 
@@ -145,6 +145,33 @@ export class ShopStore {
       if (stored) {
         const m = col === 'bills' ? mergeBillRecords(stored, rec) : mergeDebtRecords(stored, rec);
         if (m === stored) return false;                    // the stored copy is the winner and the incoming one adds nothing
+        rec = m;
+        upd = Number(rec && rec.updatedAt) || 0;
+        json = JSON.stringify(rec);
+        forceReplace = true;
+      }
+    }
+    // Customers: the winner by time decides the record, but loyalty tokens are merged (each till's awards add up - see mergeLoyaltyFields in _merge.js).
+    if (col === 'customers' && row.del !== 1 && !(rec && rec._deleted === true)) {
+      let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
+      if (stored) {
+        const lf = mergeLoyaltyFields(stored, rec);
+        if (lf) {
+          const win = upd >= (row.upd || 0) ? rec : stored;
+          rec = { ...win, ...lf };
+          upd = Number(win.updatedAt) || 0;
+          json = JSON.stringify(rec);
+          if (json === row.json) return false;
+          forceReplace = true;
+        }
+      }
+    }
+    // Trade credits and shifts only move forward (see mergeProgressRecord in _merge.js): the more advanced copy wins whatever the times say.
+    if (PROGRESS_FIELDS.includes(col) && row.del !== 1 && !(rec && rec._deleted === true)) {
+      let stored = null; try { stored = JSON.parse(row.json); } catch (e) { /* unreadable: ordinary rule */ }
+      if (stored) {
+        const m = mergeProgressRecord(col, stored, rec);
+        if (m === stored) return false;
         rec = m;
         upd = Number(rec && rec.updatedAt) || 0;
         json = JSON.stringify(rec);

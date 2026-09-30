@@ -52,11 +52,10 @@ for (const app of ['index.html', 'hotel/index.html', 'water/index.html']) {
           renderReceipt(sale);
         }, [SALE, mm]);
         await page.waitForTimeout(300);
-        await page.evaluate(() => { fitReceiptGrids(); setPrintMode('receipt'); });
+        await page.evaluate(() => { setPrintMode('receipt'); });
         await page.emulateMedia({ media: 'print' });
         await page.waitForTimeout(200);
         const m = await page.evaluate(() => {
-          fitReceiptGrids();
           const g = document.querySelector('#receipt-body .receipt-grid');
           const rows = [...g.querySelectorAll('.rg-l')];
           const lh = parseFloat(getComputedStyle(rows[0]).lineHeight);
@@ -98,7 +97,7 @@ for (const app of ['index.html', 'hotel/index.html', 'water/index.html']) {
           await page.waitForTimeout(200);
           const el = await page.$('#receipt-paper');
           await el.screenshot({ path: path.join(process.env.RECEIPT_SHOTS, `${app.split('/')[0].replace('.html', '') || 'shop'}-${mm}mm.png`) });
-          await page.evaluate(() => { fitReceiptGrids(); setPrintMode('receipt'); });
+          await page.evaluate(() => { setPrintMode('receipt'); });
           await page.emulateMedia({ media: 'print' });
           await page.pdf({ path: path.join(process.env.RECEIPT_SHOTS, `${app.split('/')[0].replace('.html', '') || 'shop'}-${mm}mm.pdf`), preferCSSPageSize: true, printBackground: true });
         }

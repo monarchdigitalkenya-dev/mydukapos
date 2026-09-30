@@ -351,7 +351,7 @@ export async function createClient(env, type, label, product, extra = {}) {
     // Where this client link came from — 'website' (public-site self-signup
     // in demo-account.js, or the legacy anonymous flow in public-demo.js),
     // 'lead' (closed out of the Owner Console's own Leads tracker, see
-    // leads.js's generateLink action), or 'owner' (typed directly into the
+    // the old Leads tab's generateLink action), or 'owner' (typed directly into the
     // 🔗 Licenses tab's "Generate Demo Link", the default for everything
     // else). Purely informational — shown as a badge in the Demo/Permanent
     // Links lists so a website- or lead-sourced link is identifiable there.
@@ -359,7 +359,7 @@ export async function createClient(env, type, label, product, extra = {}) {
     // Simple one-off billing record for what THIS client (the shop owner
     // using mydukapos, not one of their own customers) agreed to pay for
     // the service and how much of that has actually been paid — set when a
-    // Leads-tab lead is closed (see leads.js) and editable afterwards from
+    // Leads-tab lead is closed (the old Leads tab) and editable afterwards from
     // either the Leads tab or this client's own detail view (owner-lock.js's
     // 'edit' action). balanceOwed is just agreedAmount minus paidAmount,
     // recomputed any time either changes — this IS the "bill" the owner

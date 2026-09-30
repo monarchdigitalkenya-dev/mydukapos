@@ -24,13 +24,24 @@ export const SAMPLE_SALE = {
 export async function boot(app, opts = {}) {
   const html = fs.readFileSync(path.join(ROOT, app), 'utf8');
   const errors = [];
+  const state = { closed: false };
   const vc = new VirtualConsole();
   vc.on('jsdomError', (e) => errors.push(String(e.message).slice(0, 160)));
   const dom = new JSDOM(html, {
     url: opts.url || 'https://demo.mydukapos.store/', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: vc,
     beforeParse(w) {
       Object.entries(opts.storage || {}).forEach(([k, v]) => w.localStorage.setItem(k, v));
-      w.fetch = opts.fetch || (() => Promise.reject(new Error('offline')));
+      // zip 158: a real browser stops running a page's code when the page goes away; jsdom does not - a request that was still on its way
+      // when a test closed a device answered later and the page's code, finding no document any more, threw (an unhandled rejection that
+      // failed whichever test happened to be running: the multi-device chaos test). After close() no answer reaches the page.
+      const baseFetch = opts.fetch || (() => Promise.reject(new Error('offline')));
+      w.fetch = (...args) => {
+        if (state.closed) return new Promise(() => {});
+        return new Promise((resolve, reject) => {
+          let p; try { p = Promise.resolve(baseFetch(...args)); } catch (e) { reject(e); return; }
+          p.then((v) => { if (!state.closed) resolve(v); }, (e) => { if (!state.closed) reject(e); });
+        });
+      };
       w.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
       w.HTMLCanvasElement.prototype.getContext = opts.getContext || (() => null);
       if (opts.toDataURL) w.HTMLCanvasElement.prototype.toDataURL = opts.toDataURL;
@@ -57,7 +68,14 @@ export async function boot(app, opts = {}) {
     while (dom.window.document.readyState !== 'complete' && Date.now() - t0 < 3000) await new Promise((r) => setTimeout(r, 25));
     await new Promise((r) => setTimeout(r, 450));
   }
-  return { w: dom.window, d: dom.window.document, errors, close: () => dom.window.close() };
+  // close(): the network is cut at once (see above); the window itself is torn down a moment later, so promise chains already running finish
+  // against a live document instead of a dead one (the timer is unref'd: it never keeps a test process alive).
+  return { w: dom.window, d: dom.window.document, errors, close: () => {
+    if (state.closed) return;
+    state.closed = true;
+    const t = setTimeout(() => { try { dom.window.close(); } catch (e) { /* already gone */ } }, opts.closeDelayMs != null ? opts.closeDelayMs : 300);
+    if (t && t.unref) t.unref();
+  } };
 }
 
 // Decode ESC/POS bytes into { text, nonAscii, commands } so tests can assert on what a printer would print.

@@ -87,6 +87,7 @@ test('every sale carries its till, device, cashier and shift; movements carry de
   const t = Date.now() + 5000;
   await s.fetch('https://x/api/pos-sync', { method: 'POST', body: JSON.stringify({ updatedAt: Date.now(), stockMovementLog: [{ id: 'later', kind: 'count', code: 'A', counted: 9, before: 0, delta: 9, unit: 'qty', timestamp: new Date(t).toISOString() }] }) });
   await a.w.eval('flushThenPull()'); await a.w.eval('pullState()');                        // ... superseded by a later one
+  await settled(a); await new Promise((r) => setTimeout(r, 700)); await a.w.eval('flushThenPull()'); await settled(a);   // zip 156: a pull that lands on unsent work is applied right after it is sent
   a.w.eval("document.getElementById('audit-module-select').value = 'Sync'; renderAuditTab()");
   const audit = a.d.getElementById('audit-tab').textContent;
   assert.match(audit, /Synced to the server/); assert.match(audit, /conflict resolved by the server/);

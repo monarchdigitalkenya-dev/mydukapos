@@ -87,44 +87,35 @@ test('WhatsApp webhook: a message with a good signature is filed; a bad or missi
   assert.equal((await readInbox(env)).length, 1, 'nothing extra was stored');
 });
 
-test('Leads: people who message the number become leads (name from their WhatsApp profile); a returning number updates its lead instead of duplicating; yesterday\'s uncontacted leads still carry forward', async () => {
-  const { mergeInboxIntoLeads } = await load('_whatsapp.js');
-  const now = new Date().toISOString();
-  const existing = [{ id: 'L1', name: 'Bob', phone: '0712 345 678', product: 'hotel', contacted: false, dead: true, notes: 'called once' }];
-  const inbox = [
-    { id: 'w1', from: '254712345678', name: 'Bob K', text: 'Are you there?', type: 'text', at: '2026-09-21T08:00:00.000Z' },      // same number as Bob (different format)
-    { id: 'w2', from: '254799000111', name: 'Amina', text: 'Price for pharmacy POS?', type: 'text', at: '2026-09-21T09:00:00.000Z', fromAd: true, adId: '1200001', adHeadline: 'POS for your shop' },
-    { id: 'w3', from: '254799000111', name: 'Amina', text: 'Please call me', type: 'text', at: '2026-09-21T09:05:00.000Z' },                 // a follow-up (no ad marker any more)
-    { id: 'w4', from: '254700999888', name: 'Stranger', text: 'Follow-up from someone not on this sheet', type: 'text', at: '2026-09-21T09:10:00.000Z' },
-  ];
-  const { leads, changed } = mergeInboxIntoLeads(existing, inbox, now);
-  assert.ok(changed);
-  assert.equal(leads.length, 2, 'Bob updated, Amina added once');
-  const bob = leads.find((l) => l.id === 'L1');
-  assert.equal(bob.dead, false, 'writing again revives a dead lead'); assert.match(bob.notes, /called once[\s\S]*Are you there\?/); assert.equal(bob.name, 'Bob');
-  const amina = leads.find((l) => l.name === 'Amina');
-  assert.equal(amina.phone, '+254799000111'); assert.equal(amina.source, 'Meta ad'); assert.equal(amina.contacted, false);
-  assert.match(amina.notes, /From the ad "POS for your shop"/);
-  assert.ok(!leads.some((l) => l.name === 'Stranger'), 'a follow-up never creates a lead by itself');
-  assert.match(amina.notes, /Price for pharmacy POS\?[\s\S]*Please call me/, 'both of her messages are on the one lead');
-  // the same inbox merged again changes nothing
-  assert.equal(mergeInboxIntoLeads(leads, inbox, now).leads.length, 2);
-
-  // end to end through the Leads endpoint: today's sheet is carried forward from yesterday AND the inbox is merged in, then the inbox is emptied
-  const kv = makeKV(); kv.data.set('owner-session:tok', { value: '1' });
-  const env = { mydukapos_kv: kv };
-  const today = new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10);
-  const yest = new Date(Date.now() + 3 * 3600 * 1000 - 86400000).toISOString().slice(0, 10);
-  kv.data.set('leads-sheet:' + yest, { value: JSON.stringify([{ id: 'Y1', name: 'Old Lead', phone: '0700000001', product: 'shop', contacted: false, scheduled: false, closed: false, dead: false }]) });
-  const wa = await load('_whatsapp.js');
-  await wa.addToInbox(env, [inbox[1], inbox[2]]);
-  const leadsApi = await load('leads.js');
-  const res = await leadsApi.onRequestPost({ request: new Request('https://x.pages.dev/api/leads', { method: 'POST', headers: { Authorization: 'Bearer tok', 'content-type': 'application/json' }, body: JSON.stringify({ action: 'getSheet', date: today }) }), env });
-  const data = await res.json();
-  assert.deepEqual(data.leads.map((l) => l.name).sort(), ['Amina', 'Old Lead']);
-  assert.equal((await wa.readInbox(env)).length, 0, 'the inbox is emptied once merged');
-  const again = await (await leadsApi.onRequestPost({ request: new Request('https://x.pages.dev/api/leads', { method: 'POST', headers: { Authorization: 'Bearer tok', 'content-type': 'application/json' }, body: JSON.stringify({ action: 'getSheet', date: today }) }), env })).json();
-  assert.equal(again.leads.length, 2, 'asking again does not duplicate anyone');
+test('CRM: people who message the number become CRM leads (name from their WhatsApp profile); a returning number is attached to its lead instead of duplicating; follow-ups and Meta retries never create leads or duplicates', async () => {
+  const { makeCrm } = await import('./crm-harness.mjs');
+  const c = await makeCrm({ WHATSAPP_APP_SECRET: SECRET });
+  const send = async (msgs, names) => { const b = JSON.stringify(payload(msgs, names)); const r = await hook(c.env, b, { 'x-hub-signature-256': sign(b) }); assert.equal(r.status, 200); return b; };
+  const bob = (await c.ok('POST', '/leads', { body: { name: 'Bob', phone: '0712 345 678', notes: 'called once' } })).lead;     // already a CRM lead
+  // Bob writes from a different number format, WITHOUT an ad: no new lead, the chat is linked to his lead
+  await send([msg('w1', '254712345678', 'Are you there?', 1789990000)], { '254712345678': 'Bob K' });
+  assert.equal(c.q('select count(*) n from crm_leads')[0].n, 1, 'Bob is not duplicated');
+  assert.equal(c.q(`select lead_id from crm_conversations where wa_id = '254712345678'`)[0].lead_id, bob.id, 'his WhatsApp chat is on his lead');
+  assert.equal(c.q('select name from crm_leads where id = ?', bob.id)[0].name, 'Bob', 'the CRM name is not overwritten by the profile name');
+  // an ad person becomes a lead (profile name, ad headline in the notes / attribution); the follow-up joins the same lead
+  const b2 = await send([msg('w2', '254799000111', 'Price for pharmacy POS?', 1789990100, AD)], { '254799000111': 'Amina' });
+  await send([msg('w3', '254799000111', 'Please call me', 1789990200)], { '254799000111': 'Amina' });
+  const amina = c.q(`select * from crm_leads where name = 'Amina'`);
+  assert.equal(amina.length, 1);
+  assert.equal(amina[0].phone, '+254799000111'); assert.equal(amina[0].status_key, 'new'); assert.equal(amina[0].source_key, 'meta_ads');
+  assert.match(amina[0].notes, /From the ad "POS for your shop"/);
+  assert.equal(c.q('select count(*) n from crm_messages m join crm_conversations v on v.id = m.conversation_id where v.lead_id = ?', amina[0].id)[0].n, 2, 'both of her messages are on the one lead');
+  // an ordinary text from a stranger never creates a lead (the conversation is kept, unlinked)
+  await send([msg('w4', '254700999888', 'Follow-up from someone unknown', 1789990300)], { '254700999888': 'Stranger' });
+  assert.equal(c.q(`select count(*) n from crm_leads where name = 'Stranger'`)[0].n, 0);
+  assert.equal(c.q(`select lead_id from crm_conversations where wa_id = '254700999888'`)[0].lead_id, null);
+  // Meta re-delivers the same notification: nothing is added twice
+  const before = [c.q('select count(*) n from crm_leads')[0].n, c.q('select count(*) n from crm_messages')[0].n];
+  await hook(c.env, b2, { 'x-hub-signature-256': sign(b2) });
+  assert.deepEqual([c.q('select count(*) n from crm_leads')[0].n, c.q('select count(*) n from crm_messages')[0].n], before);
+  // a bad signature stores nothing in the CRM either
+  assert.equal((await hook(c.env, b2, { 'x-hub-signature-256': 'sha256=' + '0'.repeat(64) })).status, 401);
+  assert.deepEqual([c.q('select count(*) n from crm_leads')[0].n, c.q('select count(*) n from crm_messages')[0].n], before);
 });
 
 test('WhatsApp webhook: ONLY people who came from a Meta ad become leads — ordinary texts are dropped, follow-ups from an ad person are kept', async () => {

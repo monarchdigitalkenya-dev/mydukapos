@@ -25,9 +25,23 @@
         stampSize: (function () { var n = parseFloat(rxGet('pos_receipt_stamp_size')); return isFinite(n) ? n : 70; })(),
         showStamp: rxGet('pos_receipt_show_stamp') === 'true',
         billsLocked: rxGet('pos_bills_locked') === 'true',
+        fontPt: (function () { var n = parseFloat(rxGet('pos_receipt_font_pt')); return isFinite(n) && n >= 5 && n <= 20 ? Math.round(n * 2) / 2 : 7; })(),   // zip 158: the receipt letter size, in points (7 = standard)
     };
+    /* zip 158: the old receipt zoom setting no longer exists: whatever an old version stored under these two keys is dropped without a word. */
+    rxDel('pos_receipt_scale'); rxDel('aqua_receipt_scale');
+    function receiptFontPtSaved() { return rxSettings.fontPt; }
+    function receiptFontPtStore(n) {
+        n = Math.max(5, Math.min(20, Math.round(Number(n) * 2) / 2));
+        if (!isFinite(n)) n = 7;
+        rxSettings.fontPt = n;
+        rxSet('pos_receipt_font_pt', String(n));
+        return n;
+    }
     function extraSettingsCollect() {
-        return { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, billsLocked: rxSettings.billsLocked };
+        var o = { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, billsLocked: rxSettings.billsLocked };
+        // the letter size travels only once THIS device has one of its own (chosen here or received): a fresh device's default 7 must never replace the shop's real size
+        if (rxGet('pos_receipt_font_pt') !== null) o.receiptFontPt = rxSettings.fontPt;
+        return o;
     }
     function extraSettingsApply(data) {
         if (!data || typeof data !== 'object') return;
@@ -42,6 +56,10 @@
         if (typeof data.receiptShowStamp === 'boolean' && data.receiptShowStamp !== rxSettings.showStamp) { rxSettings.showStamp = data.receiptShowStamp; rxSet('pos_receipt_show_stamp', String(data.receiptShowStamp)); changed = true; }
         var lockChanged = false;
         if (typeof data.billsLocked === 'boolean' && data.billsLocked !== rxSettings.billsLocked) { rxSettings.billsLocked = data.billsLocked; rxSet('pos_bills_locked', String(data.billsLocked)); lockChanged = true; }
+        var fontChanged = false;
+        if (typeof data.receiptFontPt === 'number' && isFinite(data.receiptFontPt) && data.receiptFontPt >= 5 && data.receiptFontPt <= 20 && Math.round(data.receiptFontPt * 2) / 2 !== rxSettings.fontPt) { receiptFontPtStore(data.receiptFontPt); fontChanged = true; }
+        else if (typeof data.receiptFontPt === 'number' && isFinite(data.receiptFontPt) && data.receiptFontPt >= 5 && data.receiptFontPt <= 20 && rxGet('pos_receipt_font_pt') === null) receiptFontPtStore(data.receiptFontPt);
+        if (fontChanged) { try { receiptApplyPaperVars(); syncDevicePaperWidthUI(); receiptRelayoutOpen(); } catch (e) { /* the settings page / a receipt may not be open */ } }
         if (changed) { window.__stampRaster = null; try { rxStampRefreshUI(); } catch (e) { /* the settings page may not be open */ } }
         if (lockChanged) { try { billsLockDecorate(); } catch (e) { /* the Bills tab may not be open */ } }
     }

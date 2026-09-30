@@ -88,6 +88,7 @@ export function regionText(names, lib) {
 export const SHARED_BLOCKS = {
   'hardware-quick-access': { startMarker: '<!-- HARDWARE QUICK-ACCESS' },
   'hold-sale': { startMarker: '<!-- HOLD SALE' },
+  'receipt-size': { startMarker: '<!-- RECEIPT SIZE' },                    // Settings > Adjust receipt size: paper + letter size window with a live sample and a test print (zip 158)
   'receipt-extras': { startMarker: '<!-- RECEIPT EXTRAS' },                // the receipt stamp, the bills lock, the extra delivery fields and their settings sync (zip 155)
   'stock-take': { startMarker: '<!-- STOCK TAKE TAB', skip: ['water/index.html'] },
   'reports-tab': { startMarker: '<!-- REPORTS TAB', skip: ['water/index.html'] },

@@ -247,6 +247,50 @@ export function mergeInventoryRecord(existing, incoming) {
   return out;
 }
 
+// zip 158: records that only ever move FORWARD: a trade credit goes open -> settled, a shift goes clocked in -> clocked out. Neither list stamps
+// `updatedAt` on edit, so the ordinary "newer wins, a tie goes to the incoming copy" rule let a device that had not pulled yet (its first push of a
+// session sends its whole list) put its OLD "open" copy on top of a settlement made on another till: the debt came back to life. The more advanced
+// copy now wins whatever the order they arrive in; equally advanced copies fall back to the ordinary rule.
+export const PROGRESS_FIELDS = ['tradeCredits', 'attendanceLog'];
+function progressOf(field, r) {
+  if (!r || typeof r !== 'object') return 0;
+  if (field === 'tradeCredits') return r.status === 'settled' || r.settledAt ? 1 : 0;
+  if (field === 'attendanceLog') return r.clockOut != null && r.clockOut !== '' ? 1 : 0;
+  return 0;
+}
+export function mergeProgressRecord(field, existing, incoming) {
+  const pe = progressOf(field, existing), pi = progressOf(field, incoming);
+  if (pe !== pi) return pi > pe ? incoming : existing;
+  return (incoming.updatedAt || 0) >= (existing.updatedAt || 0) ? incoming : existing;
+}
+
+// ---- Loyalty tokens (zip 158) ------------------------------------------------------------------------------------------------
+// `customer.tokens` was a plain number, so it was last-write-wins like every other field of the customer: two tills each awarding tokens to the same
+// customer (5 -> 6 on one, 5 -> 6 on the other) ended at 6, and a stale copy of the customer could put the balance back. A till now records what
+// IT awarded in `tokenLedger` = { <deviceId>: <tokens awarded by that device> } (a device only ever raises its own entry) on top of `tokenBase` (the
+// balance before the ledger began, fixed once); `tokens` stays the total (base + every device's entry) so nothing that reads it changes.
+// Merging two copies takes each device's larger entry and the larger base, so awards from any number of tills add up whatever order they arrive
+// in, and arriving twice changes nothing. A copy from a till that has no ledger yet (an older release) can only say "the balance is N": if N is
+// more than the ledger accounts for, the difference is what that till awarded and is added to the base; if it is less, it is simply older.
+// Keep identical to mergeLoyaltyFields in src/shared/functions.js.
+export function mergeLoyaltyFields(a, b) {
+  const la = a && a.tokenLedger && typeof a.tokenLedger === 'object' ? a.tokenLedger : null;
+  const lb = b && b.tokenLedger && typeof b.tokenLedger === 'object' ? b.tokenLedger : null;
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  if (!la && !lb) {
+    if ((!a || a.tokens === undefined) && (!b || b.tokens === undefined)) return null;
+    return { tokens: Math.max(num(a && a.tokens), num(b && b.tokens)) };      // no ledger anywhere: the larger balance (a stale copy never lowers it)
+  }
+  const ledger = {};
+  for (const l of [la, lb]) if (l) for (const [dev, v] of Object.entries(l)) ledger[dev] = Math.max(num(ledger[dev]), num(v));
+  const sum = Object.values(ledger).reduce((n, v) => n + v, 0);
+  let base = Math.max(la ? num(a.tokenBase) : 0, lb ? num(b.tokenBase) : 0);
+  for (const [side, l] of [[a, la], [b, lb]]) {       // a copy without a ledger: an older release that still adds to `tokens` itself
+    if (!l && side && side.tokens !== undefined) base += Math.max(0, num(side.tokens) - (base + sum));
+  }
+  return { tokens: base + sum, tokenBase: base, tokenLedger: ledger };
+}
+
 export function mergeRecordsById(existingArr, incomingArr, finalTombstones = false, field = '') {
   if (!Array.isArray(incomingArr)) return existingArr;
   if (!Array.isArray(existingArr) || existingArr.length === 0) return incomingArr;
@@ -284,9 +328,15 @@ export function mergeRecordsById(existingArr, incomingArr, finalTombstones = fal
     }
     if (field === 'debts' && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeDebtRecords(existing, incoming)); continue; }
     if (NESTED_MERGE[field] && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeNestedRecord(field, existing, incoming)); continue; }
+    if (PROGRESS_FIELDS.includes(field) && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeProgressRecord(field, existing, incoming)); continue; }
     const existingTs = existing.updatedAt || 0;
     const incomingTs = incoming.updatedAt || 0;
     if (field === 'inventory' && existing._deleted !== true && incoming._deleted !== true) { merged.set(key, mergeInventoryRecord(existing, incoming)); continue; }
+    if (field === 'customers' && existing._deleted !== true && incoming._deleted !== true) {
+      const win = incomingTs >= existingTs ? incoming : existing;
+      const lf = mergeLoyaltyFields(existing, incoming);
+      merged.set(key, lf ? { ...win, ...lf } : win); continue;
+    }
     merged.set(key, field === 'products' ? mergeProductRecords(existing, incoming) : (incomingTs >= existingTs ? incoming : existing));
   }
   // Keyed records in their merged-map order (existing order, with
@@ -852,7 +902,7 @@ export const NEVER_BLANK_FIELDS = ['pwHash', 'adminPwHash', 'businessName'];
 // details of a shop - the things a new device starts empty on and that a person notices missing at once.
 export const SETTINGS_NEED_STAMP_FIELDS = [
   'receiptLogo', 'receiptQr', 'receiptQrCaption', 'receiptShowLogo', 'receiptShowQr', 'receiptItemAlign', 'receiptEmail', 'receiptContact',
-  'receiptExtraInfo', 'receiptFooterNotes', 'receiptWidth', 'receiptCustomWidth', 'receiptLengthMode', 'receiptFixedLength', 'receiptScale',
+  'receiptExtraInfo', 'receiptFooterNotes', 'receiptWidth', 'receiptCustomWidth', 'receiptLengthMode', 'receiptFixedLength', 'receiptFontPt',
   'receiptShowRefNumber', 'receiptShowBarcode', 'receiptFooterNotesHire', 'receiptLogoData', 'receiptQrData', 'paymentDetails', 'receiptStampSrc', 'receiptStampAngle', 'receiptStampSize', 'receiptShowStamp', 'billsLocked',
   'receiptAlign', 'lockedTabs', 'vatRateA', 'vatRateB', 'requireCartRemovePw', 'requireCartPricePw', 'lowStockThreshold', 'expiryWarningDays', 'qtyDisplayFormat',
 ];
@@ -898,6 +948,8 @@ export function mergeIncomingState(existing, incoming) {
   merged.deviceRegistry = noteDevice(existing.deviceRegistry, incoming._till, incoming._dev, tills.till);
   if (!merged.deviceRegistry) delete merged.deviceRegistry;
   delete merged._till; delete merged._dev;
+  // zip 158: the receipt "scale" setting no longer exists. An older app that still sends it is accepted and the value is simply not kept (and one stored earlier is dropped).
+  delete merged.receiptScale;
   for (const field of NEVER_BLANK_FIELDS) {
     if (isBlank(incoming[field]) && !isBlank(existing[field])) {
       merged[field] = existing[field];
@@ -937,6 +989,7 @@ export function mergeIncomingState(existing, incoming) {
       times[k] = sent;
     }
   }
+  delete times.receiptScale;
   if (Object.keys(times).length) merged._fieldTimes = times;
   for (const field of MERGE_BY_ID_FIELDS) {
     if (Array.isArray(incoming[field])) {
@@ -1079,6 +1132,24 @@ export function stripTombstones(state) {
 // src/shared/blocks/sales-journal.html — keep the two identical). Two copies with the same value are the same sale / movement /
 // expense as far as the shop is concerned, whatever bookkeeping fields (updatedAt shifted for clock drift, ctx, _srv) differ.
 // Used by /api/sync-have: "which of these records do you already have, in this version?"
+// zip 158: the version used to cover only a handful of fields (time, void, paid, amount paid, item count and total, qty, amount ...). A record edited in
+// any OTHER field (a customer's name, the payment method, a note, which item a line is, a delivery status) kept the same version, so /api/sync-have
+// answered "already have it" for a copy that was NOT the same, and the edit was never sent. The version now ends with a hash of the whole record,
+// less the fields that are only bookkeeping (SIG_IGNORED_FIELDS: stamped or re-stamped on the way to the server, so they differ between two copies
+// of the same business record). Keep this identical to sigOf in src/shared/blocks/sales-journal.html.
+export const SIG_IGNORED_FIELDS = ['updatedAt', 'tries', 'dev', 'till', 'stn', 'ctx', '_srv'];
+function stableJson(v) {
+  if (v === null || typeof v !== 'object') { const j = JSON.stringify(v); return j === undefined ? 'null' : j; }
+  if (Array.isArray(v)) return '[' + v.map(stableJson).join(',') + ']';
+  const keys = Object.keys(v).filter((k) => v[k] !== undefined && typeof v[k] !== 'function').sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableJson(v[k])).join(',') + '}';
+}
+export function contentHash(r) {
+  const j = stableJson(Object.fromEntries(Object.entries(r).filter(([k]) => !SIG_IGNORED_FIELDS.includes(k))));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < j.length; i++) { h ^= j.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36) + '.' + j.length.toString(36);
+}
 export function businessSig(r) {
   if (!r || typeof r !== 'object') return '';
   const items = r.items;
@@ -1088,7 +1159,8 @@ export function businessSig(r) {
     + '|' + (r.amountPaid == null ? '' : r.amountPaid) + '|' + n + '|' + Math.round(sum * 100) + '|' + (r.qty == null ? '' : r.qty)
     + '|' + (r.amount == null ? '' : r.amount) + '|' + (r.removed ? 1 : 0) + '|' + (r._deleted ? 1 : 0)
     // zip 141: signed later by a staff session / M-Pesa-checked later = a new version (same as salesJournalSig on the device)
-    + (r.staffAuth && r.staffAuth.m ? '|a' + r.staffAuth.m : '') + (r.mpesaCheck && r.mpesaCheck.status ? '|m' + r.mpesaCheck.status : '');
+    + (r.staffAuth && r.staffAuth.m ? '|a' + r.staffAuth.m : '') + (r.mpesaCheck && r.mpesaCheck.status ? '|m' + r.mpesaCheck.status : '')
+    + '|c' + contentHash(r);
 }
 
 
