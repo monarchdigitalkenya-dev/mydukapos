@@ -277,7 +277,7 @@ test('OWNER NOTE - a website demo sign-up still creates exactly ONE CRM lead wit
   assert.equal(r.status, 200); assert.ok(r.body.token && r.body.link, 'the demo is provisioned as before');
   const l = c.q(`select * from crm_leads where email = 'grace@example.com'`);
   assert.equal(l.length, 1, 'exactly one lead');
-  assert.deepEqual([l[0].source_key, l[0].status_key, l[0].business_name, l[0].first_utm_source, l[0].first_utm_campaign], ['website', 'new', 'Grace Duka', 'google', 'brand'], 'with its attribution');
+  assert.deepEqual([l[0].source_key, l[0].status_key, l[0].business_name, l[0].first_utm_source, l[0].first_utm_campaign], ['signup', 'new', 'Grace Duka', 'google', 'brand'], 'with its attribution');
   assert.ok(c.q('select 1 from crm_attribution_events where lead_id = ?', l[0].id).length >= 1, 'an attribution event is recorded');
   // the same person again: same phone, different e-mail -> no new lead
   const again = await demo(c.env, reg({ email: 'other@example.com', product: 'shop', utm_source: 'facebook' }), { ip: '2.2.2.2' });

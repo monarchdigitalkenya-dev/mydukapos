@@ -42,12 +42,12 @@ export async function pushWebsiteLead(env, { fullName, phone, email, product, bu
     const dups = await findDuplicates(db, fields);
     if (dups.length) {
       const row = dups[0].row, t = now();
-      await recordTouch(db, row, { attr, kind: 'form', sourceKey: 'website', summary });
+      await recordTouch(db, row, { attr, kind: 'form', sourceKey: 'signup', summary });
       if (productIds.length) await st(db, `INSERT OR IGNORE INTO crm_lead_products (lead_id, product_id, added_at, added_by) VALUES (?,?,?,NULL)`, row.id, productIds[0], t).run();
       return { ok: true, action: 'touched' };
     }
     fields.notes = demoNotes({ product: pk, branchName: text(businessName, 160), demoStatus: requested ? 'active' : null, generatedAt: requested ? now() : null, expiresAt, registeredOnly: !requested });
-    await createLeadCore(db, null, { fields, attr, sourceKey: 'website', productIds }, {
+    await createLeadCore(db, null, { fields, attr, sourceKey: 'signup', productIds }, {
       legacyId: demoLegacyId(fields.email, fields.phone_norm), attrKind: 'form', createdByName: 'Website signup', auditAction: 'lead_create_website',
       activityText: requested ? 'Website signup with a demo request' : 'Website signup (registered, no demo yet)',
     });

@@ -9,7 +9,7 @@
 import { listProducts } from '../_license.js';
 
 export const CRM_SCHEMA_VERSION = 5;                      // zip 161: 4 -> 5 (the speed indexes below; a database at 4 gets them at its next first use)
-export const CRM_SEED_VERSION = 2;
+export const CRM_SEED_VERSION = 3;
 
 // Columns added after schema v1. A database created at v1 gets them through ALTER TABLE ... ADD COLUMN in ensureCrmSchema (CREATE TABLE IF NOT EXISTS
 // cannot add columns to a table that already exists); a fresh database (or migrations/0002_crm.sql) gets them from the CREATE TABLE itself.
@@ -598,7 +598,7 @@ export const DEFAULT_CLASSES = [
   { key: 'potential', label: 'Potential', color: '#8b5cf6' }, { key: 'dead', label: 'Dead', color: '#6b7280' },
 ];
 export const DEFAULT_SOURCES = [
-  { key: 'website', label: 'Website form', system: 1 }, { key: 'whatsapp', label: 'WhatsApp', system: 1 }, { key: 'meta_ads', label: 'Meta ads (Facebook / Instagram)', system: 1 },
+  { key: 'website', label: 'Website form', system: 1 }, { key: 'signup', label: 'App sign-up / demo', system: 1 }, { key: 'whatsapp', label: 'WhatsApp', system: 1 }, { key: 'meta_ads', label: 'Meta ads (Facebook / Instagram)', system: 1 },
   { key: 'facebook', label: 'Facebook' }, { key: 'instagram', label: 'Instagram' },
   { key: 'google_ads', label: 'Google ads' }, { key: 'referral', label: 'Referral' }, { key: 'walk_in', label: 'Walk-in' }, { key: 'phone', label: 'Phone call' },
   { key: 'import', label: 'Imported list', system: 1 }, { key: 'manual', label: 'Added manually', system: 1 }, { key: 'legacy', label: 'Old Leads tab', system: 1 }, { key: 'other', label: 'Other' },
@@ -666,6 +666,12 @@ export async function ensureCrmSchema(db, opts = {}) {
   const seedTag = `${CRM_SEED_VERSION}:${listProducts().map((p) => p.id).join(',')}`;
   if (seedCur !== seedTag) {
     await db.batch(CRM_SEEDS.map((s) => db.prepare(s.sql).bind(...s.args)));
+    // zip 164: people who created an account / asked for a demo are "App sign-up / demo", not "Website form" (the public website's own contact form). Once, when the seed version changes;
+    // only leads that came from the sign-up flow (legacy_id 'demo:...') are moved, and never a lead someone changed to another source by hand.
+    await db.batch([
+      db.prepare(`UPDATE crm_leads SET source_key = 'signup' WHERE source_key = 'website' AND legacy_id LIKE 'demo:%'`),
+      db.prepare(`UPDATE crm_leads SET first_source_key = 'signup' WHERE first_source_key = 'website' AND legacy_id LIKE 'demo:%'`),
+    ]);
     await db.prepare(`INSERT INTO crm_meta (k, v) VALUES ('seed', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).bind(seedTag).run();
   }
   let tried = false;

@@ -2152,6 +2152,10 @@
             <div id="link-gen-amount-group" style="display:none; margin-top:14px;">
                 <p class="settings-hint">Once generated, this shows up as an open bill under 🧾 Bills. Settle it there once you've actually been paid, entering the amount at that point — it moves into 🧾 Daily Sales from there.</p>
             </div>
+            <div id="link-gen-staff-pin-group" style="display:none; margin-top:14px;">
+                <label class="label">Your staff PIN</label>
+                <input type="password" inputmode="numeric" id="link-gen-staff-pin" placeholder="Enter your PIN to confirm" autocomplete="off">
+            </div>
             <p id="link-gen-error" style="color:#e74c3c; min-height:18px; margin-top:10px;"></p>
             <button type="button" class="btn-main" style="width:100%;" onclick="generateOwnerLink()" id="link-gen-submit-btn">Generate Link</button>
             <div id="link-gen-result" style="display:none; margin-top:20px; padding:16px; background:#f8f9fa; border-radius:8px;">
@@ -3262,7 +3266,7 @@
 
                 <h4>♻️ Reset Sales &amp; Bills History</h4>
                 <p style="font-size:13px; color:#555; margin:0 0 8px;">Permanently deletes every sale and open bill recorded in <em>this console</em> — including license-sale entries from 🔗 Generate Link. Client license links themselves are entirely separate and are NOT affected; a client's permanent link keeps working exactly as before. Use this to clear out test/demo entries, or just to tidy up old settled records. This cannot be undone.</p>
-                <button class="btn-main settings-small-btn" style="background:var(--danger); color:white;" onclick="requestResetSalesAndBills()">♻️ Reset Sales &amp; Bills History</button>
+                <button class="btn-main settings-small-btn" style="background:var(--danger); color:white;" onclick="requestResetSalesAndBills()">♻️ Reset ALL Sales, Bills &amp; Link Income to 0</button>
 
                 <hr class="settings-divider">
 
@@ -4931,6 +4935,15 @@
 
             if (!clientName) { errEl.textContent = 'Enter the client’s name.'; return; }
             if (!label) { errEl.textContent = 'Enter a link name.'; return; }
+            // A staff session has no owner token: the staff member proves who they are with their own PIN instead.
+            let staffAuth = null;
+            if (consoleStaffMode) {
+                const pin = (document.getElementById('link-gen-staff-pin') || {}).value || '';
+                if (!pin) { errEl.textContent = 'Enter your staff PIN to generate the link.'; return; }
+                const sid = currentServer && currentServer.id;
+                if (!sid) { errEl.textContent = 'Sign in with your staff PIN first.'; return; }
+                staffAuth = { id: sid, proof: await hashPassword(pin) };
+            }
 
             const btn = document.getElementById('link-gen-submit-btn');
             btn.disabled = true;
@@ -4939,7 +4952,7 @@
                 const res = await fetch('/api/owner-clients', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() },
-                    body: JSON.stringify({ type: linkGenType, label, product, clientName, phone, email }),
+                    body: JSON.stringify({ type: linkGenType, label, product, clientName, phone, email, staff: staffAuth }),
                 });
                 const data = await res.json();
                 if (!res.ok || data.error) {
@@ -5333,7 +5346,8 @@
 
             let paymentHtml;
             if (client.type === 'permanent') {
-                paymentHtml = '<span style="color:#27ae60; font-weight:bold;">✅ Permanent — fully paid</span>';
+                paymentHtml = `<span style="color:#27ae60; font-weight:bold;">✅ Permanent</span>
+                    <button type="button" class="settings-small-btn" style="margin-left:8px;" onclick="requestConvertToDemo('${escapeQuotes(client.id)}', '${escLabel}')">🕐 Convert to demo</button>`;
             } else if (client.paymentClaimed) {
                 paymentHtml = `<p class="settings-hint" style="margin:0 0 8px;">Claimed payment${client.paymentClaimedAt ? ' on ' + new Date(client.paymentClaimedAt).toLocaleString('en-GB') : ''} — not yet confirmed.</p>
                     <button type="button" class="btn-main" onclick="confirmDemoUpgrade('${escapeQuotes(client.id)}', '${escLabel}', '${client.product}')">✅ Confirm Payment</button>
@@ -5587,6 +5601,26 @@
                 }
                 showToast(`Extended by ${days} day${days === 1 ? '' : 's'}.`);
                 ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
+            } catch (e) {
+                showToast(ownerErrText('Could not reach the server'), true);
+            }
+        }
+
+        // zip 165: the reverse of "make permanent" — a permanent link becomes a demo again with a fresh demo window. Its recorded money
+        // for the link is cleared on the server; the sale / bill already posted in this console is left (void or reset it there).
+        async function requestConvertToDemo(clientId, label) {
+            if (!confirm(`Convert "${label}" back to a DEMO?\n\nIt gets a fresh demo period and will lock when that ends unless you make it permanent again. Its recorded income/balance on the link is cleared. Its data is kept.`)) return;
+            try {
+                const res = await fetch('/api/owner-lock', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() },
+                    body: JSON.stringify({ c: clientId, action: 'convertToDemo' }),
+                });
+                const data = await res.json();
+                if (!res.ok || data.error) { showToast(data.error || 'Could not convert that link.', true); return; }
+                showToast(`"${label}" is now a demo.`);
+                ownerClientsCacheAt = 0; renderGroupedClientsList('demo', true); renderGroupedClientsList('permanent', true);
+                if (typeof renderDashboard === 'function') renderDashboard();
             } catch (e) {
                 showToast(ownerErrText('Could not reach the server'), true);
             }
@@ -6055,6 +6089,16 @@
             if (btn) btn.click();
         }
 
+        // ONE way to count money (zip 165). What a sale is worth = what was actually RECEIVED: a voided sale is 0, an unpaid sale (a bill not yet
+        // settled) is 0, a sale marked paid with a different amount counts that amount. Dashboard, Daily Sales, Profits and the printed reports
+        // all use this, so they always agree. A bill is counted ONCE: when it is settled (that creates the paid sale); the open bill is not income.
+        function saleNominal(sale) { return (sale.items || []).reduce((sum, l) => sum + (Number(l.price) || 0) * (Number(l.qty) || 0), 0); }
+        function saleReceived(sale) {
+            if (!sale || sale.voided || sale.paid === false) return 0;
+            const nominal = saleNominal(sale);
+            return typeof sale.amountReceived === 'number' ? sale.amountReceived : nominal;
+        }
+
         async function renderDashboard() {
             let clients;
             try {
@@ -6092,8 +6136,8 @@
             let revenueMonth = 0;
             let revenueTotal = 0;
             (salesLog || []).forEach(sale => {
-                if (sale.voided) return;
-                const total = (sale.items || []).reduce((sum, l) => sum + l.price * l.qty, 0);
+                const total = saleReceived(sale);
+                if (!total) return;
                 revenueTotal += total;
                 if (new Date(sale.timestamp).getTime() >= monthStart) revenueMonth += total;
             });
@@ -7021,7 +7065,7 @@
             const list = document.getElementById('login-picker-list');
             if (!list) return;
 
-            const staffButtons = staff.map(s => `
+            const staffButtons = staff.filter(s0 => !s0.removed).map(s => `
                 <button type="button" class="login-picker-btn" onclick="selectLoginStaff('${s.id}')">
                     <span class="login-picker-avatar">${escapeHtml((s.name || '?').trim().charAt(0).toUpperCase())}</span>
                     <span>${escapeHtml(s.name)}</span>
@@ -7054,7 +7098,7 @@
         }
 
         function selectLoginStaff(id) {
-            const member = staff.find(s => s.id === id);
+            const member = staff.find(s => s.id === id && !s.removed);
             if (!member) return;
             pendingLoginStaffId = id;
             document.getElementById('login-staffpin-name').innerText = member.name;
@@ -7078,7 +7122,7 @@
         }
 
         async function submitLoginStaffPin() {
-            const member = staff.find(s => s.id === pendingLoginStaffId);
+            const member = staff.find(s => s.id === pendingLoginStaffId && !s.removed);
             const errorEl = document.getElementById('login-staffpin-error');
             if (!member) {
                 errorEl.textContent = 'Something went wrong — pick your name again.';
@@ -7845,6 +7889,7 @@
             if (tabId === 'owner-messages-tab') loadOwnerMessages();
             if (tabId === 'owner-apps-tab') loadAppReleases();
             if (tabId === 'health-tab' && !healthData) loadHealth(0);
+            if (tabId === 'sales-tab') { const pg = document.getElementById('link-gen-staff-pin-group'); if (pg) pg.style.display = consoleStaffMode ? 'block' : 'none'; }
             if (tabId === 'daily-sales-tab') {
                 const picker = document.getElementById('sales-table-date-picker');
                 if (picker && !picker.value) picker.value = todayDateString();
@@ -8999,10 +9044,10 @@
         function renderStaffList() {
             const container = document.getElementById('staff-list');
             if (!container) return;
-            if (staff.length === 0) {
+            if (staff.filter(s0 => !s0.removed).length === 0) {
                 container.innerHTML = '<p style="font-size:12px; color:#95a5a6; margin:0;">No staff added yet.</p>';
             } else {
-                container.innerHTML = staff.map(s => `
+                container.innerHTML = staff.filter(s0 => !s0.removed).map(s => `
                     <div class="staff-list-item">
                         <span>${escapeHtml(s.name)}</span>
                         <span style="display:flex; flex-wrap:wrap; gap:6px;">
@@ -9065,8 +9110,11 @@
         function performRemoveStaffMember(id) {
             const member = staff.find(s => s.id === id);
             if (!member) return;
-            staff = staff.filter(s => s.id !== id);
+            // zip 164: a tombstone (`removed`), exactly like the shops: deleting the record outright let the next sync bring it back from the server
+            member.removed = true;
+            member.updatedAt = Date.now();
             safeSetItem('pos_staff', JSON.stringify(staff));
+            if (typeof markLocalDirty === 'function') markLocalDirty();
             if (currentServer && currentServer.id === id) logoutServer();
             renderStaffList();
             renderServerPickList();
@@ -9134,12 +9182,12 @@
             const container = document.getElementById('staff-roster-list');
             if (!container) return;
 
-            if (staff.length === 0) {
+            if (staff.filter(s0 => !s0.removed).length === 0) {
                 container.innerHTML = '<p style="font-size:13px; color:#95a5a6;">No staff added yet — invite one from <a href="javascript:void(0)" onclick="openSettingsSection(&#39;settings-section-staff&#39;)">⚙️ Settings → Staff Accounts</a>.</p>';
                 return;
             }
 
-            container.innerHTML = staff.map(member => {
+            container.innerHTML = staff.filter(s0 => !s0.removed).map(member => {
                 const roles = Array.isArray(member.roles) ? member.roles : [];
                 const lockedDates = Array.isArray(member.lockedDates) ? member.lockedDates : [];
                 const lockedWeekdays = Array.isArray(member.lockedWeekdays) ? member.lockedWeekdays : [];
@@ -9818,7 +9866,7 @@
             const staffId = params.get('staff');
             if (!staffId) return false;
 
-            const member = staff.find(s => s.id === staffId);
+            const member = staff.find(s => s.id === staffId && !s.removed);
             if (!member) return false; // unknown or removed staff — fall through to normal login
 
             document.getElementById('registration-screen').style.display = 'none';
@@ -9840,7 +9888,7 @@
 
         async function submitStaffLogin() {
             const staffId = document.getElementById('staff-login-screen').dataset.staffId;
-            const member = staff.find(s => s.id === staffId);
+            const member = staff.find(s => s.id === staffId && !s.removed);
             const errorEl = document.getElementById('staff-login-error');
             errorEl.textContent = '';
 
@@ -10089,11 +10137,11 @@
             if (typeof dedupeStaff === 'function') dedupeStaff();
             const list = document.getElementById('server-pick-list');
             if (!list) return;
-            if (staff.length === 0) {
+            if (staff.filter(s0 => !s0.removed).length === 0) {
                 list.innerHTML = '<p style="font-size:12px; color:#95a5a6;">No staff set up yet — add one in <a href="javascript:void(0)" onclick="openSettingsSection(&#39;settings-section-staff&#39;)">⚙️ Settings</a>.</p>';
                 return;
             }
-            list.innerHTML = staff.map(s => `
+            list.innerHTML = staff.filter(s0 => !s0.removed).map(s => `
                 <button class="server-pick-btn" onclick="selectServerToLogin('${s.id}')">${escapeHtml(s.name)}</button>
             `).join('');
         }
@@ -10109,7 +10157,7 @@
         }
 
         async function submitServerPin() {
-            const member = staff.find(s => s.id === pendingServerLoginId);
+            const member = staff.find(s => s.id === pendingServerLoginId && !s.removed);
             const errorEl = document.getElementById('server-pin-error');
             if (!member) {
                 errorEl.textContent = 'Something went wrong — pick your name again.';
@@ -15086,14 +15134,14 @@
                 // nominal price — for the common single-item case (e.g. a license
                 // sale) use exactly what was received rather than the nominal figure,
                 // so this report agrees with Daily Sales' revenue total.
-                const overrideUnitPrice = (items.length === 1 && typeof sale.amountReceived === 'number')
-                    ? sale.amountReceived / (items[0].qty || 1) : null;
+                const nominalSale = saleNominal(sale);
+                const ratio = nominalSale > 0 ? saleReceived(sale) / nominalSale : 1;   // spreads a different amount received across the lines
                 items.forEach(it => {
                     const key = it.name;
                     if (!grouped[key]) {
                         grouped[key] = { name: it.name, qty: 0, revenue: 0, cost: 0 };
                     }
-                    const unitPrice = overrideUnitPrice !== null ? overrideUnitPrice : it.price;
+                    const unitPrice = it.price * ratio;
                     grouped[key].qty += it.qty;
                     grouped[key].revenue += unitPrice * it.qty;
                     grouped[key].cost += (it.wholesalePrice || 0) * it.qty;
@@ -15151,18 +15199,20 @@
                 : `${new Date(rangeFrom + 'T00:00:00').toLocaleDateString('en-GB')} — ${new Date(rangeTo + 'T00:00:00').toLocaleDateString('en-GB')}`;
 
             const rangeSales = salesLog.filter(sale => {
-                if (sale.voided) return false; // excluded from the printed report too
+                if (sale.voided || sale.paid === false) return false; // excluded from the printed report too (same rule as the screen)
                 const key = dateKey(new Date(sale.timestamp));
                 return key >= rangeFrom && key <= rangeTo;
             });
 
             const grouped = {};
             rangeSales.forEach(sale => {
+                const nominalSale = saleNominal(sale);
+                const ratio = nominalSale > 0 ? saleReceived(sale) / nominalSale : 1;
                 sale.items.forEach(it => {
                     const key = it.name;
                     if (!grouped[key]) grouped[key] = { name: it.name, qty: 0, revenue: 0, cost: 0 };
                     grouped[key].qty += it.qty;
-                    grouped[key].revenue += it.price * it.qty;
+                    grouped[key].revenue += it.price * ratio * it.qty;
                     grouped[key].cost += (it.wholesalePrice || 0) * it.qty;
                 });
             });
@@ -15328,8 +15378,14 @@
                         totalItems += itemsQty;
                         if (paid) {
                             totalRevenue += receivedTotal;
-                            cashRevenue += (typeof sale.cashAmount === 'number' ? sale.cashAmount : (method === 'cash' ? receivedTotal : 0));
-                            mpesaRevenue += (typeof sale.mpesaAmount === 'number' ? sale.mpesaAmount : (method === 'mpesa' ? receivedTotal : 0));
+                            // cash + M-Pesa must add up to what was received — if the stored split disagrees (an old or edited record), scale it
+                            // so the two never add up to more than the revenue figure.
+                            let cPart = (typeof sale.cashAmount === 'number' ? sale.cashAmount : (method === 'cash' ? receivedTotal : 0));
+                            let mPart = (typeof sale.mpesaAmount === 'number' ? sale.mpesaAmount : (method === 'mpesa' ? receivedTotal : 0));
+                            const split = cPart + mPart;
+                            if (split > receivedTotal + 0.004 && split > 0) { cPart = cPart * receivedTotal / split; mPart = mPart * receivedTotal / split; }
+                            cashRevenue += cPart;
+                            mpesaRevenue += mPart;
                         } else {
                             unpaidTotal += saleTotal;
                         }
@@ -15473,7 +15529,7 @@
         function requestResetSalesAndBills() {
             const txCount = salesLog.length + bills.length;
             if (txCount === 0) { showToast('There are no sales or bills to clear.'); return; }
-            if (!confirm(`Delete all ${salesLog.length} sale(s) and ${bills.length} bill(s) recorded in this console, on every device? Client license links themselves are NOT affected — only this console's own revenue bookkeeping. This cannot be undone.`)) return;
+            if (!confirm(`Delete all ${salesLog.length} sale(s) and ${bills.length} bill(s) and set every permanent link's recorded income to 0, on every device? The links themselves stay. This cannot be undone.`)) return;
             adminPwModalPurpose = 'reset-sales-bills';
             showAdminPwModal(
                 'Management Access',
@@ -15492,7 +15548,12 @@
             renderDailySales();
             renderBillsTab();
             if (typeof renderProfitReport === 'function') renderProfitReport();
-            showToast(`Cleared ${salesCleared} sale(s) and ${billsCleared} bill(s).`);
+            if (typeof renderDashboard === 'function') renderDashboard();
+            // zip 165: also zero the money recorded on every permanent link and the per-person ledger (server side), so you can tick who paid again.
+            fetch('/api/owner-lock', { method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() }, body: JSON.stringify({ action: 'resetAllIncome' }) })
+                .then(r => r.json().catch(() => ({})))
+                .then(d => { ownerClientsCacheAt = 0; groupIncomeCache = {}; if (d && d.ok) showToast(`Cleared ${salesCleared} sale(s), ${billsCleared} bill(s) and the income on ${d.cleared} link(s). Everything is 0.`); else showToast(`Cleared ${salesCleared} sale(s) and ${billsCleared} bill(s). Link income could not be reset: ${(d && d.error) || 'try again'}.`, true); })
+                .catch(() => showToast('Sales cleared here, but the link income could not be reset (no connection). Run the reset again when online.', true));
         }
 
         // Builds the "Server" dropdown options from every name that has ever appeared
@@ -15614,9 +15675,11 @@
 
                         dayItems += itemsQty;
                         if (paid) {
-                            dayRevenue += saleTotal;
-                            dayCash += (typeof sale.cashAmount === 'number' ? sale.cashAmount : (method === 'cash' ? saleTotal : 0));
-                            dayMpesa += (typeof sale.mpesaAmount === 'number' ? sale.mpesaAmount : (method === 'mpesa' ? saleTotal : 0));
+                            const recv = saleReceived(sale);
+                            let cP = (typeof sale.cashAmount === 'number' ? sale.cashAmount : (method === 'cash' ? recv : 0));
+                            let mP = (typeof sale.mpesaAmount === 'number' ? sale.mpesaAmount : (method === 'mpesa' ? recv : 0));
+                            if (cP + mP > recv + 0.004 && cP + mP > 0) { const f = recv / (cP + mP); cP *= f; mP *= f; }
+                            dayRevenue += recv; dayCash += cP; dayMpesa += mP;
                         } else {
                             dayUnpaid += saleTotal;
                         }
@@ -15851,8 +15914,8 @@
 
         function revenueForDate(dateStr) {
             return salesLog
-                .filter(s => s.paid !== false && !s.voided && dayKeyOf(s.timestamp) === dateStr)
-                .reduce((sum, s) => sum + s.items.reduce((t, it) => t + it.price * it.qty, 0), 0);
+                .filter(s => dayKeyOf(s.timestamp) === dateStr)
+                .reduce((sum, s) => sum + saleReceived(s), 0);
         }
 
         function expensesForDate(dateStr) {

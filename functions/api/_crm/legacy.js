@@ -178,7 +178,7 @@ export async function migrateRoute(ctx) {
       else { counts.leads.failed++; errors.push(`lead ${l.legacyId}: ${String(e && e.message || e).slice(0, 160)}`); }
     }
   }
-  // 2b. website signups (KV demo-account-index:v1): one CRM lead per account, source 'website', original timestamps
+  // 2b. website signups (KV demo-account-index:v1): one CRM lead per account, source 'signup' (App sign-up / demo), original timestamps
   if (plan.demo.skippedEntries) warnings.push(`${plan.demo.skippedEntries} website signup entr${plan.demo.skippedEntries === 1 ? 'y has' : 'ies have'} no email or phone (or is a duplicate) and was skipped`);
   for (const d of plan.demo) {
     if (existing.has(d.legacyId)) { counts.websiteLeads.skipped++; continue; }
@@ -189,7 +189,7 @@ export async function migrateRoute(ctx) {
       fields.notes = [demoNotes({ product: d.product, branchName: d.branchName, demoStatus: d.demoStatus, generatedAt: d.generatedAt, expiresAt: d.expiresAt, registeredOnly: !d.real }), ...bad].join('\n');
       const pr = d.product ? product.get(d.product) : null;
       const created = d.createdAt || t0, updated = d.generatedAt || created;
-      await createLeadCore(db, sys, { fields, sourceKey: 'website', statusKey: 'new', productIds: pr ? [pr.id] : [] }, {
+      await createLeadCore(db, sys, { fields, sourceKey: 'signup', statusKey: 'new', productIds: pr ? [pr.id] : [] }, {
         at: created, legacyId: d.legacyId, legacyJson: jstr({ ...d.raw, real: d.real, migratedAt: t0 }), createdByName: 'Old Web signups list', silent: true, attrKind: 'legacy',
         activityText: d.real ? 'Migrated from the old Web signups list (demo ' + d.demoStatus + ')' : 'Migrated from the old Web signups list (registered, no demo yet)', auditAction: 'lead_migrate',
         extraCols: { updated_at: updated, last_activity_at: updated },

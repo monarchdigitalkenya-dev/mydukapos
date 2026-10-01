@@ -23,6 +23,9 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { requireOwnerAuth, getOwnerAccount } from './_owner-auth.js';
+import { proofMatches, isSealedProof } from './_device-auth.js';
+import { staffRecord } from './_staff-auth.js';
+import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { listClientSummaries, createClient, evaluateLicense, listProducts, clientLink, getRootDomain, purgeExpiredTrash } from './_license.js';
 
 function jsonResponse(body, status = 200) {
@@ -85,16 +88,44 @@ export async function onRequestGet(context) {
   });
 }
 
-export async function onRequestPost(context) {
-  const ok = await requireOwnerAuth(context);
-  if (!ok) return jsonResponse({ error: 'Unauthorized' }, 401);
+// A staff member who was given the 🔗 Generate Link tab may create links WITHOUT the owner's session: they prove who they are with
+// their own PIN (SHA-256 typed now), checked against the staff record the owner account holds. Nothing else is opened to staff.
+async function staffMayGenerate(context, body) {
+  const st = body && body.staff;
+  if (!st || !st.id) return null;
+  const { env } = context;
+  const proof = String(st.proof || '');
+  if (proof.length < 32 || proof.length > 300 || isSealedProof(proof)) return { error: 'Enter your PIN.', status: 400 };
+  const acct = await getOwnerAccount(env);
+  if (!acct || !acct.ownerClientId) return { error: 'Unauthorized', status: 401 };
+  const rl = await checkRateLimit(env, 'staffPin', acct.ownerClientId + ':' + String(st.id).slice(0, 80));
+  if (!rl.ok) return { rl };
+  let m;
+  try { m = await staffRecord(env, acct.ownerClientId, String(st.id).slice(0, 80)); } catch (e) { return { error: 'Busy — try again.', status: 503 }; }
+  if (!m || m.removed || !m.pinHash) return { error: 'This staff account is not on the server yet — wait for the next sync.', status: 403 };
+  if (!(await proofMatches(proof, m.pinHash))) return { error: 'Incorrect PIN.', status: 403 };
+  const roles = Array.isArray(m.roles) ? m.roles.map(String) : [];
+  if (!(m.isManager || roles.includes('sales-tab'))) return { error: 'You were not given the Generate Link tab.', status: 403 };
+  return { ok: true, name: m.name };
+}
 
+export async function onRequestPost(context) {
   let body;
   try {
     body = await context.request.json();
   } catch (e) {
     return jsonResponse({ error: 'Invalid request body.' }, 400);
   }
+  const ok = await requireOwnerAuth(context);
+  let byStaff = null;
+  if (!ok) {
+    const r = await staffMayGenerate(context, body);
+    if (!r) return jsonResponse({ error: 'Unauthorized' }, 401);
+    if (r.rl) return rateLimitResponse('PIN attempts for this staff member', r.rl, {});
+    if (!r.ok) return jsonResponse({ error: r.error }, r.status);
+    byStaff = r.name;
+  }
+  if (byStaff && body.action) return jsonResponse({ error: 'Owner only.' }, 403);
 
   const type = body.type === 'permanent' ? 'permanent' : 'demo';
   const record = await createClient(context.env, type, body.label, body.product, {

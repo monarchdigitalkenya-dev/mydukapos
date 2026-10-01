@@ -39,7 +39,7 @@
 
 import { requireOwnerAuth } from './_owner-auth.js';
 import { readState, readStateRaw, writeState, shopMode } from './_state-store.js';
-import { getLicense, saveLicense, deleteClient, restoreClient, PRODUCTS, getDemoDurationHours } from './_license.js';
+import { listClientSummaries, getLicense, saveLicense, deleteClient, restoreClient, PRODUCTS, getDemoDurationHours } from './_license.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -128,6 +128,26 @@ export async function onRequestPost(context) {
     return jsonResponse({ entries: group.entries });
   }
 
+  // zip 165: "reset all income to 0" — clears every permanent link's recorded money (agreed / paid / balance / reminder) and the
+  // per-person ledger, so the owner can tick who paid again from a clean slate. Links themselves are untouched.
+  if (body.action === 'resetAllIncome') {
+    const list = await listClientSummaries(context.env, {});
+    let cleared = 0;
+    for (const sm of list) {
+      if (!sm || sm.type !== 'permanent') continue;
+      const rec = await getLicense(context.env, sm.id);
+      if (!rec) continue;
+      if (rec.revenue || rec.agreedAmount || rec.paidAmount || rec.balanceOwed || rec.notice) {
+        delete rec.revenue; delete rec.notice;
+        rec.agreedAmount = 0; rec.paidAmount = 0; rec.balanceOwed = 0;
+        await saveLicense(context.env, rec);
+        cleared++;
+      }
+    }
+    await context.env.mydukapos_kv.delete(GROUP_INCOME_KEY);
+    return jsonResponse({ ok: true, cleared });
+  }
+
   if (body.action === 'delete') {
     const removed = await deleteClient(context.env, body.c);
     if (!removed) return jsonResponse({ error: 'Client not found.' }, 404);
@@ -186,6 +206,16 @@ export async function onRequestPost(context) {
     record.locked = true;
   } else if (body.action === 'unlock') {
     record.locked = false;
+  } else if (body.action === 'convertToDemo') {
+    // zip 165: turn a permanent link back into a demo (a fresh demo window). Its recorded money for the link is cleared so nothing is counted.
+    if (record.type !== 'permanent') return jsonResponse({ error: 'Only a permanent link can be converted to a demo.' }, 400);
+    const hours = Number.isFinite(body.hours) && body.hours > 0 ? body.hours : await getDemoDurationHours(context.env);
+    record.type = 'demo';
+    record.expiresAt = Date.now() + hours * 60 * 60 * 1000;
+    record.confirmedAt = null;
+    record.paymentClaimed = false;
+    delete record.revenue; delete record.notice;
+    record.agreedAmount = 0; record.paidAmount = 0; record.balanceOwed = 0;
   } else if (body.action === 'extend') {
     if (record.type === 'demo') {
       // Default is whatever the owner has currently configured as the

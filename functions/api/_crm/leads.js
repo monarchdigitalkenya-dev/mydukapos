@@ -332,6 +332,9 @@ function leadFilter(ctx, q) {
     }
   }
   if (q.get('status')) inList('l.status_key', q.get('status'));
+  // zip 164: "Hide won" / "Hide lost" — one switch each, so a closed deal never crowds the working list
+  if (q.get('hideWon') === '1') where.push('l.status_key NOT IN (SELECT key FROM crm_statuses WHERE is_won = 1)');
+  if (q.get('hideLost') === '1') where.push('l.status_key NOT IN (SELECT key FROM crm_statuses WHERE is_lost = 1)');
   if (q.get('class')) inList('l.class_key', q.get('class'));
   if (q.get('source')) inList('l.source_key', q.get('source'));
   const staff = q.get('staff');

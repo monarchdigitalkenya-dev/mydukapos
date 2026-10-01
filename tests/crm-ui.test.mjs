@@ -20,7 +20,7 @@ test('sign-in: shown without a session; wrong password shows the API message; su
   const stub = makeStub(); const b = await bootCrm({ stub });
   await b.until(() => b.q('form input[type=password]'));
   assert.match(b.text(), /Sign in/); assert.ok(!b.byText('button', 'Continue as owner'), 'no owner button without an owner token');
-  const [em, pw] = [b.q('input[type=email]'), b.q('input[type=password]')];
+  const [em, pw] = [b.q('form input:not([type=password])'), b.q('input[type=password]')];
   b.type(em, 'w@x.co'); b.type(pw, 'nope'); b.click(b.q('button[type=submit]'));
   await b.until(() => /Wrong email or password/.test(b.text()));
   b.type(pw, 'secret123'); b.click(b.q('button[type=submit]'));

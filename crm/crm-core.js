@@ -410,14 +410,15 @@
   function buildShell(app) {
     const me = CRM.state.me; const items = navItems();
     const link = (n, cls) => h('a', { class: 'navlink ' + (cls || ''), href: '#/' + n.name, 'data-nav': n.name }, ic(n.icon), h('span', null, n.label), n.name === 'inbox' ? h('span', { class: 'badge hidden', id: 'inbox-badge' }) : null);
-    const side = h('nav', { class: 'side', 'aria-label': 'Main' }, h('div', { class: 'brand' }, logoMark(), 'MyDuka CRM'), items.map((n) => link(n)));
+    const ownerBtn = (me && me.role === 'owner') ? h('a', { class: 'navlink', href: '/owner/', style: { marginTop: 'auto' }, 'data-owner-console': '1' }, ic('lock'), h('span', null, 'Owner Console')) : null;
+    const side = h('nav', { class: 'side', 'aria-label': 'Main' }, h('div', { class: 'brand' }, logoMark(), 'MyDuka CRM'), items.map((n) => link(n)), ownerBtn);
     const more = items.filter((n) => !BOTTOM.includes(n.name));
     const bottom = h('nav', { class: 'bottomnav', 'aria-label': 'Main' }, items.filter((n) => BOTTOM.includes(n.name)).map((n) => link(n)),
       h('button', { class: 'navlink', type: 'button', 'aria-haspopup': 'menu', onclick: (e) => popMenuUp(e.currentTarget, more) }, ic('more'), h('span', null, 'More')));
     const title = h('h1', { id: 'page-title' }, 'MyDuka CRM');
     const bell = h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Notifications', onclick: (e) => showNotifications(e.currentTarget) }, ic('bell'), h('span', { class: 'dot hidden', id: 'bell-dot' }));
     const themeBtn = h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Toggle light/dark theme', onclick: toggleTheme }, ic('moon'));
-    const userBtn = h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Account menu', 'aria-haspopup': 'menu', onclick: (e) => popMenu(e.currentTarget, [{ head: me.name || me.email }, { label: 'Change password', icon: 'lock', onClick: changePassword }, { label: 'Sign out', icon: 'logout', onClick: () => CRM.signOut() }]) }, avatar(me.name || me.email, me.photo, 'sm'));
+    const userBtn = h('button', { class: 'iconbtn', type: 'button', 'aria-label': 'Account menu', 'aria-haspopup': 'menu', onclick: (e) => popMenu(e.currentTarget, [{ head: me.name || me.email }, ...(me.role === 'owner' ? [{ label: 'Owner Console', icon: 'lock', onClick: () => { location.href = '/owner/'; } }] : []), { label: 'Change password', icon: 'lock', onClick: changePassword }, { label: 'Sign out', icon: 'logout', onClick: () => CRM.signOut() }]) }, avatar(me.name || me.email, me.photo, 'sm'));
     const top = h('header', { class: 'topbar' }, h('span', { class: 'only-narrow' }, logoMark()), title, h('span', { style: { position: 'relative' } }, bell), themeBtn, h('span', { style: { position: 'relative' } }, userBtn));
     const view = h('main', { class: 'content', id: 'main', tabindex: '-1' });
     const shell = h('div', { class: 'shell' }, side, h('div', { class: 'main' }, top, view), bottom);
@@ -507,17 +508,33 @@
   CRM.downscalePhoto = downscalePhoto;
   CRM.authScreens = {
     async signin(app) {
-      const email = inp('email', { autocomplete: 'username', required: true, placeholder: 'you@company.com' }), pw = inp('password', { autocomplete: 'current-password', required: true });
+      // zip 164: the owner signs in here with the SAME email / phone + password as the Owner Console (no need to be signed in to the console first).
+      // A team member's CRM login is tried first; only when that says "wrong email or password" is the owner login tried (so a team member never counts as a failed owner login).
+      const email = inp('text', { autocomplete: 'username', required: true, placeholder: 'Email (owner: email or phone)' }), pw = inp('password', { autocomplete: 'current-password', required: true });
       const err = h('div', { class: 'hidden' }); const go = h('button', { class: 'btn primary', type: 'submit', style: { width: '100%' } }, 'Sign in');
       const form = h('form', { novalidate: true, onsubmit: async (ev) => {
         ev.preventDefault(); err.classList.add('hidden');
         if (!email.value.trim() || !pw.value) { mount(err, errbox({ message: 'Enter your email and password.' })); err.classList.remove('hidden'); return; }
         go.disabled = true;
+        const ident = email.value.trim();
+        let staffErr = null;
+        if (/^[^@\s]+@[^@\s]+$/.test(ident)) {
+          try {
+            const d = await api('/auth/login', { body: { email: ident, password: pw.value }, token: '', noAuthRedirect: true });
+            safeLS('set', 'crm_token', d.token); safeLS('set', 'crm_mode', 'staff'); CRM.state.me = null; CRM.go('#/dashboard'); return;
+          } catch (e) { staffErr = e; if (!(e && (e.code === 'invalid_credentials' || e.status === 401))) { mount(err, errbox(e)); err.classList.remove('hidden'); go.disabled = false; return; } }
+        }
         try {
-          const d = await api('/auth/login', { body: { email: email.value.trim(), password: pw.value }, token: '', noAuthRedirect: true });
-          safeLS('set', 'crm_token', d.token); safeLS('set', 'crm_mode', 'staff'); CRM.state.me = null; CRM.go('#/dashboard');
-        } catch (e) { mount(err, errbox(e)); err.classList.remove('hidden'); go.disabled = false; }
-      } }, field('Email', email), field('Password', pw), err, go);
+          const r = await fetch('/api/owner-auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'login', identifier: ident, password: pw.value }) });
+          const j = await r.json().catch(() => ({}));
+          if (r.ok && j.token) {
+            safeLS('set', 'pos_owner_session_token', j.token); if (j.ownerClientId) safeLS('set', 'pos_owner_client_id', j.ownerClientId);
+            safeLS('set', 'crm_mode', 'owner'); CRM.state.me = null; CRM.go('#/dashboard'); return;
+          }
+          if (r.status === 429) { mount(err, errbox({ message: j.error || 'Too many wrong passwords. Wait and try again.' })); err.classList.remove('hidden'); go.disabled = false; return; }
+        } catch (e) { /* offline: the message below */ }
+        mount(err, errbox(staffErr || { message: 'Wrong email or password' })); err.classList.remove('hidden'); go.disabled = false;
+      } }, field('Email or owner login', email), field('Password', pw), err, go);
       const ownerTok = safeLS('get', 'pos_owner_session_token');
       authShell(app, h('h2', { class: 'center', style: { margin: '4px 0 14px' } }, 'Sign in'), form,
         ownerTok ? h('div', null, h('div', { class: 'sep' }), btn('Continue as owner', () => { safeLS('set', 'crm_mode', 'owner'); CRM.state.me = null; CRM.go('#/dashboard'); }, 'wa', { style: { width: '100%' } })) : null,

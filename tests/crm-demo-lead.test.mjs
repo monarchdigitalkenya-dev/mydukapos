@@ -20,7 +20,7 @@ test('demo signup -> CRM: a registration with a demo becomes ONE website lead (p
   assert.equal(r.status, 200); assert.ok(r.body.token && r.body.link, 'the demo is provisioned as before');
   const l = c.q(`select * from crm_leads where email = 'grace@example.com'`);
   assert.equal(l.length, 1);
-  assert.deepEqual([l[0].name, l[0].phone, l[0].source_key, l[0].status_key, l[0].business_name, l[0].legacy_id, l[0].first_utm_source, l[0].first_utm_campaign], ['Grace Njeri', '+254722333444', 'website', 'new', 'Grace Duka', 'demo:grace@example.com', 'google', 'brand']);
+  assert.deepEqual([l[0].name, l[0].phone, l[0].source_key, l[0].status_key, l[0].business_name, l[0].legacy_id, l[0].first_utm_source, l[0].first_utm_campaign], ['Grace Njeri', '+254722333444', 'signup', 'new', 'Grace Duka', 'demo:grace@example.com', 'google', 'brand']);
   assert.match(l[0].notes, /Website demo request[\s\S]*Product: shop[\s\S]*Grace Duka/);
   assert.equal(c.q('select count(*) n from crm_lead_products p join crm_products x on x.id = p.product_id where p.lead_id = ? and x.key = ?', l[0].id, 'shop')[0].n, 1);
   assert.ok(!JSON.stringify(c.q('select * from crm_leads')).includes('secret99'), 'no password anywhere in the CRM');
@@ -83,7 +83,7 @@ test('legacy migration: web signups (demo-account index) -> website leads; real 
   assert.deepEqual(r.errors, []); assert.deepEqual([r.counts.websiteLeads.created, r.counts.websiteLeads.createdReal, r.counts.websiteLeads.createdRegisteredOnly, r.counts.websiteLeads.failed], [4, 3, 1, 0]);
   assert.equal(JSON.stringify([...c.kv.data.entries()].sort()), kvBefore, 'KV (demo accounts, index, sessions) untouched');
   const a = c.q(`select * from crm_leads where legacy_id = 'demo:amos@x.co.ke'`)[0];
-  assert.deepEqual([a.name, a.phone, a.email, a.source_key, a.status_key, a.business_name, a.created_at, a.updated_at], ['Active Amos', '+254722000111', 'amos@x.co.ke', 'website', 'new', 'Amos Duka', t, t + 1000], 'original timestamps');
+  assert.deepEqual([a.name, a.phone, a.email, a.source_key, a.status_key, a.business_name, a.created_at, a.updated_at], ['Active Amos', '+254722000111', 'amos@x.co.ke', 'signup', 'new', 'Amos Duka', t, t + 1000], 'original timestamps');
   assert.match(a.notes, /Product: shop[\s\S]*Amos Duka[\s\S]*Demo status: active[\s\S]*Demo expires: 2026-08-17/);
   const lj = JSON.parse(a.legacy_json); assert.equal(lj.index.demoClientId, 'CLA'); assert.equal(lj.account.approvalStatus, 'pending'); assert.ok(!JSON.stringify(lj).includes('HASH') && !JSON.stringify(lj).includes('SALT'), 'password material never copied');
   assert.equal(c.q('select count(*) n from crm_lead_products p join crm_products x on x.id = p.product_id where p.lead_id = ? and x.key = ?', a.id, 'shop')[0].n, 1);

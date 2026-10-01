@@ -228,7 +228,10 @@
       C.inp('date', { value: f.from || '', 'aria-label': 'Created from', onchange: (e) => { f.from = e.target.value; S.page = 1; load(); } }), C.inp('date', { value: f.to || '', 'aria-label': 'Created to', onchange: (e) => { f.to = e.target.value; S.page = 1; load(); } }),
       btn('Clear', () => { Object.keys(f).forEach((k) => delete f[k]); S.page = 1; C.go(location.hash); }, 'sm ghost'));
     const filtBtn = h('button', { class: 'btn only-narrow-inline', type: 'button', 'aria-expanded': 'false', onclick: (e) => { const o = adv.classList.toggle('open'); e.currentTarget.setAttribute('aria-expanded', String(o)); } }, ic('filter'), 'Filters');
-    const filters = h('div', null, h('div', { class: 'filters' }, q, filtBtn), adv);
+    // zip 164: always-visible quick switches (the full filter list is behind the Filters button on a phone)
+    const hideChk = (key, label) => h('label', { class: 'chip', style: { display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' } }, inp('checkbox', { checked: f[key] === '1', 'aria-label': label, onchange: (e) => { if (e.target.checked) f[key] = '1'; else delete f[key]; S.page = 1; load(); } }), label);
+    const quick = h('div', { class: 'btnrow', style: { margin: '6px 0' } }, hideChk('hideWon', 'Hide won'), hideChk('hideLost', 'Hide lost'));
+    const filters = h('div', null, h('div', { class: 'filters' }, q, filtBtn), quick, adv);
     q.addEventListener('input', C.debounce(() => { const v = q.value.trim(); if (v === (f.q || '')) return; f.q = v; S.page = 1; load(); }, 250));
     function queryOf() { const o = Object.assign({}, f, { sort: S.sort, dir: S.dir, page: isKeyset() ? 1 : S.page, pageSize: S.pageSize }); if (mode === 'pool') o.pool = 1; if (mode === 'mine') o.staff = 'me'; return o; }
     function renderBulk() {
