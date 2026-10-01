@@ -41110,6 +41110,57 @@ function msOpenPurchasesReport(days) {
             + POS_PAY_ALL.filter(function (m) { return pres.indexOf(m[0]) !== -1; }).map(function (m) { return '<label style="display:flex;align-items:center;gap:8px;min-height:44px;font-size:15px;"><input type="checkbox" class="pos-paym" value="' + m[0] + '" style="width:auto;"' + (acc.indexOf(m[0]) !== -1 ? ' checked' : '') + '> ' + rxEsc(m[1]) + '</label>'; }).join('')
             + '<button type="button" class="btn-main" style="min-height:44px;margin-top:6px;" onclick="posSavePayMethods()">Save payment methods</button>';
     }
+
+    /* ---------- zip 166: RECEIPT KEYBOARD SHORTCUTS ----------
+       While a receipt is on screen (and you are not typing in a box): P = print, D = download, S = share, C or Esc = close/cancel.
+       Esc always closes. The four letters can be changed in Settings (kept on THIS device — keyboards differ). */
+    var POS_RK_DEFAULT = { print: 'p', download: 'd', share: 's', cancel: 'c' };
+    function posRkGet() {
+        var o = {}; try { o = JSON.parse(rxGet('pos_receipt_keys') || '{}') || {}; } catch (e) { o = {}; }
+        var out = {}; Object.keys(POS_RK_DEFAULT).forEach(function (k) { var v = String(o[k] || '').trim().toLowerCase().slice(0, 1); out[k] = v || POS_RK_DEFAULT[k]; });
+        return out;
+    }
+    function posRkRender() {
+        var host = document.getElementById('pos-receiptkeys-panel');
+        if (!host) {
+            var pm = document.getElementById('pos-paymethods-panel'); if (!pm) return;
+            host = document.createElement('div'); host.className = 'panel'; host.id = 'pos-receiptkeys-panel'; host.style.marginBottom = '15px';
+            pm.parentNode.insertBefore(host, pm.nextSibling);
+        }
+        var k = posRkGet();
+        var row = function (id, label) { return '<label style="display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:44px;font-size:15px;">' + label + '<input type="text" id="pos-rk-' + id + '" value="' + k[id] + '" maxlength="1" style="width:56px;text-align:center;font-weight:800;font-size:18px;text-transform:uppercase;"></label>'; };
+        host.innerHTML = '<h3 style="margin-top:0;">⌨️ Receipt keyboard shortcuts</h3><div style="font-size:13px;color:#7f8c8d;margin:0 0 8px;">With a receipt on screen, press a key to act on it (not while typing in a box). <strong>Esc</strong> always closes it. Change the letters to suit you; they are kept on this device.</div>'
+            + row('print', '🖨️ Print') + row('download', '⬇️ Download') + row('share', '📤 Share') + row('cancel', '✖ Cancel / close (also Esc)')
+            + '<div style="display:flex;gap:8px;margin-top:6px;"><button type="button" class="btn-main" style="min-height:44px;" onclick="posRkSave()">Save shortcuts</button><button type="button" class="settings-small-btn" style="min-height:44px;" onclick="posRkReset()">Reset</button></div>';
+    }
+    function posRkSave() {
+        var o = {}, seen = {};
+        for (var k in POS_RK_DEFAULT) {
+            var el = document.getElementById('pos-rk-' + k), v = el ? String(el.value || '').trim().toLowerCase().slice(0, 1) : '';
+            if (!v) v = POS_RK_DEFAULT[k];
+            if (!/^[a-z0-9]$/.test(v)) { rxToast('Use a single letter or number for each shortcut.', true); return; }
+            if (seen[v]) { rxToast('Each shortcut needs its own key — "' + v.toUpperCase() + '" is used twice.', true); return; }
+            seen[v] = 1; o[k] = v;
+        }
+        rxSet('pos_receipt_keys', JSON.stringify(o)); posRkRender(); rxToast('Shortcuts saved.');
+    }
+    function posRkReset() { try { localStorage.removeItem('pos_receipt_keys'); } catch (e) { /* default */ } posRkRender(); rxToast('Shortcuts reset to P / D / S / C.'); }
+    function posRkOpen() { var m = document.getElementById('receipt-modal'); return !!m && getComputedStyle(m).display !== 'none' && getComputedStyle(m).visibility !== 'hidden'; }
+    document.addEventListener('keydown', function (ev) {
+        try {
+            if (ev.defaultPrevented || ev.ctrlKey || ev.metaKey || ev.altKey || !posRkOpen()) return;
+            var t = ev.target, tag = t && t.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) { if (ev.key !== 'Escape') return; }
+            var key = String(ev.key || '').toLowerCase(), k = posRkGet(), act = null;
+            if (key === 'escape') act = 'cancel'; else if (key === k.print) act = 'print'; else if (key === k.download) act = 'download'; else if (key === k.share) act = 'share'; else if (key === k.cancel) act = 'cancel';
+            if (!act) return;
+            ev.preventDefault(); ev.stopPropagation();
+            if (act === 'print' && typeof printReceipt === 'function') printReceipt();
+            else if (act === 'download' && typeof downloadReceiptPdf === 'function') downloadReceiptPdf();
+            else if (act === 'share' && typeof shareReceiptNative === 'function') shareReceiptNative();
+            else if (act === 'cancel' && typeof closeReceipt === 'function') closeReceipt();
+        } catch (e) { /* a shortcut must never break the till */ }
+    }, true);
     function posSyncCartBarOffset() {
         try {
             var bar = document.getElementById('cart-sticky-bar'), tab = document.getElementById('sales-tab'), r = bar && bar.getBoundingClientRect();
@@ -41120,7 +41171,14 @@ function msOpenPurchasesReport(days) {
     (function () {
         try {
             var go = function () {
-                posApplyPayMethods(); posRenderPayMethodsPanel(); posSyncCartBarOffset();
+                // zip 166: the payment fields (customer phone, amount tendered, split, M-Pesa prompt, bill/tab details) live INSIDE the pinned
+                // bar, so they are always on screen — no scrolling down through the cart to reach them.
+                try {
+                    var pb = document.getElementById('cart-sticky-bar');
+                    var wrap = pb && pb.parentNode && pb.parentNode.querySelector(':scope > .payment-toggle-wrap');
+                    if (pb && wrap && wrap.parentNode !== pb) { wrap.classList.add('pos-pay-details'); pb.insertBefore(wrap, pb.firstChild); }
+                } catch (e) { /* the old layout still works */ }
+                posApplyPayMethods(); posRenderPayMethodsPanel(); posRkRender(); posSyncCartBarOffset();
                 var bar = document.getElementById('cart-sticky-bar');
                 if (bar && window.ResizeObserver) new ResizeObserver(posSyncCartBarOffset).observe(bar);
                 window.addEventListener('resize', posSyncCartBarOffset); window.addEventListener('scroll', posSyncCartBarOffset, { passive: true });
@@ -41132,6 +41190,9 @@ function msOpenPurchasesReport(days) {
     </script>
     <style>
         #cart-sticky-bar { position: sticky; bottom: 0; z-index: 60; flex-direction: column; align-items: stretch !important; gap: 8px; margin: 16px -6px 0; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bg-surface, #fff); border-top: 1px solid var(--border-color, #dfe6e9); border-radius: 14px 14px 0 0; box-shadow: 0 -8px 20px rgba(0,0,0,.14); }
+        #cart-sticky-bar .pos-pay-details { margin: 0; max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding-right: 2px; }
+        @media (max-height: 700px) { #cart-sticky-bar .pos-pay-details { max-height: 36vh; } }
+        @media (max-width: 900px) { #cart-sticky-bar .pos-pay-details { max-height: 27vh; } #cart-sticky-bar .pos-pay-details .settings-hint { display: none; } }
         #cart-sticky-bar .grand-total { display: flex; justify-content: space-between; font-size: 20px; }
         #cart-sticky-bar .payment-toggle { max-width: none; flex-wrap: wrap; gap: 6px; }
         #cart-sticky-bar .payment-toggle button { flex: 1 1 auto; min-width: 0; padding: 9px 4px; font-size: 12.5px; white-space: nowrap; }
@@ -42310,7 +42371,7 @@ function msOpenPurchasesReport(days) {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-165';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-167';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {

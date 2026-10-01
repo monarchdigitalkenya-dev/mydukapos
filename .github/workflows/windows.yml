@@ -24,11 +24,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
-          cache-dependency-path: native/windows/package-lock.json
       - name: Install build tools
         working-directory: native/windows
-        run: npm ci --no-audit --no-fund
+        shell: pwsh
+        # zip 167: works with or without a package-lock.json in the repo (the Windows copy step used to skip lock files), and no npm cache lookup
+        run: |
+          if (Test-Path package-lock.json) { npm ci --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { Write-Host 'npm ci failed - falling back to npm install'; npm install --no-audit --no-fund } } else { npm install --no-audit --no-fund }
+          if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
       - name: Build the installers (${{ matrix.app }})
         working-directory: native/windows
         env:

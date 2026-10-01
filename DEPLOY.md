@@ -20,6 +20,12 @@ Only the changed files are uploaded (Cloudflare compares file hashes: "61 upload
 Note: `wrangler.staging.toml` is excluded from the mirror on purpose. It holds YOUR staging KV id; copying the zip's version over it would put the placeholder back.
 If you ever lose it: `npx wrangler kv namespace list` shows your namespace ids (staging is the one titled mydukapos_kv_staging).
 
+## Zip 167 — Windows build fix
+Only `.github/workflows/windows.yml` changed. `npm run deploy` is not needed for it, but deploy anyway (the version stamp changed). Then git push and run the **windows** workflow again.
+
+## Zip 166 — counter, settle, service orders, receipt keys
+No router change, no migration. `npm run deploy`, then rebuild the APK/EXE via GitHub Actions.
+
 ## Zip 165 — Owner Console + CRM fixes
 No router change (`deploy:router` NOT needed). `npx wrangler d1 migrations apply mydukapos-ledger --remote` is safe to repeat (the new CRM "App sign-up / demo" source and the re-labelling of old sign-up leads are applied automatically by the server the first time the CRM opens). Then `npm run deploy` and rebuild the APK/EXE via GitHub Actions.
 After deploying: Owner Console > Settings > Danger zone > **Reset ALL Sales, Bills & Link Income to 0**, then tick each permanent link's 💰 toggle with what was paid.
