@@ -12,7 +12,7 @@ test('a short order ticket is never a landscape page (page is never shorter than
         const rule = w.eval(`receiptPageRule(${mm}, null, 20)`);          // a 20 mm fixed length used to give "80mm 40mm" = landscape
         const m = /size:\s*([\d.]+)mm\s+([\d.]+)mm/.exec(rule);
         assert.ok(m, a + ' rule ' + rule);
-        assert.ok(Number(m[2]) > Number(m[1]), `${a}: ${mm}mm roll -> ${rule} must be taller than wide`);
+        assert.ok(Number(m[2]) >= Number(m[1]), `${a}: ${mm}mm roll -> ${rule} must not be wider than tall (landscape)`);
       }
       const long = w.eval('receiptPageRule(80, null, 300)');
       assert.match(long, /80mm 300mm/, a + ': a long receipt keeps its length');

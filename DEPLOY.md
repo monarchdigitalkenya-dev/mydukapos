@@ -147,3 +147,10 @@ Details: `CHANGES_ZIP_172.md`.
 3. `npm run deploy`
 4. `git add -A`, `git commit -m "Zip 173"`, `git push` (the push re-runs the Windows build); hard-refresh each app once (`zip-173`).
 Details: `CHANGES_ZIP_173.md`.
+
+## Zip 175 — no migration
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. Hard-refresh each app once (`zip-175`).
+Details: `CHANGES_ZIP_175.md`.
