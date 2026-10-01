@@ -120,7 +120,7 @@ for (const app of ORDER_APPS) {
 
     const cam = inv(w, 'CAM1');
     assert.equal(cam.qty, 7, 'existing stock increased by the ordered quantity');
-    assert.equal(cam.wholesalePrice, 6800, 'cost price updated');
+    assert.ok(Math.abs(cam.wholesalePrice - (3 * 6500 + 4 * 6800) / 7) < 1e-9, 'cost price = weighted average of the 3 in stock (6500) and the 4 arrived (6800), zip 163');
     assert.equal(cam.price, 9500, 'retail price updated');
     assert.equal(cam.wholesaleSellingPrice, 8000, 'wholesale price left blank → unchanged');
     const nvr = invByName(w, 'Dahua 8CH NVR');

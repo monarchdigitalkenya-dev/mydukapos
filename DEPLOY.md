@@ -67,11 +67,31 @@ Details: `CHANGES_ZIP_160_RELIABILITY.md`, `CHANGES_ZIP_160_BROWSER.md` (screens
 Optional (search speed-up, not required): `migrations-optional/0005_crm_search.sql` adds full-text search — see `CRM_PERF_ZIP_161.md` before applying (it stops `wrangler d1 export` from working).
 Details: `CHANGES_ZIP_161_BUTTONS.md`, `CHANGES_ZIP_161_PASTSALE_HOTEL.md`, `CRM_PERF_ZIP_161.md`.
 
+## Zip 164 — hotel Sales view + hide/show top bar — ALL-IN-ONE deploy (covers every zip you may have skipped) — Windows cmd
+Migrations are cumulative and safe to repeat (0001 ledger, 0002 CRM, 0003 efficiency, 0004 CRM speed). The wildcard router changed in zip 156 and has not changed since; deploy it once so it is certainly current.
+1. `mkdir C:\dev\zip164`
+2. `tar -xf "%USERPROFILE%\Downloads\mydukapos_all-fixes_164.zip" -C C:\dev\zip164`
+3. `cd /d C:\dev\mydukapos`
+4. `robocopy C:\dev\zip164 C:\dev\mydukapos /MIR /XD .git node_modules /XF package-lock.json wrangler.staging.toml`
+5. `npm install`
+6. `npx wrangler d1 migrations apply mydukapos-ledger --remote`
+7. `npm run check`
+8. `npm run deploy:router`
+9. `npm run deploy`
+10. Open `https://mydukapos.store/api/health?deep=1` — it must say `"d1":true`; open `https://mydukapos.store/crm/` once while online.
+11. `git add -A`, `git commit -m "Zip 164"`, `git push`
+12. Rebuild the Android APK / Windows EXE (GitHub Actions); hard-refresh each app once (service worker `zip-164`).
+Hotel: 💰 Sales button next to 🧾 Bills (day totals: Total / Cash / M-Pesa; staff see their own, admin sees all); ▲ Hide / ▼ Show for the top bar (stays as you left it).
+
+## Zip 163 — no new migration
+Nothing new on D1 or KV. Usual steps (`npm run deploy`), then rebuild the Android APK / Windows EXE (GitHub Actions) so the phone/PC apps get the same screens. After deploying, hard-refresh each app once (the service worker is `zip-163`).
+What changed (see CHANGES_ZIP_163.md): sticky total + payment methods + Confirm bar in every module, owner-chosen payment methods (Settings), hotel order rows/categories/sub-categories, purchase packaging + weighted-average cost + measured selling + purchases report.
+
 ## Zip 162 — hotel Sales Counter, Services engine, leftovers — Windows cmd, in `C:\dev\mydukapos`
 1. `npm install`
 2. `npm run check`
 3. `npm run deploy` (no `deploy:router`; no new migration).
 4. Rebuild the APK/EXE (GitHub Actions) for the native apps.
-5. Hotel: ⚙️ Settings → Service charge & orders → "Payment methods to show" chooses which of Cash / M-Pesa / Split / Bill / Tab appear (all on by default).
+5. Payment methods: since zip 163 this is **Settings → "Payment methods you accept"** in every module (the old hotel-only box is gone).
 6. Services: existing shops stay in classic mode until the owner taps "Choose your business type"; nothing is migrated or rewritten.
 Details: `CHANGES_ZIP_162.md`, `SERVICES_ARCHITECTURE.md`.

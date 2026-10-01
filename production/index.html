@@ -3283,13 +3283,6 @@
                         <label class="label" style="margin-top:0;">Receiving Account</label>
                         <select id="receiving-account-select"></select>
                     </div>
-                    <label class="label">Payment Method</label>
-                    <div class="payment-toggle" id="payment-toggle">
-                        <button type="button" id="pay-cash-btn" class="active" onclick="setPaymentMethod(&#39;cash&#39;)">💵 Cash</button>
-                        <button type="button" id="pay-mpesa-btn" onclick="setPaymentMethod(&#39;mpesa&#39;)">📱 M-Pesa</button>
-                        <button type="button" id="pay-split-btn" onclick="setPaymentMethod(&#39;split&#39;)">➗ Split</button>
-                        <button type="button" id="pay-bill-btn" onclick="setPaymentMethod(&#39;bill&#39;)">🧾 Bill (Pay Later)</button>
-                    </div>
 
                     <div class="form-group" style="margin-top:10px;">
                         <label class="label" style="margin-top:0;">Customer Phone <span style="font-weight:normal; color:#7f8c8d;">(optional — for a thank-you SMS, works with any payment method)</span></label>
@@ -3384,10 +3377,16 @@
                         <p class="settings-hint">A bill will be printed with your payment details, and the remaining balance will wait in the 🧾 Bills tab until it's settled — it only appears in Daily Sales once it's fully paid.</p>
                     </div>
                 </div>
-                <div class="cart-totals">
+                <div class="cart-totals" id="cart-sticky-bar">
                     <div class="grand-total" id="cart-grand-total">Total: KES 0.00</div>
+                    <div class="payment-toggle" id="payment-toggle">
+                        <button type="button" id="pay-cash-btn" class="active" onclick="setPaymentMethod(&#39;cash&#39;)">💵 Cash</button>
+                        <button type="button" id="pay-mpesa-btn" onclick="setPaymentMethod(&#39;mpesa&#39;)">📱 M-Pesa</button>
+                        <button type="button" id="pay-split-btn" onclick="setPaymentMethod(&#39;split&#39;)">➗ Split</button>
+                        <button type="button" id="pay-bill-btn" onclick="setPaymentMethod(&#39;bill&#39;)">🧾 Bill</button>
+                    </div>
                     <div id="cart-offers-summary" style="display:none;"></div>
-                    <button style="background: var(--accent); color: white; padding: 12px 24px;" onclick="checkoutCart()">🖨️ View &amp; Print Receipt</button>
+                    <button id="main-checkout-btn" style="background: var(--accent); color: white; padding: 12px 24px;" onclick="checkoutCart()">✅ Confirm</button>
                 </div>
             </div>
 
@@ -3551,7 +3550,7 @@
                         <button type="button" id="hire-pay-cash-btn" class="active" onclick="setHirePaymentMethod('cash')">💵 Cash</button>
                         <button type="button" id="hire-pay-mpesa-btn" onclick="setHirePaymentMethod('mpesa')">📱 M-Pesa</button>
                         <button type="button" id="hire-pay-split-btn" onclick="setHirePaymentMethod('split')">➗ Split</button>
-                        <button type="button" id="hire-pay-bill-btn" onclick="setHirePaymentMethod('bill')">🧾 Bill (Pay Later)</button>
+                        <button type="button" id="hire-pay-bill-btn" onclick="setHirePaymentMethod('bill')">🧾 Bill</button>
                     </div>
 
                     <div id="hire-cash-payment-panel" class="cash-payment-panel">
@@ -6189,6 +6188,7 @@
         </div>
 
 <div id="settings-tab" class="tab-content">
+<div class="panel" id="pos-paymethods-panel" style="margin-bottom:15px;"></div>
         <div class="panel">
             <h3>⚙️ Settings</h3>
             <div class="settings-subnav" id="settings-subnav">
@@ -14537,9 +14537,10 @@ function pastSaleTakeStock(product, qty) {
                 logStockMovement(product.code, product.name, qty, reason);
                 // An app whose stock model needs more than `qty +=` (e.g. Pharmacy's batches) defines
                 // poCustomStockIn locally and returns true once it has added the stock itself.
+                const oldQtyForCost = Number(product.qty) || 0;
                 const handled = (typeof poCustomStockIn === 'function') && poCustomStockIn(product, qty);
                 if (!handled) product.qty = stockRound3((Number(product.qty) || 0) + qty);
-                product.wholesalePrice = cost;
+                if (typeof msApplyArrivedCost === 'function') msApplyArrivedCost(product, oldQtyForCost, qty, cost); else product.wholesalePrice = cost;   // zip 163: weighted average
                 if (retail > 0) product.price = retail;
                 if (wholesale > 0) product.wholesaleSellingPrice = wholesale;
                 return { created: false };
@@ -19079,6 +19080,7 @@ function restockReturnedItem(product, qty, sel, reason) {
         }
 
         function restockRowLineTotal(row) {
+            if (row.puTotal !== undefined && isFinite(row.puTotal)) return row.puTotal;   // zip 163: the exact total paid (the effective unit cost is total / quantity)
             const qty = parseQtyInput(row.qty) || 0;
             const cost = parseFloat(row.cost) || 0;
             return qty * cost;
@@ -23342,7 +23344,7 @@ function tillNumber() {
         }
 
         function updateMobileCartFab() {
-    try { if (typeof hospSyncCartBarOffset === 'function') hospSyncCartBarOffset(); } catch (e) { /* cosmetic */ }
+    try { if (typeof posSyncCartBarOffset === 'function') posSyncCartBarOffset(); } catch (e) { /* cosmetic */ }
             const btn = document.getElementById('mobile-cart-fab');
             if (!btn) return;
             const salesTab = document.getElementById('sales-tab');
@@ -24883,7 +24885,7 @@ async function zReportPreflight() {
                     const payerName = (document.getElementById('mpesa-payer-name-input').value || '').trim();
                     const btn = document.getElementById('mpesa-send-btn');
                     if (!payerName) {
-                        setMpesaStatus(`✅ Payment received — Receipt: ${mpesaConfirmedReceipt.receiptNumber}. Enter the payer's name above, then click "View & Print Receipt".`, 'mpesa-status-success');
+                        setMpesaStatus(`✅ Payment received — Receipt: ${mpesaConfirmedReceipt.receiptNumber}. Enter the payer's name above, then click "Confirm".`, 'mpesa-status-success');
                         if (btn) { btn.disabled = false; btn.textContent = '📲 Send M-Pesa Prompt'; }
                         mpesaCheckoutRequestId = null;
                     } else {
@@ -45267,6 +45269,425 @@ async function zReportPreflight() {
     </div>
 <!-- @shared-block:receipt-size:end -->
 
+<!-- @shared-block:measure-purchase:begin -->
+<!-- MEASURE PURCHASE ----------------------------------------------------------
+         zip 163. ONE conversion engine for buying, stocking and selling in different units. Written once here, synced into every app that has a
+         Restock tab (all but Aqua POS, whose Restocking tab is a materials screen).
+
+         WHAT IT ADDS (nothing existing is replaced - the stock of an item is still ONE number in the item's own unit, `item.unit`):
+           1. Purchase packaging on Restock: under the Restock table every row gets a card "📦 Bought as ...": the unit it was bought in (the stock unit
+              as-is, a pack such as Box / Carton / Sack with its contents, or another unit of the same kind: g<->kg, ml<->l, cm<->m), packs + loose
+              pieces ("2 boxes + 5 loose" = 53), the TOTAL cost paid. The card fills the row's Quantity (in the STOCK unit) and its Cost (the effective
+              unit cost = total / stock quantity, kept at full precision) - completeRestock() itself is unchanged and only ever sees stock-unit numbers,
+              so a purchase can never be converted twice.
+           2. Weighted-average costing: after a restock the item's buying price (`wholesalePrice`) is the weighted average of what was in stock and what
+              just arrived (item.costMethod = 'last' keeps the old "last price" behaviour). The Orders tab "Arrived" path uses the same rule.
+           3. A purchase history per item (`item.purchases`, newest last, 40 kept): purchase unit, purchased quantity, stock quantity, total cost, effective
+              unit cost, reference, supplier, who. The stock-movement entry of the restock carries the same facts.
+           4. Measured selling (opt-in per item, ⚙️ Units): "measure by price" (KES 250 of KES 1000/kg = 0.25 kg) or "by amount" in any unit of the same
+              kind (500 ml of a KES 200/l item = KES 100), quick shortcuts, the quantity always lands on the sale line in the STOCK unit.
+           5. 📊 Purchases report: purchases of a period with the purchase quantity, stock quantity, total and effective cost, plus what was sold.
+         MONEY: amounts are shown in whole KES on these screens (msKes); every stored number keeps full precision.
+         ------------------------------------------------------------------------ -->
+<style>
+    #ms-modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 9500; display: none; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 12px 10px; }
+    #ms-modal .ms-box { background: var(--bg-surface, #fff); color: var(--text-main, #222); border-radius: 14px; width: 100%; max-width: 560px; padding: 16px 16px 18px; box-shadow: 0 12px 40px rgba(0,0,0,.35); margin: auto; }
+    #ms-modal h3 { margin: 0 0 4px; font-size: 18px; }
+    #ms-modal label { display: block; font-size: 12px; font-weight: 700; margin: 10px 0 3px; color: var(--text-muted, #667); }
+    #ms-modal input, #ms-modal select { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px; border: 1px solid var(--border, #cfd6dc); border-radius: 8px; background: var(--bg-surface, #fff); color: inherit; min-height: 44px; }
+    .ms-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .ms-chip { border: 1px solid var(--border, #cfd6dc); background: var(--bg-surface-alt, #f1f4f6); border-radius: 999px; padding: 8px 14px; font-weight: 700; font-size: 14px; cursor: pointer; min-height: 40px; }
+    .ms-chip.on { background: var(--accent, #0a7); color: #fff; border-color: transparent; }
+    .ms-result { margin-top: 12px; padding: 12px; border-radius: 10px; background: #eaf7ef; color: #14532d; font-weight: 800; font-size: 17px; text-align: center; }
+    .ms-warn { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #fff4d6; color: #7a5200; font-size: 13px; font-weight: 600; }
+    .ms-err { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #fde4e1; color: #8a1c10; font-size: 13px; font-weight: 600; }
+    .ms-btns { display: flex; gap: 8px; margin-top: 14px; }
+    .ms-btns button { flex: 1; min-height: 46px; border: 0; border-radius: 10px; font-weight: 800; font-size: 15px; cursor: pointer; }
+    .ms-btn-main { background: var(--accent, #0a7); color: #fff; }
+    .ms-btn-alt { background: var(--bg-surface-alt, #e7ecef); color: inherit; }
+    #ms-pu-panel { margin: 12px 0; display: grid; gap: 10px; }
+    .ms-pu-card { border: 1px solid var(--border, #cfd6dc); border-left: 4px solid var(--accent, #0a7); border-radius: 10px; padding: 10px 12px; background: var(--bg-surface, #fff); }
+    .ms-pu-card h4 { margin: 0 0 6px; font-size: 14px; }
+    .ms-pu-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+    .ms-pu-grid label { margin: 0 0 2px; font-size: 11px; font-weight: 700; color: var(--text-muted, #667); display: block; }
+    .ms-pu-grid input, .ms-pu-grid select { width: 100%; box-sizing: border-box; font-size: 16px; padding: 8px; min-height: 40px; border: 1px solid var(--border, #cfd6dc); border-radius: 8px; background: var(--bg-surface, #fff); color: inherit; }
+    .ms-pu-sum { margin-top: 8px; font-weight: 800; font-size: 14px; color: #14532d; }
+    .ms-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .ms-table th, .ms-table td { padding: 6px 6px; border-bottom: 1px solid var(--border, #e1e6ea); text-align: left; vertical-align: top; }
+</style>
+<script>
+/* ---------- the conversion engine (pure: no DOM, no app state) ---------- */
+const MS_UNITS = {
+    kg: { f: 'mass', k: 1000 }, g: { f: 'mass', k: 1 }, lb: { f: 'mass', k: 453.59237 }, oz: { f: 'mass', k: 28.349523125 },
+    l: { f: 'volume', k: 1000 }, ml: { f: 'volume', k: 1 }, gal: { f: 'volume', k: 3785.411784 },
+    m: { f: 'length', k: 1000 }, cm: { f: 'length', k: 10 }, mm: { f: 'length', k: 1 }, in: { f: 'length', k: 25.4 }, ft: { f: 'length', k: 304.8 }, yd: { f: 'length', k: 914.4 },
+    pcs: { f: 'count', k: 1 }, dozen: { f: 'count', k: 12 },
+};
+const MS_SHORTCUTS = {
+    mass: [{ q: 250, u: 'g' }, { q: 500, u: 'g' }, { q: 1, u: 'kg' }, { q: 2, u: 'kg' }],
+    volume: [{ q: 250, u: 'ml' }, { q: 500, u: 'ml' }, { q: 1, u: 'l' }, { q: 2, u: 'l' }],
+    length: [{ q: 50, u: 'cm' }, { q: 1, u: 'm' }, { q: 2, u: 'm' }, { q: 5, u: 'm' }],
+    count: [{ q: 1, u: 'pcs' }, { q: 5, u: 'pcs' }, { q: 10, u: 'pcs' }, { q: 12, u: 'pcs' }, { q: 24, u: 'pcs' }],
+};
+function msFamily(u) { return MS_UNITS[u] ? MS_UNITS[u].f : null; }
+function msIsMeasured(u) { const f = msFamily(u); return f === 'mass' || f === 'volume' || f === 'length'; }
+function msUnitsOfFamily(u) { const f = msFamily(u); return f ? Object.keys(MS_UNITS).filter((x) => MS_UNITS[x].f === f) : [u]; }
+function msNum(v) { const n = typeof v === 'number' ? v : (typeof parseQtyInput === 'function' ? parseQtyInput(v) : parseFloat(v)); return isFinite(n) ? n : NaN; }
+// quantity conversion between two units of the same kind; NaN when they are different kinds (never guesses)
+function msConvert(q, from, to) {
+    if (from === to) return q;
+    const a = MS_UNITS[from], b = MS_UNITS[to];
+    if (!a || !b || a.f !== b.f) return NaN;
+    return Math.round((q * a.k / b.k) * 1e9) / 1e9;
+}
+// What a purchase line adds to stock. o: { invUnit, mode: 'inv' | 'pack' | <unit>, qty (inv/other-unit amount), packs, packSize, loose, total }
+// -> { invQty, total, effUnitCost, error }. invQty is ALWAYS in the stock unit; total/effUnitCost keep full precision.
+function msPurchaseCalc(o) {
+    const invUnit = o.invUnit || 'pcs', mode = o.mode || 'inv';
+    let invQty = NaN, error = '';
+    if (mode === 'pack') {
+        const packs = msNum(o.packs), size = msNum(o.packSize), loose = msNum(o.loose);
+        const p = isFinite(packs) ? packs : 0, l = isFinite(loose) ? loose : 0;
+        if (p > 0 && !(size > 0)) error = 'Enter how many ' + invUnit + ' each pack holds.';
+        else invQty = p * (size > 0 ? size : 0) + l;
+    } else if (mode === 'inv') {
+        invQty = msNum(o.qty);
+    } else {
+        const amt = msNum(o.qty);
+        invQty = msConvert(amt, mode, invUnit);
+        if (!isFinite(invQty) && isFinite(amt)) error = mode + ' cannot be converted to ' + invUnit + '.';
+    }
+    if (isFinite(invQty)) invQty = Math.round(invQty * 1e9) / 1e9;
+    const total = o.total === '' || o.total == null ? NaN : msNum(o.total);
+    const eff = isFinite(total) && invQty > 0 ? total / invQty : NaN;
+    return { invQty, total: isFinite(total) ? total : NaN, effUnitCost: eff, error };
+}
+// weighted-average unit cost of what is in stock + what just arrived (no stock / negative stock => the new cost)
+function msWac(oldQty, oldCost, addQty, addCost) {
+    const oq = Number(oldQty) || 0, oc = Number(oldCost) || 0, aq = Number(addQty) || 0, ac = Number(addCost) || 0;
+    if (aq <= 0) return oc;
+    if (oq <= 0) return ac;
+    return (oq * oc + aq * ac) / (oq + aq);
+}
+// "measure by price": how much of an item priced `unitPrice` per `priceUnit` does `amount` KES buy, expressed in `outUnit`
+function msQtyForAmount(amount, unitPrice, priceUnit, outUnit) {
+    if (!(unitPrice > 0) || !(amount >= 0)) return NaN;
+    const q = amount / unitPrice;                       // in priceUnit
+    const r = msConvert(q, priceUnit, outUnit || priceUnit);
+    return isFinite(r) ? Math.round(r * 1e9) / 1e9 : NaN;
+}
+function msAmountForQty(qty, unit, unitPrice, priceUnit) {
+    const q = msConvert(qty, unit, priceUnit);
+    return isFinite(q) ? q * unitPrice : NaN;
+}
+// whole-KES display (small unit costs keep 2 decimals so KES 0.83 never shows as KES 1)
+function msKes(n) {
+    n = Number(n); if (!isFinite(n)) return 'KES -';
+    const a = Math.abs(n);
+    const s = a > 0 && a < 10 && Math.abs(a - Math.round(a)) > 0.004 ? n.toFixed(2) : String(Math.round(n));
+    return 'KES ' + s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function msQtyStr(n) { n = Number(n); if (!isFinite(n)) return ''; return String(Math.round(n * 1e6) / 1e6); }
+
+/* ---------- small modal ---------- */
+function msModal(html) {
+    let m = document.getElementById('ms-modal');
+    if (!m) { m = document.createElement('div'); m.id = 'ms-modal'; m.addEventListener('mousedown', (e) => { if (e.target === m) msClose(); }); document.body.appendChild(m); }
+    m.innerHTML = `<div class="ms-box" role="dialog" aria-modal="true">${html}</div>`;
+    m.style.display = 'flex';
+}
+function msClose() { const m = document.getElementById('ms-modal'); if (m) { m.style.display = 'none'; m.innerHTML = ''; } window.__msSale = null; window.__msCfg = null; }
+function msItem(code) { return inventory.find((p) => String(p.code) === String(code)); }
+function msEsc(s) { return typeof escapeHtml === 'function' ? escapeHtml(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function msSaveInventory() { try { safeSetItem('pos_inventory', JSON.stringify(inventory)); } catch (e) { /* storage full: the in-memory copy still works */ } try { queuePush(); } catch (e) { /* offline: queued later */ } }
+
+/* ---------- Restock: the "Bought as" cards ---------- */
+function msRowItem(r) {
+    const code = String(r.code || '').trim(), name = String(r.name || '').trim();
+    if (!code && !name) return null;
+    return code ? inventory.find((p) => p.type !== 'service' && String(p.code || '').toLowerCase() === code.toLowerCase())
+        : inventory.find((p) => p.type !== 'service' && String(p.name || '').trim().toLowerCase() === name.toLowerCase());
+}
+function msRowUnit(r) { const it = msRowItem(r); return (it && it.unit) || r.unit || 'pcs'; }
+function msPu(r) {
+    if (!r.pu) {
+        const it = msRowItem(r);
+        r.pu = { mode: 'inv', packName: (it && it.purchaseUnit) || 'Box', packSize: it && it.purchasePackSize ? String(it.purchasePackSize) : '', packs: '', loose: '', amt: '', total: '', makeUsual: false };
+    }
+    return r.pu;
+}
+// copies the card's numbers into the row (stock-unit qty + effective cost) and returns the calculation
+function msRowRecalc(r) {
+    const pu = r.pu; if (!pu) return null;
+    const c = msPurchaseCalc({ invUnit: msRowUnit(r), mode: pu.mode, qty: pu.mode === 'inv' ? r.qty : pu.amt, packs: pu.packs, packSize: pu.packSize, loose: pu.loose, total: pu.total });
+    if (pu.mode !== 'inv') r.qty = isFinite(c.invQty) && c.invQty > 0 ? msQtyStr(c.invQty) : '';
+    if (isFinite(c.total) && c.invQty > 0) { r.cost = String(c.effUnitCost); r.puTotal = c.total; } else { r.puTotal = undefined; }
+    return c;
+}
+function msSyncCells(r) {
+    const tbody = document.getElementById('restock-rows-tbody'); if (!tbody) return;
+    const i = restockDraft.findIndex((x) => x.rowId === r.rowId), tr = tbody.children[i]; if (!tr) return;
+    const q = tr.children[3] && tr.children[3].querySelector('input'), c = tr.children[4] && tr.children[4].querySelector('input');
+    if (q && document.activeElement !== q) q.value = r.qty || '';
+    if (c && document.activeElement !== c) c.value = r.cost || '';
+    if (q) q.readOnly = !!(r.pu && r.pu.mode !== 'inv');
+    if (c) c.readOnly = !!(r.puTotal !== undefined && r.pu && r.pu.total !== '');
+}
+function msCardSummary(r) {
+    const pu = r.pu, unit = msRowUnit(r), c = msRowRecalc(r) || {};
+    const it = msRowItem(r);
+    let warn = '';
+    if (pu.mode === 'pack' && it && it.purchasePackSize > 0 && msNum(pu.packSize) > 0 && Math.abs(msNum(pu.packSize) - it.purchasePackSize) > 1e-9) {
+        warn = `⚠️ A ${msEsc(pu.packName || 'pack')} normally holds ${it.purchasePackSize} ${msEsc(unit)}; you entered ${msEsc(pu.packSize)}. This delivery uses what you typed${pu.makeUsual ? ' and it becomes the new usual' : ''}.`;
+    }
+    let html = '';
+    if (c.error) html += `<div class="ms-err">${msEsc(c.error)}</div>`;
+    else if (isFinite(c.invQty) && c.invQty > 0) {
+        html += `<div class="ms-pu-sum">= ${msEsc(msQtyStr(c.invQty))} ${msEsc(unit)} into stock`;
+        if (isFinite(c.total)) html += ` · ${msEsc(msKes(c.total))} paid · ${msEsc(msKes(c.effUnitCost))} per ${msEsc(unit)}`;
+        html += '</div>';
+        if (pu.mode === 'pack' && isFinite(c.total) && msNum(pu.packs) > 0) html += `<div class="settings-hint" style="margin:2px 0 0;">${msEsc(msKes(c.total / msNum(pu.packs)))} per ${msEsc(pu.packName || 'pack')} (if no loose pieces)</div>`;
+    }
+    if (warn) html += `<div class="ms-warn">${warn}</div>`;
+    return html;
+}
+function msCardHtml(r) {
+    const pu = msPu(r), unit = msRowUnit(r), id = r.rowId;
+    const same = msUnitsOfFamily(unit).filter((u) => u !== unit);
+    const label = (r.name || r.code || 'Item') + '';
+    const opt = (v, t) => `<option value="${msEsc(v)}"${pu.mode === v ? ' selected' : ''}>${msEsc(t)}</option>`;
+    let h = `<div class="ms-pu-card" id="ms-pu-${id}"><h4>📦 ${msEsc(label)} <span style="font-weight:400; color:var(--text-muted,#667);">· stock unit: ${msEsc(unit)}</span> ${msRowItem(r) ? `<button type="button" class="settings-small-btn" style="padding:3px 8px; font-size:12px; float:right;" onclick="msOpenItemConfig('${msEsc(String(msRowItem(r).code).replace(/'/g, ''))}')">⚙️ Units</button>` : ''}</h4><div class="ms-pu-grid">`;
+    h += `<div><label>Bought as</label><select onchange="msPuSet(${id}, 'mode', this.value, true)">${opt('inv', unit + ' (as counted)')}${opt('pack', (pu.packName || 'Box') + ' (pack)')}${same.map((u) => opt(u, u)).join('')}</select></div>`;
+    if (pu.mode === 'pack') {
+        h += `<div><label>Pack name</label><input type="text" value="${msEsc(pu.packName)}" placeholder="Box / Carton / Sack" oninput="msPuSet(${id}, 'packName', this.value)"></div>`;
+        h += `<div><label>Packs bought</label><input type="text" inputmode="decimal" value="${msEsc(pu.packs)}" placeholder="e.g. 3" oninput="msPuSet(${id}, 'packs', this.value)"></div>`;
+        h += `<div><label>${msEsc(unit)} in each pack</label><input type="text" inputmode="decimal" value="${msEsc(pu.packSize)}" placeholder="e.g. 24" oninput="msPuSet(${id}, 'packSize', this.value)"></div>`;
+        h += `<div><label>+ Loose ${msEsc(unit)}</label><input type="text" inputmode="decimal" value="${msEsc(pu.loose)}" placeholder="0" oninput="msPuSet(${id}, 'loose', this.value)"></div>`;
+    } else if (pu.mode !== 'inv') {
+        h += `<div><label>Amount (${msEsc(pu.mode)})</label><input type="text" inputmode="decimal" value="${msEsc(pu.amt)}" placeholder="e.g. 500" oninput="msPuSet(${id}, 'amt', this.value)"></div>`;
+    }
+    h += `<div><label>Total cost paid (KES, optional)</label><input type="text" inputmode="decimal" value="${msEsc(pu.total)}" placeholder="auto unit cost" oninput="msPuSet(${id}, 'total', this.value)"></div></div>`;
+    if (pu.mode === 'pack') h += `<label style="display:flex; gap:8px; align-items:center; font-size:12px; margin-top:6px;"><input type="checkbox" ${pu.makeUsual ? 'checked' : ''} onchange="msPuSet(${id}, 'makeUsual', this.checked)"> Remember this pack name and contents for this item</label>`;
+    h += `<div id="ms-pu-sum-${id}">${msCardSummary(r)}</div></div>`;
+    return h;
+}
+function msPaintCards() {
+    const tbody = document.getElementById('restock-rows-tbody'); if (!tbody) return;
+    let panel = document.getElementById('ms-pu-panel');
+    if (!panel) {
+        panel = document.createElement('div'); panel.id = 'ms-pu-panel';
+        const table = tbody.closest('table'), host = table && (table.closest('.table-scroll') || table);
+        host.insertAdjacentElement('afterend', panel);
+        const bar = document.createElement('div'); bar.style.cssText = 'margin:6px 0;';
+        bar.innerHTML = '<button type="button" class="settings-small-btn" onclick="msOpenPurchasesReport()">📊 Purchases report</button>';
+        panel.insertAdjacentElement('beforebegin', bar);
+    }
+    panel.innerHTML = restockDraft.filter((r) => (r.name || r.code)).map(msCardHtml).join('');
+    restockDraft.forEach((r) => { if (r.pu) msSyncCells(r); });
+}
+function msPuSet(rowId, field, value, repaint) {
+    const r = restockDraft.find((x) => x.rowId === rowId); if (!r) return;
+    const pu = msPu(r);
+    if (field === 'mode' && pu.mode !== value) { pu.mode = value; pu.amt = pu.amt || ''; if (value === 'inv') r.qty = r.qty; }
+    else pu[field] = value;
+    const c = msRowRecalc(r);
+    const sum = document.getElementById('ms-pu-sum-' + rowId); if (sum) sum.innerHTML = msCardSummary(r);
+    msSyncCells(r);
+    if (typeof renderRestockTotals === 'function') renderRestockTotals();
+    if (repaint || field === 'packName') msPaintCards();
+    return c;
+}
+let __msPaintT = null;
+function msSchedulePaint() { clearTimeout(__msPaintT); __msPaintT = setTimeout(msPaintCards, 250); }
+
+/* wrap the module's own restock functions (they are defined earlier on the page; this block runs after them) */
+(function () {
+    if (typeof renderRestockRows !== 'function' || typeof completeRestock !== 'function') return;
+    const origRender = renderRestockRows;
+    window.renderRestockRows = renderRestockRows = function () { const r = origRender.apply(this, arguments); try { msPaintCards(); } catch (e) { console.warn('msPaintCards', e); } return r; };
+    if (typeof updateRestockRowField === 'function') {
+        const origUpd = updateRestockRowField;
+        window.updateRestockRowField = updateRestockRowField = function (rowId, field, value) {
+            const row = restockDraft.find((x) => x.rowId === rowId);
+            const r = origUpd.apply(this, arguments);
+            if (row) {
+                if (row.pu && (field === 'qty' || field === 'cost') && row.pu.total !== '') { msRowRecalc(row); const s = document.getElementById('ms-pu-sum-' + rowId); if (s) s.innerHTML = msCardSummary(row); renderRestockTotals(); }
+                if (field === 'name' || field === 'code' || field === 'unit') msSchedulePaint();
+            }
+            return r;
+        };
+    }
+    const origComplete = completeRestock;
+    window.completeRestock = completeRestock = function () {
+        const beforeAt = window.__lastRestockAt, logLen = stockMovementLog.length, expLen = expenses.length;
+        const supSel = document.getElementById('restock-supplier-select'), refEl = document.getElementById('restock-reference-input');
+        const supplierObj = supSel && supSel.value && typeof suppliers !== 'undefined' ? suppliers.find((s) => s.id === supSel.value) : null;
+        const ref = refEl ? refEl.value.trim() : '', supplier = supplierObj ? supplierObj.name : '';
+        // stock-unit numbers first (the card is the source for packed / converted rows), then a snapshot to average against
+        const jobs = [];
+        restockDraft.forEach((r) => {
+            if (!(String(r.name || '').trim() || String(r.code || '').trim())) return;
+            if (r.pu) msRowRecalc(r);
+            const qty = typeof parseQtyInput === 'function' ? parseQtyInput(r.qty) : parseFloat(r.qty), cost = parseFloat(r.cost);
+            if (!(qty > 0) || !(cost >= 0)) return;
+            const it = msRowItem(r);
+            jobs.push({ r, qty, cost, unit: it ? (it.unit || 'pcs') : (r.unit || 'pcs'), pu: r.pu ? { ...r.pu } : null, total: r.puTotal !== undefined ? r.puTotal : qty * cost, itCode: it ? it.code : null, oldQty: it ? Number(it.qty) || 0 : 0, oldCost: it ? Number(it.wholesalePrice) || 0 : 0, isNew: !it });
+        });
+        const res = origComplete.apply(this, arguments);
+        if (window.__lastRestockAt === beforeAt || stockMovementLog.length <= logLen) return res;   // guarded / nothing valid: nothing was stocked
+        let exact = 0;
+        jobs.forEach((j) => {
+            const p = j.itCode ? msItem(j.itCode) : msRowItem(j.r);
+            exact += j.total;
+            if (!p) return;
+            if (!j.isNew && p.costMethod !== 'last') p.wholesalePrice = msWac(j.oldQty, j.oldCost, j.qty, j.cost);
+            if (!j.isNew && p.dualUnit && p.unitsPerBox > 0 && p.pieceWholesalePrice !== undefined) p.pieceWholesalePrice = p.wholesalePrice / p.unitsPerBox;
+            const pk = j.pu && j.pu.mode === 'pack';
+            const rec = { id: genSaleId(), at: new Date().toISOString(), ref, supplier, by: typeof activeServerName === 'function' ? activeServerName() : '', invUnit: j.unit,
+                purchaseUnit: pk ? (j.pu.packName || 'Pack') : (j.pu && j.pu.mode !== 'inv' ? j.pu.mode : j.unit),
+                purchaseQty: pk ? (msNum(j.pu.packs) || 0) : (j.pu && j.pu.mode !== 'inv' ? msNum(j.pu.amt) : j.qty),
+                packSize: pk ? msNum(j.pu.packSize) || 0 : 0, loose: pk ? msNum(j.pu.loose) || 0 : 0, invQty: j.qty, totalCost: j.total, effUnitCost: j.cost };
+            p.purchases = (Array.isArray(p.purchases) ? p.purchases : []).concat([rec]).slice(-40);
+            if (pk && j.pu.packName && msNum(j.pu.packSize) > 0 && (j.pu.makeUsual || !p.purchasePackSize)) { p.purchaseUnit = j.pu.packName; p.purchasePackSize = msNum(j.pu.packSize); }
+            p.updatedAt = Date.now();
+            for (let k = stockMovementLog.length - 1; k >= logLen; k--) { const m = stockMovementLog[k]; if (m.code === p.code && m.delta === j.qty) { m.pu = rec.purchaseUnit; m.puQty = rec.purchaseQty; m.invQty = j.qty; m.cost = j.total; m.effCost = j.cost; m.ref = ref; break; } }
+        });
+        if (expenses.length > expLen) { const e = expenses[expenses.length - 1]; if (e && e.category === 'Restock') { e.amount = Math.round(exact * 100) / 100; try { saveExpenses(); } catch (x) { /* kept in memory */ } } }
+        msSaveInventory();
+        try { renderInventoryTable(); } catch (e) { /* tab not built yet */ }
+        return res;
+    };
+    try { const rb = document.getElementById('restock-rows-tbody'); if (rb && restockDraft && restockDraft.length) msPaintCards(); } catch (e) { /* later */ }
+})();
+
+/* the Orders tab "Arrived" path averages cost the same way (see poApplyArrivedLine) */
+function msApplyArrivedCost(product, oldQty, addQty, cost) {
+    if (product.costMethod === 'last') { product.wholesalePrice = cost; return; }
+    product.wholesalePrice = msWac(oldQty, product.wholesalePrice, addQty, cost);
+}
+
+/* ---------- ⚙️ Units & costing (per item) ---------- */
+function msOpenItemConfig(code) {
+    const p = msItem(code); if (!p) return;
+    window.__msCfg = code;
+    const unit = p.unit || 'pcs';
+    msModal(`<h3>⚙️ Units & costing</h3><div style="font-size:13px; color:var(--text-muted,#667);">${msEsc(p.name)} · stock is counted in <b>${msEsc(unit)}</b>${msIsMeasured(unit) ? ' (measured)' : ''}</div>
+        <label>Purchase pack name (what the supplier sells, e.g. Box, Carton, Sack)</label><input id="ms-c-pname" value="${msEsc(p.purchaseUnit || '')}" placeholder="optional">
+        <label>${msEsc(unit)} in one pack</label><input id="ms-c-psize" inputmode="decimal" value="${p.purchasePackSize || ''}" placeholder="e.g. 24">
+        <label>Cost method</label><select id="ms-c-method"><option value="avg"${p.costMethod === 'last' ? '' : ' selected'}>Weighted average (recommended)</option><option value="last"${p.costMethod === 'last' ? ' selected' : ''}>Last purchase price</option></select>
+        ${msIsMeasured(unit) ? `<label style="display:flex; gap:8px; align-items:center;"><input type="checkbox" id="ms-c-measure" style="width:auto; min-height:0;" ${p.measureSale ? 'checked' : ''}> Ask “how much?” when selling this item (by price or by amount)</label>
+        <label>Measurement precision (decimals kept on a sale quantity)</label><select id="ms-c-prec">${[0, 1, 2, 3, 4].map((d) => `<option value="${d}"${(p.measurePrecision == null ? 3 : p.measurePrecision) === d ? ' selected' : ''}>${d}</option>`).join('')}</select>` : ''}
+        <div class="ms-btns"><button class="ms-btn-alt" onclick="msClose()">Cancel</button><button class="ms-btn-main" onclick="msSaveItemConfig()">Save</button></div>`);
+}
+function msSaveItemConfig() {
+    const p = msItem(window.__msCfg); if (!p) return msClose();
+    const v = (id) => { const e = document.getElementById(id); return e ? e.value : ''; };
+    const size = msNum(v('ms-c-psize'));
+    p.purchaseUnit = v('ms-c-pname').trim().slice(0, 20); p.purchasePackSize = size > 0 ? size : 0;
+    if (!p.purchaseUnit) { delete p.purchaseUnit; }
+    if (!(p.purchasePackSize > 0)) delete p.purchasePackSize;
+    p.costMethod = v('ms-c-method') === 'last' ? 'last' : 'avg';
+    const mc = document.getElementById('ms-c-measure'); if (mc) { p.measureSale = !!mc.checked; p.measurePrecision = Math.min(4, Math.max(0, parseInt(v('ms-c-prec'), 10) || 0)); }
+    p.updatedAt = Date.now();
+    msSaveInventory(); msClose();
+    try { renderInventoryTable(); } catch (e) { /* not built */ }
+    showToast('Units & costing saved.');
+}
+
+/* ---------- measured selling ---------- */
+function msOpenMeasureSale(code) {
+    const p = msItem(code); if (!p) return;
+    const unit = p.unit || 'pcs', price = Number(typeof getEffectivePrice === 'function' ? getEffectivePrice(p) : p.price) || 0;
+    window.__msSale = { code, unit, price, by: 'price' };
+    msPaintMeasureSale();
+}
+function msPaintMeasureSale() {
+    const s = window.__msSale; if (!s) return;
+    const p = msItem(s.code); if (!p) return msClose();
+    const fam = msFamily(s.unit) || 'count', avail = typeof getAvailableStock === 'function' ? getAvailableStock(p) : p.qty;
+    const units = msUnitsOfFamily(s.unit);
+    const chips = s.by === 'price' ? [20, 50, 100, 200, 500, 1000].map((a) => `<button type="button" class="ms-chip" onclick="msSaleChip('price', ${a})">KES ${a}</button>`).join('')
+        : (MS_SHORTCUTS[fam] || []).map((c) => `<button type="button" class="ms-chip" onclick="msSaleChip('amt', ${c.q}, '${c.u}')">${c.q} ${c.u}</button>`).join('');
+    msModal(`<h3>📏 ${msEsc(p.name)}</h3><div style="font-size:13px; color:var(--text-muted,#667);">${msEsc(msKes(s.price))} per ${msEsc(s.unit)} · in stock: ${msEsc(msQtyStr(avail))} ${msEsc(s.unit)}</div>
+        <div class="ms-chips"><button type="button" class="ms-chip${s.by === 'price' ? ' on' : ''}" onclick="msSaleMode('price')">By price</button><button type="button" class="ms-chip${s.by === 'amt' ? ' on' : ''}" onclick="msSaleMode('amt')">By amount</button></div>
+        ${s.by === 'price' ? `<label>Customer pays (KES)</label><input id="ms-s-val" inputmode="decimal" oninput="msSaleCalc()" placeholder="e.g. 250">`
+            : `<label>Amount</label><div style="display:flex; gap:8px;"><input id="ms-s-val" inputmode="decimal" oninput="msSaleCalc()" placeholder="e.g. 500" style="flex:2"><select id="ms-s-unit" onchange="msSaleCalc()" style="flex:1">${units.map((u) => `<option value="${u}"${u === s.unit ? ' selected' : ''}>${u}</option>`).join('')}</select></div>`}
+        <div class="ms-chips">${chips}</div><div id="ms-s-out"></div>
+        <div class="ms-btns"><button class="ms-btn-alt" onclick="msClose()">Cancel</button><button class="ms-btn-main" id="ms-s-add" onclick="msSaleAdd()">Add to sale</button></div>`);
+    const el = document.getElementById('ms-s-val'); if (el) { if (s.val != null) el.value = s.val; if (s.u2 && document.getElementById('ms-s-unit')) document.getElementById('ms-s-unit').value = s.u2; el.focus(); }
+    msSaleCalc();
+}
+function msSaleMode(by) { const s = window.__msSale; if (!s) return; s.by = by; s.val = null; s.u2 = null; msPaintMeasureSale(); }
+function msSaleChip(kind, v, u) { const s = window.__msSale; if (!s) return; s.val = v; s.u2 = u || null; msPaintMeasureSale(); }
+// -> { qty (stock unit), amount } or null
+function msSaleCalc() {
+    const s = window.__msSale, out = document.getElementById('ms-s-out'); if (!s || !out) return null;
+    const p = msItem(s.code), raw = (document.getElementById('ms-s-val') || {}).value, v = msNum(raw), u = (document.getElementById('ms-s-unit') || {}).value || s.unit;
+    let qty = NaN, amount = NaN;
+    if (s.by === 'price') { amount = v; qty = msQtyForAmount(v, s.price, s.unit, s.unit); }
+    else { qty = msConvert(v, u, s.unit); amount = isFinite(qty) ? qty * s.price : NaN; }
+    const prec = p && p.measurePrecision != null ? p.measurePrecision : 3;
+    if (isFinite(qty)) qty = s.by === 'price' ? Math.floor(qty * Math.pow(10, Math.max(prec, 3)) + 1e-9) / Math.pow(10, Math.max(prec, 3)) : Math.round(qty * Math.pow(10, prec)) / Math.pow(10, prec);
+    s.res = isFinite(qty) && qty > 0 ? { qty, amount: s.by === 'price' ? v : amount } : null;
+    const avail = typeof getAvailableStock === 'function' && p ? getAvailableStock(p) : Infinity;
+    if (!s.res) out.innerHTML = '';
+    else if (qty > avail + 1e-9) out.innerHTML = `<div class="ms-err">Only ${msEsc(msQtyStr(avail))} ${msEsc(s.unit)} in stock.</div>`;
+    else out.innerHTML = `<div class="ms-result">${s.by === 'price' ? `${msEsc(msKes(v))} buys ${msEsc(msQtyStr(qty))} ${msEsc(s.unit)}` : `${msEsc(msQtyStr(v))} ${msEsc(u)} = ${msEsc(msKes(amount))}`}</div>`;
+    return s.res;
+}
+function msSaleAdd() {
+    const s = window.__msSale; if (!s) return;
+    const res = msSaleCalc(); const p = msItem(s.code);
+    if (!res || !p) { showToast('Enter an amount first.', true); return; }
+    const avail = typeof getAvailableStock === 'function' ? getAvailableStock(p) : Infinity;
+    const key = typeof cartKeyFor === 'function' ? cartKeyFor(p.code, undefined, undefined) : p.code;
+    const inCart = currentCart[key] ? currentCart[key].qty : 0;
+    if (inCart + res.qty > avail + 1e-9) { showToast(`Only ${msQtyStr(avail)} ${s.unit} of "${p.name}" available${inCart ? ' (' + msQtyStr(inCart) + ' already in the sale)' : ''}.`, true); return; }
+    if (currentCart[key]) currentCart[key].qty = Math.round((currentCart[key].qty + res.qty) * 1e9) / 1e9;
+    else currentCart[key] = { code: p.code, cartKey: key, name: p.name, price: typeof getEffectivePrice === 'function' ? getEffectivePrice(p) : p.price, wholesalePrice: typeof getServiceUnitCost === 'function' ? getServiceUnitCost(p) : (p.wholesalePrice || 0), unit: p.unit || 'pcs', isService: false, vatCategory: p.vatCategory || 'A', qty: res.qty };
+    msClose();
+    renderCart();
+    try { document.getElementById('sales-search').value = ''; document.getElementById('search-results').style.display = 'none'; } catch (e) { /* no search box */ }
+}
+(function () {
+    if (typeof addToCart !== 'function') return;
+    const orig = addToCart;
+    window.addToCart = addToCart = function (code, mode, priceTier, variantId) {
+        const p = typeof inventory !== 'undefined' ? msItem(code) : null;
+        if (p && p.measureSale && msIsMeasured(p.unit || 'pcs') && !p.dualUnit && !p.hasVariants && p.type !== 'service' && !variantId && !window.__msDirect) { msOpenMeasureSale(code); return; }
+        return orig.apply(this, arguments);
+    };
+})();
+
+/* ---------- 📊 Purchases report ---------- */
+function msOpenPurchasesReport(days) {
+    days = days || 30;
+    const since = Date.now() - days * 86400000, rows = [];
+    inventory.forEach((p) => (Array.isArray(p.purchases) ? p.purchases : []).forEach((x) => { if (Date.parse(x.at) >= since) rows.push({ p, x }); }));
+    rows.sort((a, b) => Date.parse(b.x.at) - Date.parse(a.x.at));
+    // what was sold in the same period (selling quantity, revenue, profit with the cost recorded on the sale line)
+    const sold = {};
+    try {
+        (typeof salesLog !== 'undefined' ? salesLog : []).forEach((s) => {
+            if (!s || s.voided || Date.parse(s.timestamp || s.date || 0) < since) return;
+            (s.items || s.lines || []).forEach((l) => { const k = String(l.code); const o = sold[k] || (sold[k] = { qty: 0, rev: 0, cost: 0 }); const q = Number(l.qty) || 0; o.qty += q; o.rev += q * (Number(l.price) || 0); o.cost += q * (Number(l.wholesalePrice) || 0); });
+        });
+    } catch (e) { /* no sales log in this app */ }
+    const tot = rows.reduce((a, r) => a + (Number(r.x.totalCost) || 0), 0);
+    const per = {};
+    rows.forEach((r) => { per[r.p.code] = r.p; });
+    msModal(`<h3>📊 Purchases — last ${days} days</h3>
+        <div class="ms-chips">${[7, 30, 90, 365].map((d) => `<button class="ms-chip${d === days ? ' on' : ''}" onclick="msOpenPurchasesReport(${d})">${d === 365 ? '1 year' : d + ' days'}</button>`).join('')}</div>
+        <div class="ms-result" style="margin-bottom:10px;">${rows.length} purchase${rows.length === 1 ? '' : 's'} · ${msEsc(msKes(tot))}</div>
+        <div style="overflow-x:auto;"><table class="ms-table"><thead><tr><th>Date</th><th>Item</th><th>Bought</th><th>Into stock</th><th>Paid</th><th>Per unit</th></tr></thead><tbody>
+        ${rows.map(({ p, x }) => `<tr><td>${msEsc(String(x.at).slice(0, 10))}</td><td>${msEsc(p.name)}${x.ref ? `<div style="font-size:11px;color:#889;">${msEsc(x.ref)}${x.by ? ' · ' + msEsc(x.by) : ''}</div>` : ''}</td><td>${msEsc(msQtyStr(x.purchaseQty))} ${msEsc(x.purchaseUnit)}${x.loose ? ` + ${msEsc(msQtyStr(x.loose))}` : ''}</td><td>${msEsc(msQtyStr(x.invQty))} ${msEsc(x.invUnit)}</td><td>${msEsc(msKes(x.totalCost))}</td><td>${msEsc(msKes(x.effUnitCost))}</td></tr>`).join('') || '<tr><td colspan="6">No purchases recorded in this period.</td></tr>'}
+        </tbody></table></div>
+        ${Object.keys(per).length ? `<h4 style="margin:14px 0 4px;">Sold in the same period</h4><div style="overflow-x:auto;"><table class="ms-table"><thead><tr><th>Item</th><th>Sold</th><th>Revenue</th><th>Profit</th><th>Cost now</th></tr></thead><tbody>${Object.keys(per).map((k) => { const p = per[k], o = sold[k] || { qty: 0, rev: 0, cost: 0 }; return `<tr><td>${msEsc(p.name)}</td><td>${msEsc(msQtyStr(o.qty))} ${msEsc(p.unit || 'pcs')}</td><td>${msEsc(msKes(o.rev))}</td><td>${msEsc(msKes(o.rev - o.cost))}</td><td>${msEsc(msKes(p.wholesalePrice))}/${msEsc(p.unit || 'pcs')}</td></tr>`; }).join('')}</tbody></table></div>` : ''}
+        <div class="ms-btns"><button class="ms-btn-main" onclick="msClose()">Close</button></div>`);
+}
+</script>
+<!-- @shared-block:measure-purchase:end -->
+
 <!-- @shared-block:receipt-extras:begin -->
 <!-- RECEIPT EXTRAS ------------------------------------------------------------
          zip 155. Four things every app gets from this ONE block:
@@ -45311,11 +45732,13 @@ async function zReportPreflight() {
         var o = { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, billsLocked: rxSettings.billsLocked };
         // the letter size travels only once THIS device has one of its own (chosen here or received): a fresh device's default 7 must never replace the shop's real size
         if (rxGet('pos_receipt_font_pt') !== null) o.receiptFontPt = rxSettings.fontPt;
+        o.payMethods = posPayAccepted();                      // zip 163: which payment methods this shop accepts (every till shows only those)
         return o;
     }
     function extraSettingsApply(data) {
         if (!data || typeof data !== 'object') return;
         var changed = false;
+        if (Array.isArray(data.payMethods)) { var pm = JSON.stringify(posPayAccepted()); if (JSON.stringify(data.payMethods) !== pm) { posPaySetAccepted(data.payMethods, true); } }
         if (typeof data.receiptStampSrc === 'string' && data.receiptStampSrc !== rxSettings.stampSrc) {
             rxSettings.stampSrc = data.receiptStampSrc;
             if (data.receiptStampSrc) rxSet('pos_receipt_stamp_src', data.receiptStampSrc); else rxDel('pos_receipt_stamp_src');
@@ -45707,7 +46130,78 @@ async function zReportPreflight() {
         };
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
     })();
+    
+    /* ---------- zip 163: PAYMENT METHODS THIS SHOP ACCEPTS + the sticky pay bar (every app's Sales Counter) ----------
+       The cashier sees only the methods the owner accepts (default: all the app has). The setting syncs with the shop's other settings,
+       so every till, phone and the Android/Windows apps agree. The total, the method buttons and Confirm live in ONE bar fixed to the
+       bottom of the cart, so a long cart never needs scrolling to finish a sale. */
+    var POS_PAY_ALL = [['cash', '💵 Cash'], ['mpesa', '📱 M-Pesa'], ['card', '💳 Card'], ['split', '➗ Split'], ['bill', '🧾 Bill (Pay Later)'], ['tab', '🍽️ Tab (Table/Room/Guest)']];
+    function posPayPresent() { var out = []; POS_PAY_ALL.forEach(function (m) { if (document.getElementById('pay-' + m[0] + '-btn')) out.push(m[0]); }); return out; }
+    function posPayAccepted() { var raw = rxGet('pos_pay_methods'); if (!raw) return POS_PAY_ALL.map(function (m) { return m[0]; }); try { var a = JSON.parse(raw); if (Array.isArray(a) && a.length) return a.filter(function (k) { return POS_PAY_ALL.some(function (m) { return m[0] === k; }); }); } catch (e) { /* default */ } return POS_PAY_ALL.map(function (m) { return m[0]; }); }
+    function posPayShown() {
+        var acc = posPayAccepted(), pres = posPayPresent(), out = pres.filter(function (k) { return acc.indexOf(k) !== -1; });
+        return out.length ? out : (pres.length ? [pres[0]] : []);       /* a module can never be left with no way to pay */
+    }
+    function posPaySetAccepted(list, fromSync) {
+        var a = (Array.isArray(list) ? list : []).filter(function (k) { return POS_PAY_ALL.some(function (m) { return m[0] === k; }); });
+        if (!a.length) return false;
+        if (a.length === POS_PAY_ALL.length) rxDel('pos_pay_methods'); else rxSet('pos_pay_methods', JSON.stringify(a));
+        posApplyPayMethods();
+        try { if (document.getElementById('pos-paymethods-panel')) posRenderPayMethodsPanel(); } catch (e) { /* cosmetic */ }
+        if (!fromSync) rxPush();
+        return true;
+    }
+    function posApplyPayMethods() {
+        try {
+            var shown = posPayShown();
+            posPayPresent().forEach(function (k) { var b = document.getElementById('pay-' + k + '-btn'); if (b) b.style.display = shown.indexOf(k) !== -1 ? '' : 'none'; });
+            if (typeof currentPaymentMethod !== 'undefined' && shown.length && shown.indexOf(currentPaymentMethod) === -1 && typeof setPaymentMethod === 'function') setPaymentMethod(shown[0]);
+            if (typeof hospApplyPayMethods === 'function') hospApplyPayMethods();
+        } catch (e) { /* cosmetic */ }
+    }
+    function posSavePayMethods() {
+        var sel = Array.prototype.slice.call(document.querySelectorAll('.pos-paym:checked')).map(function (x) { return x.value; });
+        if (!sel.length) { rxToast('Keep at least one payment method.', true); return; }
+        posPaySetAccepted(sel, false); rxToast('Payment methods saved.');
+    }
+    function posRenderPayMethodsPanel() {
+        var el = document.getElementById('pos-paymethods-panel'); if (!el) return;
+        var pres = posPayPresent(), acc = posPayAccepted();
+        el.innerHTML = '<h3 style="margin-top:0;">💳 Payment methods I accept</h3><div style="font-size:13px;color:#7f8c8d;margin:0 0 8px;">Only the ticked ones appear on the Sales Counter (and when settling). All are on by default. Every till and phone follows this.</div>'
+            + POS_PAY_ALL.filter(function (m) { return pres.indexOf(m[0]) !== -1; }).map(function (m) { return '<label style="display:flex;align-items:center;gap:8px;min-height:44px;font-size:15px;"><input type="checkbox" class="pos-paym" value="' + m[0] + '" style="width:auto;"' + (acc.indexOf(m[0]) !== -1 ? ' checked' : '') + '> ' + rxEsc(m[1]) + '</label>'; }).join('')
+            + '<button type="button" class="btn-main" style="min-height:44px;margin-top:6px;" onclick="posSavePayMethods()">Save payment methods</button>';
+    }
+    function posSyncCartBarOffset() {
+        try {
+            var bar = document.getElementById('cart-sticky-bar'), tab = document.getElementById('sales-tab'), r = bar && bar.getBoundingClientRect();
+            var on = bar && tab && tab.classList.contains('active') && bar.offsetParent !== null && r.top < innerHeight - 4 && r.bottom > 0;
+            document.documentElement.style.setProperty('--cartbar-h', on ? bar.offsetHeight + 'px' : '0px');
+        } catch (e) { /* cosmetic */ }
+    }
+    (function () {
+        try {
+            var go = function () {
+                posApplyPayMethods(); posRenderPayMethodsPanel(); posSyncCartBarOffset();
+                var bar = document.getElementById('cart-sticky-bar');
+                if (bar && window.ResizeObserver) new ResizeObserver(posSyncCartBarOffset).observe(bar);
+                window.addEventListener('resize', posSyncCartBarOffset); window.addEventListener('scroll', posSyncCartBarOffset, { passive: true });
+                document.addEventListener('click', function () { setTimeout(posSyncCartBarOffset, 60); }, true);
+            };
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(go, 300); }); else setTimeout(go, 300);
+        } catch (e) { /* cosmetic */ }
+    })();
     </script>
+    <style>
+        #cart-sticky-bar { position: sticky; bottom: 0; z-index: 60; flex-direction: column; align-items: stretch !important; gap: 8px; margin: 16px -6px 0; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bg-surface, #fff); border-top: 1px solid var(--border-color, #dfe6e9); border-radius: 14px 14px 0 0; box-shadow: 0 -8px 20px rgba(0,0,0,.14); }
+        #cart-sticky-bar .grand-total { display: flex; justify-content: space-between; font-size: 20px; }
+        #cart-sticky-bar .payment-toggle { max-width: none; flex-wrap: wrap; gap: 6px; }
+        #cart-sticky-bar .payment-toggle button { flex: 1 1 auto; min-width: 0; padding: 9px 4px; font-size: 12.5px; white-space: nowrap; }
+        #cart-sticky-bar #main-checkout-btn, #cart-sticky-bar #add-order-to-tab-btn { width: 100%; min-height: 46px; font-size: 16px; margin: 0; }
+        @media (max-width: 900px) {
+            .scroll-to-top-btn, .mobile-cart-fab, #floating-kb-toggle { bottom: calc(var(--cartbar-h, 0px) + 14px) !important; }
+            #sales-tab input, #sales-tab select { font-size: 16px; }
+        }
+    </style>
 <!-- @shared-block:receipt-extras:end -->
     <!-- @shared-block:hold-sale:begin -->
 <!-- HOLD SALE ----------------------------------------------------------------
@@ -46877,7 +47371,7 @@ async function zReportPreflight() {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-162';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-164';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {

@@ -32,19 +32,19 @@ test('payment methods: all five by default; owner can hide some; the current met
   const shown = () => ['cash', 'mpesa', 'split', 'bill', 'tab'].filter((k) => d.getElementById('pay-' + k + '-btn').style.display !== 'none');
   w.eval('hospApplyPayMethods()');
   assert.deepEqual(shown(), ['cash', 'mpesa', 'split', 'bill', 'tab']);
-  w.eval("renderServiceChargeSetting && (document.getElementById('svc-charge-settings') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'svc-charge-settings' }))); renderServiceChargeSetting()");
-  d.querySelectorAll('.hosp-paym').forEach((c) => { c.checked = ['mpesa', 'bill'].includes(c.value); });
-  w.eval('saveHospPayMethods()');
+  const setMethods = (list) => {
+    d.querySelectorAll('.pos-paym').forEach((c) => { c.checked = list.includes(c.value); });
+    w.eval('posSavePayMethods()');
+  };
+  w.eval('posRenderPayMethodsPanel()');
+  setMethods(['mpesa', 'bill']);
   assert.deepEqual(shown(), ['mpesa', 'bill']);
   assert.equal(w.eval('currentPaymentMethod'), 'mpesa', 'cash was hidden, so the counter moved to a shown method');
   const set = [...d.querySelectorAll('#tab-settle-pay-toggle button')].filter((x) => x.style.display !== 'none').length;
   assert.equal(set, 2, 'settle shows M-Pesa and Card only (Card is always offered when settling)');
-  d.querySelectorAll('.hosp-paym').forEach((c) => { c.checked = false; });
-  w.eval('saveHospPayMethods()');
+  setMethods([]);
   assert.deepEqual(shown(), ['mpesa', 'bill'], 'cannot hide every method');
-  d.querySelectorAll('.hosp-paym').forEach((c) => { c.checked = true; });
-  w.eval('saveHospPayMethods()');
-  assert.equal(w.eval('hospConfig.payMethods'), null);
+  setMethods(['cash', 'mpesa', 'card', 'split', 'bill', 'tab']);
   assert.deepEqual(shown(), ['cash', 'mpesa', 'split', 'bill', 'tab']);
   b.close();
 });

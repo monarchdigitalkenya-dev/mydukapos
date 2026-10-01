@@ -91,6 +91,7 @@ export const SHARED_BLOCKS = {
   'hold-sale': { startMarker: '<!-- HOLD SALE' },
   'receipt-size': { startMarker: '<!-- RECEIPT SIZE' },                    // Settings > Adjust receipt size: paper + letter size window with a live sample and a test print (zip 158)
   'receipt-extras': { startMarker: '<!-- RECEIPT EXTRAS' },                // the receipt stamp, the bills lock, the extra delivery fields and their settings sync (zip 155)
+  'measure-purchase': { startMarker: '<!-- MEASURE PURCHASE', skip: ['water/index.html'] },   // zip 163: purchase packaging, weighted-average cost, measured selling, purchases report
   'stock-take': { startMarker: '<!-- STOCK TAKE TAB', skip: ['water/index.html'] },
   'reports-tab': { startMarker: '<!-- REPORTS TAB', skip: ['water/index.html'] },
   'mobile-cards': { startMarker: '<!-- MOBILE CARDS', owner: true },

@@ -41,11 +41,13 @@
         var o = { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, billsLocked: rxSettings.billsLocked };
         // the letter size travels only once THIS device has one of its own (chosen here or received): a fresh device's default 7 must never replace the shop's real size
         if (rxGet('pos_receipt_font_pt') !== null) o.receiptFontPt = rxSettings.fontPt;
+        o.payMethods = posPayAccepted();                      // zip 163: which payment methods this shop accepts (every till shows only those)
         return o;
     }
     function extraSettingsApply(data) {
         if (!data || typeof data !== 'object') return;
         var changed = false;
+        if (Array.isArray(data.payMethods)) { var pm = JSON.stringify(posPayAccepted()); if (JSON.stringify(data.payMethods) !== pm) { posPaySetAccepted(data.payMethods, true); } }
         if (typeof data.receiptStampSrc === 'string' && data.receiptStampSrc !== rxSettings.stampSrc) {
             rxSettings.stampSrc = data.receiptStampSrc;
             if (data.receiptStampSrc) rxSet('pos_receipt_stamp_src', data.receiptStampSrc); else rxDel('pos_receipt_stamp_src');
@@ -437,4 +439,75 @@
         };
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
     })();
+    
+    /* ---------- zip 163: PAYMENT METHODS THIS SHOP ACCEPTS + the sticky pay bar (every app's Sales Counter) ----------
+       The cashier sees only the methods the owner accepts (default: all the app has). The setting syncs with the shop's other settings,
+       so every till, phone and the Android/Windows apps agree. The total, the method buttons and Confirm live in ONE bar fixed to the
+       bottom of the cart, so a long cart never needs scrolling to finish a sale. */
+    var POS_PAY_ALL = [['cash', '💵 Cash'], ['mpesa', '📱 M-Pesa'], ['card', '💳 Card'], ['split', '➗ Split'], ['bill', '🧾 Bill (Pay Later)'], ['tab', '🍽️ Tab (Table/Room/Guest)']];
+    function posPayPresent() { var out = []; POS_PAY_ALL.forEach(function (m) { if (document.getElementById('pay-' + m[0] + '-btn')) out.push(m[0]); }); return out; }
+    function posPayAccepted() { var raw = rxGet('pos_pay_methods'); if (!raw) return POS_PAY_ALL.map(function (m) { return m[0]; }); try { var a = JSON.parse(raw); if (Array.isArray(a) && a.length) return a.filter(function (k) { return POS_PAY_ALL.some(function (m) { return m[0] === k; }); }); } catch (e) { /* default */ } return POS_PAY_ALL.map(function (m) { return m[0]; }); }
+    function posPayShown() {
+        var acc = posPayAccepted(), pres = posPayPresent(), out = pres.filter(function (k) { return acc.indexOf(k) !== -1; });
+        return out.length ? out : (pres.length ? [pres[0]] : []);       /* a module can never be left with no way to pay */
+    }
+    function posPaySetAccepted(list, fromSync) {
+        var a = (Array.isArray(list) ? list : []).filter(function (k) { return POS_PAY_ALL.some(function (m) { return m[0] === k; }); });
+        if (!a.length) return false;
+        if (a.length === POS_PAY_ALL.length) rxDel('pos_pay_methods'); else rxSet('pos_pay_methods', JSON.stringify(a));
+        posApplyPayMethods();
+        try { if (document.getElementById('pos-paymethods-panel')) posRenderPayMethodsPanel(); } catch (e) { /* cosmetic */ }
+        if (!fromSync) rxPush();
+        return true;
+    }
+    function posApplyPayMethods() {
+        try {
+            var shown = posPayShown();
+            posPayPresent().forEach(function (k) { var b = document.getElementById('pay-' + k + '-btn'); if (b) b.style.display = shown.indexOf(k) !== -1 ? '' : 'none'; });
+            if (typeof currentPaymentMethod !== 'undefined' && shown.length && shown.indexOf(currentPaymentMethod) === -1 && typeof setPaymentMethod === 'function') setPaymentMethod(shown[0]);
+            if (typeof hospApplyPayMethods === 'function') hospApplyPayMethods();
+        } catch (e) { /* cosmetic */ }
+    }
+    function posSavePayMethods() {
+        var sel = Array.prototype.slice.call(document.querySelectorAll('.pos-paym:checked')).map(function (x) { return x.value; });
+        if (!sel.length) { rxToast('Keep at least one payment method.', true); return; }
+        posPaySetAccepted(sel, false); rxToast('Payment methods saved.');
+    }
+    function posRenderPayMethodsPanel() {
+        var el = document.getElementById('pos-paymethods-panel'); if (!el) return;
+        var pres = posPayPresent(), acc = posPayAccepted();
+        el.innerHTML = '<h3 style="margin-top:0;">💳 Payment methods I accept</h3><div style="font-size:13px;color:#7f8c8d;margin:0 0 8px;">Only the ticked ones appear on the Sales Counter (and when settling). All are on by default. Every till and phone follows this.</div>'
+            + POS_PAY_ALL.filter(function (m) { return pres.indexOf(m[0]) !== -1; }).map(function (m) { return '<label style="display:flex;align-items:center;gap:8px;min-height:44px;font-size:15px;"><input type="checkbox" class="pos-paym" value="' + m[0] + '" style="width:auto;"' + (acc.indexOf(m[0]) !== -1 ? ' checked' : '') + '> ' + rxEsc(m[1]) + '</label>'; }).join('')
+            + '<button type="button" class="btn-main" style="min-height:44px;margin-top:6px;" onclick="posSavePayMethods()">Save payment methods</button>';
+    }
+    function posSyncCartBarOffset() {
+        try {
+            var bar = document.getElementById('cart-sticky-bar'), tab = document.getElementById('sales-tab'), r = bar && bar.getBoundingClientRect();
+            var on = bar && tab && tab.classList.contains('active') && bar.offsetParent !== null && r.top < innerHeight - 4 && r.bottom > 0;
+            document.documentElement.style.setProperty('--cartbar-h', on ? bar.offsetHeight + 'px' : '0px');
+        } catch (e) { /* cosmetic */ }
+    }
+    (function () {
+        try {
+            var go = function () {
+                posApplyPayMethods(); posRenderPayMethodsPanel(); posSyncCartBarOffset();
+                var bar = document.getElementById('cart-sticky-bar');
+                if (bar && window.ResizeObserver) new ResizeObserver(posSyncCartBarOffset).observe(bar);
+                window.addEventListener('resize', posSyncCartBarOffset); window.addEventListener('scroll', posSyncCartBarOffset, { passive: true });
+                document.addEventListener('click', function () { setTimeout(posSyncCartBarOffset, 60); }, true);
+            };
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(go, 300); }); else setTimeout(go, 300);
+        } catch (e) { /* cosmetic */ }
+    })();
     </script>
+    <style>
+        #cart-sticky-bar { position: sticky; bottom: 0; z-index: 60; flex-direction: column; align-items: stretch !important; gap: 8px; margin: 16px -6px 0; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bg-surface, #fff); border-top: 1px solid var(--border-color, #dfe6e9); border-radius: 14px 14px 0 0; box-shadow: 0 -8px 20px rgba(0,0,0,.14); }
+        #cart-sticky-bar .grand-total { display: flex; justify-content: space-between; font-size: 20px; }
+        #cart-sticky-bar .payment-toggle { max-width: none; flex-wrap: wrap; gap: 6px; }
+        #cart-sticky-bar .payment-toggle button { flex: 1 1 auto; min-width: 0; padding: 9px 4px; font-size: 12.5px; white-space: nowrap; }
+        #cart-sticky-bar #main-checkout-btn, #cart-sticky-bar #add-order-to-tab-btn { width: 100%; min-height: 46px; font-size: 16px; margin: 0; }
+        @media (max-width: 900px) {
+            .scroll-to-top-btn, .mobile-cart-fab, #floating-kb-toggle { bottom: calc(var(--cartbar-h, 0px) + 14px) !important; }
+            #sales-tab input, #sales-tab select { font-size: 16px; }
+        }
+    </style>

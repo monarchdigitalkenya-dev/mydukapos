@@ -7176,6 +7176,7 @@ function resetUnavailableExchangeForm() {
 
 //@fn restockRowLineTotal
 function restockRowLineTotal(row) {
+            if (row.puTotal !== undefined && isFinite(row.puTotal)) return row.puTotal;   // zip 163: the exact total paid (the effective unit cost is total / quantity)
             const qty = parseQtyInput(row.qty) || 0;
             const cost = parseFloat(row.cost) || 0;
             return qty * cost;
@@ -11138,7 +11139,7 @@ function updateLoyaltyTier(id, field, value) {
 
 //@fn updateMobileCartFab
 function updateMobileCartFab() {
-    try { if (typeof hospSyncCartBarOffset === 'function') hospSyncCartBarOffset(); } catch (e) { /* cosmetic */ }
+    try { if (typeof posSyncCartBarOffset === 'function') posSyncCartBarOffset(); } catch (e) { /* cosmetic */ }
             const btn = document.getElementById('mobile-cart-fab');
             if (!btn) return;
             const salesTab = document.getElementById('sales-tab');
@@ -13068,9 +13069,10 @@ function poApplyArrivedLine(order, item, qty) {
                 logStockMovement(product.code, product.name, qty, reason);
                 // An app whose stock model needs more than `qty +=` (e.g. Pharmacy's batches) defines
                 // poCustomStockIn locally and returns true once it has added the stock itself.
+                const oldQtyForCost = Number(product.qty) || 0;
                 const handled = (typeof poCustomStockIn === 'function') && poCustomStockIn(product, qty);
                 if (!handled) product.qty = stockRound3((Number(product.qty) || 0) + qty);
-                product.wholesalePrice = cost;
+                if (typeof msApplyArrivedCost === 'function') msApplyArrivedCost(product, oldQtyForCost, qty, cost); else product.wholesalePrice = cost;   // zip 163: weighted average
                 if (retail > 0) product.price = retail;
                 if (wholesale > 0) product.wholesaleSellingPrice = wholesale;
                 return { created: false };
