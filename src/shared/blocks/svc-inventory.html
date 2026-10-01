@@ -1,0 +1,673 @@
+<!-- SVC INVENTORY ---------------------------------------------------------------------------------------
+     Services engine block "svc-inventory". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B3-C. Nobody else edits this file.
+     STATE: IMPLEMENTED (B3-C): material use / reversal / replace with exactly-once stock deduction, consumption suggestions, auto-deduct on start, reversal on cancel, Materials drawer tab, Settings > Stock use page.
+     KIND: touches globals + DOM (drawer tab). Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcUseMaterial, svcReverseMaterial, svcReplaceMaterial, svcSuggestConsumption, svcApplyConsumption, svcReverseAllMaterials, svcInvConvert, svcInvStockInfo, Materials drawer tab (key materials), Settings page (key stock). Reuses deductStockForSaleUnit / restoreStockForSaleUnit / getAvailableStock.
+     SPEC: SERVICES_ARCHITECTURE.md 6.2, 8.2 B3-C. Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<style id="svc-inventory-css">
+/* Materials tab + Stock use settings (svc-inventory). Only the app's design tokens (dark-mode safe); touch targets >= 44px; inputs 16px (no iOS zoom). The page has a global * {margin:0;padding:0} reset: spacing is explicit. */
+.svci { color: var(--dark); font-size: 15px; line-height: 1.4; }
+.svci *, .svci-set * { box-sizing: border-box; }
+.svci-box { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px; margin: 0 0 12px; }
+.svci-box h4 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .03em; opacity: .75; }
+.svci-note { background: var(--tint-info-bg); border-radius: 10px; padding: 10px 12px; margin: 0 0 10px; font-size: 14px; }
+.svci-note.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); }
+.svci-note.bad { background: var(--tint-danger-bg); color: var(--danger); }
+.svci-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px; margin: 0 8px 8px 0; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); font-size: 15px; font-weight: 600; cursor: pointer; width: auto; }
+.svci-btn:active { transform: translateY(1px); }
+.svci-btn[disabled] { opacity: .55; cursor: not-allowed; }
+.svci-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.svci-btn.danger { color: var(--danger); }
+.svci-btn:focus, .svci-in:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.svci-in { width: 100%; min-height: 44px; padding: 8px 12px; font-size: 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); }
+.svci-fld { margin: 0 0 10px; }
+.svci-fld > label, .svci-fld > .lbl { display: block; font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+.svci-2 { display: flex; flex-wrap: wrap; margin: 0 -4px; }
+.svci-2 > .svci-fld { flex: 1 1 120px; margin: 0 4px 10px; }
+.svci-chk { display: flex; align-items: center; min-height: 44px; cursor: pointer; font-size: 14px; }
+.svci-chk input { width: 22px; height: 22px; margin: 0 10px 0 0; flex: 0 0 auto; }
+.svci-hint { font-size: 12px; margin-top: 3px; opacity: .8; }
+.svci-hint.bad { color: var(--danger); opacity: 1; }
+.svci-hint.warn { color: var(--tint-warning-text); opacity: 1; }
+.svci-row { padding: 10px 0; border-bottom: 1px solid var(--border-color); }
+.svci-row:last-child { border-bottom: 0; }
+.svci-row .r1 { display: flex; justify-content: space-between; align-items: baseline; }
+.svci-row .nm { font-weight: 700; margin-right: 8px; word-break: break-word; }
+.svci-row .q { white-space: nowrap; font-weight: 700; }
+.svci-row .r2 { margin-top: 3px; font-size: 13px; opacity: .85; }
+.svci-row.off .nm, .svci-row.off .q { text-decoration: line-through; opacity: .6; }
+.svci-row .acts { display: flex; flex-wrap: wrap; margin-top: 6px; }
+.svci-tag { display: inline-block; margin: 2px 6px 2px 0; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--bg-surface-alt); color: var(--dark); border: 1px solid var(--border-color); }
+.svci-tag.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); border-color: transparent; }
+.svci-tag.good { background: var(--tint-success-bg); color: var(--tint-success-text); border-color: transparent; }
+.svci-ask { margin-top: 6px; padding: 8px; border: 1px dashed var(--border-color); border-radius: 10px; }
+.svci-ask:empty { display: none; }
+.svci-sug { display: flex; flex-wrap: wrap; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.svci-sug:last-of-type { border-bottom: 0; }
+.svci-sug .chk { flex: 0 0 44px; }
+.svci-sug .chk input { width: 22px; height: 22px; }
+.svci-sug .nm { flex: 1 1 140px; font-weight: 600; word-break: break-word; }
+.svci-sug .nm small { display: block; font-weight: 400; opacity: .75; }
+.svci-sug .qq { flex: 0 0 96px; margin-left: 8px; }
+.svci-sug .un { flex: 0 0 auto; margin-left: 6px; font-size: 13px; opacity: .8; }
+.svci-sug .st { flex: 1 1 100%; font-size: 12px; margin: 2px 0 0 44px; }
+.svci-sug .st.bad { color: var(--danger); }
+.svci-tot { text-align: right; font-weight: 700; margin-top: 6px; }
+.svci-set { color: var(--dark); font-size: 15px; }
+@media (prefers-reduced-motion: reduce) { .svci-btn:active { transform: none; } }
+</style>
+<script>
+/* ===================================================================================================================
+   SVC INVENTORY (B3-C): materials used on a job. Stock is taken from the shop's inventory through the SAME functions a sale uses
+   (deductStockForSaleUnit / restoreStockForSaleUnit), the stock movements that call appended are re-tagged with the job (reason "Job <no>", jobId,
+   materialId, staffId) and given deterministic ids (mv-<materialId>-<n>), so the stock ledger keeps one movement per id. Every record is appended
+   through svcCommit; a material is never deleted: a reversal marks it (reversedAt) and puts the stock back.
+   Exactly-once: a material id is minted by the caller (the form keeps one id per open form) or derived from the job service line + item (lineKey),
+   and a repeat of either returns the existing record without touching the stock again.
+   =================================================================================================================== */
+var SVC_INV_GROUPS = { ml: ['v', 1], cl: ['v', 10], l: ['v', 1000], mg: ['m', 0.001], g: ['m', 1], kg: ['m', 1000], mm: ['n', 0.1], cm: ['n', 1], m: ['n', 100] };
+var SVC_INV_ALIAS = { litre: 'l', litres: 'l', liter: 'l', liters: 'l', ltr: 'l', ltrs: 'l', lt: 'l', millilitre: 'ml', millilitres: 'ml', milliliter: 'ml', milliliters: 'ml', mls: 'ml',
+  gram: 'g', grams: 'g', gm: 'g', gms: 'g', gr: 'g', kilogram: 'kg', kilograms: 'kg', kgs: 'kg', kilo: 'kg', kilos: 'kg', metre: 'm', metres: 'm', meter: 'm', meters: 'm', mtr: 'm', mtrs: 'm',
+  centimetre: 'cm', centimetres: 'cm', centimeter: 'cm', centimeters: 'cm', piece: 'pcs', pieces: 'pcs', pc: 'pcs', pce: 'pcs', pcs: 'pcs', unit: 'pcs', units: 'pcs', each: 'pcs', item: 'pcs', items: 'pcs', nos: 'pcs' };
+var SVC_INV_MAX_QTY = 1000000;
+var SVC_INV_UI = { draftId: '' };
+
+/* ===== tiny private helpers ===== */
+function svcInvNow() { try { return typeof svcNow === 'function' ? svcNow() : Date.now(); } catch (e) { return Date.now(); } }
+function svcInvEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcInvNum(v) { var n = typeof v === 'number' ? v : parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isFinite(n) ? n : 0; }
+function svcInvR2(n) { n = svcInvNum(n); return Math.round((n + (n < 0 ? -1 : 1) * 1e-9) * 100) / 100; }
+function svcInvQty(n) { n = svcInvNum(n); var r = Math.round(n * 1e6) / 1e6; return r; }
+function svcInvStr(v, max) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max || 200); }
+function svcInvArr(v) { return Array.isArray(v) ? v : []; }
+function svcInvSlug(v) { return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 30); }
+function svcInvCan(perm) { try { return typeof svcCan === 'function' ? !!svcCan(perm) : true; } catch (e) { return true; } }
+function svcInvActor() { try { if (typeof svcActor === 'function') { var a = svcActor(); if (a && a.name) return a; } } catch (e) { /* owner */ } return { id: 'owner', name: 'Owner' }; }
+function svcInvToast(msg, isErr) { try { if (typeof showToast === 'function') showToast(String(msg), !!isErr); } catch (e) { /* toast is cosmetic */ } }
+function svcInvMoney(n) { try { if (typeof svcFormatMoney === 'function') return svcFormatMoney(n); } catch (e) { /* fall through */ } return 'KSh ' + svcInvR2(n); }
+function svcInvStock() { try { return typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : []; } catch (e) { return []; } }
+function svcInvLog() { try { return typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog) ? stockMovementLog : null; } catch (e) { return null; } }
+function svcInvCfg() { try { return (typeof svcConfigGet === 'function' ? svcConfigGet('cfg-business') : null) || {}; } catch (e) { return {}; } }
+function svcInvTpl(typeKey) { try { return typeof svcGetTemplate === 'function' ? svcGetTemplate(typeKey) : null; } catch (e) { return null; } }
+function svcInvInvCfg(job) { var t = svcInvTpl(job && job.serviceType), c = t && t.inventory; return c && typeof c === 'object' ? c : { mode: 'optional', deductOn: 'record', chargeableDefault: false, unitChoices: ['pcs', 'ml', 'g'], partsLabel: 'Materials' }; }
+function svcInvFail(code, msg, extra) { var r = { ok: false, code: code, error: msg, errors: [{ id: '', msg: msg }] }; var k; if (extra) for (k in extra) r[k] = extra[k]; return r; }
+function svcInvHash(s) {                                 /* FNV-1a, 8 hex: a short stable id part for a job-line key */
+  var h = 0x811c9dc5, i; s = String(s);
+  for (i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }
+  return ('00000000' + h.toString(16)).slice(-8);
+}
+function svcInvShortId(prefix) {
+  var r = '', i; for (i = 0; i < 5; i++) r += Math.floor(Math.random() * 36).toString(36);
+  return prefix + svcInvNow().toString(36) + r;
+}
+function svcInvJob(id) { try { return typeof svcGetJob === 'function' ? (svcGetJob(id) || null) : null; } catch (e) { return null; } }
+function svcInvJobTag(job) { return String(job && (job.no || job.id) || ''); }
+function svcInvIsClosed(job) { return !!job && (job.closedAt != null || Number(job.phase) >= 3); }
+function svcInvActive(job) { return svcInvArr(job && job.materials).filter(function (m) { return m && !m.reversedAt && !m.void; }); }
+function svcInvStatusDef(job, key) {
+  var t = svcInvTpl(job && job.serviceType), s = t && t.statuses, i;
+  if (Array.isArray(s)) { for (i = 0; i < s.length; i++) { if (s[i] && s[i].key === key) return s[i]; } }
+  return null;
+}
+
+/* ===== units ===== */
+function svcInvNormUnit(u) {
+  var s = String(u == null ? '' : u).toLowerCase().replace(/[.\s]+$/g, '').replace(/^\s+/, '');
+  if (!s) return 'pcs';
+  return SVC_INV_ALIAS[s] || s;
+}
+/* svcInvConvert(qty, fromUnit, toUnit) -> {ok, factor, qty}: qty expressed in toUnit. Only like units convert (ml/l, g/kg, mm/cm/m, counted pieces). */
+function svcInvConvert(qty, from, to) {
+  var a = svcInvNormUnit(from), b = svcInvNormUnit(to), ga = SVC_INV_GROUPS[a], gb = SVC_INV_GROUPS[b], f;
+  if (a === b) return { ok: true, factor: 1, qty: svcInvQty(qty) };
+  if (ga && gb && ga[0] === gb[0]) { f = ga[1] / gb[1]; return { ok: true, factor: f, qty: svcInvQty(svcInvNum(qty) * f) }; }
+  return { ok: false, factor: 0, qty: 0 };
+}
+function svcInvIsPieceUnit(u) { return svcInvNormUnit(u) === 'pcs'; }
+
+/* ===== inventory lookups ===== */
+function svcInvLive(p) { return !!p && !p._deleted && !p.removed; }
+/* a product by code, else by a UNIQUE name (never guesses between two). Services are returned too: callers check .type */
+function svcInvFind(code, name) {
+  var inv = svcInvStock(), i, p, nm = String(name == null ? '' : name).trim().toLowerCase();
+  if (code != null && String(code) !== '') {
+    for (i = 0; i < inv.length; i++) { p = inv[i]; if (svcInvLive(p) && String(p.code) === String(code)) return p; }
+  }
+  if (nm) {
+    var hit = null, n = 0;
+    for (i = 0; i < inv.length; i++) { p = inv[i]; if (svcInvLive(p) && p.type !== 'service' && String(p.name || '').trim().toLowerCase() === nm) { hit = p; n++; } }
+    if (n === 1) return hit;
+  }
+  return null;
+}
+function svcInvAvailable(p, mode) {
+  try { if (typeof getAvailableStock === 'function') { var v = getAvailableStock(p, mode); if (typeof v === 'number') return v; } } catch (e) { /* fall through */ }
+  if (p.dualUnit && mode === 'piece') return (Number(p.pieceQty) || 0) + (Number(p.qty) || 0) * (Number(p.unitsPerBox) || 1);
+  return Number(p.qty) || 0;
+}
+function svcInvLowLimit() { try { if (typeof LOW_STOCK_THRESHOLD !== 'undefined' && isFinite(Number(LOW_STOCK_THRESHOLD))) return Number(LOW_STOCK_THRESHOLD); } catch (e) { /* default */ } return 3; }
+/* why a product cannot be used as a material (null = fine) */
+function svcInvUnusable(p) {
+  if (!p) return 'notfound';
+  if (p.type === 'service') return 'service';
+  if (p.hasVariants && svcInvArr(p.variants).length) return 'variants';
+  if (p.type === 'set' || svcInvArr(p.productionRecipe).length) return 'composite';
+  return null;
+}
+/* svcInvStockInfo(code, name, qty, unit) -> what the stock looks like for that use (no side effects). */
+function svcInvStockInfo(code, name, qty, unit) {
+  var out = { found: false, convertible: false, code: '', name: '', unit: '', mode: 'box', factor: 1, need: 0, left: 0, avail: 0, short: false, low: false, unusable: null };
+  var p = svcInvFind(code, name);
+  if (!p) return out;
+  out.found = true; out.code = String(p.code); out.name = String(p.name || ''); out.unit = p.unit || 'pcs';
+  out.unusable = svcInvUnusable(p);
+  var mode = 'box', conv;
+  if (p.dualUnit && svcInvIsPieceUnit(unit) && svcInvNormUnit(p.unit) !== 'pcs') { mode = 'piece'; conv = { ok: true, factor: 1, qty: svcInvQty(qty) }; }
+  else conv = svcInvConvert(qty, unit || p.unit, p.unit || 'pcs');
+  out.mode = mode; out.convertible = !!conv.ok; out.factor = conv.factor || 1;
+  if (!conv.ok) return out;
+  out.need = conv.qty;
+  out.left = svcInvQty(svcInvAvailable(p, mode));
+  out.avail = out.factor > 0 ? svcInvQty(out.left / out.factor) : out.left;          /* in the unit the caller asked in */
+  out.short = out.need > out.left + 1e-9;
+  out.low = !out.short && (out.left - out.need) <= svcInvLowLimit();
+  out.price = svcInvNum(p.price) * out.factor; out.cost = svcInvNum(p.wholesalePrice != null ? p.wholesalePrice : p.cost) * out.factor;
+  return out;
+}
+
+/* ===== persistence of the stock side (inventory + movement ledger) ===== */
+function svcInvPersist() {
+  try {
+    if (typeof safeSetItem === 'function') {
+      safeSetItem('pos_inventory', JSON.stringify(svcInvStock()));
+      var lg = svcInvLog();
+      if (lg) safeSetItem(typeof appStoreKey === 'function' ? appStoreKey('pos_stock_movement_log') : 'pos_stock_movement_log', JSON.stringify(lg));
+    }
+  } catch (e) { /* the next stock change saves them */ }
+  try { if (typeof renderInventoryTable === 'function') renderInventoryTable(); } catch (e2) { /* not on screen */ }
+}
+function svcInvSnap(p) { var lg = svcInvLog(); return { qty: p.qty, hasPiece: p.pieceQty !== undefined, pieceQty: p.pieceQty, len: lg ? lg.length : 0 }; }
+function svcInvRollback(p, s) {
+  p.qty = s.qty; if (s.hasPiece) p.pieceQty = s.pieceQty; else delete p.pieceQty;
+  var lg = svcInvLog(); if (lg && lg.length > s.len) lg.length = s.len;
+}
+function svcInvTag(rows, matId, job, o, suffix) {
+  var ids = [];
+  rows.forEach(function (r, i) {
+    var id = 'mv-' + matId + '-' + (suffix || '') + (i + 1);
+    r.id = id; r.reason = 'Job ' + svcInvJobTag(job) + (suffix === 'r' ? ' (material reversed)' : ' (material used)');
+    r.jobId = job.id; r.materialId = matId;
+    if (o && o.staffId) r.staffId = o.staffId;
+    if (o && o.lineId) r.serviceLineId = o.lineId;
+    ids.push(id);
+  });
+  return ids;
+}
+function svcInvTaken(rows, mode) {
+  var unit = mode === 'piece' ? 'pieceQty' : 'qty', s = 0;
+  rows.forEach(function (r) { if ((r.unit || 'qty') === unit) s += Number(r.delta) || 0; });
+  return svcInvQty(-s);
+}
+
+/* ===== svcUseMaterial ===== */
+/* svcUseMaterial(jobId, {code, name, qty, unit, serviceLineId, staffId, chargeable, price, cost, id, lineKey, untracked, note, auto, system, allowNegative})
+   -> {ok, material, duplicate?, warn?, errors[]}. Tracked (code given): checks the stock, takes it through deductStockForSaleUnit, re-tags the movements.
+   untracked (no code, or untracked:true): recorded with no stock effect and flagged. A repeat of the same id / lineKey returns the existing record. */
+function svcUseMaterial(jobId, o) {
+  o = o || {};
+  if (!o.system && !svcInvCan('svc:inventory')) return svcInvFail('perm', 'You are not allowed to record stock use on jobs.');
+  var job = svcInvJob(jobId);
+  if (!job) return svcInvFail('notfound', 'That job could not be found.');
+  if (job._legacy) return svcInvFail('legacy', 'Upgrade this classic job to a full job first.');
+  if (job._deleted) return svcInvFail('deleted', 'That job was removed.');
+  if (svcInvIsClosed(job)) return svcInvFail('closed', 'This job is closed: materials can no longer be added.');
+  var code = svcInvStr(o.code, 60), name = svcInvStr(o.name, 80), qty = svcInvQty(o.qty);
+  var untracked = o.untracked === true || !code;
+  if (!(qty > 0)) return svcInvFail('qty', 'Enter a quantity above 0.');
+  if (qty > SVC_INV_MAX_QTY) return svcInvFail('qty', 'That quantity is too large.');
+  var prod = null;
+  if (!untracked) {
+    prod = svcInvFind(code, '');
+    if (!prod) return svcInvFail('notfound', 'Item ' + code + ' is not in your inventory.');
+    var un = svcInvUnusable(prod);
+    if (un === 'service') return svcInvFail('service', prod.name + ' is a service, not stock. Pick a stock item.');
+    if (un === 'variants') return svcInvFail('variants', prod.name + ' has variants. Record the specific variant item, or tick "Not in stock list".');
+    if (un === 'composite') return svcInvFail('composite', prod.name + ' is made from other items. Record its parts instead.');
+    if (!name) name = svcInvStr(prod.name, 80);
+  } else if (!name) return svcInvFail('name', 'Enter what was used.');
+
+  /* ids: caller minted, else derived from the job line + item (stable), else random */
+  var lk = '', matId = '', existing = svcInvArr(job.materials), i, same = [];
+  if (o.lk) lk = String(o.lk);
+  else if (o.lineKey) lk = svcInvHash(o.lineKey);
+  if (o.id) {
+    matId = String(o.id).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 60);
+    if (matId.length < 4) return svcInvFail('id', 'Bad record id.');
+    for (i = 0; i < existing.length; i++) { if (existing[i] && existing[i].id === matId) return { ok: true, duplicate: true, material: existing[i], errors: [] }; }
+  } else if (lk) {
+    for (i = 0; i < existing.length; i++) { if (existing[i] && existing[i].lk === lk) { same.push(existing[i]); if (!existing[i].reversedAt) return { ok: true, duplicate: true, material: existing[i], errors: [] }; } }
+    matId = 'mt-' + lk + '-' + same.length;
+  } else matId = svcInvShortId('mt-');
+
+  var unit = svcInvStr(o.unit, 12) || (prod ? (prod.unit || '') : '');
+  var cfg = svcInvCfg(), tcfg = svcInvInvCfg(job), actor = svcInvActor();
+  var chargeable = o.chargeable != null ? o.chargeable === true : tcfg.chargeableDefault === true;
+  var price = o.price != null && o.price !== '' ? Math.max(0, svcInvNum(o.price)) : 0, cost = o.cost != null && o.cost !== '' ? Math.max(0, svcInvNum(o.cost)) : 0;
+  var mat = { id: matId, code: untracked ? null : String(prod.code), name: name, qty: qty, unit: unit, cost: 0, price: 0, chargeable: chargeable, at: svcInvNow(), by: actor.name, byId: actor.id };
+  if (lk) mat.lk = lk;
+  if (o.serviceLineId) mat.lineId = String(o.serviceLineId);
+  if (o.staffId) mat.staffId = String(o.staffId);
+  if (o.auto) mat.auto = true;
+  if (o.note) mat.note = svcInvStr(o.note, 200);
+  var warn = null, snap = null, rows = [], mode = 'box', taken = 0;
+
+  if (untracked) {
+    mat.untracked = true; mat.cost = svcInvR2(cost); mat.price = o.price != null && o.price !== '' ? svcInvR2(price) : 0;
+    mat.movementIds = [];
+  } else {
+    var info = svcInvStockInfo(prod.code, '', qty, unit);
+    if (!info.convertible) return svcInvFail('unit', prod.name + ' is counted in ' + (prod.unit || 'pcs') + '. Use ' + (prod.unit || 'pcs') + ' (or a matching unit such as ' + (svcInvNormUnit(prod.unit) === 'l' ? 'ml' : (svcInvNormUnit(prod.unit) === 'kg' ? 'g' : 'a like unit')) + ').');
+    mode = info.mode;
+    if (info.short && !(o.allowNegative === true || cfg.allowNegativeStock === true)) {
+      return svcInvFail('stock', 'Only ' + info.avail + ' ' + (unit || prod.unit || 'pcs') + ' of ' + prod.name + ' left in stock.', { available: info.avail, need: qty, unit: unit || prod.unit || 'pcs' });
+    }
+    mat.cost = svcInvR2(o.cost != null && o.cost !== '' ? cost : info.cost);
+    mat.price = o.price != null && o.price !== '' ? svcInvR2(price) : svcInvR2(info.price);
+    if (typeof o.price === 'undefined' && !chargeable) mat.price = svcInvR2(info.price);
+    var lg0 = svcInvLog(), before = lg0 ? lg0.length : 0;
+    snap = svcInvSnap(prod);
+    try { deductStockForSaleUnit(prod, info.need, mode); } catch (e) { svcInvRollback(prod, snap); return svcInvFail('stock', 'The stock could not be updated: ' + String((e && e.message) || e)); }
+    rows = lg0 ? lg0.slice(before) : [];
+    mat.movementIds = svcInvTag(rows, matId, job, { staffId: o.staffId, lineId: o.serviceLineId }, '');
+    taken = svcInvTaken(rows, mode);
+    mat.stock = { mode: mode, taken: taken, unit: prod.unit || 'pcs', factor: info.factor };
+    if (taken + 1e-9 < info.need) mat.short = svcInvQty(info.need - taken);
+    svcInvPersist();
+    var left = svcInvQty(svcInvAvailable(prod, mode));
+    if (left <= svcInvLowLimit()) warn = { code: 'low', left: left, unit: prod.unit || 'pcs', name: prod.name, message: left <= 0 ? prod.name + ' is now out of stock.' : 'Only ' + left + ' ' + (prod.unit || 'pcs') + ' of ' + prod.name + ' left.' };
+  }
+
+  var res = svcCommit(function (j) {
+    var cur = svcInvArr(j.materials), k;
+    for (k = 0; k < cur.length; k++) { if (cur[k] && cur[k].id === matId) return false; }       /* a concurrent copy already has it: abort, nothing to add */
+    j.materials = cur.concat([mat]);
+    return j;
+  }, { list: 'svcJobs', id: job.id, audit: { act: 'material.use', ref: matId, note: name + ' x ' + qty + (unit ? ' ' + unit : '') + (untracked ? ' (not tracked)' : '') }, event: 'material:used', payload: { jobId: job.id, material: mat, reversed: false } });
+  if (!res || !res.ok) {
+    if (prod && snap) { svcInvRollback(prod, snap); svcInvPersist(); }
+    if (res && res.code === 'aborted') return { ok: true, duplicate: true, material: mat, errors: [] };
+    return svcInvFail((res && res.code) || 'store', (res && res.error) || 'The material could not be saved.');
+  }
+  var out = { ok: true, material: mat, errors: [] };
+  if (warn) { out.warn = warn; if (!o.quiet) svcInvToast(warn.message, true); }
+  return out;
+}
+
+/* ===== svcReverseMaterial ===== */
+/* svcReverseMaterial(jobId, materialId, {reason, system}) -> {ok, material, duplicate?}. Puts the stock back (restoreStockForSaleUnit), marks the record (never deletes it). */
+function svcReverseMaterial(jobId, materialId, o) {
+  o = o || {};
+  if (!o.system && !svcInvCan('svc:inventory')) return svcInvFail('perm', 'You are not allowed to reverse stock use.');
+  var job = svcInvJob(jobId);
+  if (!job) return svcInvFail('notfound', 'That job could not be found.');
+  if (job._legacy) return svcInvFail('legacy', 'Upgrade this classic job to a full job first.');
+  var m = null, i, list = svcInvArr(job.materials);
+  for (i = 0; i < list.length; i++) { if (list[i] && list[i].id === materialId) { m = list[i]; break; } }
+  if (!m) return svcInvFail('notfound', 'That material is not on this job.');
+  if (m.reversedAt) return { ok: true, duplicate: true, material: m, errors: [] };
+  var reason = svcInvStr(o.reason, 160) || 'Reversed', actor = svcInvActor(), now = svcInvNow();
+  var prod = null, snap = null, noStock = false, rows = [], ids = [];
+  if (!m.untracked && m.code && m.stock && Number(m.stock.taken) > 0) {
+    prod = svcInvFind(m.code, '');
+    if (prod) {
+      var lg = svcInvLog(), before = lg ? lg.length : 0, mode = m.stock.mode === 'piece' ? 'piece' : 'box';
+      snap = svcInvSnap(prod);
+      try { restoreStockForSaleUnit(prod, Number(m.stock.taken), mode); } catch (e) { svcInvRollback(prod, snap); return svcInvFail('stock', 'The stock could not be put back: ' + String((e && e.message) || e)); }
+      rows = lg ? lg.slice(before) : [];
+      ids = svcInvTag(rows, m.id, job, { staffId: m.staffId, lineId: m.lineId }, 'r');
+      svcInvPersist();
+    } else noStock = true;
+  }
+  var res = svcCommit(function (j) {
+    var cur = svcInvArr(j.materials), k, t = null;
+    for (k = 0; k < cur.length; k++) { if (cur[k] && cur[k].id === materialId) { t = cur[k]; break; } }
+    if (!t || t.reversedAt) return false;
+    t.reversedAt = now; t.reversedBy = actor.name; t.reverseReason = reason; t.rev = (Number(t.rev) || 0) + 1;
+    if (ids.length) t.reverseMovementIds = ids;
+    if (noStock) t.reverseNote = 'item no longer in inventory: no stock put back';
+    m = t;
+    return j;
+  }, { list: 'svcJobs', id: job.id, audit: { act: 'material.reverse', ref: materialId, note: m.name + ' x ' + m.qty + ' - ' + reason }, event: 'material:used', payload: { jobId: job.id, material: m, reversed: true } });
+  if (!res || !res.ok) {
+    if (prod && snap) { svcInvRollback(prod, snap); svcInvPersist(); }
+    if (res && res.code === 'aborted') return { ok: true, duplicate: true, material: m, errors: [] };
+    return svcInvFail((res && res.code) || 'store', (res && res.error) || 'The material could not be reversed.');
+  }
+  return { ok: true, material: m, errors: [] };
+}
+/* every active material of a job (cancel path: system = true skips the permission check because the cancel itself was authorised) */
+function svcReverseAllMaterials(jobId, reason, o) {
+  o = o || {};
+  var job = svcInvJob(jobId), out = { ok: true, reversed: 0, failed: [] };
+  if (!job || job._legacy) return { ok: false, reversed: 0, failed: [], code: 'notfound' };
+  svcInvActive(job).forEach(function (m) {
+    var r = svcReverseMaterial(jobId, m.id, { reason: reason || 'Job cancelled', system: o.system !== false });
+    if (r.ok && !r.duplicate) out.reversed++; else if (!r.ok) { out.failed.push({ id: m.id, error: r.error }); out.ok = false; }
+  });
+  return out;
+}
+/* svcReplaceMaterial(jobId, materialId, {qty, unit, note}) -> the edit path: the old record is reversed (stock back) and a new one recorded, so an edit never double-deducts.
+   When the new quantity cannot be taken, the old record is put back and the error returned. */
+function svcReplaceMaterial(jobId, materialId, o) {
+  o = o || {};
+  if (!svcInvCan('svc:inventory')) return svcInvFail('perm', 'You are not allowed to change stock use.');
+  var job = svcInvJob(jobId), m = null, i;
+  if (!job) return svcInvFail('notfound', 'That job could not be found.');
+  var list = svcInvArr(job.materials);
+  for (i = 0; i < list.length; i++) { if (list[i] && list[i].id === materialId) { m = list[i]; break; } }
+  if (!m || m.reversedAt) return svcInvFail('notfound', 'That material is not active on this job.');
+  var qty = svcInvQty(o.qty);
+  if (!(qty > 0)) return svcInvFail('qty', 'Enter a quantity above 0.');
+  if (Math.abs(qty - svcInvNum(m.qty)) < 1e-9 && (o.unit == null || o.unit === m.unit)) return { ok: true, material: m, unchanged: true, errors: [] };
+  var base = { code: m.code || '', name: m.name, unit: o.unit || m.unit, chargeable: m.chargeable, price: m.price, cost: m.cost, serviceLineId: m.lineId, staffId: m.staffId, lk: m.lk, untracked: !!m.untracked, auto: m.auto, note: o.note || m.note, quiet: true };
+  var back = svcReverseMaterial(jobId, materialId, { reason: 'Quantity changed to ' + qty });
+  if (!back.ok) return back;
+  var next = Object.assign({}, base, { qty: qty });
+  var use = svcUseMaterial(jobId, next);
+  if (!use.ok) {
+    var again = svcUseMaterial(jobId, Object.assign({}, base, { qty: m.qty, allowNegative: true }));       /* put the original back: the shop's stock must end where it started */
+    use.restored = !!(again && again.ok);
+    return use;
+  }
+  use.replaced = materialId;
+  return use;
+}
+
+/* ===== consumption suggestions (recipe style) ===== */
+function svcInvCatalogOf(line, typeKey) {
+  var rec = null;
+  try {
+    if (typeof svcCatalogGet === 'function' && line && line.catalogId) rec = svcCatalogGet(line.catalogId, { includeDeleted: true });
+    if (!rec && typeof svcCatalogList === 'function' && line && line.name) {
+      var nm = String(line.name).trim().toLowerCase(), all = svcCatalogList({ includeInactive: true, type: typeKey }), i;
+      for (i = 0; i < all.length; i++) { if (String(all[i].name || '').trim().toLowerCase() === nm) { rec = all[i]; break; } }
+    }
+  } catch (e) { rec = null; }
+  return rec;
+}
+/* -> [{key, lineKey, lineId, service, code, name, qty, unit, found, convertible, available, short, done, autoDone, auto, chargeable, price, cost, reason}] */
+function svcSuggestConsumption(jobOrId, opts) {
+  opts = opts || {};
+  var job = jobOrId && typeof jobOrId === 'object' ? jobOrId : svcInvJob(jobOrId);
+  if (!job || job._legacy || job._deleted) return [];
+  var tcfg = svcInvInvCfg(job), out = [], mats = svcInvArr(job.materials);
+  svcInvArr(job.jobServices).forEach(function (line) {
+    if (!line || line.removedAt || line.voidedAt || line.cancelled) return;
+    var rec = svcInvCatalogOf(line, job.serviceType), list = rec && Array.isArray(rec.consumption) ? rec.consumption.slice() : [];
+    if (!list.length && rec && rec.invCode) {
+      var sp = svcInvFind(rec.invCode, '');
+      if (sp && sp.type === 'service' && Array.isArray(sp.recipe)) {
+        list = sp.recipe.map(function (ing) { var it = svcInvFind(ing && ing.code, ''); return { code: String(ing && ing.code || ''), name: it ? it.name : '', unit: it && it.unit ? it.unit : '', qty: ing && ing.qtyPerUnit }; });
+      }
+    }
+    var lq = line.qty == null || line.qty === '' ? 1 : svcInvNum(line.qty);
+    if (!(lq > 0)) lq = 1;
+    list.forEach(function (c) {
+      if (!c || !(svcInvNum(c.qty) > 0)) return;
+      var item = svcInvFind(c.code, c.name), usable = item && !svcInvUnusable(item) ? item : null;
+      var ident = usable ? String(usable.code) : (svcInvStr(c.code, 60) || svcInvSlug(c.name));
+      if (!ident) return;
+      var lineKey = String(line.id) + ':' + ident, h = svcInvHash(lineKey), done = false, autoDone = false;
+      mats.forEach(function (m) { if (m && m.lk === h) { if (!m.reversedAt) done = true; if (m.auto) autoDone = true; } });
+      var qty = svcInvQty(svcInvNum(c.qty) * lq), unit = svcInvStr(c.unit, 12) || (usable ? usable.unit || '' : '');
+      var s = { key: lineKey, lineKey: lineKey, lineId: String(line.id), service: String(line.name || ''), code: usable ? String(usable.code) : '', name: usable ? String(usable.name) : svcInvStr(c.name || c.code, 80),
+        qty: qty, unit: unit, found: !!usable, convertible: false, available: null, short: false, done: done, autoDone: autoDone, auto: !!(rec && rec.autoConsume), chargeable: tcfg.chargeableDefault === true, price: 0, cost: 0, reason: '' };
+      if (usable) {
+        var info = svcInvStockInfo(usable.code, '', qty, unit);
+        s.convertible = info.convertible; s.available = info.convertible ? info.avail : null; s.short = info.convertible && info.short;
+        if (info.convertible) { s.price = svcInvR2(info.price); s.cost = svcInvR2(info.cost); } else s.reason = usable.name + ' is counted in ' + (usable.unit || 'pcs');
+      } else if (item) s.reason = 'Cannot be used as a stock item';
+      else s.reason = 'Not in your inventory: recorded without a stock change';
+      out.push(s);
+    });
+  });
+  return out;
+}
+/* svcApplyConsumption(jobId, {keys, qty: {key: qty}, includeUntracked, auto, system}) -> {ok, used[], skipped[], failed[]}. Idempotent per job line + item. */
+function svcApplyConsumption(jobId, o) {
+  o = o || {};
+  var job = svcInvJob(jobId), res = { ok: true, used: [], skipped: [], failed: [], warns: [] };
+  if (!job) return { ok: false, used: [], skipped: [], failed: [], code: 'notfound' };
+  var keys = Array.isArray(o.keys) ? o.keys : null, sugg = svcSuggestConsumption(job);
+  sugg.forEach(function (s) {
+    if (keys && keys.indexOf(s.key) === -1) return;
+    if (!keys && !s.found) return;                                    /* default selection = items that really are in stock */
+    if (s.done || (o.auto && s.autoDone)) { res.skipped.push({ key: s.key, name: s.name, why: 'already recorded' }); return; }
+    var qty = o.qty && o.qty[s.key] != null && o.qty[s.key] !== '' ? svcInvQty(o.qty[s.key]) : s.qty;
+    var untracked = !s.found || (keys && o.includeUntracked === true && !s.found);
+    if (untracked && o.includeUntracked !== true) { res.skipped.push({ key: s.key, name: s.name, why: 'not in inventory' }); return; }
+    var r = svcUseMaterial(jobId, { code: s.found ? s.code : '', name: s.name, qty: qty, unit: s.unit, lineKey: s.lineKey, serviceLineId: s.lineId, chargeable: s.chargeable, auto: !!o.auto, system: !!o.system, untracked: untracked, quiet: true });
+    if (r.ok) { if (r.duplicate) res.skipped.push({ key: s.key, name: s.name, why: 'already recorded' }); else res.used.push(r.material); if (r.warn) res.warns.push(r.warn); }
+    else { res.failed.push({ key: s.key, name: s.name, code: r.code, error: r.error }); res.ok = false; }
+  });
+  return res;
+}
+
+/* ===== events: auto-deduct when work starts (opt-in), reverse everything when a job is cancelled ===== */
+function svcInvOnStatus(p) {
+  try {
+    var job = p && (p.job || p.rec), id = job && job.id; if (!id) return;
+    var cur = svcInvJob(id); if (!cur || cur._legacy) return;
+    var def = svcInvStatusDef(cur, p.to || cur.status); if (!def) return;
+    if (Number(def.phase) === 4) {
+      if (svcInvActive(cur).length) {
+        var r = svcReverseAllMaterials(id, 'Job cancelled', { system: true });
+        if (r.reversed) svcInvToast(r.reversed + ' material' + (r.reversed === 1 ? '' : 's') + ' put back in stock (job cancelled).');
+      }
+      return;
+    }
+    if (Number(def.phase) !== 1) return;
+    var tcfg = svcInvInvCfg(cur), cfg = svcInvCfg();
+    if (cfg.autoConsume !== true || tcfg.mode === 'off' || tcfg.deductOn === 'off') return;
+    var autoKeys = svcSuggestConsumption(cur).filter(function (s) { return s.auto && s.found && !s.done && !s.autoDone && !s.short; }).map(function (s) { return s.key; });
+    if (!autoKeys.length) return;
+    var a = svcApplyConsumption(id, { keys: autoKeys, auto: true, system: true });
+    if (a.used.length) svcInvToast(a.used.length + ' item' + (a.used.length === 1 ? '' : 's') + ' taken from stock for ' + svcInvJobTag(cur) + '.');
+    if (a.failed.length) svcInvToast('Some stock could not be deducted automatically. Open the Materials tab.', true);
+  } catch (e) { /* a stock side effect never blocks a status change */ }
+}
+
+/* ===== Materials drawer tab ===== */
+function svcInvJobUnits(job, extra) {
+  var tcfg = svcInvInvCfg(job), seen = {}, out = [];
+  (svcInvArr(tcfg.unitChoices).concat(['pcs', 'ml', 'l', 'g', 'kg']).concat(extra ? [extra] : [])).forEach(function (u) { var k = String(u || '').trim(); if (k && !seen[k.toLowerCase()]) { seen[k.toLowerCase()] = 1; out.push(k); } });
+  return out;
+}
+function svcInvTagHtml(t, cls) { return '<span class="svci-tag' + (cls ? ' ' + cls : '') + '">' + svcInvEsc(t) + '</span>'; }
+function svcInvWhen(ms) { try { var d = new Date(Number(ms)); return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } }
+function svcInvSuggHtml(job, sugg, canEdit) {
+  var pending = sugg.filter(function (s) { return !s.done; });
+  if (!pending.length) return '';
+  var h = '<div class="svci-box" data-sugg><h4>Suggested from the services on this job</h4><div class="svci-hint" style="margin:0 0 6px">Tick what was really used and set the quantity. Nothing is taken from stock until you press the button.</div>';
+  pending.forEach(function (s, i) {
+    var usable = s.found && s.convertible, bad = s.found && s.convertible && s.short;
+    h += '<div class="svci-sug" data-key="' + svcInvEsc(s.key) + '"><div class="chk"><input type="checkbox" data-sg="on" aria-label="Use ' + svcInvEsc(s.name) + '"' + (usable && !bad ? ' checked' : '') + (canEdit ? '' : ' disabled') + '></div>' +
+      '<div class="nm">' + svcInvEsc(s.name) + '<small>for ' + svcInvEsc(s.service) + '</small></div>' +
+      '<input class="svci-in qq" type="text" inputmode="decimal" data-sg="qty" value="' + svcInvEsc(s.qty) + '" aria-label="Quantity of ' + svcInvEsc(s.name) + '"' + (canEdit ? '' : ' disabled') + '><span class="un">' + svcInvEsc(s.unit) + '</span>' +
+      '<div class="st' + (bad || (s.found && !s.convertible) ? ' bad' : '') + '">' + svcInvEsc(!s.found ? s.reason : (!s.convertible ? s.reason : (bad ? 'Not enough: only ' + s.available + ' ' + (s.unit || '') + ' in stock' : 'In stock: ' + s.available + ' ' + (s.unit || '')))) + '</div></div>';
+  });
+  h += (canEdit ? '<button type="button" class="svci-btn primary" data-act="apply-sugg" style="margin-top:8px">Use selected from stock</button>' : '') + '</div>';
+  return h;
+}
+function svcInvRowHtml(job, m, canEdit, fin) {
+  var off = !!m.reversedAt, tags = '';
+  tags += m.untracked ? svcInvTagHtml('not tracked', 'warn') : svcInvTagHtml('from stock', 'good');
+  if (m.chargeable) tags += svcInvTagHtml('charged ' + svcInvMoney(svcInvR2(svcInvNum(m.qty) * svcInvNum(m.price))));
+  else tags += svcInvTagHtml('included');
+  if (m.auto) tags += svcInvTagHtml('auto');
+  if (m.short) tags += svcInvTagHtml('short by ' + m.short, 'warn');
+  if (fin && !m.untracked && m.cost) tags += svcInvTagHtml('cost ' + svcInvMoney(svcInvR2(svcInvNum(m.qty) * svcInvNum(m.cost))));
+  var meta = svcInvEsc(m.by || '') + ' &middot; ' + svcInvEsc(svcInvWhen(m.at)) + (off ? ' &middot; reversed by ' + svcInvEsc(m.reversedBy || '') + ' (' + svcInvEsc(m.reverseReason || '') + ')' : '');
+  var h = '<div class="svci-row' + (off ? ' off' : '') + '" data-mid="' + svcInvEsc(m.id) + '"><div class="r1"><span class="nm">' + svcInvEsc(m.name) + '</span><span class="q">' + svcInvEsc(m.qty) + ' ' + svcInvEsc(m.unit || '') + '</span></div>' +
+    '<div class="r2">' + tags + '</div><div class="r2">' + meta + '</div>';
+  if (!off && canEdit) h += '<div class="acts"><button type="button" class="svci-btn" data-act="ask-change" aria-label="Change quantity of ' + svcInvEsc(m.name) + '">Change quantity</button><button type="button" class="svci-btn danger" data-act="ask-reverse" aria-label="Reverse ' + svcInvEsc(m.name) + '">Reverse</button></div>';
+  return h + '<div class="svci-ask" data-ask></div></div>';
+}
+function svcInvFormHtml(job, canEdit) {
+  if (!canEdit) return '';
+  var inv = svcInvStock().filter(function (p) { return svcInvLive(p) && p.type !== 'service'; }).slice(0, 800), tcfg = svcInvInvCfg(job), units = svcInvJobUnits(job);
+  return '<div class="svci-box" data-add><h4>Add a ' + svcInvEsc(String(tcfg.partsLabel || 'material').toLowerCase()) + '</h4>' +
+    '<div class="svci-fld"><label for="svci-item">Item from your stock</label><input class="svci-in" id="svci-item" list="svci-invlist" data-f="item" autocomplete="off" placeholder="Search your stock">' +
+    '<datalist id="svci-invlist">' + inv.map(function (p) { return '<option value="' + svcInvEsc(p.name) + '" label="' + svcInvEsc(p.code) + '">'; }).join('') + '</datalist>' +
+    '<div class="svci-hint" data-hint></div></div>' +
+    '<label class="svci-chk"><input type="checkbox" data-f="untracked">Not in my stock list (record only, no stock change)</label>' +
+    '<div class="svci-2"><div class="svci-fld"><label for="svci-qty">Quantity</label><input class="svci-in" id="svci-qty" type="text" inputmode="decimal" data-f="qty" placeholder="0"></div>' +
+    '<div class="svci-fld"><label for="svci-unit">Unit</label><input class="svci-in" id="svci-unit" list="svci-units" data-f="unit" placeholder="pcs"><datalist id="svci-units">' + units.map(function (u) { return '<option value="' + svcInvEsc(u) + '">'; }).join('') + '</datalist></div></div>' +
+    '<label class="svci-chk"><input type="checkbox" data-f="chargeable"' + (tcfg.chargeableDefault === true ? ' checked' : '') + '>Charge the customer for it</label>' +
+    '<div class="svci-fld" data-priceBox' + (tcfg.chargeableDefault === true ? '' : ' hidden') + '><label for="svci-price">Price per unit</label><input class="svci-in" id="svci-price" type="text" inputmode="decimal" data-f="price" placeholder="from the item"></div>' +
+    '<div class="svci-note bad" data-err hidden role="alert"></div>' +
+    '<button type="button" class="svci-btn primary" data-act="add">Add and take from stock</button></div>';
+}
+function svcInvRenderTab(job, el) {
+  if (!el) return false;
+  var fresh = svcInvJob(job && job.id) || job;
+  el.__svciJob = fresh.id;
+  var tcfg = svcInvInvCfg(fresh), canEdit = svcInvCan('svc:inventory') && !svcInvIsClosed(fresh) && !fresh._deleted, fin = svcInvCan('svc:financials');
+  var mats = svcInvArr(fresh.materials), act = svcInvActive(fresh), sugg = canEdit || svcInvCan('svc:inventory') ? svcSuggestConsumption(fresh) : [];
+  var tot = null; try { tot = typeof svcTotals === 'function' ? svcTotals(fresh) : null; } catch (e) { tot = null; }
+  var h = '<div class="svci">';
+  if (svcInvIsClosed(fresh)) h += '<div class="svci-note">This job is closed. Materials can no longer be added; use Reverse to correct a mistake.</div>';
+  else if (!svcInvCan('svc:inventory')) h += '<div class="svci-note warn">You can look at the materials, but only people allowed to record stock use can change them.</div>';
+  h += svcInvSuggHtml(fresh, sugg, canEdit);
+  h += '<div class="svci-box"><h4>Used on this job (' + act.length + ')</h4>';
+  h += mats.length ? mats.slice().sort(function (a, b) { return (Number(b.at) || 0) - (Number(a.at) || 0); }).map(function (m) { return svcInvRowHtml(fresh, m, svcInvCan('svc:inventory'), fin); }).join('') : '<div class="svci-hint">Nothing recorded yet.</div>';
+  if (tot && act.length) h += '<div class="svci-tot">Charged to customer: ' + svcInvEsc(svcInvMoney(tot.materialsTotal)) + (fin ? ' &middot; Cost: ' + svcInvEsc(svcInvMoney(tot.materialCost)) : '') + '</div>';
+  h += '</div>' + svcInvFormHtml(fresh, canEdit) + '</div>';
+  el.innerHTML = h;
+  svcInvBind(el);
+  return true;
+}
+function svcInvFormVals(el) {
+  var q = function (s) { return el.querySelector('[data-f="' + s + '"]'); };
+  return { item: q('item') ? q('item').value : '', qty: q('qty') ? q('qty').value : '', unit: q('unit') ? q('unit').value : '', untracked: !!(q('untracked') && q('untracked').checked), chargeable: !!(q('chargeable') && q('chargeable').checked), price: q('price') ? q('price').value : '' };
+}
+function svcInvUpdateHint(el) {
+  var box = el.querySelector('[data-hint]'); if (!box) return;
+  var v = svcInvFormVals(el), name = String(v.item || '').trim(), unitIn = el.querySelector('[data-f="unit"]');
+  box.className = 'svci-hint'; box.textContent = '';
+  if (!name || v.untracked) { if (name && v.untracked) box.textContent = 'Recorded without a stock change.'; return; }
+  var p = svcInvFind('', name) || svcInvFind(name, '');
+  if (!p) { box.className = 'svci-hint warn'; box.textContent = 'Not found in your stock list. Tick "Not in my stock list" to record it anyway.'; return; }
+  if (svcInvUnusable(p)) { box.className = 'svci-hint bad'; box.textContent = p.type === 'service' ? p.name + ' is a service, not stock.' : p.name + ' cannot be used as a material (variants or made from other items).'; return; }
+  if (unitIn && !unitIn.value) unitIn.value = p.unit || 'pcs';
+  var q = svcInvNum(v.qty), u = (unitIn && unitIn.value) || p.unit || 'pcs', info = svcInvStockInfo(p.code, '', q > 0 ? q : 0, u);
+  if (!info.convertible) { box.className = 'svci-hint bad'; box.textContent = p.name + ' is counted in ' + (p.unit || 'pcs') + '. Use that unit.'; return; }
+  var cfg = svcInvCfg();
+  if (q > 0 && info.short) { box.className = 'svci-hint bad'; box.textContent = (cfg.allowNegativeStock === true ? 'Warning: ' : 'Not enough: ') + 'only ' + info.avail + ' ' + u + ' of ' + p.name + ' in stock.'; return; }
+  var after = info.left - (q > 0 ? info.need : 0);
+  box.className = 'svci-hint' + (after <= svcInvLowLimit() ? ' warn' : '');
+  box.textContent = 'In stock: ' + info.avail + ' ' + u + (after <= svcInvLowLimit() && q > 0 ? ' (low after this)' : '');
+  var pr = el.querySelector('[data-f="price"]'); if (pr) pr.placeholder = 'KSh ' + svcInvR2(info.price) + ' per ' + u;
+}
+function svcInvShowErr(el, msg) { var e = el.querySelector('[data-err]'); if (!e) return; e.textContent = msg || ''; e.hidden = !msg; }
+function svcInvAfter(el, jobId, toastMsg) {
+  if (toastMsg) svcInvToast(toastMsg);
+  var j = svcInvJob(jobId); if (j) svcInvRenderTab(j, el);
+}
+function svcInvBind(el) {
+  if (el.__svciBound) return; el.__svciBound = true;
+  el.addEventListener('input', function (ev) { var t = ev.target; if (t && t.matches && t.matches('[data-f="item"],[data-f="qty"],[data-f="unit"]')) svcInvUpdateHint(el); });
+  el.addEventListener('change', function (ev) {
+    var t = ev.target; if (!t || !t.matches) return;
+    if (t.matches('[data-f="chargeable"]')) { var pb = el.querySelector('[data-priceBox]'); if (pb) pb.hidden = !t.checked; }
+    if (t.matches('[data-f]')) svcInvUpdateHint(el);
+  });
+  el.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-act]') : null; if (!b || !el.contains(b)) return;
+    var act = b.getAttribute('data-act'), jobId = el.__svciJob, row = b.closest ? b.closest('[data-mid]') : null, mid = row ? row.getAttribute('data-mid') : '';
+    if (act === 'add') svcInvDoAdd(el, jobId, b);
+    else if (act === 'apply-sugg') svcInvDoApply(el, jobId, b);
+    else if (act === 'ask-reverse' && row) {
+      var ask = row.querySelector('[data-ask]'); ask.innerHTML = '<label class="svci-fld lbl" for="svci-rr-' + svcInvEsc(mid) + '" style="display:block;font-size:13px;font-weight:600">Reason</label><input class="svci-in" id="svci-rr-' + svcInvEsc(mid) + '" data-f="reason" placeholder="e.g. Entered by mistake" maxlength="120"><div style="margin-top:8px"><button type="button" class="svci-btn danger" data-act="do-reverse">Confirm reverse</button><button type="button" class="svci-btn" data-act="cancel-ask">Cancel</button></div>';
+      var ri = ask.querySelector('input'); if (ri) { try { ri.focus(); } catch (e) { /* not focusable */ } }
+    } else if (act === 'ask-change' && row) {
+      var ask2 = row.querySelector('[data-ask]'), cur = svcInvActive(svcInvJob(jobId) || {}).filter(function (m) { return m.id === mid; })[0];
+      ask2.innerHTML = '<label class="svci-fld lbl" for="svci-cq-' + svcInvEsc(mid) + '" style="display:block;font-size:13px;font-weight:600">New quantity (' + svcInvEsc(cur ? cur.unit : '') + ')</label><input class="svci-in" id="svci-cq-' + svcInvEsc(mid) + '" data-f="newqty" type="text" inputmode="decimal" value="' + svcInvEsc(cur ? cur.qty : '') + '"><div style="margin-top:8px"><button type="button" class="svci-btn primary" data-act="do-change">Update</button><button type="button" class="svci-btn" data-act="cancel-ask">Cancel</button></div>';
+      var ci = ask2.querySelector('input'); if (ci) { try { ci.focus(); ci.select(); } catch (e2) { /* not focusable */ } }
+    } else if (act === 'cancel-ask' && row) { row.querySelector('[data-ask]').innerHTML = ''; }
+    else if (act === 'do-reverse' && row) {
+      b.disabled = true;
+      var rsn = row.querySelector('[data-f="reason"]'), r = svcReverseMaterial(jobId, mid, { reason: rsn ? rsn.value : '' });
+      if (!r.ok) { b.disabled = false; svcInvToast(r.error || 'Could not reverse.', true); return; }
+      svcInvAfter(el, jobId, 'Put back in stock.');
+    } else if (act === 'do-change' && row) {
+      b.disabled = true;
+      var nq = row.querySelector('[data-f="newqty"]'), r2 = svcReplaceMaterial(jobId, mid, { qty: nq ? nq.value : 0 });
+      if (!r2.ok) { b.disabled = false; svcInvToast(r2.error || 'Could not change the quantity.', true); svcInvAfter(el, jobId, ''); return; }
+      svcInvAfter(el, jobId, r2.unchanged ? '' : 'Quantity updated.');
+    }
+  });
+}
+function svcInvDoAdd(el, jobId, btn) {
+  var v = svcInvFormVals(el), name = String(v.item || '').trim();
+  if (!el.__svciDraft) el.__svciDraft = svcInvShortId('mt-');
+  var o = { id: el.__svciDraft, qty: v.qty, unit: String(v.unit || '').trim(), chargeable: v.chargeable, quiet: false };
+  if (v.chargeable && String(v.price).trim() !== '') o.price = v.price;
+  if (v.untracked) { o.untracked = true; o.name = name; }
+  else {
+    var p = svcInvFind('', name) || svcInvFind(name, '');
+    if (!name) { svcInvShowErr(el, 'Pick the item that was used.'); return; }
+    if (!p) { svcInvShowErr(el, 'That item is not in your stock list. Tick "Not in my stock list" to record it without a stock change.'); return; }
+    o.code = String(p.code); o.name = String(p.name);
+  }
+  btn.disabled = true;
+  var r = svcUseMaterial(jobId, o);
+  if (!r.ok) { btn.disabled = false; svcInvShowErr(el, r.error || 'Could not add that.'); return; }
+  el.__svciDraft = '';                                             /* a fresh id for the next material; a repeat tap of THIS one was already answered as a duplicate */
+  svcInvAfter(el, jobId, r.duplicate ? 'Already recorded.' : (v.untracked ? 'Recorded.' : 'Taken from stock.'));
+}
+function svcInvDoApply(el, jobId, btn) {
+  var keys = [], qty = {}, rows = el.querySelectorAll('[data-sugg] .svci-sug');
+  Array.prototype.forEach.call(rows, function (r) {
+    var on = r.querySelector('[data-sg="on"]'), q = r.querySelector('[data-sg="qty"]'), k = r.getAttribute('data-key');
+    if (on && on.checked) { keys.push(k); qty[k] = q ? q.value : ''; }
+  });
+  if (!keys.length) { svcInvToast('Tick at least one item first.', true); return; }
+  btn.disabled = true;
+  var r = svcApplyConsumption(jobId, { keys: keys, qty: qty, includeUntracked: true });
+  var msg = r.used.length ? r.used.length + ' item' + (r.used.length === 1 ? '' : 's') + ' taken from stock.' : '';
+  if (r.failed.length) { svcInvToast(r.failed.map(function (f) { return f.name + ': ' + f.error; }).join(' '), true); }
+  if (r.warns && r.warns.length) svcInvToast(r.warns[0].message, true);
+  svcInvAfter(el, jobId, msg);
+}
+
+/* ===== Settings > Services > Stock use ===== */
+function svcInvRenderSettings(el) {
+  if (!el) return false;
+  var cfg = svcInvCfg(), canEdit = svcInvCan('svc:manageConfig');
+  el.innerHTML = '<div class="svci-set"><h3 style="font-size:18px;margin:0 0 10px">Stock use on jobs</h3>' +
+    '<div class="svci-box"><label class="svci-chk"><input type="checkbox" data-s="autoConsume"' + (cfg.autoConsume === true ? ' checked' : '') + (canEdit ? '' : ' disabled') + '>Take stock automatically when work starts, for catalog services marked "auto-deduct"</label>' +
+    '<div class="svci-hint">Off by default. Staff can always add or reverse materials on a job in its Materials tab.</div></div>' +
+    '<div class="svci-box"><label class="svci-chk"><input type="checkbox" data-s="allowNegativeStock"' + (cfg.allowNegativeStock === true ? ' checked' : '') + (canEdit ? '' : ' disabled') + '>Allow using more than the stock on hand</label>' +
+    '<div class="svci-hint">Off by default: staff are told when the shop has too little. When on, the stock stops at 0 and the job is marked "short by".</div></div>' +
+    (canEdit ? '' : '<div class="svci-note warn">Only people allowed to manage the Services settings can change this.</div>') + '</div>';
+  if (!el.__svciSetBound) {
+    el.__svciSetBound = true;
+    el.addEventListener('change', function (ev) {
+      var t = ev.target; if (!t || !t.matches || !t.matches('[data-s]')) return;
+      var key = t.getAttribute('data-s'), patch = {}; patch[key] = !!t.checked;
+      var r = typeof svcConfigPatch === 'function' ? svcConfigPatch('cfg-business', patch, { what: key + ' ' + (t.checked ? 'on' : 'off') }) : { ok: false };
+      svcInvToast(r && r.ok ? 'Saved.' : 'Could not save that setting.', !(r && r.ok));
+      if (!(r && r.ok)) t.checked = !t.checked;
+    });
+  }
+  return true;
+}
+
+/* registration (registries only; guarded because blocks load in order) */
+try { if (typeof svcDrawerRegister === 'function') svcDrawerRegister('materials', { label: 'Materials', order: 40, render: svcInvRenderTab, visibleWhen: function (job) { if (!job || job._legacy || job._deleted) return false; var t = svcInvInvCfg(job); return t.mode !== 'off' || svcInvArr(job.materials).length > 0; } }); } catch (e) { /* registry not ready */ }
+try { if (typeof svcSettingsRegister === 'function') svcSettingsRegister('stock', { label: 'Stock use', order: 25, render: svcInvRenderSettings }); } catch (e2) { /* registry not ready */ }
+try { if (typeof svcOn === 'function') svcOn('job:status', svcInvOnStatus); } catch (e3) { /* events not ready */ }
+</script>

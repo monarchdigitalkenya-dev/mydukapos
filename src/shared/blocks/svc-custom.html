@@ -1,0 +1,108 @@
+<!-- SVC CUSTOM ---------------------------------------------------------------------------------------
+     Services engine block "svc-custom". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B3-N. Nobody else edits this file.
+     STATE: STUB (marker-only, created by B1-S). The owner adds the block content below this comment: one script element (plus style element / markup for DOM blocks). Never write a literal script open tag inside this comment.
+     KIND: DOM + pure. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcCustomFieldUpsert, custom-field renderer integration, rich widgets (services, materials, quote, payment, valuables, condition, photos) via svcRegisterWidget priority 10, valuables tab.
+     SPEC: SERVICES_ARCHITECTURE.md 2.4, 8.2 B3-N. Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+
+<script>
+/* ===== Services custom fields (B3-N). The owner adds their own questions to the job form (Settings → Services → Custom fields).
+   Stored in the synced config record "cfg-customFields"; svcGetTemplate adds the active ones, for the chosen business types, as an
+   "Extra details" section. A field is never deleted, only switched off, so old jobs keep showing what was typed. ===== */
+var SVC_CU_TYPES = ['text', 'longtext', 'number', 'date', 'dropdown', 'checkbox', 'yesno', 'photo'];
+var SVC_CU_LABELS = { text: 'Short text', longtext: 'Long text', number: 'Number', date: 'Date', dropdown: 'Dropdown list', checkbox: 'Tick box', yesno: 'Yes / No', photo: 'Photo' };
+function svcCuEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcCuToast(m, e) { try { if (typeof showToast === 'function') showToast(m, !!e); } catch (x) { /* cosmetic */ } }
+function svcCuCan() { try { return typeof svcCan !== 'function' || svcCan('svc:manageConfig'); } catch (e) { return true; } }
+function svcCuList() { var v = null; try { v = svcConfigGet('cfg-customFields'); } catch (e) { v = null; } return v && Array.isArray(v.fields) ? v.fields.filter(function (f) { return f && f.id; }) : []; }
+function svcCuSlug(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40); }
+function svcCuTypeLabel(k) { try { var t = svcGetTemplate(k); return (t && (t.label || t.name)) || String(k).replace(/_/g, ' '); } catch (e) { return String(k).replace(/_/g, ' '); } }
+function svcCuCleanOptions(o) { var a = Array.isArray(o) ? o : String(o || '').split(/[\n,]+/); var seen = {}, out = []; a.forEach(function (x) { x = String(x == null ? '' : x).trim(); if (x && !seen[x.toLowerCase()]) { seen[x.toLowerCase()] = 1; out.push(x.slice(0, 60)); } }); return out.slice(0, 40); }
+/* svcCustomFieldUpsert({id?, label, type, options?, required?, serviceTypes[], help?, active?}) -> {ok, field} | {ok:false, errors:{...}} */
+function svcCustomFieldUpsert(input) {
+  input = input || {};
+  if (!svcCuCan()) return { ok: false, code: 'perm', errors: { _: 'You are not allowed to change the form.' } };
+  var errors = {}, label = String(input.label || '').trim().slice(0, 60), type = SVC_CU_TYPES.indexOf(input.type) !== -1 ? input.type : 'text';
+  if (!label) errors.label = 'Give the question a name.';
+  var types = (Array.isArray(input.serviceTypes) ? input.serviceTypes : []).filter(function (k) { return typeof SVC_TYPES === 'undefined' || SVC_TYPES[k]; });
+  if (!types.length) errors.serviceTypes = 'Choose at least one business type.';
+  var options = type === 'dropdown' ? svcCuCleanOptions(input.options) : [];
+  if (type === 'dropdown' && options.length < 2) errors.options = 'A dropdown needs at least two choices.';
+  if (Object.keys(errors).length) return { ok: false, code: 'invalid', errors: errors };
+  var list = svcCuList().slice(), idx = -1, i;
+  if (input.id) for (i = 0; i < list.length; i++) { if (list[i].id === input.id) idx = i; }
+  var now = Date.now(), actor = 'Owner'; try { actor = svcActor().name; } catch (e) { /* owner */ }
+  var field;
+  if (idx >= 0) {
+    field = Object.assign({}, list[idx], { label: label, options: options, required: !!input.required, serviceTypes: types, help: String(input.help || '').slice(0, 120), active: input.active !== false, updatedAt: now, updatedBy: actor });
+    if (list[idx].type !== type && list[idx].type) field.type = list[idx].type;      /* the type of an existing question never changes: old answers keep their meaning */
+    else field.type = type;
+    list[idx] = field;
+  } else {
+    var base = 'cf_' + (svcCuSlug(label) || 'field'), id = base, n = 2;
+    while (list.some(function (f) { return f.id === id; })) { id = base + '_' + n; n++; }
+    field = { id: id, label: label, type: type, options: options, required: !!input.required, serviceTypes: types, help: String(input.help || '').slice(0, 120), section: 'extra', order: (list.length + 1) * 10, active: input.active !== false, createdAt: now, createdBy: actor };
+    list.push(field);
+  }
+  var r = svcConfigSet('cfg-customFields', { fields: list }, { what: (idx >= 0 ? 'edited' : 'added') + ' custom field "' + label + '"' });
+  if (r && r.ok === false) return { ok: false, code: r.code || 'save', errors: { _: 'Could not save.' } };
+  try { if (typeof svcEmit === 'function') svcEmit('config:changed', { what: 'customFields' }); } catch (e2) { /* listeners */ }
+  return { ok: true, field: field };
+}
+function svcCustomFieldSetActive(id, active) {
+  var f = svcCuList().filter(function (x) { return x.id === id; })[0];
+  if (!f) return { ok: false, code: 'notfound' };
+  return svcCustomFieldUpsert(Object.assign({}, f, { active: !!active }));
+}
+
+/* ---- the Settings page ---- */
+function svcCuTypeBoxes(selected) {
+  var order = typeof SVC_TYPE_ORDER !== 'undefined' ? SVC_TYPE_ORDER : [];
+  return order.map(function (k) { return '<label style="display:flex;align-items:center;gap:6px;min-height:44px;font-size:14px;"><input type="checkbox" data-cu-type value="' + svcCuEsc(k) + '" style="width:auto;"' + (selected.indexOf(k) !== -1 ? ' checked' : '') + '> ' + svcCuEsc(svcCuTypeLabel(k)) + '</label>'; }).join('');
+}
+function svcCuFormHtml(f) {
+  f = f || {};
+  var typeSel = SVC_CU_TYPES.map(function (t) { return '<option value="' + t + '"' + (f.type === t ? ' selected' : '') + '>' + svcCuEsc(SVC_CU_LABELS[t]) + '</option>'; }).join('');
+  var def = f.serviceTypes && f.serviceTypes.length ? f.serviceTypes : (function () { try { return [svcBusinessType()]; } catch (e) { return []; } })();
+  return '<div class="svc-cu-form" style="border:1px solid var(--border-color,#dfe6e9);border-radius:12px;padding:12px;margin:10px 0;">'
+    + '<label style="font-weight:600;font-size:13px;">Question (what staff will see)</label><input type="text" data-cu="label" maxlength="60" value="' + svcCuEsc(f.label || '') + '" placeholder="e.g. Fuel level" style="width:100%;min-height:44px;margin:4px 0 10px;">'
+    + '<label style="font-weight:600;font-size:13px;">Answer type</label><select data-cu="type" style="width:100%;min-height:44px;margin:4px 0 10px;"' + (f.id ? ' disabled' : '') + '>' + typeSel + '</select>'
+    + '<div data-cu-opts style="display:' + (f.type === 'dropdown' ? 'block' : 'none') + ';"><label style="font-weight:600;font-size:13px;">Choices (one per line)</label><textarea data-cu="options" rows="4" style="width:100%;margin:4px 0 10px;">' + svcCuEsc((f.options || []).join('\n')) + '</textarea></div>'
+    + '<label style="font-weight:600;font-size:13px;">Show for these business types</label><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));">' + svcCuTypeBoxes(def) + '</div>'
+    + '<label style="display:flex;align-items:center;gap:6px;min-height:44px;"><input type="checkbox" data-cu="required" style="width:auto;"' + (f.required ? ' checked' : '') + '> Must be filled in</label>'
+    + '<div data-cu-err style="color:#c0392b;font-size:13px;min-height:18px;" role="alert"></div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="button" class="btn-main" data-cu-save="' + svcCuEsc(f.id || '') + '" style="min-height:44px;">Save</button><button type="button" class="btn-main" data-cu-cancel style="min-height:44px;background:#95a5a6;">Cancel</button></div></div>';
+}
+function svcCuRenderPage(el) {
+  if (!el) return;
+  if (!svcCuCan()) { el.innerHTML = '<p style="color:#7f8c8d;">Only the owner or a manager can change the job form.</p>'; return; }
+  var list = svcCuList().slice().sort(function (a, b) { return (a.order || 0) - (b.order || 0); });
+  var h = '<p style="color:#7f8c8d;font-size:13px;">Add your own questions to the job form. A question is never deleted — switch it off and old jobs keep their answers.</p>'
+    + '<button type="button" class="btn-main" data-cu-new style="min-height:44px;">➕ Add a question</button><div data-cu-editor></div>';
+  h += list.length ? list.map(function (f) {
+    return '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;border-bottom:1px solid var(--border-color,#dfe6e9);padding:8px 0;' + (f.active === false ? 'opacity:.55;' : '') + '"><div><strong>' + svcCuEsc(f.label) + '</strong>' + (f.required ? ' <span style="color:#c0392b;">*</span>' : '') + '<div style="font-size:12px;color:#7f8c8d;">' + svcCuEsc(SVC_CU_LABELS[f.type] || f.type) + ' · ' + svcCuEsc((f.serviceTypes || []).map(svcCuTypeLabel).join(', ')) + (f.active === false ? ' · off' : '') + '</div></div><div style="display:flex;gap:6px;flex-shrink:0;"><button type="button" class="btn-main" data-cu-edit="' + svcCuEsc(f.id) + '" style="min-height:44px;">Edit</button><button type="button" class="btn-main" data-cu-toggle="' + svcCuEsc(f.id) + '" style="min-height:44px;background:#e67e22;">' + (f.active === false ? 'Turn on' : 'Turn off') + '</button></div></div>';
+  }).join('') : '<p style="margin-top:12px;color:#7f8c8d;">No custom questions yet.</p>';
+  el.innerHTML = h;
+  var ed = el.querySelector('[data-cu-editor]');
+  function openEditor(f) {
+    ed.innerHTML = svcCuFormHtml(f);
+    var ts = ed.querySelector('[data-cu="type"]'), op = ed.querySelector('[data-cu-opts]');
+    ts.addEventListener('change', function () { op.style.display = ts.value === 'dropdown' ? 'block' : 'none'; });
+    ed.querySelector('[data-cu-cancel]').addEventListener('click', function () { ed.innerHTML = ''; });
+    ed.querySelector('[data-cu-save]').addEventListener('click', function (ev) {
+      var btn = ev.currentTarget; if (btn.__busy) return; btn.__busy = true;
+      var g = function (k) { return ed.querySelector('[data-cu="' + k + '"]'); };
+      var r = svcCustomFieldUpsert({ id: btn.getAttribute('data-cu-save') || undefined, label: g('label').value, type: ts.value, options: g('options').value, required: g('required').checked, serviceTypes: [].map.call(ed.querySelectorAll('[data-cu-type]:checked'), function (c) { return c.value; }), active: f ? f.active !== false : true });
+      btn.__busy = false;
+      if (!r.ok) { ed.querySelector('[data-cu-err]').textContent = Object.keys(r.errors || {}).map(function (k) { return r.errors[k]; }).join(' '); return; }
+      svcCuToast('Saved.'); svcCuRenderPage(el);
+    });
+  }
+  el.querySelector('[data-cu-new]').addEventListener('click', function () { openEditor(null); });
+  [].forEach.call(el.querySelectorAll('[data-cu-edit]'), function (b) { b.addEventListener('click', function () { openEditor(svcCuList().filter(function (x) { return x.id === b.getAttribute('data-cu-edit'); })[0]); }); });
+  [].forEach.call(el.querySelectorAll('[data-cu-toggle]'), function (b) { b.addEventListener('click', function () { var f = svcCuList().filter(function (x) { return x.id === b.getAttribute('data-cu-toggle'); })[0]; if (f) { svcCustomFieldSetActive(f.id, f.active === false); svcCuRenderPage(el); } }); });
+}
+try { if (typeof svcSettingsRegister === 'function') svcSettingsRegister('custom', { label: 'Custom fields', order: 40, render: svcCuRenderPage }); } catch (svcCuRegErr) { /* registry absent: the functions above still work */ }
+</script>

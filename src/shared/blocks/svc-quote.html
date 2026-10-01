@@ -1,0 +1,915 @@
+<!-- SVC QUOTE ---------------------------------------------------------------------------------------
+     Services engine block "svc-quote". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B3-Q. Nobody else edits this file.
+     STATE: IMPLEMENTED (B3-Q). One style element + one script element below this comment.
+     KIND: pure + UI. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_. Private helpers are svcQt* / SVC_QT_*.
+     CONTRACT: svcQuoteDraft / svcQuoteSend / svcQuoteAwaitApproval / svcQuoteApprove / svcQuoteReject / svcQuoteExpire / svcQuoteRevise / svcQuoteApply,
+               svcQuoteState(job), svcQuoteVersions, svcQuoteCompute, svcQuoteText(job, cfg), svcQuoteGate(job, toStatus), svcQuoteConfig, svcQuoteSummary,
+               svcAddCharge / svcApproveCharge / svcRejectCharge / svcVoidCharge / svcQuotePendingCharges, drawer tab "quote" (svcDrawerRegister), events quote:sent / quote:approved /
+               quote:rejected / quote:gate (+ quote:changed and charge:added through svcCommit).
+     SPEC: SERVICES_ARCHITECTURE.md 3.2, 3.6, 6.8, 8.2 B3-Q, 8.3. Dependency direction (8.3): this block calls only B1 blocks; anything from another B3 block would be guarded with typeof.
+     MONEY RULES: quote versions and the quote log are append-only (a revision is a NEW version, the old one stays with a diff); extra charges are a separate list and count in svcTotals only
+                  when approved (pending ones are stored with approved:false + approval:'pending' so svcTotals leaves them out); an approval is never overwritten.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<style id="svc-quote-css">
+/* Quote tab (svc-quote). Colours only from the app tokens (dark-mode safe); touch targets >= 44px; inputs 16px. */
+.sqt { color: var(--dark); font-size: 15px; line-height: 1.4; }
+.sqt * { box-sizing: border-box; }
+.sqt-box { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px; margin: 0 0 12px; }
+.sqt-box h4 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .03em; opacity: .75; }
+.sqt-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.sqt-big { font-size: 22px; font-weight: 700; margin: 2px 0; }
+.sqt-sub { font-size: 13px; opacity: .75; }
+.sqt-pill { display: inline-block; padding: 4px 12px; border-radius: 14px; font-size: 13px; font-weight: 700; color: #fff; background: #7f8c8d; white-space: nowrap; }
+.sqt-pill.t-draft { background: #7f8c8d; } .sqt-pill.t-sent { background: #2980b9; } .sqt-pill.t-awaiting_approval { background: #d68910; }
+.sqt-pill.t-approved { background: var(--success); } .sqt-pill.t-rejected { background: var(--danger); } .sqt-pill.t-expired { background: #6c3483; } .sqt-pill.t-none { background: #95a5a6; }
+.sqt-chip { display: inline-block; margin: 0 6px 0 0; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 700; background: var(--bg-surface-alt); border: 1px solid var(--border-color); }
+.sqt-chip.ok { background: var(--tint-success-bg); color: var(--tint-success-text); border-color: transparent; }
+.sqt-chip.wait { background: var(--tint-warning-bg); color: var(--tint-warning-text); border-color: transparent; }
+.sqt-chip.bad { background: var(--tint-danger-bg); color: var(--danger); border-color: transparent; }
+.sqt-note { background: var(--tint-info-bg); border-radius: 10px; padding: 10px 12px; margin: 8px 0; font-size: 14px; }
+.sqt-note.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); }
+.sqt-note.bad { background: var(--tint-danger-bg); color: var(--danger); }
+.sqt-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px; margin: 4px 8px 4px 0; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); font-size: 15px; font-weight: 600; cursor: pointer; width: auto; }
+.sqt-btn.pri { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sqt-btn.good { background: var(--success); border-color: var(--success); color: #fff; }
+.sqt-btn.bad { background: var(--danger); border-color: var(--danger); color: #fff; }
+.sqt-btn.sm { min-height: 44px; padding: 0 12px; font-size: 14px; }
+.sqt-btn[disabled] { opacity: .55; cursor: not-allowed; }
+.sqt-actions { display: flex; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.sqt-in { width: 100%; min-height: 44px; padding: 8px 10px; font-size: 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); margin: 0; }
+.sqt-lbl { display: block; font-size: 13px; opacity: .8; margin: 8px 0 3px; }
+.sqt-row { display: grid; grid-template-columns: 1fr 1fr 1fr 44px; grid-gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.sqt-row .nm { grid-column: 1 / -1; }
+.sqt-row .kd { grid-column: 1 / 2; }
+.sqt-row .dl { grid-column: 4 / 5; min-width: 44px; padding: 0; margin: 0; }
+.sqt-row:last-of-type { border-bottom: 0; }
+.sqt-tot { width: 100%; border-collapse: collapse; }
+.sqt-tot td { padding: 4px 0; font-size: 14px; }
+.sqt-tot td:last-child { text-align: right; white-space: nowrap; }
+.sqt-tot tr.g td { font-weight: 700; font-size: 16px; border-top: 1px solid var(--border-color); padding-top: 8px; }
+.sqt-tot tr.m td { opacity: .75; }
+.sqt-panel { background: var(--bg-surface-alt); border: 1px solid var(--border-color); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.sqt-ch { padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.sqt-ch:last-child { border-bottom: 0; }
+.sqt-ch .r1 { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+.sqt-tl { list-style: none; margin: 0; padding: 0; }
+.sqt-tl li { position: relative; padding: 0 0 12px 20px; font-size: 14px; }
+.sqt-tl li:before { content: ''; position: absolute; left: 3px; top: 5px; width: 10px; height: 10px; border-radius: 50%; background: var(--dot, #7f8c8d); }
+.sqt-tl li:after { content: ''; position: absolute; left: 7px; top: 16px; bottom: -2px; width: 2px; background: var(--border-color); }
+.sqt-tl li:last-child:after { display: none; }
+.sqt-tl .w { font-size: 12px; opacity: .7; }
+.sqt-pre { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 14px; background: var(--bg-surface-alt); border-radius: 10px; padding: 10px 12px; margin: 0 0 8px; max-height: 260px; overflow: auto; }
+@media (min-width: 560px) { .sqt-row { grid-template-columns: 110px 1fr 70px 100px 44px; } .sqt-row .nm { grid-column: 2 / 3; grid-row: 1; } .sqt-row .kd { grid-column: 1 / 2; grid-row: 1; } .sqt-row .dl { grid-column: 5 / 6; } }
+@media (prefers-reduced-motion: reduce) { .sqt-btn:active { transform: none; } }
+</style>
+<script>
+/* ===================================================================================================================
+   SVC QUOTE (B3-Q): quote lifecycle (Draft -> Sent -> Awaiting Approval -> Approved / Rejected / Expired), immutable versions,
+   approvals with audit trail, additional charges kept SEPARATE from the approved quote, the optional "approval before work" gate,
+   the printable quote text and the Quote drawer tab. Every state change goes through svcCommit (actor + timestamp audit).
+   =================================================================================================================== */
+
+var SVC_QT_STATES = {
+  none: { label: 'No quote', tone: 'none' }, draft: { label: 'Draft', tone: 'draft' }, sent: { label: 'Sent', tone: 'sent' },
+  awaiting_approval: { label: 'Awaiting Approval', tone: 'awaiting_approval' }, approved: { label: 'Approved', tone: 'approved' },
+  rejected: { label: 'Rejected', tone: 'rejected' }, expired: { label: 'Expired', tone: 'expired' }
+};
+/* legal next actions per state ('send' from sent / awaiting_approval is a re-send: the state does not move) */
+var SVC_QT_NEXT = {
+  none: ['draft'], draft: ['send', 'await', 'revise'], sent: ['send', 'await', 'approve', 'reject', 'revise'],
+  awaiting_approval: ['send', 'approve', 'reject', 'revise'], approved: ['revise'], rejected: ['revise'], expired: ['revise']
+};
+var SVC_QT_METHODS = ['verbal', 'whatsapp', 'signature', 'in_person'];
+var SVC_QT_METHOD_LABEL = { verbal: 'Verbal (phone / spoken)', whatsapp: 'WhatsApp / message', signature: 'Signature', in_person: 'In person' };
+var SVC_QT_CHANNELS = ['', 'whatsapp', 'sms', 'email', 'print', 'other'];
+var SVC_QT_LINE_KINDS = ['service', 'labour', 'part', 'charge', 'discount'];
+var SVC_QT_LINE_LABEL = { service: 'Service', labour: 'Labour', part: 'Parts / materials', charge: 'Additional', discount: 'Discount' };
+var SVC_QT_CHARGE_KINDS = ['additional', 'labour', 'fee', 'discount'];
+var SVC_QT_CHARGE_LABEL = { additional: 'Additional work / service', labour: 'Labour', fee: 'Fee', discount: 'Discount' };
+var SVC_QT_GATED = ['in_progress'];                 /* statuses that need an approved quote when the template / config requires approval before work */
+var SVC_QT_MAX_LINES = 30;
+var SVC_QT_MAX_AMOUNT = 10000000;
+var SVC_QT_UI = { drafts: {}, panel: null, ids: {} };
+
+/* ===== tiny private helpers ===== */
+function svcQtEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcQtNow() { try { if (typeof svcNow === 'function') return svcNow(); } catch (e) { /* use the clock */ } return Date.now(); }
+function svcQtCan(perm) { try { return typeof svcCan === 'function' ? !!svcCan(perm) : true; } catch (e) { return true; } }
+function svcQtActor() { try { if (typeof svcActor === 'function') { var a = svcActor(); if (a && a.name) return a; } } catch (e) { /* fall through */ } return { id: 'owner', name: 'Owner' }; }
+function svcQtStr(v, n) { var s = v == null ? '' : String(v).trim(); return n ? s.slice(0, n) : s; }
+function svcQtMoney(n, cfg) { try { if (typeof svcFormatMoney === 'function') return svcFormatMoney(n, cfg); } catch (e) { /* fall through */ } return 'KSh ' + svcRound2(n); }
+function svcQtShortId(prefix) {
+  var r = '', i;
+  try { if (typeof crypto !== 'undefined' && crypto.getRandomValues) { var b = new Uint8Array(5); crypto.getRandomValues(b); for (i = 0; i < 5; i++) r += (b[i] % 36).toString(36); } } catch (e) { r = ''; }
+  while (r.length < 5) r += Math.floor(Math.random() * 36).toString(36);
+  return prefix + Date.now().toString(36) + r;
+}
+function svcQtKenya(ms) { return new Date(Number(ms) + 3 * 3600000); }
+function svcQtDateStr(ms) { return svcQtKenya(ms).toISOString().slice(0, 10); }
+function svcQtWhen(ms) {
+  if (!ms) return '';
+  var d = svcQtKenya(ms), M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return svcPad(d.getUTCDate(), 2) + ' ' + M[d.getUTCMonth()] + ' ' + d.getUTCFullYear() + ' ' + svcPad(d.getUTCHours(), 2) + ':' + svcPad(d.getUTCMinutes(), 2);
+}
+function svcQtDay(ms) { if (!ms) return ''; var d = svcQtKenya(ms), M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']; return svcPad(d.getUTCDate(), 2) + ' ' + M[d.getUTCMonth()] + ' ' + d.getUTCFullYear(); }
+function svcQtToast(msg, isErr) { try { if (typeof showToast === 'function') showToast(String(msg), !!isErr); } catch (e) { /* cosmetic */ } }
+function svcQtIsClosed(job) { return Number(job && job.phase) >= 3; }
+/* resolve a job for a write: {job} or {err} */
+function svcQtPrep(jobId, perm, o) {
+  o = o || {};
+  var job = null;
+  try { job = typeof svcGetJob === 'function' ? svcGetJob(jobId) : null; } catch (e) { job = null; }
+  if (!job) return { err: { ok: false, code: 'notfound', why: 'Job not found.' } };
+  if (job._legacy) return { err: { ok: false, code: 'legacy', action: 'promote', why: 'Upgrade this classic job to a full job to use quotes.' } };
+  if (job._deleted) return { err: { ok: false, code: 'deleted', why: 'This job was deleted.' } };
+  if (perm && !svcQtCan(perm)) return { err: { ok: false, code: 'perm', why: 'You are not allowed to do that.' } };
+  if (!o.allowClosed && svcQtIsClosed(job)) return { err: { ok: false, code: 'closed', why: 'This job is closed.' } };
+  return { job: job };
+}
+function svcQtHasEntry(arr, id) { var i; if (!id) return false; arr = svcArr(arr); for (i = 0; i < arr.length; i++) { if (arr[i] && arr[i].id === id) return true; } return false; }
+
+/* ===== configuration: template.quote + cfg-quote.perType[type] ===== */
+function svcQuoteConfig(job) {
+  var type = job && job.serviceType, tpl = null, q, over = {}, threshold = Infinity, days = 7, mode = 'optional';
+  try { if (typeof svcGetTemplate === 'function') tpl = svcGetTemplate(type); } catch (e) { tpl = null; }
+  q = (tpl && tpl.quote) || {};
+  try { var c = typeof svcConfigGet === 'function' ? svcConfigGet('cfg-quote') : null; if (c && c.perType && c.perType[type]) over = c.perType[type]; } catch (e2) { over = {}; }
+  if (q.mode) mode = String(q.mode);
+  if (q.requireApprovalWhen && q.requireApprovalWhen.additionalOver != null && isFinite(Number(q.requireApprovalWhen.additionalOver))) threshold = Number(q.requireApprovalWhen.additionalOver);
+  if (q.validityDays != null && isFinite(Number(q.validityDays)) && Number(q.validityDays) > 0) days = Number(q.validityDays);
+  var requireApproval = over.requireApproval != null ? !!over.requireApproval : mode === 'required';
+  if (over.approvalThreshold != null && over.approvalThreshold !== '' && isFinite(Number(over.approvalThreshold))) threshold = Number(over.approvalThreshold);
+  else if (over.requireApproval === true && threshold === Infinity) threshold = 0;
+  if (over.requireApproval === false) threshold = Infinity;
+  if (over.validityDays != null && isFinite(Number(over.validityDays)) && Number(over.validityDays) > 0) days = Number(over.validityDays);
+  return { requireApproval: requireApproval, chargeThreshold: threshold, validityDays: days, mode: mode };
+}
+
+/* ===== versions (append-only; displayed in the order they were made) ===== */
+function svcQuoteVersions(job) {
+  var vs = svcArr(job && job.quoteVersions), idx = [], i;
+  for (i = 0; i < vs.length; i++) { if (vs[i] && (vs[i].id || vs[i].v != null)) idx.push({ x: vs[i], i: i }); }
+  idx.sort(function (a, b) {
+    return (Number(a.x.at) || 0) - (Number(b.x.at) || 0) || (Number(a.x.v) || 0) - (Number(b.x.v) || 0) || (String(a.x.id) < String(b.x.id) ? -1 : (String(a.x.id) > String(b.x.id) ? 1 : 0)) || a.i - b.i;
+  });
+  return idx.map(function (o, k) { var c = Object.assign({}, o.x); c.n = k + 1; return c; });
+}
+function svcQtSortedLog(job) {
+  var log = svcArr(job && job.quoteLog), idx = [], i;
+  for (i = 0; i < log.length; i++) { if (log[i] && log[i].act) idx.push({ x: log[i], i: i }); }
+  idx.sort(function (a, b) { return (Number(a.x.at) || 0) - (Number(b.x.at) || 0) || a.i - b.i; });
+  return idx.map(function (o) { return o.x; });
+}
+
+/* ===== svcQuoteState(job | jobId, now?) -> derived from the log + versions, expiry evaluated at read time ===== */
+function svcQuoteState(job, now) {
+  if (typeof job === 'string') { try { job = svcGetJob(job); } catch (e) { job = null; } }
+  job = job || {};
+  now = now == null ? svcQtNow() : Number(now);
+  var vs = svcQuoteVersions(job), log = svcQtSortedLog(job), i, e, cur = { state: 'none', vid: null, v: null, since: 0 }, lastApproval = null;
+  function same(x) { return cur.state !== 'none' && (x.vid ? x.vid === cur.vid : (x.v == null || x.v === cur.v)); }
+  for (i = 0; i < log.length; i++) {
+    e = log[i];
+    if (e.act === 'draft' || e.act === 'revise') { cur = { state: 'draft', vid: e.vid || null, v: e.v, since: e.at }; }
+    else if (e.act === 'send') { if (same(e) && cur.state === 'draft') { cur.state = 'sent'; cur.since = e.at; } }
+    else if (e.act === 'await') { if (same(e) && (cur.state === 'draft' || cur.state === 'sent')) { cur.state = 'awaiting_approval'; cur.since = e.at; } }
+    else if (e.act === 'approve' || e.act === 'reject') {
+      if (cur.state === 'none' && vs.length) cur = { state: 'sent', vid: e.vid || null, v: e.v, since: e.at };          /* classic jobs: only the decision is recorded */
+      if (same(e) && (cur.state === 'sent' || cur.state === 'awaiting_approval')) {
+        if (e.act === 'approve') { cur.state = 'approved'; cur.approval = e; lastApproval = e; } else { cur.state = 'rejected'; cur.rejection = e; }
+        cur.since = e.at;
+      }
+    }
+    else if (e.act === 'expire') { if (same(e) && (cur.state === 'draft' || cur.state === 'sent' || cur.state === 'awaiting_approval')) { cur.state = 'expired'; cur.expiredBy = 'log'; cur.since = e.at; } }
+  }
+  var ver = null, k;
+  if (cur.vid) { for (k = 0; k < vs.length; k++) { if (vs[k].id === cur.vid) { ver = vs[k]; break; } } }
+  if (!ver && cur.v != null && cur.state !== 'none') { for (k = vs.length - 1; k >= 0; k--) { if (vs[k].v === cur.v) { ver = vs[k]; break; } } }
+  if (cur.state === 'none' && vs.length) { ver = vs[vs.length - 1]; cur.state = 'draft'; cur.vid = ver.id || null; cur.v = ver.v; }
+  if (!ver && cur.state !== 'none' && vs.length) ver = vs[vs.length - 1];
+  if ((cur.state === 'draft' || cur.state === 'sent' || cur.state === 'awaiting_approval') && ver && ver.validUntil && now > Number(ver.validUntil)) { cur.state = 'expired'; cur.expiredBy = 'clock'; }
+  var meta = SVC_QT_STATES[cur.state] || SVC_QT_STATES.none;
+  return {
+    state: cur.state, label: meta.label, tone: meta.tone, version: ver, n: ver ? ver.n : 0, v: cur.v, vid: cur.vid || (ver && ver.id) || null,
+    amount: ver && ver.total != null ? svcRound2(ver.total) : null, validUntil: ver && ver.validUntil ? Number(ver.validUntil) : null, expiredBy: cur.expiredBy || null,
+    approval: cur.state === 'approved' ? cur.approval : null, rejection: cur.state === 'rejected' ? cur.rejection : null,
+    priorApproval: cur.state !== 'approved' ? lastApproval : null, next: (SVC_QT_NEXT[cur.state] || []).slice(), count: vs.length, since: cur.since || 0
+  };
+}
+function svcQuoteNext(job, now) { return svcQuoteState(job, now).next; }
+
+/* ===== lines + totals (math by svcTotals itself, through a synthetic job) ===== */
+function svcQuoteNormLines(lines) {
+  var out = [], errs = [], src = Array.isArray(lines) ? lines : [], i, l, n = 0;
+  for (i = 0; i < src.length; i++) {
+    l = src[i]; if (!l || typeof l !== 'object') continue;
+    var nameRaw = svcQtStr(l.name, 60), priceEmpty = l.price == null || String(l.price).trim() === '';
+    if (!nameRaw && (priceEmpty || svcNum(l.price) === 0)) continue;                     /* blank editor row */
+    n++;
+    var kind = String(l.kind || 'service');
+    if (kind === 'additional') kind = 'charge'; else if (kind === 'material' || kind === 'materials') kind = 'part';
+    if (SVC_QT_LINE_KINDS.indexOf(kind) === -1) { errs.push('Line ' + n + ': unknown type'); continue; }
+    if (!nameRaw) { errs.push('Line ' + n + ' needs a description'); continue; }
+    var qty = l.qty == null || String(l.qty).trim() === '' ? 1 : svcNum(l.qty), price = svcNum(l.price);
+    if (!(qty > 0) || qty > 9999) { errs.push('Line ' + n + ' (' + nameRaw + '): quantity must be more than 0'); continue; }
+    if (!isFinite(price) || price < 0 || price > SVC_QT_MAX_AMOUNT) { errs.push('Line ' + n + ' (' + nameRaw + '): price must be 0 or more'); continue; }
+    var ln = { id: l.id ? String(l.id).slice(0, 24) : svcQtShortId('ql'), kind: kind, name: nameRaw, qty: Math.round(qty * 1000) / 1000, price: svcRound2(price) };
+    if (l.refId) ln.refId = String(l.refId).slice(0, 40);
+    out.push(ln);
+  }
+  if (out.length > SVC_QT_MAX_LINES) errs.push('A quote can have at most ' + SVC_QT_MAX_LINES + ' lines');
+  if (!out.length && !errs.length) errs.push('Add at least one line');
+  return { ok: errs.length === 0, lines: out, errors: errs };
+}
+function svcQuoteCompute(lines, opts) {
+  opts = opts || {};
+  var sj = { jobServices: [], materials: [], charges: [] }, i, l, gross = 0;
+  lines = Array.isArray(lines) ? lines : [];
+  for (i = 0; i < lines.length; i++) {
+    l = lines[i]; if (!l) continue;
+    var q = l.qty == null || l.qty === '' ? 1 : svcNum(l.qty), p = svcNum(l.price), a = svcRound2(q * p);
+    if (l.kind === 'part') sj.materials.push({ name: l.name, qty: q, price: p, cost: 0, chargeable: true });
+    else if (l.kind === 'labour') { sj.charges.push({ kind: 'labour', label: l.name, amount: a, approved: true }); gross += a; }
+    else if (l.kind === 'charge') { sj.charges.push({ kind: 'additional', label: l.name, amount: a, approved: true }); gross += a; }
+    else if (l.kind === 'discount') sj.charges.push({ kind: 'discount', label: l.name, amount: a, approved: true });
+    else sj.jobServices.push({ name: l.name, qty: q, price: p, source: 'base' });
+    if (l.kind === 'part' || l.kind === 'service') gross += a;
+  }
+  var t = svcTotals(sj, { cfg: svcBizCfg(opts.cfg) });
+  return { servicesTotal: t.servicesTotal, materialsTotal: t.materialsTotal, labour: t.labour, additional: t.additional, discount: t.discount, subtotal: t.subtotal, tax: t.tax, total: t.total, lines: t.lines, discountTooBig: t.discount > svcRound2(gross) + 0.005 };
+}
+/* what changed between two versions (kept on the new version, small) */
+function svcQuoteDiff(prevLines, nextLines, prevTotal, nextTotal) {
+  var pm = {}, used = {}, out = { add: [], rem: [], chg: [], f: svcRound2(prevTotal), t: svcRound2(nextTotal) }, i, p, n;
+  prevLines = svcArr(prevLines); nextLines = svcArr(nextLines);
+  for (i = 0; i < prevLines.length; i++) { if (prevLines[i]) pm[prevLines[i].id] = prevLines[i]; }
+  var amt = function (x) { return svcRound2(svcNum(x.qty == null ? 1 : x.qty) * svcNum(x.price)); };
+  for (i = 0; i < nextLines.length; i++) {
+    n = nextLines[i]; p = pm[n.id];
+    if (!p || used[p.id]) { p = null; for (var k = 0; k < prevLines.length; k++) { var c = prevLines[k]; if (c && !used[c.id] && !nextLines.some(function (z) { return z.id === c.id; }) && c.kind === n.kind && c.name === n.name) { p = c; break; } } }
+    if (p) { used[p.id] = 1; if (amt(p) !== amt(n) || p.name !== n.name || p.kind !== n.kind) out.chg.push({ n: n.name.slice(0, 30), f: amt(p), t: amt(n) }); }
+    else out.add.push({ n: n.name.slice(0, 30), a: amt(n) });
+  }
+  for (i = 0; i < prevLines.length; i++) { if (prevLines[i] && !used[prevLines[i].id]) out.rem.push({ n: prevLines[i].name.slice(0, 30), a: amt(prevLines[i]) }); }
+  out.add = out.add.slice(0, 6); out.rem = out.rem.slice(0, 6); out.chg = out.chg.slice(0, 6);
+  return out;
+}
+function svcQtDiffText(d, cfg) {
+  if (!d) return '';
+  var parts = [];
+  svcArr(d.add).forEach(function (x) { parts.push('+ ' + x.n + ' ' + svcQtMoney(x.a, cfg)); });
+  svcArr(d.rem).forEach(function (x) { parts.push('- ' + x.n + ' ' + svcQtMoney(x.a, cfg)); });
+  svcArr(d.chg).forEach(function (x) { parts.push(x.n + ': ' + svcQtMoney(x.f, cfg) + ' to ' + svcQtMoney(x.t, cfg)); });
+  if (d.f != null && d.t != null && d.f !== d.t) parts.push('Total ' + svcQtMoney(d.f, cfg) + ' to ' + svcQtMoney(d.t, cfg));
+  return parts.join('; ');
+}
+function svcQtSig(lines) { return svcArr(lines).map(function (l) { return [l.kind, l.name, l.qty, l.price].join('|'); }).join('~'); }
+/* -> {ok, ms} ; undefined input = "not given" -> {ok:true, given:false} ; null / '' = no expiry */
+function svcQtParseValidUntil(v) {
+  if (v === undefined) return { ok: true, given: false, ms: null };
+  if (v === null || v === '' || v === 0) return { ok: true, given: true, ms: null };
+  var ms;
+  if (typeof v === 'number') ms = v;
+  else { var s = String(v).trim(); ms = /^\d{4}-\d{2}-\d{2}$/.test(s) ? Date.parse(s + 'T23:59:59+03:00') : Date.parse(s); }
+  if (!isFinite(ms) || ms <= 0) return { ok: false };
+  return { ok: true, given: true, ms: ms };
+}
+
+/* ===== writing a version: svcQuoteDraft (first) / svcQuoteRevise (every later one) ===== */
+function svcQtWriteVersion(jobId, lines, o, act) {
+  o = o || {};
+  var pre = svcQtPrep(jobId, 'svc:quote'); if (pre.err) return pre.err;
+  var job = pre.job, vs = svcQuoteVersions(job), st = svcQuoteState(job), cfgQ = svcQuoteConfig(job), now = svcQtNow(), i;
+  if (o.id) { for (i = 0; i < vs.length; i++) { if (vs[i].id === String(o.id)) return { ok: true, duplicate: true, job: job, version: vs[i], state: st }; } }
+  if (act === 'draft' && vs.length) return { ok: false, code: 'exists', why: 'A quote already exists for this job. Make a new version instead.' };
+  if (act === 'revise' && !vs.length) return { ok: false, code: 'noquote', why: 'There is no quote to revise yet.' };
+  var reason = svcQtStr(o.reason || o.note, 200);
+  if (act === 'revise' && st.state === 'approved' && !reason) return { ok: false, code: 'reason', why: 'Say why the approved quote is being changed.' };
+  var norm = svcQuoteNormLines(lines);
+  if (!norm.ok) return { ok: false, code: 'lines', errors: norm.errors, why: norm.errors[0] };
+  var cmp = svcQuoteCompute(norm.lines, { cfg: o.cfg });
+  if (cmp.discountTooBig) return { ok: false, code: 'discount', why: 'The discount is more than the quote total.' };
+  var vu = svcQtParseValidUntil(o.validUntil);
+  if (!vu.ok) return { ok: false, code: 'validUntil', why: 'The valid-until date is not valid.' };
+  var validUntil;
+  if (vu.given) validUntil = vu.ms;
+  else if (act === 'revise' && st.version && st.version.validUntil && Number(st.version.validUntil) > now) validUntil = Number(st.version.validUntil);
+  else validUntil = now + cfgQ.validityDays * 86400000;
+  if (validUntil && validUntil <= now) return { ok: false, code: 'validUntil', why: 'The valid-until date is in the past.' };
+  var prev = st.version || null;
+  if (act === 'revise' && prev && svcQtSig(prev.lines) === svcQtSig(norm.lines) && (prev.validUntil || null) === (validUntil || null) && st.state !== 'approved' && st.state !== 'rejected' && st.state !== 'expired') {
+    return { ok: false, code: 'nochange', why: 'Nothing changed since the last version.' };
+  }
+  if (act === 'revise' && prev && svcQtSig(prev.lines) === svcQtSig(norm.lines) && st.state === 'approved') return { ok: false, code: 'nochange', why: 'The lines are the same as the approved quote.' };
+  var vid = o.id ? String(o.id).slice(0, 40) : svcQtShortId('qv-'), actor = svcQtActor(), note = svcQtStr(o.note, 200);
+  var diff = prev ? svcQuoteDiff(prev.lines, norm.lines, prev.total, cmp.total) : null;
+  var fromState = st.state;
+  var res = svcCommit(function (j) {
+    var vers = svcArr(j.quoteVersions), maxV = 0, k;
+    for (k = 0; k < vers.length; k++) { if (vers[k]) { if (vers[k].id === vid) return false; if (Number(vers[k].v) > maxV) maxV = Number(vers[k].v); } }
+    var ver = { id: vid, v: maxV + 1, at: now, by: actor.name, byId: actor.id, lines: norm.lines, subtotal: cmp.subtotal, discount: cmp.discount, tax: cmp.tax, total: cmp.total, note: note };
+    if (validUntil) ver.validUntil = validUntil;
+    if (prev && prev.id) ver.prev = prev.id;
+    if (diff) ver.diff = diff;
+    j.quoteVersions = vers.concat([ver]);
+    var entry = { id: svcQtShortId('ql-'), at: now, by: actor.name, byId: actor.id, act: act, v: ver.v, vid: vid, amount: cmp.total };
+    if (reason) entry.note = reason; else if (note) entry.note = note;
+    j.quoteLog = svcArr(j.quoteLog).concat([entry]);
+    return j;
+  }, { list: 'svcJobs', id: job.id, audit: { act: 'quote.' + act, ref: vid, from: fromState, to: 'draft', note: reason || note || undefined }, event: 'quote:changed', payload: { act: act, state: 'draft', jobId: job.id } });
+  if (!res.ok) return res.code === 'aborted' ? { ok: false, code: 'duplicate', why: 'That version was already saved.' } : res;
+  var ns = svcQuoteState(res.rec);
+  return { ok: true, job: res.rec, version: ns.version, state: ns, diff: diff };
+}
+function svcQuoteDraft(jobId, lines, opts) { return svcQtWriteVersion(jobId, lines, opts, 'draft'); }
+/* changes: an array of lines (replaces them) or {lines?, add?:[line], remove?:[lineId], update?:{lineId:{name,qty,price,kind}}, note, reason, validUntil, id} */
+function svcQuoteRevise(jobId, changes, opts) {
+  var o = Object.assign({}, opts || {}), base, st;
+  try { st = svcQuoteState(jobId); } catch (e) { st = null; }
+  var cur = st && st.version ? svcArr(st.version.lines).map(function (l) { return Object.assign({}, l); }) : [];
+  if (Array.isArray(changes)) base = changes;
+  else {
+    changes = changes || {};
+    ['note', 'reason', 'validUntil', 'id', 'cfg'].forEach(function (k) { if (changes[k] !== undefined && o[k] === undefined) o[k] = changes[k]; });
+    base = Array.isArray(changes.lines) ? changes.lines : cur;
+    if (!Array.isArray(changes.lines)) {
+      var rm = svcArr(changes.remove), up = changes.update || {};
+      base = base.filter(function (l) { return rm.indexOf(l.id) === -1; }).map(function (l) { return up[l.id] ? Object.assign({}, l, up[l.id]) : l; });
+    }
+    base = base.concat(svcArr(changes.add));
+  }
+  return svcQtWriteVersion(jobId, base, o, 'revise');
+}
+
+/* ===== lifecycle transitions ===== */
+function svcQtTransition(jobId, act, o, spec) {
+  o = o || {};
+  var pre = svcQtPrep(jobId, spec.perm); if (pre.err) return pre.err;
+  var job = pre.job, st = svcQuoteState(job);
+  if (o.id && svcQtHasEntry(job.quoteLog, String(o.id))) return { ok: true, duplicate: true, job: job, state: st };
+  if (spec.from.indexOf(st.state) === -1) {
+    var why = st.state === 'none' ? 'There is no quote yet.' : 'That is not possible while the quote is ' + st.label.toLowerCase() + '.';
+    return { ok: false, code: st.state === 'expired' ? 'expired' : (st.state === 'none' ? 'noquote' : 'state'), why: why, state: st.state };
+  }
+  var bad = spec.check ? spec.check(st, job) : null; if (bad) return bad;
+  var now = svcQtNow(), actor = svcQtActor();
+  var entry = { id: o.id ? String(o.id).slice(0, 40) : svcQtShortId('ql-'), at: now, by: actor.name, byId: actor.id, act: act, v: st.v, vid: st.vid, amount: st.amount };
+  var extra = spec.fields ? spec.fields(st, job, o) : {}, k;
+  for (k in extra) { if (extra[k] !== undefined && extra[k] !== '') entry[k] = extra[k]; }
+  var to = typeof spec.to === 'function' ? spec.to(st) : spec.to;
+  var res = svcCommit(function (j) {
+    var cur = svcQuoteState(j);
+    if (spec.from.indexOf(cur.state) === -1 || cur.vid !== st.vid) return false;
+    j.quoteLog = svcArr(j.quoteLog).concat([entry]);
+    return j;
+  }, { list: 'svcJobs', id: job.id, audit: { act: 'quote.' + act, ref: st.vid, from: st.state, to: to, note: entry.note || entry.approvedBy || undefined }, event: 'quote:changed', payload: { act: act, state: to, jobId: job.id, v: st.v } });
+  if (!res.ok) return res.code === 'aborted' ? { ok: false, code: 'state', why: 'The quote changed on another till. Reload and try again.' } : res;
+  var out = { ok: true, job: res.rec, entry: entry, state: svcQuoteState(res.rec) };
+  if (spec.after) { try { spec.after(out, st); } catch (e) { /* listeners never undo a saved transition */ } }
+  return out;
+}
+function svcQtEmit(evt, payload) { try { if (typeof svcEmit === 'function') svcEmit(evt, payload); } catch (e) { /* listeners are optional */ } }
+/* marks the quote Sent and records the channel INTENT. The message itself is opened by svc-notify, which listens to quote:sent. Re-sending keeps the state. */
+function svcQuoteSend(jobId, opts) {
+  opts = opts || {};
+  var ch = String(opts.channel == null ? '' : opts.channel).toLowerCase(); if (ch === 'wa') ch = 'whatsapp';
+  if (SVC_QT_CHANNELS.indexOf(ch) === -1) return { ok: false, code: 'channel', why: 'Unknown channel.' };
+  return svcQtTransition(jobId, 'send', opts, {
+    perm: 'svc:quote', from: ['draft', 'sent', 'awaiting_approval'], to: function (st) { return st.state === 'draft' ? 'sent' : st.state; },
+    fields: function () { return { via: ch || undefined, to: svcQtStr(opts.to, 40), note: svcQtStr(opts.note, 200) }; },
+    after: function (out) {
+      var j = out.job;
+      svcQtEmit('quote:sent', { jobId: j.id, job: j, v: out.entry.v, vid: out.entry.vid, channel: ch, to: opts.to || (j.customer && j.customer.phone) || '', amount: out.entry.amount, text: svcQuoteText(j, opts.cfg), resend: !!(out.entry && out.state && false) });
+    }
+  });
+}
+function svcQuoteAwaitApproval(jobId, opts) {
+  opts = opts || {};
+  return svcQtTransition(jobId, 'await', opts, { perm: 'svc:quote', from: ['draft', 'sent'], to: 'awaiting_approval', fields: function () { return { note: svcQtStr(opts.note, 200) }; } });
+}
+/* approval is the customer's decision recorded by staff: who approved, how, for which amount, when, and who recorded it (audit) */
+function svcQuoteApprove(jobId, o) {
+  o = o || {};
+  var res = svcQtTransition(jobId, 'approve', o, {
+    perm: 'svc:approve', from: ['sent', 'awaiting_approval'], to: 'approved',
+    check: function (st, job) {
+      var by = svcQtStr(o.by, 60), method = String(o.method || '');
+      if (!by) return { ok: false, code: 'by', why: 'Enter who approved the quote (the customer).' };
+      if (SVC_QT_METHODS.indexOf(method) === -1) return { ok: false, code: 'method', why: 'Pick how the approval was given (verbal, WhatsApp, signature or in person).' };
+      if (o.amount != null && o.amount !== '' && Math.abs(svcNum(o.amount) - st.amount) > SVC_MONEY_TOL) return { ok: false, code: 'amount', why: 'The approved amount must equal the quote total (' + svcQtMoney(st.amount) + ').' };
+      return null;
+    },
+    fields: function (st) { return { approvedBy: svcQtStr(o.by, 60), method: String(o.method), via: String(o.method), amount: st.amount, note: svcQtStr(o.note, 200) }; },
+    after: function (out) {
+      svcQtEmit('quote:approved', { jobId: out.job.id, job: out.job, v: out.entry.v, vid: out.entry.vid, amount: out.entry.amount, by: out.entry.approvedBy, method: out.entry.method });
+    }
+  });
+  if (res.ok && !res.duplicate && o.apply) { var ap = svcQuoteApply(jobId); res.applied = ap; if (ap && ap.ok && ap.job) res.job = ap.job; }
+  return res;
+}
+function svcQuoteReject(jobId, reason, opts) {
+  var o = Object.assign({}, opts || {});
+  if (reason && typeof reason === 'object') o = Object.assign(o, reason); else if (reason != null) o.reason = reason;
+  return svcQtTransition(jobId, 'reject', o, {
+    perm: 'svc:approve', from: ['sent', 'awaiting_approval'], to: 'rejected',
+    check: function () { return svcQtStr(o.reason, 200) ? null : { ok: false, code: 'reason', why: 'Enter the reason the quote was rejected.' }; },
+    fields: function () { return { note: svcQtStr(o.reason, 200), approvedBy: svcQtStr(o.by, 60) || undefined }; },
+    after: function (out) { svcQtEmit('quote:rejected', { jobId: out.job.id, job: out.job, v: out.entry.v, vid: out.entry.vid, reason: out.entry.note }); }
+  });
+}
+/* the log entry is written when the validity date has passed (or with force + reason); reads always evaluate expiry from validUntil anyway */
+function svcQuoteExpire(jobId, opts) {
+  opts = opts || {};
+  var st0 = svcQuoteState(jobId);
+  if (st0.expiredBy === 'log') { var j0 = svcGetJob(jobId); return { ok: true, noop: true, job: j0, state: st0 }; }
+  return svcQtTransition(jobId, 'expire', opts, {
+    perm: 'svc:quote', from: ['draft', 'sent', 'awaiting_approval', 'expired'], to: 'expired',
+    check: function (st) {
+      if (st.expiredBy === 'clock') return null;
+      if (!opts.force) return { ok: false, code: 'notdue', why: 'The quote has not reached its valid-until date yet.' };
+      return svcQtStr(opts.note, 200) ? null : { ok: false, code: 'reason', why: 'Say why the quote is being expired early.' };
+    },
+    fields: function (st) { return { note: svcQtStr(opts.note, 200) || (st.expiredBy === 'clock' ? 'Valid-until date passed' : undefined) }; }
+  });
+}
+
+/* ===== seed lines from the job / apply an approved quote to the job ===== */
+function svcQuoteSeedLines(job) {
+  var out = [], js = svcArr(job && job.jobServices), ms = svcArr(job && job.materials), ch = svcArr(job && job.charges), i, x;
+  for (i = 0; i < js.length; i++) { x = js[i]; if (x && !x.removedAt && !x.voidedAt && !x.cancelled) out.push({ id: svcQtShortId('ql'), kind: 'service', name: x.name || 'Service', qty: x.qty == null ? 1 : x.qty, price: svcNum(x.price), refId: x.id }); }
+  for (i = 0; i < ms.length; i++) { x = ms[i]; if (x && !x.reversedAt && !x.void && x.chargeable) out.push({ id: svcQtShortId('ql'), kind: 'part', name: x.name || 'Part', qty: x.qty, price: svcNum(x.price), refId: x.id }); }
+  for (i = 0; i < ch.length; i++) { x = ch[i]; if (x && !x.voidedAt && x.kind === 'labour' && x.approved !== false && !x.quoteLineId) out.push({ id: svcQtShortId('ql'), kind: 'labour', name: x.label || 'Labour', qty: 1, price: svcNum(x.amount), refId: x.id }); }
+  return out;
+}
+/* add the approved quote's lines that are not on the job yet (idempotent by line id); price edits of lines already on the job are NOT rewritten */
+function svcQuoteApply(jobId, opts) {
+  opts = opts || {};
+  var pre = svcQtPrep(jobId, 'svc:quote'); if (pre.err) return pre.err;
+  var job = pre.job, st = svcQuoteState(job);
+  if (st.state !== 'approved' || !st.version) return { ok: false, code: 'state', why: 'Only an approved quote can be added to the job.' };
+  var ver = st.version, now = svcQtNow(), actor = svcQtActor(), added = 0;
+  var onJob = {}; ['jobServices', 'materials', 'charges'].forEach(function (f) { svcArr(job[f]).forEach(function (x) { if (x) { if (x.quoteLineId) onJob[x.quoteLineId] = 1; if (x.id) onJob[x.id] = 1; } }); });
+  var todo = svcArr(ver.lines).filter(function (l) { return l && !onJob[l.id] && !(l.refId && onJob[l.refId]); });
+  if (!todo.length) return { ok: true, noop: true, job: job, added: 0 };
+  var res = svcCommit(function (j) {
+    var seen = {}; ['jobServices', 'materials', 'charges'].forEach(function (f) { svcArr(j[f]).forEach(function (x) { if (x && x.quoteLineId) seen[x.quoteLineId] = 1; }); });
+    var tag = 'Approved quote v' + ver.n;
+    todo.forEach(function (l) {
+      if (seen[l.id]) return;
+      var a = svcRound2(svcNum(l.qty == null ? 1 : l.qty) * svcNum(l.price));
+      if (l.kind === 'part') j.materials = svcArr(j.materials).concat([{ id: svcQtShortId('mq'), code: null, name: l.name, qty: svcNum(l.qty), unit: '', cost: 0, price: svcNum(l.price), chargeable: true, at: now, by: actor.name, movementIds: [], quoteLineId: l.id, rev: 0 }]);
+      else if (l.kind === 'labour' || l.kind === 'discount') j.charges = svcArr(j.charges).concat([{ id: svcQtShortId('cq'), kind: l.kind, label: l.name, amount: a, reason: tag, at: now, by: actor.name, byId: actor.id, quoteV: ver.v, approved: true, approval: 'quote', quoteLineId: l.id, rev: 0 }]);
+      else j.jobServices = svcArr(j.jobServices).concat([{ id: svcQtShortId('sq'), catalogId: null, name: l.name, category: '', qty: svcNum(l.qty == null ? 1 : l.qty), price: svcNum(l.price), durationMin: 0, source: l.kind === 'charge' ? 'additional' : 'base', staffIds: [], done: false, quoteLineId: l.id }]);
+      added++;
+    });
+    return added ? j : false;
+  }, { list: 'svcJobs', id: job.id, audit: { act: 'quote.apply', ref: ver.id, note: todo.length + ' line(s) from quote v' + ver.n }, event: 'quote:changed', payload: { act: 'apply', jobId: job.id } });
+  if (!res.ok) return res.code === 'aborted' ? { ok: true, noop: true, job: job, added: 0 } : res;
+  return { ok: true, job: res.rec, added: added };
+}
+
+/* ===== additional charges: a separate list, never merged into an approved quote ===== */
+function svcQuoteChargeState(c) {
+  if (!c) return 'void';
+  if (c.voidedAt) return 'void';
+  if (c.approval === 'pending') return 'pending';
+  if (c.approval === 'rejected') return 'rejected';
+  if (c.approval === 'approved' || c.approval === 'quote') return 'approved';
+  if (c.approval === 'not_required') return 'not_required';
+  return c.approved === false ? 'rejected' : 'approved';        /* same reading as svcTotals: only approved === false is left out */
+}
+function svcQuotePendingCharges(job) { return svcArr(job && job.charges).filter(function (c) { return c && svcQuoteChargeState(c) === 'pending'; }); }
+function svcQtFindCharge(job, id) { var a = svcArr(job.charges), i; for (i = 0; i < a.length; i++) { if (a[i] && a[i].id === id) return a[i]; } return null; }
+function svcAddCharge(jobId, c) {
+  c = c || {};
+  var pre = svcQtPrep(jobId, 'svc:charge'); if (pre.err) return pre.err;
+  var job = pre.job;
+  if (c.id && svcQtFindCharge(job, String(c.id))) return { ok: true, duplicate: true, job: job, charge: svcQtFindCharge(job, String(c.id)) };
+  var label = svcQtStr(c.label, 80), kind = String(c.kind || 'additional'), amount = svcRound2(Math.abs(svcNum(c.amount)));
+  if (SVC_QT_CHARGE_KINDS.indexOf(kind) === -1) return { ok: false, code: 'kind', why: 'Unknown charge type.' };
+  if (!label) return { ok: false, code: 'label', why: 'Describe the charge (for example "Heavy dirt").' };
+  if (!(amount > 0) || amount > SVC_QT_MAX_AMOUNT) return { ok: false, code: 'amount', why: 'Enter an amount above 0.' };
+  if (kind === 'discount') { var t0 = svcTotals(job); if (amount > t0.subtotal + SVC_MONEY_TOL) return { ok: false, code: 'discount', why: 'The discount is more than the job subtotal.' }; }
+  var cfgQ = svcQuoteConfig(job), byRule = kind !== 'discount' && cfgQ.chargeThreshold !== Infinity && amount > cfgQ.chargeThreshold, need;
+  if (c.requiresApproval === true) need = true;
+  else if (c.requiresApproval === false) { if (byRule && !svcQtCan('svc:approve')) return { ok: false, code: 'perm', why: 'This charge needs the customer\'s approval. Only someone allowed to approve can waive that.' }; need = false; }
+  else need = byRule;
+  var st = svcQuoteState(job), now = svcQtNow(), actor = svcQtActor();
+  var el = { id: c.id ? String(c.id).slice(0, 40) : svcQtShortId('ch-'), kind: kind, label: label, amount: amount, reason: svcQtStr(c.reason, 160), at: now, by: actor.name, byId: actor.id, rev: 0 };
+  if (st.version) el.quoteV = st.version.v;
+  if (need) { el.approved = false; el.approval = 'pending'; } else { el.approved = true; el.approval = 'not_required'; }
+  var res = svcCommit(function (j) {
+    if (svcQtFindCharge(j, el.id)) return false;
+    j.charges = svcArr(j.charges).concat([el]); return j;
+  }, { list: 'svcJobs', id: job.id, audit: { act: 'charge.add', ref: el.id, to: need ? 'pending' : 'approved', note: label + ' ' + amount }, event: 'charge:added', payload: { jobId: job.id, chargeId: el.id, pending: need } });
+  if (!res.ok) return res.code === 'aborted' ? { ok: true, duplicate: true, job: job } : res;
+  return { ok: true, job: res.rec, charge: el, pending: need };
+}
+function svcQtChargeEdit(jobId, chargeId, perm, act, o, apply, from) {
+  var pre = svcQtPrep(jobId, perm); if (pre.err) return pre.err;
+  var job = pre.job, c = svcQtFindCharge(job, String(chargeId));
+  if (!c) return { ok: false, code: 'notfound', why: 'Charge not found.' };
+  var s = svcQuoteChargeState(c);
+  if (from.indexOf(s) === -1) {
+    if ((act === 'charge.approve' && s === 'approved') || (act === 'charge.void' && s === 'void') || (act === 'charge.reject' && s === 'rejected')) return { ok: true, duplicate: true, job: job, charge: c };
+    return { ok: false, code: 'state', why: 'That is not possible while the charge is ' + s.replace('_', ' ') + '.', state: s };
+  }
+  var now = svcQtNow(), actor = svcQtActor();
+  var res = svcCommit(function (j) {
+    var x = svcQtFindCharge(j, c.id); if (!x) return false;
+    if (from.indexOf(svcQuoteChargeState(x)) === -1) return false;
+    apply(x, now, actor); x.rev = (Number(x.rev) || 0) + 1; return j;
+  }, { list: 'svcJobs', id: job.id, audit: { act: act, ref: c.id, from: s, note: svcQtStr(o.note || o.reason, 160) || undefined }, event: 'quote:changed', payload: { act: act, jobId: job.id, chargeId: c.id } });
+  if (!res.ok) return res.code === 'aborted' ? { ok: false, code: 'state', why: 'The charge changed on another till. Reload and try again.' } : res;
+  return { ok: true, job: res.rec, charge: svcQtFindCharge(res.rec, c.id) };
+}
+function svcApproveCharge(jobId, chargeId, o) {
+  o = o || {};
+  var by = svcQtStr(o.by, 60), method = String(o.method || '');
+  var pre = svcQtPrep(jobId, 'svc:approve'); if (pre.err) return pre.err;
+  var c0 = svcQtFindCharge(pre.job, String(chargeId));
+  if (c0 && svcQuoteChargeState(c0) === 'approved') return { ok: true, duplicate: true, job: pre.job, charge: c0 };
+  if (!by) return { ok: false, code: 'by', why: 'Enter who approved the extra charge (the customer).' };
+  if (SVC_QT_METHODS.indexOf(method) === -1) return { ok: false, code: 'method', why: 'Pick how the approval was given.' };
+  return svcQtChargeEdit(jobId, chargeId, 'svc:approve', 'charge.approve', o, function (x, now, actor) {
+    x.approved = true; x.approval = 'approved'; x.approvedBy = by; x.approvedVia = method; x.approvedAt = now; x.approvedById = actor.id; x.approvedAmount = x.amount;
+    if (o.note) x.approvedNote = svcQtStr(o.note, 160);
+  }, ['pending']);
+}
+function svcRejectCharge(jobId, chargeId, reason) {
+  var o = reason && typeof reason === 'object' ? reason : { reason: reason };
+  if (!svcQtStr(o.reason, 160)) return { ok: false, code: 'reason', why: 'Enter the reason the customer declined.' };
+  return svcQtChargeEdit(jobId, chargeId, 'svc:approve', 'charge.reject', o, function (x, now, actor) {
+    x.approved = false; x.approval = 'rejected'; x.rejectedAt = now; x.rejectedBy = actor.name; x.rejectedReason = svcQtStr(o.reason, 160);
+  }, ['pending']);
+}
+function svcVoidCharge(jobId, chargeId, reason) {
+  var o = reason && typeof reason === 'object' ? reason : { reason: reason };
+  if (!svcQtStr(o.reason, 160)) return { ok: false, code: 'reason', why: 'Enter the reason for removing the charge.' };
+  return svcQtChargeEdit(jobId, chargeId, 'svc:charge', 'charge.void', o, function (x, now, actor) {
+    x.voidedAt = now; x.voidedBy = actor.name; x.voidReason = svcQtStr(o.reason, 160);
+  }, ['pending', 'approved', 'rejected', 'not_required']);
+}
+
+/* ===== the "approval before work" gate ===== */
+/* -> {ok, required, applies, code?, why?}. svc-store's svcCanEnter should call this (see the report); until then svcQuoteOnStatus records a warning. */
+function svcQuoteGate(job, toStatus) {
+  if (!job || job._legacy) return { ok: true, required: false, applies: false };
+  var cfg = svcQuoteConfig(job);
+  if (!cfg.requireApproval) return { ok: true, required: false, applies: false };
+  if (SVC_QT_GATED.indexOf(toStatus) === -1) return { ok: true, required: true, applies: false };
+  var st = svcQuoteState(job);
+  if (st.state === 'approved') return { ok: true, required: true, applies: true, state: st.state };
+  return { ok: false, required: true, applies: true, code: 'quote_approval', state: st.state, why: st.state === 'none' ? 'A quote approved by the customer is needed before work starts.' : 'The quote is ' + st.label.toLowerCase() + '. The customer must approve it before work starts.' };
+}
+/* job:status listener: the store let the move through, so leave an audit row and a warning instead of staying silent */
+function svcQuoteOnStatus(p) {
+  var job = p && (p.job || p.rec);
+  if (!job || job._legacy || !p.to) return;
+  var g = svcQuoteGate(job, p.to);
+  if (g.ok) return;
+  var hist = svcArr(job.statusHistory), last = hist.length ? hist[hist.length - 1] : null, ref = last && last.id ? last.id : String(p.to);
+  var jid = job.id, to = p.to, from = p.from;
+  svcQtEmit('quote:gate', { jobId: jid, job: job, to: to, why: g.why });
+  svcQtToast('Warning: work moved to ' + to.replace(/_/g, ' ') + ' without an approved quote.', true);
+  var write = function () {
+    var cur = null; try { cur = svcGetJob(jid); } catch (e) { cur = null; }
+    if (!cur || cur._legacy || svcArr(cur.audit).some(function (a) { return a && a.act === 'quote.gate' && a.ref === ref; })) return;
+    svcCommit(function (j) { return j; }, { list: 'svcJobs', id: jid, audit: { act: 'quote.gate', ref: ref, from: from, to: to, note: g.why }, event: 'job:updated' });
+  };
+  if (typeof setTimeout === 'function') setTimeout(write, 0); else write();
+}
+
+/* ===== summary for other blocks (pay / board / notify) ===== */
+function svcQuoteSummary(job) {
+  if (typeof job === 'string') { try { job = svcGetJob(job); } catch (e) { job = null; } }
+  job = job || {};
+  var st = svcQuoteState(job), t = svcTotals(job), ch = svcArr(job.charges), pending = [], extras = 0, i, c, s;
+  for (i = 0; i < ch.length; i++) {
+    c = ch[i]; if (!c) continue; s = svcQuoteChargeState(c);
+    if (s === 'pending') pending.push(c);
+    else if ((s === 'approved' || s === 'not_required') && !c.quoteLineId) extras += (c.kind === 'discount' ? -1 : 1) * svcRound2(Math.abs(svcNum(c.amount)));
+  }
+  var pendingAmount = 0; pending.forEach(function (x) { pendingAmount += svcRound2(Math.abs(svcNum(x.amount))) * (x.kind === 'discount' ? -1 : 1); });
+  var ver = st.version, diff = null;
+  if (st.state === 'approved' && ver) diff = svcRound2(t.subtotal - svcNum(ver.subtotal) - extras);
+  return { state: st.state, label: st.label, quoteTotal: st.amount, approvedAmount: t.approvedAmount, jobTotal: t.total, extras: svcRound2(extras), pendingCharges: pending, pendingAmount: svcRound2(pendingAmount), difference: diff, paid: t.paid, balance: t.balance };
+}
+
+/* ===== printable / shareable text (pure; svc-notify uses it) ===== */
+function svcQuoteText(job, cfg) {
+  if (typeof job === 'string') { try { job = svcGetJob(job); } catch (e) { job = null; } }
+  cfg = cfg || {}; job = job || {};
+  var st = svcQuoteState(job, cfg.now), ver = st.version;
+  if (!ver) return '';
+  var biz = svcQtStr(cfg.businessName || cfg.business, 80);
+  if (!biz) { try { biz = svcQtStr(typeof localStorage !== 'undefined' ? localStorage.getItem('pos_biz_name') : '', 80); } catch (e2) { biz = ''; } }
+  var m = function (n) { return svcQtMoney(n, cfg); }, out = [], cu = job.customer || {}, snap = job.assetSnap || {}, i, l;
+  out.push((biz ? biz + ' - ' : '') + 'QUOTE' + (job.no ? ' ' + job.no : ''));
+  if (cu.name) out.push('Customer: ' + cu.name);
+  if (snap.label) out.push('Item: ' + snap.label);
+  out.push('Date: ' + svcQtDay(ver.at) + (st.n > 1 ? ' (version ' + st.n + ')' : ''));
+  if (ver.validUntil) out.push('Valid until: ' + svcQtDay(ver.validUntil));
+  out.push('Status: ' + st.label);
+  out.push('');
+  var pre = { service: '', labour: 'Labour: ', part: 'Parts: ', charge: 'Additional: ', discount: 'Discount: ' };
+  for (i = 0; i < svcArr(ver.lines).length; i++) {
+    l = ver.lines[i]; var a = svcRound2(svcNum(l.qty == null ? 1 : l.qty) * svcNum(l.price));
+    out.push((i + 1) + '. ' + (pre[l.kind] || '') + l.name + (svcNum(l.qty) !== 1 ? ' x' + svcNum(l.qty) : '') + ' - ' + (l.kind === 'discount' ? '-' : '') + m(a));
+  }
+  out.push('');
+  if (svcNum(ver.discount) > 0 || svcNum(ver.tax) > 0) {
+    out.push('Subtotal: ' + m(ver.subtotal));
+    if (svcNum(ver.discount) > 0) out.push('Discount included above: -' + m(ver.discount));
+    if (svcNum(ver.tax) > 0) out.push('Tax: ' + m(ver.tax));
+  }
+  out.push('TOTAL: ' + m(ver.total));
+  if (st.state === 'approved' && st.approval) out.push('Approved by ' + (st.approval.approvedBy || 'customer') + ' (' + String(st.approval.method || '').replace('_', ' ') + ') on ' + svcQtWhen(st.approval.at));
+  var extras = svcArr(job.charges).filter(function (c) { return c && !c.voidedAt && !c.quoteLineId; });
+  if (extras.length) {
+    out.push(''); out.push('Additional charges (separate from the quote):');
+    var approvedSum = 0;
+    extras.forEach(function (c) {
+      var s = svcQuoteChargeState(c), amt = svcRound2(Math.abs(svcNum(c.amount))), tag = s === 'pending' ? 'awaiting approval' : (s === 'rejected' ? 'declined' : 'approved');
+      if (tag === 'approved') approvedSum += (c.kind === 'discount' ? -amt : amt);
+      out.push('- ' + c.label + ': ' + (c.kind === 'discount' ? '-' : '') + m(amt) + ' (' + tag + ')');
+    });
+    if (approvedSum) out.push('Approved additional charges: ' + m(approvedSum));
+  }
+  try {
+    var t = svcTotals(job);
+    if (t.paid > 0) { out.push(''); out.push('Paid so far: ' + m(t.paid)); out.push('Balance: ' + m(t.balance)); }
+  } catch (e3) { /* totals are optional in the text */ }
+  return out.join('\n');
+}
+function svcQuotePrint(jobId) {
+  var job = null; try { job = svcGetJob(jobId); } catch (e) { job = null; }
+  var text = job ? svcQuoteText(job) : '';
+  if (!text) { svcQtToast('There is no quote to print yet.', true); return false; }
+  try {
+    var w = window.open('', '_blank');
+    if (!w) { svcQtToast('Allow pop-ups to print, or use Copy.', true); return false; }
+    w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Quote</title><style>body{font-family:Arial,sans-serif;font-size:14px;padding:16px}pre{white-space:pre-wrap;font-family:inherit}</style></head><body><pre>' + svcQtEsc(text) + '</pre></body></html>');
+    w.document.close(); try { w.focus(); w.print(); } catch (e2) { /* the window stays open for a manual print */ }
+    return true;
+  } catch (e3) { svcQtToast('Could not open the print window.', true); return false; }
+}
+
+/* ===================================================================================================================
+   UI: the Quote drawer tab (registered with svcDrawerRegister). State of open editors / panels survives drawer refreshes.
+   =================================================================================================================== */
+function svcQtActId(jobId, act) { var k = jobId + ':' + act; if (!SVC_QT_UI.ids[k]) SVC_QT_UI.ids[k] = svcQtShortId('ql-'); return SVC_QT_UI.ids[k]; }
+function svcQtActDone(jobId, act) { delete SVC_QT_UI.ids[jobId + ':' + act]; }
+function svcQtOpenDraft(job, st) {
+  var d = SVC_QT_UI.drafts[job.id];
+  if (d) return d;
+  var lines = st.version ? svcArr(st.version.lines).map(function (l) { return { id: l.id, kind: l.kind, name: l.name, qty: l.qty, price: l.price, refId: l.refId }; }) : svcQuoteSeedLines(job);
+  if (!lines.length) lines = [{ id: svcQtShortId('ql'), kind: 'service', name: '', qty: 1, price: '' }];
+  var cfgQ = svcQuoteConfig(job), vu = st.validUntil && st.validUntil > svcQtNow() ? st.validUntil : svcQtNow() + cfgQ.validityDays * 86400000;
+  d = SVC_QT_UI.drafts[job.id] = { lines: lines, note: '', reason: '', validUntil: svcQtDateStr(vu), formId: svcQtShortId('qv-') };
+  return d;
+}
+function svcQtDraftLines(d) { return d.lines.map(function (l) { return { id: l.id, kind: l.kind, name: l.name, qty: l.qty, price: l.price, refId: l.refId }; }); }
+function svcQtTotalsHtml(lines, cfg) {
+  var n = svcQuoteNormLines(lines), c = svcQuoteCompute(n.lines), m = function (x) { return svcQtMoney(x); };
+  var rows = '';
+  if (c.servicesTotal) rows += '<tr><td>Services</td><td>' + m(c.servicesTotal) + '</td></tr>';
+  if (c.materialsTotal) rows += '<tr><td>Parts / materials</td><td>' + m(c.materialsTotal) + '</td></tr>';
+  if (c.labour) rows += '<tr><td>Labour</td><td>' + m(c.labour) + '</td></tr>';
+  if (c.additional) rows += '<tr><td>Additional</td><td>' + m(c.additional) + '</td></tr>';
+  if (c.discount) rows += '<tr><td>Discount</td><td>-' + m(c.discount) + '</td></tr>';
+  if (c.tax) rows += '<tr class="m"><td>Tax</td><td>' + m(c.tax) + '</td></tr>';
+  rows += '<tr class="g"><td>Quote total</td><td>' + m(c.total) + '</td></tr>';
+  return '<table class="sqt-tot" aria-label="Quote totals">' + rows + '</table>' + (c.discountTooBig ? '<div class="sqt-note bad">The discount is more than the quote total.</div>' : '') + (n.errors.length && n.lines.length ? '<div class="sqt-note warn">' + svcQtEsc(n.errors[0]) + '</div>' : '');
+}
+function svcQtEditorHtml(job, st, d) {
+  var first = st.state === 'none', rows = d.lines.map(function (l) {
+    var id = svcQtEsc(l.id);
+    return '<div class="sqt-row" data-qt-row="' + id + '">' +
+      '<input class="sqt-in nm" data-qt-f="name" value="' + svcQtEsc(l.name) + '" maxlength="60" placeholder="Description" aria-label="Description">' +
+      '<select class="sqt-in kd" data-qt-f="kind" aria-label="Line type">' + SVC_QT_LINE_KINDS.map(function (k) { return '<option value="' + k + '"' + (l.kind === k ? ' selected' : '') + '>' + svcQtEsc(SVC_QT_LINE_LABEL[k]) + '</option>'; }).join('') + '</select>' +
+      '<input class="sqt-in" data-qt-f="qty" value="' + svcQtEsc(l.qty == null ? '' : l.qty) + '" inputmode="decimal" placeholder="Qty" aria-label="Quantity">' +
+      '<input class="sqt-in" data-qt-f="price" value="' + svcQtEsc(l.price == null ? '' : l.price) + '" inputmode="decimal" placeholder="Price" aria-label="Unit price">' +
+      '<button type="button" class="sqt-btn dl" data-qt="rowdel" aria-label="Remove line">✕</button></div>';
+  }).join('');
+  var needReason = st.state === 'approved';
+  return '<div class="sqt-box" data-qt-editor="1"><h4>' + (first ? 'New quote' : 'New version') + '</h4>' +
+    (needReason ? '<div class="sqt-note warn">This quote is approved. A new version replaces it and the customer has to approve again.</div><label class="sqt-lbl" for="sqt-reason">Why is it changing? (required)</label><input id="sqt-reason" class="sqt-in" data-qt-f="reason" value="' + svcQtEsc(d.reason) + '" maxlength="200">' : '') +
+    '<div data-qt-rows="1">' + rows + '</div>' +
+    '<div class="sqt-actions">' + ['service', 'labour', 'part', 'charge', 'discount'].map(function (k) { return '<button type="button" class="sqt-btn sm" data-qt="addrow" data-kind="' + k + '">+ ' + svcQtEsc(SVC_QT_LINE_LABEL[k]) + '</button>'; }).join('') +
+    (svcQuoteSeedLines(job).length ? '<button type="button" class="sqt-btn sm" data-qt="seed">Fill from job</button>' : '') + '</div>' +
+    '<div class="sqt-live" aria-live="polite">' + svcQtTotalsHtml(svcQtDraftLines(d)) + '</div>' +
+    '<label class="sqt-lbl" for="sqt-valid">Valid until</label><input id="sqt-valid" type="date" class="sqt-in" data-qt-f="valid" value="' + svcQtEsc(d.validUntil) + '">' +
+    '<label class="sqt-lbl" for="sqt-note">Note for the customer (optional)</label><input id="sqt-note" class="sqt-in" data-qt-f="note" value="' + svcQtEsc(d.note) + '" maxlength="200">' +
+    '<div class="sqt-actions"><button type="button" class="sqt-btn pri" data-qt="save">' + (first ? 'Save draft' : 'Save new version') + '</button>' + (first ? '' : '<button type="button" class="sqt-btn" data-qt="canceledit">Cancel</button>') + '</div></div>';
+}
+function svcQtPanelHtml(job, st) {
+  var p = SVC_QT_UI.panel; if (!p || p.jobId !== job.id) return '';
+  var cust = (job.customer && job.customer.name) || '';
+  var methods = SVC_QT_METHODS.map(function (k) { return '<option value="' + k + '">' + svcQtEsc(SVC_QT_METHOD_LABEL[k]) + '</option>'; }).join('');
+  if (p.kind === 'approve' && st.state !== 'approved') {
+    return '<div class="sqt-panel" data-qt-panel="approve"><b>Record the customer\'s approval</b><div class="sqt-sub">Amount: ' + svcQtMoney(st.amount) + '</div>' +
+      '<label class="sqt-lbl" for="sqt-by">Approved by</label><input id="sqt-by" class="sqt-in" data-qt-f="by" value="' + svcQtEsc(cust) + '" maxlength="60">' +
+      '<label class="sqt-lbl" for="sqt-method">How was it approved?</label><select id="sqt-method" class="sqt-in" data-qt-f="method">' + methods + '</select>' +
+      '<label class="sqt-lbl" for="sqt-anote">Note (optional)</label><input id="sqt-anote" class="sqt-in" data-qt-f="anote" maxlength="200">' +
+      '<label class="sqt-lbl"><input type="checkbox" data-qt-f="apply" checked> Add the quote lines to the job</label>' +
+      '<div class="sqt-actions"><button type="button" class="sqt-btn good" data-qt="approve-go">Confirm approval</button><button type="button" class="sqt-btn" data-qt="panel-close">Cancel</button></div></div>';
+  }
+  if (p.kind === 'reject') {
+    return '<div class="sqt-panel" data-qt-panel="reject"><b>Customer rejected the quote</b>' +
+      '<label class="sqt-lbl" for="sqt-rr">Reason</label><input id="sqt-rr" class="sqt-in" data-qt-f="rreason" maxlength="200">' +
+      '<div class="sqt-actions"><button type="button" class="sqt-btn bad" data-qt="reject-go">Record rejection</button><button type="button" class="sqt-btn" data-qt="panel-close">Cancel</button></div></div>';
+  }
+  return '';
+}
+function svcQtChargesHtml(job) {
+  var list = svcArr(job.charges).filter(function (c) { return c && !c.quoteLineId; }), canCharge = svcQtCan('svc:charge'), canApprove = svcQtCan('svc:approve'), p = SVC_QT_UI.panel, html = '';
+  html += '<div class="sqt-box"><h4>Additional charges</h4><div class="sqt-sub">Extra work is recorded here, separate from the approved quote. It counts in the total once approved.</div>';
+  if (!list.length) html += '<p class="sqt-sub">No additional charges.</p>';
+  list.forEach(function (c) {
+    var s = svcQuoteChargeState(c), cls = s === 'approved' || s === 'not_required' ? 'ok' : (s === 'pending' ? 'wait' : 'bad'), lab = { approved: 'Approved', not_required: 'Approved (no approval needed)', pending: 'Awaiting approval', rejected: 'Declined', 'void': 'Removed' }[s];
+    html += '<div class="sqt-ch" data-qt-charge="' + svcQtEsc(c.id) + '"><div class="r1"><span>' + svcQtEsc(c.label) + '</span><span>' + (c.kind === 'discount' ? '-' : '') + svcQtMoney(c.amount) + '</span></div>' +
+      '<div><span class="sqt-chip ' + cls + '">' + svcQtEsc(lab) + '</span><span class="sqt-sub">' + svcQtEsc(SVC_QT_CHARGE_LABEL[c.kind] || c.kind) + (c.reason ? ' - ' + svcQtEsc(c.reason) : '') + '</span></div>' +
+      (c.approvedBy ? '<div class="sqt-sub">Approved by ' + svcQtEsc(c.approvedBy) + ' (' + svcQtEsc(String(c.approvedVia || '').replace('_', ' ')) + ') ' + svcQtEsc(svcQtWhen(c.approvedAt)) + '</div>' : '') +
+      (c.rejectedReason ? '<div class="sqt-sub">Declined: ' + svcQtEsc(c.rejectedReason) + '</div>' : '') + (c.voidReason ? '<div class="sqt-sub">Removed: ' + svcQtEsc(c.voidReason) + '</div>' : '');
+    var open = p && p.jobId === job.id && p.cid === c.id ? p.kind : '';
+    if (s === 'pending' && canApprove) html += '<div class="sqt-actions"><button type="button" class="sqt-btn sm good" data-qt="charge-approve" data-cid="' + svcQtEsc(c.id) + '">Customer approved</button><button type="button" class="sqt-btn sm" data-qt="charge-reject" data-cid="' + svcQtEsc(c.id) + '">Declined</button>' + (canCharge ? '<button type="button" class="sqt-btn sm" data-qt="charge-void" data-cid="' + svcQtEsc(c.id) + '">Remove</button>' : '') + '</div>';
+    else if (s !== 'void' && s !== 'rejected' && canCharge) html += '<div class="sqt-actions"><button type="button" class="sqt-btn sm" data-qt="charge-void" data-cid="' + svcQtEsc(c.id) + '">Remove</button></div>';
+    if (open === 'charge-approve') html += '<div class="sqt-panel" data-qt-panel="charge-approve"><label class="sqt-lbl" for="sqt-cby">Approved by</label><input id="sqt-cby" class="sqt-in" data-qt-f="cby" value="' + svcQtEsc((job.customer && job.customer.name) || '') + '" maxlength="60">' +
+      '<label class="sqt-lbl" for="sqt-cm">How?</label><select id="sqt-cm" class="sqt-in" data-qt-f="cmethod">' + SVC_QT_METHODS.map(function (k) { return '<option value="' + k + '">' + svcQtEsc(SVC_QT_METHOD_LABEL[k]) + '</option>'; }).join('') + '</select>' +
+      '<div class="sqt-actions"><button type="button" class="sqt-btn good" data-qt="charge-approve-go" data-cid="' + svcQtEsc(c.id) + '">Confirm</button><button type="button" class="sqt-btn" data-qt="panel-close">Cancel</button></div></div>';
+    if (open === 'charge-reject' || open === 'charge-void') html += '<div class="sqt-panel" data-qt-panel="' + open + '"><label class="sqt-lbl" for="sqt-cr">Reason</label><input id="sqt-cr" class="sqt-in" data-qt-f="creason" maxlength="160">' +
+      '<div class="sqt-actions"><button type="button" class="sqt-btn bad" data-qt="' + open + '-go" data-cid="' + svcQtEsc(c.id) + '">' + (open === 'charge-reject' ? 'Record decline' : 'Remove charge') + '</button><button type="button" class="sqt-btn" data-qt="panel-close">Cancel</button></div></div>';
+    html += '</div>';
+  });
+  if (canCharge && !svcQtIsClosed(job)) {
+    if (p && p.jobId === job.id && p.kind === 'charge-add') {
+      html += '<div class="sqt-panel" data-qt-panel="charge-add"><b>Add a charge</b>' +
+        '<label class="sqt-lbl" for="sqt-cl">What is it for?</label><input id="sqt-cl" class="sqt-in" data-qt-f="clabel" maxlength="80" placeholder="e.g. Heavy dirt, extra part">' +
+        '<label class="sqt-lbl" for="sqt-ca">Amount</label><input id="sqt-ca" class="sqt-in" data-qt-f="camount" inputmode="decimal" placeholder="0">' +
+        '<label class="sqt-lbl" for="sqt-ck">Type</label><select id="sqt-ck" class="sqt-in" data-qt-f="ckind">' + SVC_QT_CHARGE_KINDS.map(function (k) { return '<option value="' + k + '">' + svcQtEsc(SVC_QT_CHARGE_LABEL[k]) + '</option>'; }).join('') + '</select>' +
+        '<label class="sqt-lbl" for="sqt-cw">Why is it needed?</label><input id="sqt-cw" class="sqt-in" data-qt-f="cwhy" maxlength="160">' +
+        '<label class="sqt-lbl" for="sqt-cp">Customer approval</label><select id="sqt-cp" class="sqt-in" data-qt-f="capproval"><option value="auto">By the shop rules</option><option value="yes">Needed</option><option value="no">Not needed</option></select>' +
+        '<div class="sqt-actions"><button type="button" class="sqt-btn pri" data-qt="charge-add-go">Add charge</button><button type="button" class="sqt-btn" data-qt="panel-close">Cancel</button></div></div>';
+    } else html += '<div class="sqt-actions"><button type="button" class="sqt-btn" data-qt="charge-add">+ Add charge</button></div>';
+  }
+  return html + '</div>';
+}
+function svcQtTimelineHtml(job, st) {
+  var log = svcQtSortedLog(job).slice().reverse(), vs = svcQuoteVersions(job), byId = {}, words = { draft: 'Draft saved', revise: 'New version', send: 'Sent to customer', await: 'Awaiting approval', approve: 'Approved', reject: 'Rejected', expire: 'Expired' };
+  vs.forEach(function (v) { if (v.id) byId[v.id] = v; });
+  var colors = { draft: '#7f8c8d', revise: '#7f8c8d', send: '#2980b9', await: '#d68910', approve: '#27ae60', reject: '#c0392b', expire: '#6c3483' };
+  if (!log.length) return '';
+  var html = '<div class="sqt-box"><h4>History</h4><ul class="sqt-tl">';
+  log.forEach(function (e) {
+    var v = byId[e.vid], extra = '';
+    if (e.act === 'approve') extra = ' by ' + svcQtEsc(e.approvedBy || '') + (e.method ? ' (' + svcQtEsc(String(e.method).replace('_', ' ')) + ')' : '');
+    if (e.act === 'send' && e.via) extra = ' via ' + svcQtEsc(e.via);
+    var dt = v && (e.act === 'revise') ? svcQtDiffText(v.diff) : '';
+    html += '<li style="--dot:' + (colors[e.act] || '#7f8c8d') + '"><b>' + svcQtEsc(words[e.act] || e.act) + '</b>' + (v ? ' - version ' + v.n : '') + (e.amount != null ? ' - ' + svcQtMoney(e.amount) : '') + extra +
+      (e.note ? '<div>' + svcQtEsc(e.note) + '</div>' : '') + (dt ? '<div class="w">' + svcQtEsc(dt) + '</div>' : '') +
+      '<div class="w">' + svcQtEsc(svcQtWhen(e.at)) + (e.by ? ' - recorded by ' + svcQtEsc(e.by) : '') + '</div></li>';
+  });
+  return html + '</ul></div>';
+}
+function svcQtTotalsBoxHtml(job) {
+  var t = svcTotals(job), sm = svcQuoteSummary(job), m = function (x) { return svcQtMoney(x); }, rows = '';
+  if (t.servicesTotal) rows += '<tr><td>Services</td><td>' + m(t.servicesTotal) + '</td></tr>';
+  if (t.materialsTotal) rows += '<tr><td>Parts / materials</td><td>' + m(t.materialsTotal) + '</td></tr>';
+  if (t.labour) rows += '<tr><td>Labour</td><td>' + m(t.labour) + '</td></tr>';
+  if (t.additional) rows += '<tr><td>Additional charges</td><td>' + m(t.additional) + '</td></tr>';
+  if (t.discount) rows += '<tr><td>Discount</td><td>-' + m(t.discount) + '</td></tr>';
+  if (t.tax) rows += '<tr class="m"><td>Tax</td><td>' + m(t.tax) + '</td></tr>';
+  rows += '<tr class="g"><td>Job total</td><td>' + m(t.total) + '</td></tr>';
+  if (t.paid) rows += '<tr class="m"><td>Paid</td><td>' + m(t.paid) + '</td></tr>';
+  rows += '<tr class="m"><td>Balance</td><td>' + m(t.balance) + '</td></tr>';
+  var notes = '';
+  if (sm.pendingCharges.length) notes += '<div class="sqt-note warn">' + sm.pendingCharges.length + ' charge(s) awaiting approval (' + m(Math.abs(sm.pendingAmount)) + ') are not in the total yet.</div>';
+  if (sm.difference != null && Math.abs(sm.difference) > SVC_MONEY_TOL) notes += '<div class="sqt-note warn">The job lines differ from the approved quote by ' + m(Math.abs(sm.difference)) + '. Record the change as an additional charge or make a new quote version.</div>';
+  return '<div class="sqt-box"><h4>Job total</h4><table class="sqt-tot" aria-label="Job totals">' + rows + '</table>' + notes + '</div>';
+}
+function svcQuoteTabHtml(job) {
+  var st = svcQuoteState(job), canQuote = svcQtCan('svc:quote'), canApprove = svcQtCan('svc:approve'), closed = svcQtIsClosed(job), cfgQ = svcQuoteConfig(job), d = SVC_QT_UI.drafts[job.id];
+  var html = '<div class="sqt" data-qt-job="' + svcQtEsc(job.id) + '">';
+  html += '<div class="sqt-box"><div class="sqt-head"><div><div class="sqt-sub">Quote' + (st.n ? ' - version ' + st.n + (st.count > 1 ? ' of ' + st.count : '') : '') + '</div><div class="sqt-big">' + (st.amount != null ? svcQtMoney(st.amount) : 'No quote yet') + '</div></div><span class="sqt-pill t-' + svcQtEsc(st.tone) + '" data-qt-state="' + svcQtEsc(st.state) + '">' + svcQtEsc(st.label) + '</span></div>';
+  if (st.validUntil && (st.state === 'draft' || st.state === 'sent' || st.state === 'awaiting_approval' || st.state === 'expired')) html += '<div class="sqt-sub">' + (st.state === 'expired' ? 'Expired ' : 'Valid until ') + svcQtEsc(svcQtDay(st.validUntil)) + '</div>';
+  if (st.approval) html += '<div class="sqt-sub">Approved by ' + svcQtEsc(st.approval.approvedBy || 'customer') + ' (' + svcQtEsc(String(st.approval.method || '').replace('_', ' ')) + ') ' + svcQtEsc(svcQtWhen(st.approval.at)) + ' - recorded by ' + svcQtEsc(st.approval.by || '') + '</div>';
+  if (st.rejection && st.rejection.note) html += '<div class="sqt-sub">Rejected: ' + svcQtEsc(st.rejection.note) + '</div>';
+  if (st.priorApproval) html += '<div class="sqt-note warn">The earlier approval of ' + svcQtMoney(st.priorApproval.amount) + ' no longer applies to this version.</div>';
+  if (cfgQ.requireApproval && st.state !== 'approved') html += '<div class="sqt-note warn">Customer approval is required before work starts on this job.</div>';
+  if (closed) html += '<div class="sqt-note">This job is closed. The quote can no longer be changed.</div>';
+  else if (!canQuote && !canApprove) html += '<div class="sqt-note">You can view the quote but not change it.</div>';
+  if (!closed && !d) {
+    var nx = st.next, acts = '';
+    if (st.state === 'none' && canQuote) acts += '<button type="button" class="sqt-btn pri" data-qt="edit">Create quote</button>';
+    if (canQuote && nx.indexOf('send') !== -1) acts += '<select class="sqt-in" style="width:auto;margin-right:8px" data-qt-f="channel" aria-label="Send through"><option value="whatsapp">WhatsApp</option><option value="sms">SMS</option><option value="email">Email</option><option value="print">Print / hand over</option><option value="">Not through the app</option></select><button type="button" class="sqt-btn pri" data-qt="send">' + (st.state === 'draft' ? 'Send to customer' : 'Send again') + '</button>';
+    if (canQuote && nx.indexOf('await') !== -1) acts += '<button type="button" class="sqt-btn" data-qt="await">Mark awaiting approval</button>';
+    if (canApprove && nx.indexOf('approve') !== -1) acts += '<button type="button" class="sqt-btn good" data-qt="approve">Customer approved</button>';
+    if (canApprove && nx.indexOf('reject') !== -1) acts += '<button type="button" class="sqt-btn" data-qt="reject">Customer rejected</button>';
+    if (canQuote && nx.indexOf('revise') !== -1) acts += '<button type="button" class="sqt-btn" data-qt="edit">' + (st.state === 'approved' ? 'Change (new version)' : 'Edit (new version)') + '</button>';
+    if (canQuote && st.state === 'approved') acts += '<button type="button" class="sqt-btn" data-qt="apply">Add quote lines to job</button>';
+    if (acts) html += '<div class="sqt-actions">' + acts + '</div>';
+    html += svcQtPanelHtml(job, st);
+  }
+  html += '</div>';
+  if (!closed && canQuote && (d || st.state === 'none') && (st.state === 'none' || d)) { d = svcQtOpenDraft(job, st); html += svcQtEditorHtml(job, st, d); }
+  html += svcQtChargesHtml(job) + svcQtTotalsBoxHtml(job) + svcQtTimelineHtml(job, st);
+  var txt = svcQuoteText(job);
+  if (txt) html += '<div class="sqt-box"><h4>Share</h4><pre class="sqt-pre" data-qt-text="1">' + svcQtEsc(txt) + '</pre><div class="sqt-actions"><button type="button" class="sqt-btn sm" data-qt="copy">Copy text</button><button type="button" class="sqt-btn sm" data-qt="print">Print</button>' + (typeof navigator !== 'undefined' && navigator.share ? '<button type="button" class="sqt-btn sm" data-qt="share">Share</button>' : '') + '</div></div>';
+  return html + '</div>';
+}
+function svcQuoteRenderTab(job, el) {
+  if (!el) return;
+  el.__svcQtJob = job.id;
+  if (!el.__svcQtBound) {
+    el.__svcQtBound = true;
+    el.addEventListener('click', svcQtOnClick);
+    el.addEventListener('input', svcQtOnInput);
+    el.addEventListener('change', svcQtOnInput);
+  }
+  el.innerHTML = svcQuoteTabHtml(job);
+  if (SVC_QT_UI.panel && SVC_QT_UI.panel.jobId === job.id && SVC_QT_UI.panel.fresh) {
+    SVC_QT_UI.panel.fresh = false;
+    var pn = el.querySelector('[data-qt-panel]'); try { if (pn && pn.scrollIntoView) pn.scrollIntoView({ block: 'nearest' }); } catch (e) { /* cosmetic */ }
+  }
+}
+function svcQtRerender(el) {
+  var job = null; try { job = svcGetJob(el.__svcQtJob); } catch (e) { job = null; }
+  if (job) svcQuoteRenderTab(job, el);
+}
+function svcQtVal(el, f) { var n = el.querySelector('[data-qt-f="' + f + '"]'); return n ? n.value : ''; }
+function svcQtRowOf(d, node) { var r = node && node.closest ? node.closest('[data-qt-row]') : null; if (!r) return null; var id = r.getAttribute('data-qt-row'), i; for (i = 0; i < d.lines.length; i++) { if (d.lines[i].id === id) return d.lines[i]; } return null; }
+function svcQtOnInput(ev) {
+  var el = ev.currentTarget, t = ev.target, f = t && t.getAttribute ? t.getAttribute('data-qt-f') : null, jid = el.__svcQtJob, d = SVC_QT_UI.drafts[jid];
+  if (!f || !d) return;
+  var root = t.closest ? t.closest('[data-qt-editor]') : null; if (!root) return;
+  if (f === 'note') d.note = t.value; else if (f === 'reason') d.reason = t.value; else if (f === 'valid') d.validUntil = t.value;
+  else { var l = svcQtRowOf(d, t); if (!l) return; if (f === 'name') l.name = t.value; else if (f === 'qty') l.qty = t.value; else if (f === 'price') l.price = t.value; else if (f === 'kind') { l.kind = t.value; } }
+  var live = root.querySelector('.sqt-live'); if (live) live.innerHTML = svcQtTotalsHtml(svcQtDraftLines(d));
+}
+function svcQtFail(res) { svcQtToast(res && (res.why || res.error) ? (res.why || res.error) : 'That did not work (' + (res && res.code ? res.code : 'error') + ').', true); }
+function svcQtOnClick(ev) {
+  var el = ev.currentTarget, b = ev.target && ev.target.closest ? ev.target.closest('[data-qt]') : null;
+  if (!b || !el.contains(b) || b.disabled) return;
+  var act = b.getAttribute('data-qt'), jid = el.__svcQtJob, job = null;
+  try { job = svcGetJob(jid); } catch (e) { job = null; }
+  if (!job) return;
+  var st = svcQuoteState(job), d = SVC_QT_UI.drafts[jid], res = null, cid = b.getAttribute('data-cid');
+  var done = function (msg) { SVC_QT_UI.panel = null; svcQtToast(msg); svcQtRerender(el); };
+  b.disabled = true;                                           /* double taps: the button is off until the next render; ids below make a repeat harmless anyway */
+  var reenable = function () { b.disabled = false; };
+  if (act === 'edit') { svcQtOpenDraft(job, st); svcQtRerender(el); return; }
+  if (act === 'canceledit') { delete SVC_QT_UI.drafts[jid]; svcQtRerender(el); return; }
+  if (act === 'addrow' && d) { d.lines.push({ id: svcQtShortId('ql'), kind: b.getAttribute('data-kind') || 'service', name: '', qty: 1, price: '' }); svcQtRerender(el); return; }
+  if (act === 'rowdel' && d) { var rl = svcQtRowOf(d, b); if (rl) d.lines = d.lines.filter(function (x) { return x !== rl; }); if (!d.lines.length) d.lines.push({ id: svcQtShortId('ql'), kind: 'service', name: '', qty: 1, price: '' }); svcQtRerender(el); return; }
+  if (act === 'seed' && d) { d.lines = svcQuoteSeedLines(job); if (!d.lines.length) d.lines.push({ id: svcQtShortId('ql'), kind: 'service', name: '', qty: 1, price: '' }); svcQtRerender(el); return; }
+  if (act === 'save' && d) {
+    var o = { id: d.formId, note: d.note, validUntil: d.validUntil || undefined, reason: d.reason };
+    res = st.state === 'none' ? svcQuoteDraft(jid, svcQtDraftLines(d), o) : svcQuoteRevise(jid, svcQtDraftLines(d), o);
+    if (res.ok) { delete SVC_QT_UI.drafts[jid]; done(res.duplicate ? 'Already saved.' : 'Quote saved.'); } else { svcQtFail(res); reenable(); }
+    return;
+  }
+  if (act === 'send') { res = svcQuoteSend(jid, { id: svcQtActId(jid, 'send'), channel: svcQtVal(el, 'channel') }); if (res.ok) { svcQtActDone(jid, 'send'); done('Quote marked as sent.'); } else { svcQtFail(res); reenable(); } return; }
+  if (act === 'await') { res = svcQuoteAwaitApproval(jid, { id: svcQtActId(jid, 'await') }); if (res.ok) { svcQtActDone(jid, 'await'); done('Waiting for the customer.'); } else { svcQtFail(res); reenable(); } return; }
+  if (act === 'approve') { SVC_QT_UI.panel = { jobId: jid, kind: 'approve', fresh: true }; svcQtRerender(el); return; }
+  if (act === 'reject') { SVC_QT_UI.panel = { jobId: jid, kind: 'reject', fresh: true }; svcQtRerender(el); return; }
+  if (act === 'panel-close') { SVC_QT_UI.panel = null; svcQtRerender(el); return; }
+  if (act === 'approve-go') {
+    var ap = el.querySelector('[data-qt-f="apply"]');
+    res = svcQuoteApprove(jid, { id: svcQtActId(jid, 'approve'), by: svcQtVal(el, 'by'), method: svcQtVal(el, 'method'), note: svcQtVal(el, 'anote'), amount: st.amount, apply: !!(ap && ap.checked) });
+    if (res.ok) { svcQtActDone(jid, 'approve'); done('Approval recorded.'); } else { svcQtFail(res); reenable(); }
+    return;
+  }
+  if (act === 'reject-go') { res = svcQuoteReject(jid, svcQtVal(el, 'rreason'), { id: svcQtActId(jid, 'reject') }); if (res.ok) { svcQtActDone(jid, 'reject'); done('Rejection recorded.'); } else { svcQtFail(res); reenable(); } return; }
+  if (act === 'apply') { res = svcQuoteApply(jid); if (res.ok) done(res.added ? res.added + ' line(s) added to the job.' : 'Nothing new to add.'); else { svcQtFail(res); reenable(); } return; }
+  if (act === 'charge-add') { SVC_QT_UI.panel = { jobId: jid, kind: 'charge-add', fresh: true }; svcQtRerender(el); return; }
+  if (act === 'charge-approve' || act === 'charge-reject' || act === 'charge-void') { SVC_QT_UI.panel = { jobId: jid, kind: act, cid: cid, fresh: true }; svcQtRerender(el); return; }
+  if (act === 'charge-add-go') {
+    var ap2 = svcQtVal(el, 'capproval');
+    res = svcAddCharge(jid, { id: svcQtActId(jid, 'charge'), label: svcQtVal(el, 'clabel'), amount: svcQtVal(el, 'camount'), kind: svcQtVal(el, 'ckind'), reason: svcQtVal(el, 'cwhy'), requiresApproval: ap2 === 'yes' ? true : (ap2 === 'no' ? false : undefined) });
+    if (res.ok) { svcQtActDone(jid, 'charge'); done(res.pending ? 'Charge added - waiting for the customer to approve.' : 'Charge added.'); } else { svcQtFail(res); reenable(); }
+    return;
+  }
+  if (act === 'charge-approve-go') { res = svcApproveCharge(jid, cid, { by: svcQtVal(el, 'cby'), method: svcQtVal(el, 'cmethod') }); if (res.ok) done('Charge approved.'); else { svcQtFail(res); reenable(); } return; }
+  if (act === 'charge-reject-go') { res = svcRejectCharge(jid, cid, svcQtVal(el, 'creason')); if (res.ok) done('Decline recorded.'); else { svcQtFail(res); reenable(); } return; }
+  if (act === 'charge-void-go') { res = svcVoidCharge(jid, cid, svcQtVal(el, 'creason')); if (res.ok) done('Charge removed.'); else { svcQtFail(res); reenable(); } return; }
+  if (act === 'copy' || act === 'share') {
+    var txt = svcQuoteText(job);
+    try {
+      if (act === 'share' && navigator.share) { navigator.share({ title: 'Quote ' + (job.no || ''), text: txt }); svcQtRerender(el); return; }
+      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(txt); svcQtToast('Quote text copied.'); reenable(); return; }
+    } catch (e2) { /* fall back to selection */ }
+    var pre = el.querySelector('[data-qt-text]'); try { var r = document.createRange(); r.selectNodeContents(pre); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); svcQtToast('Press copy on your keyboard.'); } catch (e3) { svcQtToast('Select the text to copy it.', true); }
+    reenable(); return;
+  }
+  if (act === 'print') { svcQuotePrint(jid); reenable(); return; }
+  reenable();
+}
+
+/* registration (cheap: two map assignments; svc-ui-home and svc-core are earlier blocks) */
+try {
+  if (typeof svcDrawerRegister === 'function') svcDrawerRegister('quote', { label: 'Quote', order: 30, render: svcQuoteRenderTab, visibleWhen: function (job) { return !!job && !job._legacy; } });
+  if (typeof svcOn === 'function') svcOn('job:status', svcQuoteOnStatus);
+} catch (svcQtBootErr) { /* the tab is optional */ }
+</script>

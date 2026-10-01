@@ -39,7 +39,7 @@ const BUDGETS = [
   ['/leads/__LEAD__', 2], ['/inbox/conversations', 2], ['/inbox/conversations/__CONV__/messages', 2],
   ['/followups?bucket=today', 2], ['/followups?bucket=overdue', 2], ['/campaigns', 2], ['/campaigns?lite=1', 2],
   ['/reports/staff', 2], ['/reports/sources', 2], ['/reports/campaigns', 3], ['/reports/products', 2], ['/reports/funnel', 2], ['/reports/response', 2],
-  ['/staff/__STAFF__', 6], ['/sales', 2], ['/audit', 2], ['/automation', 2],
+  ['/staff/__STAFF__', 2], ['/sales', 2], ['/audit', 2], ['/automation', 2],
 ];
 test('D1 round trips per endpoint stay within budget on the big dataset (5,000 leads / 30,000 messages)', { timeout: 110000 }, async () => {
   const b = await bigCrm(); const over = [];
@@ -205,7 +205,7 @@ function swSandbox(files) {
     async post(url) { let out = null; const e = ev({ request: new Request(url, { method: 'POST', body: 'x' }), respondWith: (p) => { out = p; } }); listeners.fetch(e); return out; },
   };
 }
-const SHELL_FILES = () => Object.fromEntries(['/crm/index.html', '/crm/crm.css', '/crm/crm-core.js', '/crm/crm-leads.js', '/crm/crm-inbox.js', '/crm/crm-admin.js', '/crm/crm-start.js', '/crm/manifest.webmanifest', '/crm/icon.svg'].map((p) => [p, 'v1 ' + p]));
+const SHELL_FILES = () => Object.fromEntries(['/crm/index.html', '/crm/crm.css', '/crm/crm-core.js', '/crm/crm-leads.js', '/crm/crm-inbox.js', '/crm/crm-admin.js', '/crm/crm-admin-more.js', '/crm/crm-start.js', '/crm/manifest.webmanifest', '/crm/icon.svg'].map((p) => [p, 'v1 ' + p]));
 
 test('service worker: caches the shell as one set, serves it from the cache, never touches /api, other origins, non-GET or paths outside the shell', async () => {
   const files = SHELL_FILES(); const sw = swSandbox(files);

@@ -1,0 +1,1115 @@
+<!-- SVC TEMPLATES ---------------------------------------------------------------------------------------
+     Services engine block "svc-templates". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B1-A. Nobody else edits this file.
+     STATE: IMPLEMENTED (B1-A).
+     KIND: pure data + lookups. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: SVC_TYPES (10 templates, section 2.2/2.7), SVC_TYPE_ORDER, svcGetTemplate, svcTerm, svcFillTypeSelect(selectId) (fills #signup-biz-type), vehicle/phone reference data, default notification texts.
+     SPEC: SERVICES_ARCHITECTURE.md 2.2, 2.7, 8.3 (svc-templates). Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<script>
+/* ===== shared vocab (frozen ids: SERVICES_ARCHITECTURE.md R4/R5, golden file tests/fixtures/svc-field-ids.json) ===== */
+var SVC_TYPE_ORDER = ['phone_repair', 'car_wash', 'garage', 'salon', 'barber', 'laundry', 'cleaning', 'electronics_repair', 'tailoring', 'other'];
+var SVC_FIELD_TYPES = ['text', 'longtext', 'email', 'number', 'money', 'year', 'odometer', 'phone', 'plate', 'imei', 'date', 'time', 'datetime', 'dropdown', 'combo', 'checkbox', 'yesno', 'chips', 'photo', 'widget'];
+var SVC_WIDGETS_KNOWN = ['services', 'staff', 'materials', 'valuables', 'condition', 'quote', 'payment', 'photos'];
+var SVC_NOTIFY_EVENTS = ['received', 'ready', 'approval_needed', 'balance_due', 'appointment_confirmed', 'appointment_reminder', 'completed_thanks'];
+var SVC_NOTIFY_VARS = ['customer', 'first_name', 'asset', 'plate', 'device', 'job_no', 'business', 'amount', 'balance', 'paid', 'total', 'service', 'staff', 'ready_time', 'date', 'time'];
+var SVC_DASH_METRICS = ['total', 'remaining', 'today', 'revenue_today', 'queue', 'overdue', 'outstanding', 'appointments_upcoming', 'walkins_today', 'available_staff', 'noshows_today'];
+var SVC_REPORT_KEYS = ['jobs_created', 'jobs_completed', 'revenue', 'revenue_by_service', 'revenue_by_staff', 'revenue_by_payment', 'outstanding', 'turnaround', 'avg_turnaround', 'quotes', 'deposits_held', 'materials_used', 'inventory_consumption', 'customer_visits', 'repeat_customers', 'staff_activity', 'appointments', 'cancellations', 'faults', 'brands', 'imei_lookup', 'warranty_returns', 'vehicles_washed', 'revenue_per_vehicle', 'popular_washes', 'peak_hours', 'vehicle_history', 'parts_by_vehicle', 'awaiting_parts_ageing', 'stylist_revenue', 'rebooking_rate', 'no_shows', 'fittings', 'ready_by_ageing', 'items_weight', 'pickup_due', 'fault_mix', 'site_jobs'];
+var SVC_PHONE_BRANDS = ['Samsung', 'Apple', 'Tecno', 'Infinix', 'Itel', 'Xiaomi', 'Oppo', 'Vivo', 'Huawei', 'Nokia', 'Realme', 'Google', 'OnePlus', 'Other'];
+var SVC_VEHICLE_TYPES = [{ v: 'sedan', l: 'Sedan' }, { v: 'hatchback', l: 'Hatchback' }, { v: 'suv', l: 'SUV' }, { v: 'crossover', l: 'Crossover' }, { v: 'pickup', l: 'Pickup' }, { v: 'van', l: 'Van' }, { v: 'minibus', l: 'Minibus' }, { v: 'bus', l: 'Bus' }, { v: 'truck', l: 'Truck' }, { v: 'motorcycle', l: 'Motorcycle' }, { v: 'other', l: 'Other' }];
+/* one string per make ('Model|Model|...'), parsed on first use; 20 Kenyan-market makes (incl. Other) */
+var SVC_VEHICLE_MAKES = {
+  'Toyota': 'Premio|Allion|Axio|Fielder|Vitz|Probox|Succeed|Harrier|Prado|Land Cruiser|Hilux|Noah|Voxy|Corolla|Rav4|Passo|Mark X|Wish|Sienta|Crown|Camry|Fortuner|Hiace|Vanguard|Rush|Belta|Ractis|Runx|Spacio|IST|Ipsum|Raum|Aqua|Prius|Alphard|Dyna|Coaster',
+  'Nissan': 'Note|X-Trail|Juke|March|Tiida|Wingroad|Navara|Serena|Sylphy|Dualis|Qashqai|Patrol|Caravan|Latio|Bluebird|NV200|Sunny|Teana|Murano',
+  'Subaru': 'Forester|Impreza|Legacy|Outback|XV|Levorg|WRX|Exiga|Trezia|Crosstrek',
+  'Mazda': 'Demio|CX-5|Axela|Atenza|CX-3|Premacy|Verisa|BT-50|Mazda 3|Mazda 6|Bongo|Tribute',
+  'Honda': 'Fit|Vezel|CR-V|Civic|Freed|Accord|Stream|Insight|Airwave|Odyssey|HR-V|Shuttle|Jazz|Grace',
+  'Mercedes-Benz': 'C-Class|E-Class|S-Class|A-Class|GLA|GLC|GLE|ML|Sprinter|Vito|G-Class|B-Class|CLA',
+  'BMW': '1 Series|3 Series|5 Series|7 Series|X1|X3|X5|X6|Mini',
+  'Volkswagen': 'Golf|Polo|Passat|Tiguan|Touareg|Jetta|Amarok|Caddy|Beetle|Touran',
+  'Mitsubishi': 'Outlander|Pajero|L200|Canter|RVR|Lancer|Colt|Delica|Fuso|ASX|Montero|Mirage',
+  'Isuzu': 'D-Max|NPR|FRR|MU-X|NQR|FTR|Elf|Bighorn|Trooper|FVR',
+  'Ford': 'Ranger|Focus|Fiesta|EcoSport|Everest|Escape|Explorer|Transit|Kuga|F-150',
+  'Hyundai': 'Tucson|Santa Fe|i10|i20|Elantra|Accent|Creta|Kona|H-1|County|Sonata',
+  'Kia': 'Sportage|Sorento|Rio|Picanto|Cerato|Seltos|Carens|Soul|Stonic',
+  'Suzuki': 'Swift|Alto|Escudo|Jimny|Vitara|Wagon R|Baleno|Ertiga|Every|Carry|Ignis|SX4',
+  'Peugeot': '206|207|208|301|308|3008|5008|407|508|Partner|Boxer|Expert',
+  'Land Rover': 'Defender|Discovery|Discovery Sport|Range Rover|Range Rover Sport|Evoque|Velar|Freelander',
+  'Lexus': 'RX|LX|GX|NX|ES|IS|LS|CT',
+  'Audi': 'A3|A4|A5|A6|Q3|Q5|Q7|A1|TT',
+  'Volvo': 'XC60|XC90|XC40|S60|S90|V40|V60|FH|FM',
+  'Other': ''
+};
+var SVC_VALUABLE_KINDS = [{ v: 'cash', l: 'Cash' }, { v: 'laptop', l: 'Laptop' }, { v: 'phone', l: 'Phone' }, { v: 'bags', l: 'Bags' }, { v: 'documents', l: 'Documents' }, { v: 'electronics', l: 'Electronics' }, { v: 'jewellery', l: 'Jewellery' }, { v: 'other', l: 'Other' }];
+var SVC_CONDITION_CHECKLIST = [
+  { id: 'front_bumper', label: 'Front bumper' }, { id: 'rear_bumper', label: 'Rear bumper' }, { id: 'bonnet', label: 'Bonnet' }, { id: 'roof', label: 'Roof' },
+  { id: 'doors_left', label: 'Doors - left side' }, { id: 'doors_right', label: 'Doors - right side' }, { id: 'windscreen', label: 'Windscreen / windows' }, { id: 'mirrors', label: 'Mirrors and lights' },
+  { id: 'wheels', label: 'Wheels / rims / tyres' }, { id: 'seats', label: 'Seats and upholstery' }, { id: 'dashboard', label: 'Dashboard and interior trim' }, { id: 'boot', label: 'Boot / load area' }
+];
+var SVC_DISCLAIMER_DEFAULT = {
+  valuables: 'The business is not responsible for cash, valuables or personal items left in the vehicle unless they are recorded here and acknowledged by the customer.',
+  requireAck: true,
+  carWashWaiver: 'Existing scratches, dents and damage have been recorded above. The business is not liable for pre-existing damage or for loose items.'
+};
+var SVC_VALUABLES_BANNER = 'CUSTOMER VALUABLES RECORDED';
+var SVC_SALON_SPECIALTIES = [{ key: 'hair_stylist', label: 'Hair Stylist' }, { key: 'braider', label: 'Braider' }, { key: 'loctician', label: 'Loctician' }, { key: 'makeup_artist', label: 'Makeup Artist' }, { key: 'nail_technician', label: 'Nail Technician' }, { key: 'barber', label: 'Barber' }];
+var SVC_PERM_BUNDLES = {
+  worker: ['svc:view', 'svc:status', 'svc:inventory'],
+  receptionist: ['svc:view', 'svc:create', 'svc:edit', 'svc:assign', 'svc:status', 'svc:customers', 'svc:history'],
+  cashier: ['svc:view', 'svc:pay', 'svc:customers', 'svc:history'],
+  supervisor: ['svc:view', 'svc:create', 'svc:edit', 'svc:assign', 'svc:status', 'svc:quote', 'svc:charge', 'svc:inventory', 'svc:customers', 'svc:financials', 'svc:pay', 'svc:cancel', 'svc:history']
+};
+var SVC_GENERIC_TERMS = {
+  job: 'Job', jobs: 'Jobs', customer: 'Customer', customers: 'Customers', asset: 'Item', assets: 'Items', staff: 'Staff', staffs: 'Staff', service: 'Service', services: 'Services',
+  appointment: 'Appointment', appointments: 'Appointments', newButton: '+ New Job', walkInButton: '+ New Job', bookingButton: '+ Booking', quickButton: 'Quick add', queue: 'Queue',
+  tabLabel: '🔧 Services Counter', registerLabel: '🗂️ Client Registry', appointmentsLabel: '📅 Bookings', boardLabel: 'Board', listLabel: 'List', reportsLabel: 'Reports', ready: 'Ready', done: 'Completed'
+};
+
+/* ===== the ten templates (built once, lazily resolved by svcGetTemplate) ===== */
+var SVC_TYPES = (function () {
+  var R = {};
+  function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''); }
+  function opt(list) { return list.map(function (s) { return { v: slug(s), l: s }; }); }
+  function F(id, type, label, o) {
+    var f = { id: id, type: type, label: label, required: false, storesIn: 'data' }, k;
+    if (o) for (k in o) f[k] = o[k];
+    return f;
+  }
+  function sec(id, title, icon, phase, fields, o) {
+    var s = { id: id, title: title, icon: icon, phase: phase, collapsed: false, fields: fields }, k;
+    if (o) for (k in o) s[k] = o[k];
+    return s;
+  }
+  /* customer section (storesIn customer). req: 'quickOff' | true | false for name/phone */
+  function custSec(nameLabel, title, nameReq, phoneReq) {
+    return sec('customer', title || 'Customer', '👤', 'intake', [
+      F('cust_name', 'text', nameLabel, { required: nameReq, storesIn: 'customer', placeholder: 'e.g. Jane Wanjiru', width: 'half', autocomplete: 'customer' }),
+      F('cust_phone', 'phone', 'Phone', { required: phoneReq, storesIn: 'customer', validate: 'phone', keyboard: 'tel', placeholder: 'e.g. 0712 345 678', width: 'half', autocomplete: 'customer' }),
+      F('cust_alt_phone', 'phone', 'Alternative phone', { storesIn: 'customer', validate: 'phoneOptional', level: 'warn', keyboard: 'tel', width: 'half' }),
+      F('cust_email', 'email', 'Email', { storesIn: 'customer', validate: 'email', keyboard: 'email', width: 'half' }),
+      F('cust_notes', 'longtext', 'Customer notes', { storesIn: 'customer', rows: 2 })
+    ]);
+  }
+  function servicesSec(req, title) { return sec('services', title || 'Services', '🧾', 'intake', [F('services', 'widget', title || 'Services', { widget: 'services', required: req, storesIn: 'job' })]); }
+  function staffSec(title, id, role) {
+    var f = F(id || 'staff', 'widget', title, { widget: 'staff', storesIn: 'job' });
+    if (role) f.staffRole = role;
+    return sec('staff', title, '👷', 'both', [f], { collapsed: true });
+  }
+  function matSec(title) { return sec('materials', title, '🧴', 'both', [F('parts', 'widget', title, { widget: 'materials', storesIn: 'job' })], { collapsed: true }); }
+  function quoteSec() { return sec('quote', 'Quote & approval', '📝', 'both', [F('quote', 'widget', 'Quote', { widget: 'quote', storesIn: 'job' })], { collapsed: true }); }
+  function paySec() { return sec('payment', 'Payment', '💵', 'both', [F('payment', 'widget', 'Payment', { widget: 'payment', storesIn: 'job' })], { collapsed: true }); }
+  function statusSec() { return sec('status', 'Status', '🚦', 'both', [F('status', 'dropdown', 'Status', { storesIn: 'job', default: '' })], { collapsed: true }); }
+  var STAMP = { in_progress: 'startedAt', ready: 'readyAt', completed: 'completedAt', collected: 'collectedAt' };
+  var NOTIFY_ON = { ready: 'ready', awaiting_approval: 'approval_needed', confirmed: 'appointment_confirmed' };
+  /* [key, label, icon, color, group, phase, next[], {extra}] */
+  function ST(rows) {
+    return rows.map(function (r) {
+      var o = { key: r[0], label: r[1], icon: r[2], color: r[3], group: r[4], phase: r[5], scope: 'job', terminal: r[5] >= 3, successful: r[5] === 3 ? true : (r[5] === 4 ? false : null), next: r[6] || [], requires: [] }, k, x = r[7] || {};
+      if (STAMP[o.key]) o.stamp = STAMP[o.key];
+      if (NOTIFY_ON[o.key]) o.notifyOn = NOTIFY_ON[o.key];
+      for (k in x) o[k] = x[k];
+      return o;
+    });
+  }
+  function QG(rows) { return rows.map(function (r) { return { key: r[0], label: r[1], statuses: r[2], color: r[3] || '' }; }); }
+  function D(rows) { return rows.map(function (r) { return { id: r[0], label: r[1], metric: r[2], tone: r[3] || 'neutral' }; }); }
+  function seedId(type, name) { return 'sc-seed-' + type + '-' + slug(name); }
+  var TIER = { sedan: 1, hatchback: 1, suv: 1.4, crossover: 1.4, pickup: 1.6, van: 1.8, minibus: 2, bus: 3, truck: 3, motorcycle: 0.4, other: 1 };
+  function tiers(base) { var o = {}, k; for (k in TIER) o[k] = Math.max(50, Math.round(base * TIER[k] / 50) * 50); return o; }
+  function C(name, unit, qty) { return { code: '', name: name, unit: unit, qty: qty }; }
+  /* seed rows: [name, category, price, durationMin, staffRole, consumption[], {priceMode, byAsset, description}] */
+  function seeds(type, rows) {
+    return rows.map(function (r, i) {
+      var x = r[6] || {};
+      return { id: seedId(type, r[0]), name: r[0], category: r[1], description: x.description || '', price: r[2], priceMode: x.priceMode || 'fixed', priceByAssetType: x.byAsset ? tiers(r[2]) : null,
+        durationMin: r[3], staffRole: r[4] || '', consumption: r[5] || [], serviceTypes: [type], invCode: '', active: true, sort: (i + 1) * 10 };
+    });
+  }
+  function notify(nouns) {
+    /* nouns: {item:'your vehicle {plate}', itemShort:'vehicle', ready:'...'} */
+    var ev = {
+      received: { tpl: 'Hello {first_name}, we have received ' + nouns.item + ' at {business} (job {job_no}). We will keep you updated.' },
+      ready: { tpl: nouns.ready },
+      approval_needed: { tpl: 'Hello {first_name}, ' + nouns.item + ' needs your approval before we continue. Estimated amount: {amount}. Please reply to confirm. - {business}' },
+      balance_due: { tpl: 'Hello {first_name}, a balance of {balance} is due for job {job_no} at {business}. Thank you.' },
+      appointment_confirmed: { tpl: 'Hello {first_name}, your appointment at {business} is confirmed for {date} at {time}. See you then.' },
+      appointment_reminder: { tpl: 'Reminder: Hello {first_name}, you have an appointment at {business} on {date} at {time}. Reply if you need to reschedule.' },
+      completed_thanks: { tpl: 'Thank you {first_name} for choosing {business}. We hope to see you again soon.' }
+    };
+    return { events: ev };
+  }
+  var N_VEHICLE = notify({ item: 'your vehicle {plate}', ready: 'Hello {first_name}, your vehicle {plate} is ready for collection from {business}. Total amount due: {amount}. Thank you.' });
+  var N_DEVICE = notify({ item: 'your {device}', ready: 'Hello {first_name}, your {device} is ready for collection from {business}. Total amount due: {amount}. Thank you.' });
+  var N_CLIENT = notify({ item: 'your booking', ready: 'Hello {first_name}, we are ready for you at {business}. Please come in.' });
+  var N_LAUNDRY = notify({ item: 'your laundry', ready: 'Hello {first_name}, your laundry (ticket {job_no}) is ready for collection from {business}. Total amount due: {amount}. Thank you.' });
+  var N_TAILOR = notify({ item: 'your garment ({asset})', ready: 'Hello {first_name}, your garment ({asset}) is ready for collection from {business}. Total amount due: {amount}. Thank you.' });
+  var N_CLEAN = notify({ item: 'your cleaning job', ready: 'Hello {first_name}, your cleaning job ({job_no}) is complete. Amount due: {amount}. Thank you for choosing {business}.' });
+  var N_OTHER = notify({ item: 'your order', ready: 'Hello {first_name}, your order {job_no} is ready from {business}. Total amount due: {amount}. Thank you.' });
+
+  /* ---------- reusable sections ---------- */
+  function vehicleSec(title) {
+    return sec('vehicle', title || 'Vehicle', '🚗', 'intake', [
+      F('veh_plate', 'plate', 'Number plate / registration', { required: true, storesIn: 'asset', assetAttr: 'plate', validate: 'plate', level: 'warn', autocomplete: 'asset', placeholder: 'e.g. KDA 123A', width: 'half' }),
+      F('veh_make', 'combo', 'Vehicle make', { required: true, storesIn: 'asset', assetAttr: 'make', optionsFrom: 'vehicleMakes', allowOther: true, width: 'half' }),
+      F('veh_model', 'combo', 'Vehicle model', { required: true, storesIn: 'asset', assetAttr: 'model', optionsFrom: 'vehicleModels:veh_make', allowOther: true, width: 'half' }),
+      F('veh_type', 'dropdown', 'Vehicle type', { required: true, storesIn: 'asset', assetAttr: 'type', optionsFrom: 'vehicleTypes', options: SVC_VEHICLE_TYPES.slice(), width: 'half' }),
+      F('veh_color', 'text', 'Colour', { storesIn: 'asset', assetAttr: 'color', width: 'half' }),
+      F('veh_year', 'year', 'Year', { storesIn: 'asset', assetAttr: 'year', validate: 'year', level: 'warn', keyboard: 'numeric', width: 'half' }),
+      F('veh_odometer', 'odometer', 'Mileage / odometer (km)', { storesIn: 'asset', assetAttr: 'odometer', validate: 'odometer', level: 'warn', keyboard: 'numeric', width: 'half' }),
+      F('veh_notes', 'longtext', 'Vehicle notes', { storesIn: 'asset', assetAttr: 'notes', rows: 2 })
+    ]);
+  }
+  function labourField() { return F('rep_labour', 'money', 'Labour charge', { storesIn: 'job', maps: 'charge:labour', validate: 'money', keyboard: 'decimal', width: 'half' }); }
+
+  /* ============ PHONE REPAIR ============ */
+  R.phone_repair = {
+    key: 'phone_repair', version: 1, label: 'Phone Repair', icon: '📱', description: 'Phones, tablets and smartwatches: intake, diagnosis, parts, quote, repair and collection.',
+    prefix: 'PR', assetKind: 'phone',
+    terms: { job: 'Repair Job', jobs: 'Repair Jobs', customer: 'Customer', customers: 'Customers', asset: 'Device', assets: 'Devices', staff: 'Technician', staffs: 'Technicians', service: 'Repair', services: 'Repairs',
+      appointment: 'Drop-off', appointments: 'Drop-offs', newButton: '+ New Repair', walkInButton: '+ New Repair', bookingButton: '+ Booking', quickButton: 'Quick check-in', queue: 'Repair Queue',
+      tabLabel: '🔧 Repair Counter', registerLabel: '🗂️ Client Registry', appointmentsLabel: '📅 Bookings', boardLabel: 'Repair Board', listLabel: 'Repairs', reportsLabel: 'Reports', ready: 'Ready for collection', done: 'Completed' },
+    sections: [
+      custSec('Customer name', 'Customer', true, 'quickOff'),
+      sec('device', 'Device', '📱', 'intake', [
+        F('dev_type', 'dropdown', 'Device type', { required: true, storesIn: 'asset', assetAttr: 'type', options: opt(['Phone', 'Tablet', 'Laptop', 'Smartwatch', 'Other']), default: 'phone', width: 'half' }),
+        F('dev_brand', 'combo', 'Brand', { required: true, storesIn: 'asset', assetAttr: 'brand', optionsFrom: 'phoneBrands', allowOther: true, width: 'half' }),
+        F('dev_model', 'text', 'Model', { required: true, storesIn: 'asset', assetAttr: 'model', placeholder: 'e.g. Galaxy A14', width: 'half' }),
+        F('dev_imei', 'imei', 'IMEI (dial *#06#)', { storesIn: 'asset', assetAttr: 'imei', validate: 'imei', level: 'warn', keyboard: 'numeric', autocomplete: 'asset', visibleWhen: { field: 'dev_type', in: ['phone', 'tablet'] }, maxLength: 17, width: 'half' }),
+        F('dev_imei2', 'imei', 'IMEI 2', { storesIn: 'asset', assetAttr: 'imei2', validate: 'imei', level: 'warn', keyboard: 'numeric', visibleWhen: { field: 'dev_type', in: ['phone', 'tablet'] }, maxLength: 17, width: 'half' }),
+        F('dev_serial', 'text', 'Serial number', { storesIn: 'asset', assetAttr: 'serial', autocomplete: 'asset', width: 'half' }),
+        F('dev_color', 'text', 'Colour', { storesIn: 'asset', assetAttr: 'color', width: 'half' }),
+        F('dev_condition', 'longtext', 'Condition on arrival', { rows: 2, placeholder: 'Scratches, cracks, powers on?' }),
+        F('dev_accessories', 'chips', 'Accessories left', { options: opt(['Charger', 'SIM', 'SD card', 'Case', 'Battery']) }),
+        F('dev_passcode', 'text', 'Passcode / pattern (optional)', { sensitive: true, placeholder: 'Only if needed for testing' })
+      ]),
+      sec('problem', 'Reported problem', '⚠️', 'intake', [F('rep_problem', 'longtext', 'Reported problem', { required: true, rows: 3, placeholder: 'What is wrong with the device?' })]),
+      sec('diagnosis', 'Diagnosis', '🔍', 'both', [
+        F('rep_diagnosis', 'longtext', 'Diagnosis', { rows: 2 }),
+        F('rep_recommended', 'longtext', 'Recommended repair', { rows: 2 })
+      ], { collapsed: true }),
+      sec('repair', 'Repair', '🔧', 'both', [
+        F('services', 'widget', 'Repair services', { widget: 'services', storesIn: 'job' }),
+        F('parts', 'widget', 'Parts required / used', { widget: 'materials', storesIn: 'job' }),
+        labourField(),
+        F('rep_tech', 'widget', 'Technician', { widget: 'staff', storesIn: 'job', staffRole: 'technician' })
+      ], { collapsed: true }),
+      quoteSec(), paySec(), statusSec(),
+      sec('legacy', 'Earlier record details', '🗃️', 'work', [
+        F('leg_id_number', 'text', 'ID number', { width: 'half' }),
+        F('leg_item_details', 'longtext', 'Item details (as first recorded)', { rows: 3 }),
+        F('leg_notes', 'longtext', 'Service notes (as first recorded)', { rows: 2 })
+      ], { collapsed: true, when: { any: [{ field: 'leg_item_details', truthy: true }, { field: 'leg_id_number', truthy: true }, { field: 'leg_notes', truthy: true }] } })
+    ],
+    quick: { fields: ['cust_name', 'cust_phone', 'dev_brand', 'dev_model', 'rep_problem'], required: ['dev_brand', 'rep_problem'], submitLabel: 'Check in device' },
+    statuses: ST([
+      ['received', 'Received', '📥', '#7f8c8d', 'received', 0, ['diagnosing', 'awaiting_approval', 'in_progress', 'cancelled']],
+      ['diagnosing', 'Diagnosing', '🔍', '#8e44ad', 'diagnosing', 1, ['awaiting_approval', 'awaiting_parts', 'in_progress', 'ready', 'cancelled']],
+      ['awaiting_approval', 'Awaiting Approval', '⏳', '#e67e22', 'approval', 1, ['in_progress', 'awaiting_parts', 'diagnosing', 'cancelled']],
+      ['awaiting_parts', 'Awaiting Parts', '📦', '#d35400', 'parts', 1, ['in_progress', 'diagnosing', 'cancelled']],
+      ['in_progress', 'In Progress', '🔧', '#2980b9', 'working', 1, ['ready', 'awaiting_parts', 'awaiting_approval', 'diagnosing', 'cancelled']],
+      ['ready', 'Ready', '✅', '#27ae60', 'ready', 2, ['completed', 'collected', 'in_progress', 'cancelled']],
+      ['completed', 'Completed', '🏁', '#16a085', 'done', 3, ['collected']],
+      ['collected', 'Collected', '🤝', '#1e8449', 'done', 3, []],
+      ['cancelled', 'Cancelled', '✖️', '#c0392b', 'cancelled', 4, []]
+    ]),
+    initialStatus: 'received', appointmentInitialStatus: 'received', createStatuses: ['received', 'diagnosing', 'in_progress'],
+    queueGroups: QG([['received', 'Received', ['received'], '#7f8c8d'], ['diagnosing', 'Diagnosing', ['diagnosing'], '#8e44ad'], ['approval', 'Approval', ['awaiting_approval'], '#e67e22'], ['parts', 'Parts', ['awaiting_parts'], '#d35400'], ['working', 'In repair', ['in_progress'], '#2980b9'], ['ready', 'Ready', ['ready'], '#27ae60'], ['done', 'Done', ['completed', 'collected'], '#16a085']]),
+    staffRoles: [{ key: 'technician', label: 'Technician', bundle: 'worker' }, { key: 'receptionist', label: 'Receptionist', bundle: 'receptionist' }],
+    staffAssignment: { mode: 'single', perTask: false, taskLabels: [], required: false, filterBySpecialty: false, roleKey: 'technician' },
+    catalog: { categories: ['Screen', 'Battery', 'Charging', 'Software', 'Water damage', 'Accessories', 'Other'], seeds: seeds('phone_repair', [
+      ['Screen Replacement', 'Screen', 3500, 60, 'technician', [C('Replacement screen', 'pcs', 1), C('Adhesive', 'ml', 2)], { priceMode: 'from' }],
+      ['Battery Replacement', 'Battery', 2000, 30, 'technician', [C('Replacement battery', 'pcs', 1), C('Adhesive', 'ml', 1)], { priceMode: 'from' }],
+      ['Charging Port Repair', 'Charging', 1500, 45, 'technician', [C('Charging port', 'pcs', 1)]],
+      ['Back Glass Replacement', 'Screen', 2500, 60, 'technician', [C('Back glass', 'pcs', 1)], { priceMode: 'from' }],
+      ['Speaker / Microphone Repair', 'Other', 1200, 45, 'technician'],
+      ['Software / Flashing', 'Software', 1000, 45, 'technician'],
+      ['Water Damage Treatment', 'Water damage', 2500, 120, 'technician', [], { priceMode: 'from' }],
+      ['Data Transfer / Backup', 'Software', 500, 30, 'technician'],
+      ['Screen Protector', 'Accessories', 300, 10, '', [C('Screen protector', 'pcs', 1)]],
+      ['Diagnostic Fee', 'Other', 300, 20, 'technician'],
+      ['Other', 'Other', 0, 30, '', [], { priceMode: 'variable' }]
+    ]) },
+    inventory: { mode: 'optional', partsLabel: 'Parts used', unitChoices: ['pcs', 'ml', 'g'], deductOn: 'record', chargeableDefault: true },
+    quote: { mode: 'optional', requireApprovalWhen: { additionalOver: 0 }, validityDays: 7, statusesAllowingQuote: ['received', 'diagnosing', 'awaiting_approval', 'in_progress'] },
+    pricing: { labour: true, materials: 'chargeable', discount: true, taxMode: 'cfg' },
+    notify: N_DEVICE,
+    dashboard: D([['received', 'Devices received', 'group:received'], ['diagnosing', 'Diagnosing', 'group:diagnosing', 'info'], ['parts', 'Awaiting parts', 'group:parts', 'warn'], ['working', 'In progress', 'group:working', 'info'], ['ready', 'Ready for collection', 'group:ready', 'good'], ['overdue', 'Jobs due', 'overdue', 'bad'], ['outstanding', 'Outstanding', 'outstanding', 'warn']]),
+    reports: ['jobs_created', 'jobs_completed', 'revenue', 'outstanding', 'faults', 'brands', 'imei_lookup', 'warranty_returns', 'avg_turnaround', 'staff_activity', 'materials_used', 'quotes'],
+    appointments: { mode: 'off', defaultDurationMin: 30, slotStepMin: 15, doubleBookingCheck: 'staff', depositField: false },
+    hasAppointments: false,
+    search: { extraKeys: ['asset.imei', 'asset.imei2', 'asset.serial', 'asset.brand', 'asset.model'] },
+    disclaimers: {},
+    legacyMap: { status: { pending: 'received', in_progress: 'in_progress', ready: 'ready', completed: 'completed', collected: 'collected' },
+      fields: { clientName: 'cust_name', clientPhone: 'cust_phone', idNumber: 'leg_id_number', itemDetails: 'leg_item_details', serviceNotes: 'leg_notes', promisedPickup: 'dueAt', quoteAmount: 'quote', laborFee: 'rep_labour' } }
+  };
+
+  /* ============ CAR WASH ============ */
+  R.car_wash = {
+    key: 'car_wash', version: 1, label: 'Car Wash', icon: '🚗', description: 'Vehicle wash and detailing with a live queue, condition record, valuables and per-task staff.',
+    prefix: 'CW', assetKind: 'vehicle',
+    terms: { job: 'Wash Job', jobs: 'Wash Jobs', customer: 'Owner', customers: 'Owners', asset: 'Vehicle', assets: 'Vehicles', staff: 'Assigned Staff', staffs: 'Assigned Staff', service: 'Wash', services: 'Wash Services',
+      appointment: 'Booking', appointments: 'Bookings', newButton: '+ New Vehicle Job', walkInButton: '+ New Vehicle Job', bookingButton: '+ Booking', quickButton: 'Quick add', queue: 'Wash Queue',
+      tabLabel: '🚗 Wash Counter', registerLabel: '🗂️ Vehicle Register', appointmentsLabel: '📅 Bookings', boardLabel: 'Wash Queue', listLabel: 'Wash Jobs', reportsLabel: 'Reports', ready: 'Ready for collection', done: 'Completed' },
+    sections: [
+      custSec('Owner name', 'Customer / Vehicle Owner', 'quickOff', 'quickOff'),
+      vehicleSec('Vehicle'),
+      servicesSec(true, 'Services'),
+      sec('condition', 'Vehicle condition', '🔎', 'both', [
+        F('cond_scratches', 'text', 'Existing scratches', { placeholder: 'e.g. Left rear door' }),
+        F('cond_dents', 'text', 'Existing dents'),
+        F('cond_damage', 'text', 'Existing damage'),
+        F('cond_broken', 'text', 'Broken components'),
+        F('cond_other', 'longtext', 'Other observations', { rows: 2 }),
+        F('cond_photos', 'photo', 'Condition photos', { multiple: true, storesIn: 'job' })
+      ], { collapsed: true }),
+      sec('valuables', 'Valuables / Items Left in Vehicle', '💼', 'both', [
+        F('valuables', 'widget', 'Valuables / Items Left in Vehicle', { widget: 'valuables', storesIn: 'job' }),
+        F('val_ack', 'checkbox', 'Customer acknowledges the valuables disclaimer', { requiredWhen: { field: 'valuables', truthy: true }, visibleWhen: { field: 'valuables', truthy: true }, storesIn: 'data' })
+      ], { collapsed: true }),
+      staffSec('Assigned staff', 'staff'),
+      matSec('Products used'), quoteSec(), paySec(), statusSec()
+    ],
+    quick: { fields: ['veh_plate', 'services'], required: ['veh_plate'], submitLabel: 'Add to queue' },
+    statuses: ST([
+      ['waiting', 'Waiting', '🕒', '#f39c12', 'waiting', 0, ['in_progress', 'ready', 'cancelled']],
+      ['in_progress', 'In Progress', '🚿', '#2980b9', 'working', 1, ['ready', 'waiting', 'completed', 'cancelled']],
+      ['ready', 'Ready', '✅', '#27ae60', 'ready', 2, ['completed', 'in_progress', 'cancelled']],
+      ['completed', 'Completed', '🏁', '#16a085', 'done', 3, []],
+      ['cancelled', 'Cancelled', '✖️', '#c0392b', 'cancelled', 4, []]
+    ]),
+    initialStatus: 'waiting', appointmentInitialStatus: 'waiting', createStatuses: ['waiting', 'in_progress'],
+    queueGroups: QG([['waiting', 'Waiting', ['waiting'], '#f39c12'], ['working', 'In Progress', ['in_progress'], '#2980b9'], ['ready', 'Ready', ['ready'], '#27ae60'], ['done', 'Completed', ['completed'], '#16a085']]),
+    staffRoles: [{ key: 'washer', label: 'Washer', bundle: 'worker' }, { key: 'detailer', label: 'Detailer', bundle: 'worker' }, { key: 'supervisor', label: 'Supervisor', bundle: 'supervisor' }, { key: 'cashier', label: 'Cashier', bundle: 'cashier' }],
+    staffAssignment: { mode: 'multi', perTask: true, taskLabels: ['Exterior', 'Interior', 'Engine', 'Finishing'], required: false, filterBySpecialty: true, roleKey: 'washer' },
+    catalog: { categories: ['Wash', 'Interior', 'Exterior', 'Detailing', 'Add-ons'], seeds: seeds('car_wash', [
+      ['Basic Wash', 'Wash', 500, 30, 'washer', [C('Shampoo', 'ml', 50)], { byAsset: true }],
+      ['Premium Wash', 'Wash', 1500, 60, 'washer', [C('Shampoo', 'ml', 80), C('Interior cleaner', 'ml', 50), C('Tyre shine', 'ml', 30), C('Wax', 'ml', 30)], { byAsset: true }],
+      ['Exterior Wash', 'Exterior', 400, 20, 'washer', [C('Shampoo', 'ml', 40)], { byAsset: true }],
+      ['Interior Cleaning', 'Interior', 500, 30, 'washer', [C('Interior cleaner', 'ml', 60)], { byAsset: true }],
+      ['Vacuum', 'Interior', 200, 15, 'washer', [], { byAsset: true }],
+      ['Waxing', 'Exterior', 800, 45, 'detailer', [C('Wax', 'ml', 60)], { byAsset: true }],
+      ['Full Detailing', 'Detailing', 5000, 180, 'detailer', [C('Shampoo', 'ml', 100), C('Interior cleaner', 'ml', 100), C('Wax', 'ml', 80), C('Tyre shine', 'ml', 40)], { byAsset: true, priceMode: 'from' }],
+      ['Engine Cleaning', 'Add-ons', 800, 30, 'detailer', [C('Degreaser', 'ml', 100)], { byAsset: true }],
+      ['Tyre Shine', 'Add-ons', 200, 10, 'washer', [C('Tyre shine', 'ml', 30)], { byAsset: true }],
+      ['Other', 'Add-ons', 0, 15, '', [], { priceMode: 'variable' }]
+    ]) },
+    inventory: { mode: 'optional', partsLabel: 'Products used', unitChoices: ['ml', 'l', 'g', 'kg', 'pcs'], deductOn: 'record', chargeableDefault: false },
+    quote: { mode: 'optional', requireApprovalWhen: { additionalOver: 500 }, validityDays: 1, statusesAllowingQuote: ['waiting', 'in_progress'] },
+    pricing: { labour: false, materials: 'included', discount: true, taxMode: 'cfg' },
+    notify: N_VEHICLE,
+    dashboard: D([['remaining', 'Vehicles remaining', 'remaining', 'info'], ['waiting', 'Waiting', 'group:waiting', 'warn'], ['working', 'In progress', 'group:working', 'info'], ['ready', 'Ready', 'group:ready', 'good'], ['done', 'Completed', 'group:done', 'good'], ['today', "Today's jobs", 'today'], ['revenue', 'Revenue (collected today)', 'revenue_today', 'good'], ['queue', 'Current queue', 'queue']]),
+    reports: ['vehicles_washed', 'revenue_per_vehicle', 'popular_washes', 'repeat_customers', 'avg_turnaround', 'peak_hours', 'jobs_created', 'jobs_completed', 'revenue', 'outstanding', 'staff_activity', 'inventory_consumption'],
+    appointments: { mode: 'optional', defaultDurationMin: 45, slotStepMin: 15, doubleBookingCheck: 'staff', depositField: true },
+    hasAppointments: true,
+    search: { extraKeys: ['asset.plate', 'asset.make', 'asset.model'] },
+    disclaimers: { valuables: SVC_DISCLAIMER_DEFAULT.valuables, requireAck: true, carWashWaiver: SVC_DISCLAIMER_DEFAULT.carWashWaiver },
+    valuables: { enabled: true, kinds: SVC_VALUABLE_KINDS.slice(), banner: SVC_VALUABLES_BANNER },
+    conditionChecklist: SVC_CONDITION_CHECKLIST.slice()
+  };
+
+  /* ============ GARAGE ============ */
+  R.garage = {
+    key: 'garage', version: 1, label: 'Garage / Auto Repair', icon: '🛠️', description: 'Vehicle repairs: complaint, inspection, diagnosis, parts, labour, quote approval and handover.',
+    prefix: 'GR', assetKind: 'vehicle',
+    terms: { job: 'Repair Job', jobs: 'Repair Jobs', customer: 'Owner', customers: 'Owners', asset: 'Vehicle', assets: 'Vehicles', staff: 'Mechanic', staffs: 'Mechanics', service: 'Repair', services: 'Repairs',
+      appointment: 'Booking', appointments: 'Bookings', newButton: '+ New Repair Job', walkInButton: '+ New Repair Job', bookingButton: '+ Booking', quickButton: 'Quick check-in', queue: 'Repair Queue',
+      tabLabel: '🔧 Garage Counter', registerLabel: '🗂️ Vehicle Register', appointmentsLabel: '📅 Bookings', boardLabel: 'Repair Board', listLabel: 'Repair Jobs', reportsLabel: 'Reports', ready: 'Ready for collection', done: 'Completed' },
+    sections: [
+      custSec('Owner name', 'Customer / Owner', true, 'quickOff'),
+      vehicleSec('Vehicle'),
+      sec('complaint', 'Complaint', '⚠️', 'intake', [
+        F('cmp_problem', 'longtext', 'Reported problem', { required: true, rows: 3 }),
+        F('cmp_symptoms', 'longtext', 'Symptoms', { rows: 2, placeholder: 'Noises, warning lights, when it happens' }),
+        F('cmp_notes', 'longtext', 'Customer notes', { rows: 2 })
+      ]),
+      sec('diagnosis', 'Diagnosis', '🔍', 'both', [
+        F('dx_diagnosis', 'longtext', 'Diagnosis', { rows: 2 }),
+        F('dx_inspection', 'longtext', 'Inspection findings', { rows: 2 }),
+        F('dx_recommended', 'longtext', 'Recommended repair', { rows: 2 })
+      ], { collapsed: true }),
+      sec('repair', 'Repair', '🔧', 'both', [
+        F('services', 'widget', 'Services', { widget: 'services', storesIn: 'job' }),
+        F('parts', 'widget', 'Parts required / used', { widget: 'materials', storesIn: 'job' }),
+        labourField(),
+        F('mechanic', 'widget', 'Mechanic', { widget: 'staff', storesIn: 'job', staffRole: 'mechanic' })
+      ], { collapsed: true }),
+      quoteSec(), paySec(), statusSec()
+    ],
+    quick: { fields: ['cust_name', 'cust_phone', 'veh_plate', 'cmp_problem'], required: ['veh_plate', 'cmp_problem'], submitLabel: 'Receive vehicle' },
+    statuses: ST([
+      ['received', 'Received', '📥', '#7f8c8d', 'received', 0, ['inspection', 'diagnosing', 'awaiting_approval', 'in_progress', 'cancelled']],
+      ['inspection', 'Inspection', '🔎', '#8e44ad', 'diagnosing', 1, ['diagnosing', 'awaiting_approval', 'in_progress', 'ready', 'cancelled']],
+      ['diagnosing', 'Diagnosing', '🩺', '#9b59b6', 'diagnosing', 1, ['awaiting_approval', 'awaiting_parts', 'in_progress', 'ready', 'cancelled']],
+      ['awaiting_approval', 'Awaiting Approval', '⏳', '#e67e22', 'approval', 1, ['in_progress', 'awaiting_parts', 'diagnosing', 'cancelled']],
+      ['awaiting_parts', 'Awaiting Parts', '📦', '#d35400', 'parts', 1, ['in_progress', 'diagnosing', 'cancelled']],
+      ['in_progress', 'In Progress', '🔧', '#2980b9', 'working', 1, ['ready', 'awaiting_parts', 'awaiting_approval', 'diagnosing', 'cancelled']],
+      ['ready', 'Ready', '✅', '#27ae60', 'ready', 2, ['completed', 'in_progress', 'cancelled']],
+      ['completed', 'Completed', '🏁', '#16a085', 'done', 3, []],
+      ['cancelled', 'Cancelled', '✖️', '#c0392b', 'cancelled', 4, []]
+    ]),
+    initialStatus: 'received', appointmentInitialStatus: 'received', createStatuses: ['received', 'inspection', 'diagnosing'],
+    queueGroups: QG([['received', 'Received', ['received'], '#7f8c8d'], ['diagnosing', 'Inspection / Diagnosing', ['inspection', 'diagnosing'], '#8e44ad'], ['approval', 'Approval', ['awaiting_approval'], '#e67e22'], ['parts', 'Parts', ['awaiting_parts'], '#d35400'], ['working', 'In progress', ['in_progress'], '#2980b9'], ['ready', 'Ready', ['ready'], '#27ae60'], ['done', 'Completed', ['completed'], '#16a085']]),
+    staffRoles: [{ key: 'mechanic', label: 'Mechanic', bundle: 'worker' }, { key: 'electrician', label: 'Auto Electrician', bundle: 'worker' }, { key: 'service_advisor', label: 'Service Advisor', bundle: 'receptionist' }, { key: 'supervisor', label: 'Supervisor', bundle: 'supervisor' }],
+    staffAssignment: { mode: 'multi', perTask: false, taskLabels: [], required: false, filterBySpecialty: true, roleKey: 'mechanic' },
+    catalog: { categories: ['Service', 'Brakes', 'Engine', 'Electrical', 'Tyres & wheels', 'Suspension', 'Diagnostics', 'Other'], seeds: seeds('garage', [
+      ['Oil Change', 'Service', 2500, 45, 'mechanic', [C('Engine oil', 'l', 4), C('Oil filter', 'pcs', 1)]],
+      ['Full Service', 'Service', 6000, 150, 'mechanic', [C('Engine oil', 'l', 4), C('Oil filter', 'pcs', 1), C('Air filter', 'pcs', 1), C('Spark plugs', 'pcs', 4)], { priceMode: 'from' }],
+      ['Brake Pad Replacement', 'Brakes', 3000, 90, 'mechanic', [C('Brake pads', 'set', 1)], { priceMode: 'from' }],
+      ['Wheel Alignment', 'Tyres & wheels', 2000, 45, 'mechanic'],
+      ['Wheel Balancing', 'Tyres & wheels', 1500, 40, 'mechanic'],
+      ['Tyre Fitting', 'Tyres & wheels', 500, 20, 'mechanic'],
+      ['Battery Replacement', 'Electrical', 1000, 30, 'electrician', [C('Battery', 'pcs', 1)], { priceMode: 'from' }],
+      ['Diagnostic Scan', 'Diagnostics', 2000, 45, 'electrician'],
+      ['Suspension Repair', 'Suspension', 4000, 180, 'mechanic', [], { priceMode: 'from' }],
+      ['Engine Repair', 'Engine', 10000, 480, 'mechanic', [], { priceMode: 'from' }],
+      ['AC Service', 'Service', 3500, 90, 'mechanic', [C('AC gas', 'g', 400)]],
+      ['Other', 'Other', 0, 60, '', [], { priceMode: 'variable' }]
+    ]) },
+    inventory: { mode: 'optional', partsLabel: 'Parts used', unitChoices: ['pcs', 'set', 'l', 'ml', 'g'], deductOn: 'record', chargeableDefault: true },
+    quote: { mode: 'optional', requireApprovalWhen: { additionalOver: 0 }, validityDays: 7, statusesAllowingQuote: ['received', 'inspection', 'diagnosing', 'awaiting_approval', 'in_progress'] },
+    pricing: { labour: true, materials: 'chargeable', discount: true, taxMode: 'cfg' },
+    notify: N_VEHICLE,
+    dashboard: D([['received', 'Vehicles received', 'group:received'], ['diagnosing', 'Diagnosing', 'group:diagnosing', 'info'], ['approval', 'Awaiting approval', 'group:approval', 'warn'], ['parts', 'Awaiting parts', 'group:parts', 'warn'], ['working', 'In progress', 'group:working', 'info'], ['ready', 'Ready', 'group:ready', 'good'], ['overdue', 'Jobs due', 'overdue', 'bad'], ['outstanding', 'Outstanding', 'outstanding', 'warn']]),
+    reports: ['jobs_created', 'jobs_completed', 'revenue', 'outstanding', 'vehicle_history', 'parts_by_vehicle', 'awaiting_parts_ageing', 'avg_turnaround', 'staff_activity', 'quotes', 'materials_used'],
+    appointments: { mode: 'optional', defaultDurationMin: 60, slotStepMin: 30, doubleBookingCheck: 'staff', depositField: true },
+    hasAppointments: true,
+    search: { extraKeys: ['asset.plate', 'asset.make', 'asset.model'] },
+    disclaimers: {}
+  };
+
+  /* ============ SALON / BARBER (one builder, two configurations) ============ */
+  function salonStatuses() {
+    return ST([
+      ['booked', 'Booking', '📅', '#95a5a6', 'booked', 0, ['confirmed', 'checked_in', 'cancelled', 'no_show'], { scope: 'appt' }],
+      ['confirmed', 'Confirmed', '👍', '#3498db', 'booked', 0, ['checked_in', 'cancelled', 'no_show'], { scope: 'appt' }],
+      ['checked_in', 'Checked In', '🙋', '#f1c40f', 'waiting', 0, ['waiting', 'in_progress', 'cancelled'], { scope: 'both' }],
+      ['waiting', 'Waiting', '🕒', '#f39c12', 'waiting', 0, ['in_progress', 'cancelled'], { scope: 'job' }],
+      ['in_progress', 'In Progress', '💇', '#2980b9', 'working', 1, ['completed', 'waiting', 'cancelled'], { scope: 'job' }],
+      ['completed', 'Completed', '🏁', '#16a085', 'done', 3, [], { scope: 'both' }],
+      ['cancelled', 'Cancelled', '✖️', '#c0392b', 'cancelled', 4, [], { scope: 'both' }],
+      ['no_show', 'No Show', '🚫', '#7f8c8d', 'noshow', 4, [], { scope: 'appt' }]
+    ]);
+  }
+  function salonSections(isBarber) {
+    var client = 'Client name';
+    var s = [
+      custSec(client, 'Client', 'quickOff', 'quickOff'),
+      sec('appointment', 'Appointment / Walk-in', '📅', 'intake', [
+        F('appt_mode', 'dropdown', 'Type', { options: [{ v: 'walk_in', l: 'Walk-in' }, { v: 'booking', l: 'Booking' }], default: 'walk_in', storesIn: 'job', width: 'half' }),
+        F('appt_date', 'date', 'Date', { required: true, visibleWhen: { field: 'appt_mode', eq: 'booking' }, storesIn: 'job', width: 'half' }),
+        F('appt_time', 'time', 'Time', { required: true, visibleWhen: { field: 'appt_mode', eq: 'booking' }, storesIn: 'job', width: 'half' }),
+        F('appt_staff', 'dropdown', 'Preferred staff', { optionsFrom: 'staff:byService', visibleWhen: { field: 'appt_mode', eq: 'booking' }, storesIn: 'job', width: 'half' }),
+        F('appt_notes', 'longtext', 'Notes', { rows: 2 }),
+        F('appt_special', 'longtext', 'Special requests', { rows: 2 }),
+        F('appt_deposit', 'money', 'Deposit', { validate: 'money', keyboard: 'decimal', visibleWhen: { field: 'appt_mode', eq: 'booking' }, storesIn: 'job', width: 'half', help: 'Recorded as a payment on the job' })
+      ]),
+      servicesSec(true, 'Services'),
+      staffSec(isBarber ? 'Barber' : 'Staff', 'staff')
+    ];
+    if (!isBarber) s.push(matSec('Products used'));
+    s.push(quoteSec(), paySec(), statusSec());
+    return s;
+  }
+  function salonBase(key, label, icon, prefix, isBarber) {
+    var specs = isBarber ? [{ key: 'barber', label: 'Barber', bundle: 'worker' }, { key: 'receptionist', label: 'Receptionist', bundle: 'receptionist' }] :
+      SVC_SALON_SPECIALTIES.map(function (x) { return { key: x.key, label: x.label, bundle: 'worker' }; }).concat([{ key: 'receptionist', label: 'Receptionist', bundle: 'receptionist' }]);
+    return {
+      key: key, version: 1, label: label, icon: icon, description: isBarber ? 'Barbershop: fast walk-in queue with optional bookings.' : 'Hair, beauty and nails: bookings, walk-ins, specialist staff and products used.',
+      prefix: prefix, assetKind: 'none',
+      terms: { job: 'Service', jobs: 'Services', customer: 'Client', customers: 'Clients', asset: 'Item', assets: 'Items', staff: isBarber ? 'Barber' : 'Stylist', staffs: isBarber ? 'Barbers' : 'Stylists', service: 'Service', services: 'Services',
+        appointment: 'Appointment', appointments: 'Appointments', newButton: '+ Walk-In', walkInButton: '+ Walk-In', bookingButton: '+ Booking', quickButton: 'Quick walk-in', queue: 'Client Queue',
+        tabLabel: isBarber ? '💈 Barber Counter' : '💇 Salon Counter', registerLabel: '🗂️ Client Register', appointmentsLabel: '📅 Appointments', boardLabel: 'Client Queue', listLabel: 'Services', reportsLabel: 'Reports', ready: 'Ready', done: 'Completed' },
+      sections: salonSections(isBarber),
+      quick: { fields: ['cust_name', 'services'], required: ['services'], submitLabel: 'Start walk-in' },
+      statuses: salonStatuses(),
+      initialStatus: 'waiting', appointmentInitialStatus: 'checked_in', appointmentBookedStatus: 'booked', createStatuses: ['waiting', 'checked_in', 'in_progress'],
+      queueGroups: QG([['booked', 'Upcoming', ['booked', 'confirmed'], '#95a5a6'], ['waiting', 'Waiting', ['checked_in', 'waiting'], '#f39c12'], ['working', 'Being served', ['in_progress'], '#2980b9'], ['done', 'Completed', ['completed'], '#16a085']]),
+      staffRoles: specs,
+      staffAssignment: { mode: 'multi', perTask: false, taskLabels: [], required: false, filterBySpecialty: true, roleKey: isBarber ? 'barber' : 'hair_stylist' },
+      inventory: { mode: 'optional', partsLabel: 'Products used', unitChoices: ['ml', 'g', 'pcs', 'sachet'], deductOn: 'record', chargeableDefault: false },
+      quote: { mode: 'optional', requireApprovalWhen: { additionalOver: 500 }, validityDays: 1, statusesAllowingQuote: ['booked', 'confirmed', 'checked_in', 'waiting', 'in_progress'] },
+      pricing: { labour: false, materials: 'included', discount: true, taxMode: 'cfg' },
+      notify: N_CLIENT,
+      hasAppointments: true,
+      search: { extraKeys: [] },
+      disclaimers: {}
+    };
+  }
+  R.salon = salonBase('salon', 'Salon / Beauty', '💇', 'SL', false);
+  R.salon.catalog = { categories: ['Hair', 'Braids & locs', 'Wigs', 'Makeup', 'Nails', 'Treatments', 'Other'], seeds: seeds('salon', [
+    ['Hair Styling', 'Hair', 1500, 60, 'hair_stylist', [C('Shampoo', 'ml', 30), C('Gel', 'ml', 20)]],
+    ['Braiding', 'Braids & locs', 3000, 180, 'braider', [C('Extensions', 'pack', 3)], { priceMode: 'from' }],
+    ['Dreadlocks', 'Braids & locs', 5000, 240, 'loctician', [], { priceMode: 'from' }],
+    ['Dreadlocks Retwist', 'Braids & locs', 2000, 120, 'loctician', [C('Gel', 'ml', 30)]],
+    ['Twists', 'Braids & locs', 2500, 150, 'braider', [C('Extensions', 'pack', 2)], { priceMode: 'from' }],
+    ['Wig Installation', 'Wigs', 1500, 60, 'hair_stylist', [C('Adhesive', 'ml', 10)]],
+    ['Wig Styling', 'Wigs', 1000, 60, 'hair_stylist'],
+    ['Makeup', 'Makeup', 2500, 60, 'makeup_artist', [], { priceMode: 'from' }],
+    ['Nails', 'Nails', 1000, 60, 'nail_technician', [C('Nail polish', 'ml', 5)], { priceMode: 'from' }],
+    ['Hair Treatment', 'Treatments', 1800, 60, 'hair_stylist', [C('Conditioner', 'ml', 50), C('Shampoo', 'ml', 30)]],
+    ['Hair Coloring', 'Hair', 3000, 120, 'hair_stylist', [C('Hair dye', 'ml', 60)], { priceMode: 'from' }],
+    ['Barber Services', 'Hair', 400, 30, 'barber'],
+    ['Other', 'Other', 0, 30, '', [], { priceMode: 'variable' }]
+  ]) };
+  R.salon.dashboard = D([['upcoming', 'Upcoming appointments', 'appointments_upcoming', 'info'], ['walkins', 'Walk-ins today', 'walkins_today'], ['waiting', 'Waiting clients', 'group:waiting', 'warn'], ['working', 'In progress', 'group:working', 'info'], ['done', 'Completed', 'group:done', 'good'], ['noshow', 'No shows', 'noshows_today', 'bad'], ['staff', 'Available staff', 'available_staff', 'good'], ['revenue', 'Revenue (collected today)', 'revenue_today', 'good']]);
+  R.salon.reports = ['jobs_created', 'jobs_completed', 'revenue', 'revenue_by_service', 'stylist_revenue', 'rebooking_rate', 'no_shows', 'appointments', 'cancellations', 'repeat_customers', 'staff_activity', 'inventory_consumption'];
+  R.salon.appointments = { mode: 'primary', defaultDurationMin: 60, slotStepMin: 15, doubleBookingCheck: 'staff', depositField: true };
+
+  R.barber = salonBase('barber', 'Barber', '💈', 'BB', true);
+  R.barber.catalog = { categories: ['Cuts', 'Beard', 'Grooming', 'Other'], seeds: seeds('barber', [
+    ['Haircut', 'Cuts', 300, 25, 'barber'],
+    ['Kids Haircut', 'Cuts', 200, 20, 'barber'],
+    ['Shave', 'Beard', 200, 15, 'barber'],
+    ['Beard Trim', 'Beard', 200, 15, 'barber'],
+    ['Haircut + Beard', 'Cuts', 450, 40, 'barber'],
+    ['Hair Dye', 'Grooming', 500, 40, 'barber', [C('Hair dye', 'ml', 30)]],
+    ['Facial Scrub', 'Grooming', 300, 20, 'barber'],
+    ['Other', 'Other', 0, 20, '', [], { priceMode: 'variable' }]
+  ]) };
+  R.barber.dashboard = D([['waiting', 'Waiting clients', 'group:waiting', 'warn'], ['working', 'In the chair', 'group:working', 'info'], ['done', 'Completed', 'group:done', 'good'], ['upcoming', 'Upcoming bookings', 'appointments_upcoming', 'info'], ['staff', 'Available barbers', 'available_staff', 'good'], ['revenue', 'Revenue (collected today)', 'revenue_today', 'good']]);
+  R.barber.reports = ['jobs_created', 'jobs_completed', 'revenue', 'revenue_by_service', 'revenue_by_staff', 'repeat_customers', 'no_shows', 'appointments', 'staff_activity'];
+  R.barber.appointments = { mode: 'optional', defaultDurationMin: 30, slotStepMin: 15, doubleBookingCheck: 'staff', depositField: false };
+  R.barber.quick = { fields: ['cust_name', 'services'], required: ['services'], submitLabel: 'Start walk-in' };
+
+  /* ============ LAUNDRY ============ */
+  R.laundry = {
+    key: 'laundry', version: 1, label: 'Laundry', icon: '🧺', description: 'Laundry and dry cleaning: tickets, item counts or weight, express orders and collection.',
+    prefix: 'LD', assetKind: 'garment',
+    terms: { job: 'Laundry Order', jobs: 'Laundry Orders', customer: 'Customer', customers: 'Customers', asset: 'Item', assets: 'Items', staff: 'Attendant', staffs: 'Attendants', service: 'Laundry Service', services: 'Laundry Services',
+      appointment: 'Pickup', appointments: 'Pickups', newButton: '+ New Laundry Order', walkInButton: '+ New Laundry Order', bookingButton: '+ Booking', quickButton: 'Quick drop-off', queue: 'Laundry Queue',
+      tabLabel: '🧺 Laundry Counter', registerLabel: '🗂️ Customer Register', appointmentsLabel: '📅 Pickups', boardLabel: 'Laundry Queue', listLabel: 'Orders', reportsLabel: 'Reports', ready: 'Ready for collection', done: 'Collected' },
+    sections: [
+      custSec('Customer name', 'Customer', true, 'quickOff'),
+      sec('items', 'Items', '👕', 'intake', [
+        F('ld_tag', 'text', 'Ticket / tag number', { help: 'Leave blank to use the job number', storesIn: 'job', width: 'half' }),
+        F('ld_pieces', 'number', 'Number of pieces', { min: 0, keyboard: 'numeric', width: 'half' }),
+        F('ld_weight', 'number', 'Weight (kg)', { min: 0, step: 0.1, keyboard: 'decimal', width: 'half' }),
+        F('ld_items', 'longtext', 'Items', { rows: 2, placeholder: 'e.g. 3 shirts, 2 trousers, 1 duvet' }),
+        F('ld_express', 'yesno', 'Express service?', { width: 'half' }),
+        F('ld_notes', 'longtext', 'Stains / damage noted', { rows: 2 })
+      ]),
+      servicesSec(true, 'Services'),
+      staffSec('Attendant', 'staff'), quoteSec(), paySec(), statusSec()
+    ],
+    quick: { fields: ['cust_name', 'cust_phone', 'ld_pieces', 'services'], required: ['services'], submitLabel: 'Take in laundry' },
+    statuses: ST([
+      ['received', 'Received', '📥', '#7f8c8d', 'received', 0, ['sorting', 'washing', 'cancelled']],
+      ['sorting', 'Sorting', '🗂️', '#8e44ad', 'working', 1, ['washing', 'cancelled']],
+      ['washing', 'Washing', '🫧', '#2980b9', 'working', 1, ['drying', 'sorting', 'cancelled'], { stamp: 'startedAt' }],
+      ['drying', 'Drying', '🌬️', '#3498db', 'working', 1, ['ironing', 'ready', 'washing', 'cancelled']],
+      ['ironing', 'Ironing', '♨️', '#e67e22', 'working', 1, ['ready', 'drying', 'cancelled']],
+      ['ready', 'Ready', '✅', '#27ae60', 'ready', 2, ['collected', 'ironing', 'cancelled']],
+      ['collected', 'Collected', '🤝', '#1e8449', 'done', 3, []],
+      ['cancelled', 'Cancelled', '✖️', '#c0392b', 'cancelled', 4, []]
+    ]),
+    initialStatus: 'received', appointmentInitialStatus: 'received', createStatuses: ['received'],
+    queueGroups: QG([['received', 'Received', ['received'], '#7f8c8d'], ['working', 'In process', ['sorting', 'washing', 'drying', 'ironing'], '#2980b9'], ['ready', 'Ready', ['ready'], '#27ae60'], ['done', 'Collected', ['collected'], '#1e8449']]),
+    staffRoles: [{ key: 'attendant', label: 'Attendant', bundle: 'worker' }, { key: 'cashier', label: 'Cashier', bundle: 'cashier' }],
+    staffAssignment: { mode: 'single', perTask: false, taskLabels: [], required: false, filterBySpecialty: false, roleKey: 'attendant' },
+    catalog: { categories: ['Wash', 'Ironing', 'Dry clean', 'Household', 'Other'], seeds: seeds('laundry', [
+      ['Wash & Fold (per kg)', 'Wash', 150, 120, 'attendant', [C('Detergent', 'g', 50)]],
+      ['Wash & Iron (per kg)', 'Wash', 220, 180, 'attendant', [C('Detergent', 'g', 50)]],
+      ['Ironing Only (per piece)', 'Ironing', 50, 5, 'attendant'],
+      ['Dry Clean - Suit', 'Dry clean', 800, 1440, 'attendant'],
+      ['Dry Clean - Dress', 'Dry clean', 600, 1440, 'attendant'],
+      ['Duvet / Comforter', 'Household', 600, 240, 'attendant'],
+      ['Blanket', 'Household', 400, 240, 'attendant'],
+      ['Curtains (per piece)', 'Household', 300, 240, 'attendant'],
+      ['Other', 'Other', 0, 60, '', [], { priceMode: 'variable' }]
+    ]) },
+    inventory: { mode: 'off', partsLabel: 'Consumables', unitChoices: ['g', 'ml', 'pcs'], deductOn: 'off' },
+    quote: { mode: 'optional', requireApprovalWhen: { additionalOver: 500 }, validityDays: 1, statusesAllowingQuote: ['received', 'sorting'] },
+    pricing: { labour: false, materials: 'none', discount: true, taxMode: 'cfg' },
+    notify: N_LAUNDRY,
+    dashboard: D([['received', 'Orders received', 'group:received'], ['working', 'In process', 'group:working', 'info'], ['ready', 'Ready for collection', 'group:ready', 'good'], ['overdue', 'Pickups due', 'overdue', 'bad'], ['today', "Today's orders", 'today'], ['revenue', 'Revenue (collected today)', 'revenue_today', 'good'], ['outstanding', 'Outstanding', 'outstanding', 'warn']]),
+    reports: ['jobs_created', 'jobs_completed', 'revenue', 'outstanding', 'items_weight', 'pickup_due', 'avg_turnaround', 'repeat_customers', 'staff_activity'],
+    appointments: { mode: 'off', defaultDurationMin: 30, slotStepMin: 30, doubleBookingCheck: 'none', depositField: false },
+    hasAppointments: false,
+    search: { extraKeys: [] },
+    disclaimers: {}
+  };
+
+  /* ============ CLEANING ============ */
+  R.cleaning = {
+    key: 'cleaning', version: 1, label: 'Cleaning Services', icon: '🧹', description: 'Scheduled cleaning jobs at a site: crew, supplies, quote and completion.',
+    prefix: 'CN', assetKind: 'none',
+    terms: { job: 'Cleaning Job', jobs: 'Cleaning Jobs', customer: 'Client', customers: 'Clients', asset: 'Site', assets: 'Sites', staff: 'Crew Member', staffs: 'Crew', service: 'Cleaning Service', services: 'Cleaning Services',
+      appointment: 'Booking', appointments: 'Bookings', newButton: '+ New Cleaning Job', walkInButton: '+ New Cleaning Job', bookingButton: '+ Booking', quickButton: 'Quick job', queue: 'Job Schedule',
+      tabLabel: '🧹 Cleaning Jobs', registerLabel: '🗂️ Client Register', appointmentsLabel: '📅 Schedule', boardLabel: 'Job Board', listLabel: 'Cleaning Jobs', reportsLabel: 'Reports', ready: 'Ready', done: 'Completed' },
+    sections: [
+      custSec('Client name', 'Client', true, 'quickOff'),
+      sec('site', 'Site', '📍', 'intake', [
+        F('site_address', 'longtext', 'Site address / location', { required: true, rows: 2 }),
+        F('site_type', 'dropdown', 'Site type', { options: opt(['Home', 'Office', 'Shop', 'Event', 'Other']), width: 'half' }),
+        F('site_area', 'number', 'Area (sq m)', { min: 0, keyboard: 'numeric', width: 'half' }),
+        F('site_rooms', 'number', 'Number of rooms', { min: 0, keyboard: 'numeric', width: 'half' }),
+        F('site_access', 'longtext', 'Access instructions', { rows: 2, placeholder: 'Gate code, who to ask for, parking' })
+      ]),
+      sec('schedule', 'Schedule', '📅', 'intake', [
+        F('sched_date', 'date', 'Date', { required: true, storesIn: 'job', width: 'half' }),
+        F('sched_time', 'time', 'Start time', { required: true, storesIn: 'job', width: 'half' }),
+        F('sched_duration', 'number', 'Expected duration (hours)', { min: 0, step: 0.5, keyboard: 'decimal', storesIn: 'job', width: 'half' })
+      ]),
+      servicesSec(true, 'Services'),
+      staffSec('Crew', 'staff'), matSec('Supplies used'), quoteSec(), paySec(), statusSec()
+    ],
+    quick: { fields: ['cust_name', 'cust_phone', 'site_address', 'services'], required: ['site_address', 'services'], submitLabel: 'Create job' },
+    statuses: ST([
+      ['booked', 'Booked', '📅', '#95a5a6', 'booked', 0, ['scheduled', 'cancelled', 'no_show']],
+      ['scheduled', 'Scheduled', '🗓️', '#3498db', 'booked', 0, ['on_the_way', 'in_progress', 'cancelled', 'no_show']],
+      ['on_the_way', 'On the Way', '🚐', '#f39c12', 'working', 1, ['in_progress', 'scheduled', 'cancelled', 'no_show']],
+      ['in_progress', 'In Progress', '🧹', '#2980b9', 'working', 1, ['completed', 'cancelled']],
+      ['completed', 'Completed', '🏁', '#16a085', 'done', 3, []],
+      ['cancelled', 'Cancelled', '✖️', '#c0392b', 'cancelled', 4, []],
+      ['no_show', 'No Show', '🚫', '#7f8c8d', 'noshow', 4, []]
+    ]),
+    initialStatus: 'booked', appointmentInitialStatus: 'scheduled', createStatuses: ['booked', 'scheduled', 'in_progress'],
+    queueGroups: QG([['booked', 'Booked / Scheduled', ['booked', 'scheduled'], '#3498db'], ['working', 'On site', ['on_the_way', 'in_progress'], '#2980b9'], ['done', 'Completed', ['completed'], '#16a085']]),
+    staffRoles: [{ key: 'cleaner', label: 'Cleaner', bundle: 'worker' }, { key: 'team_lead', label: 'Team Lead', bundle: 'supervisor' }],
+    staffAssignment: { mode: 'multi', perTask: false, taskLabels: [], required: false, filterBySpecialty: false, roleKey: 'cleaner' },
+    catalog: { categories: ['Home', 'Office', 'Special', 'Other'], seeds: seeds('cleaning', [
+      ['Home Cleaning', 'Home', 3000, 240, 'cleaner', [C('Cleaning chemicals', 'ml', 200)], { priceMode: 'from' }],
+      ['Office Cleaning', 'Office', 5000, 240, 'cleaner', [C('Cleaning chemicals', 'ml', 300)], { priceMode: 'from' }],
+      ['Deep Cleaning', 'Special', 6000, 360, 'cleaner', [], { priceMode: 'from' }],
+      ['Post-Construction Cleaning', 'Special', 8000, 480, 'cleaner', [], { priceMode: 'from' }],
+      ['Carpet Cleaning', 'Special', 2500, 120, 'cleaner', [C('Carpet shampoo', 'ml', 200)], { priceMode: 'from' }],
+      ['Sofa Cleaning', 'Special', 3000, 120, 'cleaner', [C('Upholstery cleaner', 'ml', 150)], { priceMode: 'from' }],
+      ['Window Cleaning', 'Special', 1500, 90, 'cleaner', [], { priceMode: 'from' }],
+      ['Fumigation', 'Special', 4000, 120, 'cleaner', [], { priceMode: 'from' }],
+      ['Move-in / Move-out Cleaning', 'Home', 6000, 300, 'cleaner', [], { priceMode: 'from' }],
+      ['Other', 'Other', 0, 60, '', [], { priceMode: 'variable' }]
+    ]) },
+    inventory: { mode: 'optional', partsLabel: 'Supplies used', unitChoices: ['ml', 'l', 'g', 'pcs'], deductOn: 'record', chargeableDefault: false },
+    quote: { mode: 'required', requireApprovalWhen: { additionalOver: 0 }, validityDays: 7, statusesAllowingQuote: ['booked', 'scheduled', 'on_the_way', 'in_progress'] },
+    pricing: { labour: true, materials: 'included', discount: true, taxMode: 'cfg' },
+    notify: N_CLEAN,
+    dashboard: D([['upcoming', 'Upcoming jobs', 'appointments_upcoming', 'info'], ['booked', 'Booked / scheduled', 'group:booked'], ['working', 'On site', 'group:working', 'info'], ['done', 'Completed', 'group:done', 'good'], ['noshow', 'No shows', 'noshows_today', 'bad'], ['revenue', 'Revenue (collected today)', 'revenue_today', 'good'], ['outstanding', 'Outstanding', 'outstanding', 'warn']]),
+    reports: ['jobs_created', 'jobs_completed', 'revenue', 'outstanding', 'site_jobs', 'appointments', 'no_shows', 'cancellations', 'quotes', 'staff_activity', 'inventory_consumption'],
+    appointments: { mode: 'primary', defaultDurationMin: 180, slotStepMin: 30, doubleBookingCheck: 'staff', depositField: true },
+    hasAppointments: true,
+    search: { extraKeys: [] },
+    disclaimers: {}
+  };
+
+  /* ============ ELECTRONICS REPAIR ============ */
+  R.electronics_repair = {
+    key: 'electronics_repair', version: 1, label: 'Electronics Repair', icon: '🔌', description: 'TVs, laptops, fridges, printers and other equipment: intake, diagnosis, parts, quote and collection.',
+    prefix: 'ER', assetKind: 'equipment',
+    terms: { job: 'Repair Job', jobs: 'Repair Jobs', customer: 'Customer', customers: 'Customers', asset: 'Equipment', assets: 'Equipment', staff: 'Technician', staffs: 'Technicians', service: 'Repair', services: 'Repairs',
+      appointment: 'Booking', appointments: 'Bookings', newButton: '+ New Repair', walkInButton: '+ New Repair', bookingButton: '+ Booking', quickButton: 'Quick check-in', queue: 'Repair Queue',
+      tabLabel: '🔌 Repair Counter', registerLabel: '🗂️ Customer Register', appointmentsLabel: '📅 Bookings', boardLabel: 'Repair Board', listLabel: 'Repairs', reportsLabel: 'Reports', ready: 'Ready for collection', done: 'Completed' },
+    sections: [
+      custSec('Customer name', 'Customer', true, 'quickOff'),
+      sec('equipment', 'Equipment', '🔌', 'intake', [
+        F('eq_type', 'dropdown', 'Equipment type', { required: true, storesIn: 'asset', assetAttr: 'type', options: opt(['TV', 'Laptop', 'Fridge', 'Printer', 'Other']), width: 'half' }),
+        F('eq_brand', 'text', 'Brand', { required: true, storesIn: 'asset', assetAttr: 'brand', width: 'half' }),
+        F('eq_model', 'text', 'Model', { required: true, storesIn: 'asset', assetAttr: 'model', width: 'half' }),
+        F('eq_serial', 'text', 'Serial number', { storesIn: 'asset', assetAttr: 'serial', autocomplete: 'asset', width: 'half' }),
+        F('eq_condition', 'longtext', 'Condition on arrival', { rows: 2 }),
+        F('eq_accessories', 'chips', 'Accessories left', { options: opt(['Power cable', 'Remote', 'Charger', 'Stand', 'Carry bag']) })
+      ]),
+      sec('problem', 'Reported problem', '⚠️', 'intake', [F('rep_problem', 'longtext', 'Reported problem', { required: true, rows: 3 })]),
+      sec('diagnosis', 'Diagnosis', '🔍', 'both', [F('rep_diagnosis', 'longtext', 'Diagnosis', { rows: 2 }), F('rep_recommended', 'longtext', 'Recommended repair', { rows: 2 })], { collapsed: true }),
+      sec('repair', 'Repair', '🔧', 'both', [
+        F('services', 'widget', 'Repair services', { widget: 'services', storesIn: 'job' }),
+        F('parts', 'widget', 'Parts required / used', { widget: 'materials', storesIn: 'job' }),
+        labourField(),
+        F('rep_tech', 'widget', 'Technician', { widget: 'staff', storesIn: 'job', staffRole: 'technician' })
+      ], { collapsed: true }),
+      quoteSec(), paySec(), statusSec()
+    ],
+    quick: { fields: ['cust_name', 'cust_phone', 'eq_type', 'eq_brand', 'rep_problem'], required: ['eq_type', 'rep_problem'], submitLabel: 'Check in equipment' },
+    statuses: ST([
+      ['received', 'Received', '📥', '#7f8c8d', 'received', 0, ['diagnosing', 'awaiting_approval', 'in_progress', 'cancelled']],
+      ['diagnosing', 'Diagnosing', '🔍', '#8e44ad', 'diagnosing', 1, ['awaiting_approval', 'awaiting_parts', 'in_progress', 'ready', 'cancelled']],
+      ['awaiting_approval', 'Awaiting Approval', '⏳', '#e67e22', 'approval', 1, ['in_progress', 'awaiting_parts', 'diagnosing', 'cancelled']],
+      ['awaiting_parts', 'Awaiting Parts', '📦', '#d35400', 'parts', 1, ['in_progress', 'diagnosing', 'cancelled']],
+      ['in_progress', 'In Progress', '🔧', '#2980b9', 'working', 1, ['ready', 'awaiting_parts', 'awaiting_approval', 'diagnosing', 'cancelled']],
+      ['ready', 'Ready', '✅', '#27ae60', 'ready', 2, ['completed', 'collected', 'in_progress', 'cancelled']],
+      ['completed', 'Completed', '🏁', '#16a085', 'done', 3, ['collected']],
+      ['collected', 'Collected', '🤝', '#1e8449', 'done', 3, []],
+      ['cancelled', 'Cancelled', '✖️', '#c0392b', 'cancelled', 4, []]
+    ]),
+    initialStatus: 'received', appointmentInitialStatus: 'received', createStatuses: ['received', 'diagnosing', 'in_progress'],
+    queueGroups: QG([['received', 'Received', ['received'], '#7f8c8d'], ['diagnosing', 'Diagnosing', ['diagnosing'], '#8e44ad'], ['approval', 'Approval', ['awaiting_approval'], '#e67e22'], ['parts', 'Parts', ['awaiting_parts'], '#d35400'], ['working', 'In repair', ['in_progress'], '#2980b9'], ['ready', 'Ready', ['ready'], '#27ae60'], ['done', 'Done', ['completed', 'collected'], '#16a085']]),
+    staffRoles: [{ key: 'technician', label: 'Technician', bundle: 'worker' }, { key: 'receptionist', label: 'Receptionist', bundle: 'receptionist' }],
+    staffAssignment: { mode: 'single', perTask: false, taskLabels: [], required: false, filterBySpecialty: false, roleKey: 'technician' },
+    catalog: { categories: ['Diagnostics', 'TV', 'Computers', 'Appliances', 'Printers', 'Other'], seeds: seeds('electronics_repair', [
+      ['Diagnostic Fee', 'Diagnostics', 500, 30, 'technician'],
+      ['TV Repair', 'TV', 2500, 90, 'technician', [], { priceMode: 'from' }],
+      ['TV Screen / Backlight', 'TV', 6000, 120, 'technician', [], { priceMode: 'from' }],
+      ['Laptop Screen Replacement', 'Computers', 6000, 90, 'technician', [C('Laptop screen', 'pcs', 1)], { priceMode: 'from' }],
+      ['Laptop Reformat / OS Install', 'Computers', 1500, 90, 'technician'],
+      ['Fridge Gas Refill', 'Appliances', 3500, 90, 'technician', [C('Refrigerant gas', 'g', 200)]],
+      ['Printer Servicing', 'Printers', 2000, 60, 'technician', [], { priceMode: 'from' }],
+      ['Microwave / Cooker Repair', 'Appliances', 1500, 60, 'technician', [], { priceMode: 'from' }],
+      ['Other', 'Other', 0, 60, '', [], { priceMode: 'variable' }]
+    ]) },
+    inventory: { mode: 'optional', partsLabel: 'Parts used', unitChoices: ['pcs', 'g', 'ml'], deductOn: 'record', chargeableDefault: true },
+    quote: { mode: 'optional', requireApprovalWhen: { additionalOver: 0 }, validityDays: 7, statusesAllowingQuote: ['received', 'diagnosing', 'awaiting_approval', 'in_progress'] },
+    pricing: { labour: true, materials: 'chargeable', discount: true, taxMode: 'cfg' },
+    notify: N_DEVICE,
+    dashboard: D([['received', 'Items received', 'group:received'], ['diagnosing', 'Diagnosing', 'group:diagnosing', 'info'], ['parts', 'Awaiting parts', 'group:parts', 'warn'], ['working', 'In progress', 'group:working', 'info'], ['ready', 'Ready for collection', 'group:ready', 'good'], ['overdue', 'Jobs due', 'overdue', 'bad'], ['outstanding', 'Outstanding', 'outstanding', 'warn']]),
+    reports: ['jobs_created', 'jobs_completed', 'revenue', 'outstanding', 'fault_mix', 'brands', 'avg_turnaround', 'staff_activity', 'materials_used', 'quotes'],
+    appointments: { mode: 'off', defaultDurationMin: 30, slotStepMin: 15, doubleBookingCheck: 'staff', depositField: false },
+    hasAppointments: false,
+    search: { extraKeys: ['asset.serial', 'asset.brand', 'asset.model'] },
+    disclaimers: {}
+  };
+
+  /* ============ TAILORING ============ */
+  R.tailoring = {
+    key: 'tailoring', version: 1, label: 'Tailoring', icon: '🧵', description: 'Made-to-measure and alterations: measurements, fittings, due dates, deposits and collection.',
+    prefix: 'TL', assetKind: 'garment',
+    terms: { job: 'Tailoring Order', jobs: 'Tailoring Orders', customer: 'Customer', customers: 'Customers', asset: 'Garment', assets: 'Garments', staff: 'Tailor', staffs: 'Tailors', service: 'Tailoring Service', services: 'Tailoring Services',
+      appointment: 'Fitting', appointments: 'Fittings', newButton: '+ New Order', walkInButton: '+ New Order', bookingButton: '+ Booking', quickButton: 'Quick order', queue: 'Order Queue',
+      tabLabel: '🧵 Tailoring Counter', registerLabel: '🗂️ Customer Register', appointmentsLabel: '📅 Fittings', boardLabel: 'Order Board', listLabel: 'Orders', reportsLabel: 'Reports', ready: 'Ready for collection', done: 'Collected' },
+    sections: [
+      custSec('Customer name', 'Customer', true, 'quickOff'),
+      sec('garment', 'Garment', '👔', 'intake', [
+        F('tl_item', 'dropdown', 'Garment', { required: true, storesIn: 'asset', assetAttr: 'item', options: opt(['Shirt', 'Trousers', 'Suit', 'Dress', 'Skirt', 'Uniform', 'Curtains', 'Alteration only', 'Other']), width: 'half' }),
+        F('tl_fabric', 'text', 'Fabric', { width: 'half' }),
+        F('tl_color', 'text', 'Colour', { width: 'half' }),
+        F('tl_due_date', 'date', 'Due date', { required: true, storesIn: 'job', width: 'half' }),
+        F('tl_fitting_date', 'date', 'Fitting date', { storesIn: 'job', width: 'half' })
+      ]),
+      sec('measurements', 'Measurements (cm)', '📏', 'both', [
+        F('tl_chest', 'number', 'Chest', { min: 0, step: 0.5, keyboard: 'decimal', width: 'half' }),
+        F('tl_waist', 'number', 'Waist', { min: 0, step: 0.5, keyboard: 'decimal', width: 'half' }),
+        F('tl_hips', 'number', 'Hips', { min: 0, step: 0.5, keyboard: 'decimal', width: 'half' }),
+        F('tl_shoulder', 'number', 'Shoulder', { min: 0, step: 0.5, keyboard: 'decimal', width: 'half' }),
+        F('tl_sleeve', 'number', 'Sleeve', { min: 0, step: 0.5, keyboard: 'decimal', width: 'half' }),
+        F('tl_length', 'number', 'Length', { min: 0, step: 0.5, keyboard: 'decimal', width: 'half' }),
+        F('tl_inseam', 'number', 'Inseam', { min: 0, step: 0.5, keyboard: 'decimal', width: 'half' }),
+        F('tl_neck', 'number', 'Neck', { min: 0, step: 0.5, keyboard: 'decimal', width: 'half' }),
+        F('tl_measure_notes', 'longtext', 'Other measurements / style notes', { rows: 2 })
+      ], { collapsed: true }),
+      servicesSec(true, 'Services'),
+      staffSec('Tailor', 'staff'), matSec('Fabric & materials'), quoteSec(), paySec(), statusSec()
+    ],
+    quick: { fields: ['cust_name', 'cust_phone', 'tl_item', 'tl_due_date', 'services'], required: ['tl_due_date', 'services'], submitLabel: 'Take order' },
+    statuses: ST([
+      ['received', 'Received', '📥', '#7f8c8d', 'received', 0, ['measured', 'cutting', 'cancelled']],
+      ['measured', 'Measured', '📏', '#8e44ad', 'received', 0, ['cutting', 'cancelled']],
+      ['cutting', 'Cutting', '✂️', '#2980b9', 'working', 1, ['stitching', 'measured', 'cancelled'], { stamp: 'startedAt' }],
+      ['stitching', 'Stitching', '🧵', '#3498db', 'working', 1, ['fitting', 'ready', 'cutting', 'cancelled']],
+      ['fitting', 'Fitting', '👗', '#e67e22', 'fitting', 1, ['alteration', 'ready', 'stitching', 'cancelled']],
+      ['alteration', 'Alteration', '🪡', '#d35400', 'working', 1, ['fitting', 'ready', 'cancelled']],
+      ['ready', 'Ready', '✅', '#27ae60', 'ready', 2, ['collected', 'alteration', 'cancelled']],
+      ['collected', 'Collected', '🤝', '#1e8449', 'done', 3, []],
+      ['cancelled', 'Cancelled', '✖️', '#c0392b', 'cancelled', 4, []]
+    ]),
+    initialStatus: 'received', appointmentInitialStatus: 'received', createStatuses: ['received', 'measured'],
+    queueGroups: QG([['received', 'Received / Measured', ['received', 'measured'], '#7f8c8d'], ['working', 'Cutting & stitching', ['cutting', 'stitching', 'alteration'], '#2980b9'], ['fitting', 'Fitting', ['fitting'], '#e67e22'], ['ready', 'Ready', ['ready'], '#27ae60'], ['done', 'Collected', ['collected'], '#1e8449']]),
+    staffRoles: [{ key: 'tailor', label: 'Tailor', bundle: 'worker' }, { key: 'cutter', label: 'Cutter', bundle: 'worker' }, { key: 'receptionist', label: 'Receptionist', bundle: 'receptionist' }],
+    staffAssignment: { mode: 'multi', perTask: false, taskLabels: [], required: false, filterBySpecialty: false, roleKey: 'tailor' },
+    catalog: { categories: ['Alterations', 'New garments', 'Household', 'Other'], seeds: seeds('tailoring', [
+      ['Hem Trousers / Skirt', 'Alterations', 200, 30, 'tailor'],
+      ['Shorten Sleeves', 'Alterations', 300, 45, 'tailor'],
+      ['Take In / Let Out', 'Alterations', 400, 60, 'tailor'],
+      ['Zip Replacement', 'Alterations', 300, 30, 'tailor', [C('Zip', 'pcs', 1)]],
+      ['Shirt (new)', 'New garments', 1800, 1440, 'tailor', [C('Thread', 'pcs', 1)], { priceMode: 'from' }],
+      ['Trousers (new)', 'New garments', 2000, 1440, 'tailor', [C('Thread', 'pcs', 1)], { priceMode: 'from' }],
+      ['Dress (new)', 'New garments', 3500, 2880, 'tailor', [], { priceMode: 'from' }],
+      ['Suit (new)', 'New garments', 8000, 4320, 'tailor', [], { priceMode: 'from' }],
+      ['School Uniform', 'New garments', 1500, 1440, 'tailor', [], { priceMode: 'from' }],
+      ['Curtains Stitching', 'Household', 1500, 480, 'tailor', [], { priceMode: 'from' }],
+      ['Other', 'Other', 0, 60, '', [], { priceMode: 'variable' }]
+    ]) },
+    inventory: { mode: 'optional', partsLabel: 'Fabric & materials', unitChoices: ['m', 'pcs', 'cm'], deductOn: 'record', chargeableDefault: true },
+    quote: { mode: 'optional', requireApprovalWhen: { additionalOver: 500 }, validityDays: 7, statusesAllowingQuote: ['received', 'measured', 'cutting'] },
+    pricing: { labour: true, materials: 'chargeable', discount: true, taxMode: 'cfg' },
+    notify: N_TAILOR,
+    dashboard: D([['received', 'Orders received', 'group:received'], ['working', 'Cutting & stitching', 'group:working', 'info'], ['fitting', 'Fittings', 'group:fitting', 'warn'], ['ready', 'Ready for collection', 'group:ready', 'good'], ['overdue', 'Overdue', 'overdue', 'bad'], ['revenue', 'Revenue (collected today)', 'revenue_today', 'good'], ['outstanding', 'Outstanding', 'outstanding', 'warn']]),
+    reports: ['jobs_created', 'jobs_completed', 'revenue', 'outstanding', 'fittings', 'ready_by_ageing', 'avg_turnaround', 'repeat_customers', 'staff_activity', 'materials_used'],
+    appointments: { mode: 'optional', defaultDurationMin: 30, slotStepMin: 15, doubleBookingCheck: 'staff', depositField: false },
+    hasAppointments: true,
+    search: { extraKeys: [] },
+    disclaimers: {}
+  };
+
+  /* ============ OTHER (also the fallback for unknown types) ============ */
+  R.other = {
+    key: 'other', version: 1, label: 'Other', icon: '🛎️', description: 'Any other service business: customer, what was left or needed, services, quote and payment.',
+    prefix: 'SV', assetKind: 'none',
+    terms: { job: 'Job', jobs: 'Jobs', customer: 'Customer', customers: 'Customers', asset: 'Item', assets: 'Items', staff: 'Staff', staffs: 'Staff', service: 'Service', services: 'Services',
+      appointment: 'Booking', appointments: 'Bookings', newButton: '+ New Job', walkInButton: '+ New Job', bookingButton: '+ Booking', quickButton: 'Quick add', queue: 'Job Queue',
+      tabLabel: '🔧 Services Counter', registerLabel: '🗂️ Client Registry', appointmentsLabel: '📅 Bookings', boardLabel: 'Job Board', listLabel: 'Jobs', reportsLabel: 'Reports', ready: 'Ready', done: 'Completed' },
+    sections: [
+      custSec('Customer name', 'Customer', true, 'quickOff'),
+      sec('details', 'Service details', '📋', 'intake', [
+        F('oth_item', 'text', 'What was left / what is needed', { required: true, placeholder: 'e.g. Sofa set, passport photos, generator' }),
+        F('oth_details', 'longtext', 'Details', { rows: 3 })
+      ]),
+      servicesSec(false, 'Services'),
+      staffSec('Staff', 'staff'), matSec('Materials used'), quoteSec(), paySec(), statusSec()
+    ],
+    quick: { fields: ['cust_name', 'cust_phone', 'oth_item'], required: ['oth_item'], submitLabel: 'Create job' },
+    statuses: ST([
+      ['received', 'Received', '📥', '#7f8c8d', 'received', 0, ['in_progress', 'ready', 'cancelled']],
+      ['in_progress', 'In Progress', '🔧', '#2980b9', 'working', 1, ['ready', 'received', 'cancelled']],
+      ['ready', 'Ready', '✅', '#27ae60', 'ready', 2, ['completed', 'in_progress', 'cancelled']],
+      ['completed', 'Completed', '🏁', '#16a085', 'done', 3, []],
+      ['cancelled', 'Cancelled', '✖️', '#c0392b', 'cancelled', 4, []]
+    ]),
+    initialStatus: 'received', appointmentInitialStatus: 'received', createStatuses: ['received', 'in_progress'],
+    queueGroups: QG([['received', 'Received', ['received'], '#7f8c8d'], ['working', 'In progress', ['in_progress'], '#2980b9'], ['ready', 'Ready', ['ready'], '#27ae60'], ['done', 'Completed', ['completed'], '#16a085']]),
+    staffRoles: [{ key: 'staff', label: 'Staff', bundle: 'worker' }, { key: 'supervisor', label: 'Supervisor', bundle: 'supervisor' }],
+    staffAssignment: { mode: 'multi', perTask: false, taskLabels: [], required: false, filterBySpecialty: false, roleKey: 'staff' },
+    catalog: { categories: ['General'], seeds: seeds('other', [
+      ['General Service', 'General', 0, 30, '', [], { priceMode: 'variable' }],
+      ['Consultation', 'General', 500, 30, ''],
+      ['Other', 'General', 0, 30, '', [], { priceMode: 'variable' }]
+    ]) },
+    inventory: { mode: 'optional', partsLabel: 'Materials used', unitChoices: ['pcs', 'ml', 'g', 'kg', 'l'], deductOn: 'record', chargeableDefault: true },
+    quote: { mode: 'optional', requireApprovalWhen: { additionalOver: 0 }, validityDays: 7, statusesAllowingQuote: ['received', 'in_progress'] },
+    pricing: { labour: true, materials: 'chargeable', discount: true, taxMode: 'cfg' },
+    notify: N_OTHER,
+    dashboard: D([['received', 'Received', 'group:received'], ['working', 'In progress', 'group:working', 'info'], ['ready', 'Ready', 'group:ready', 'good'], ['overdue', 'Jobs due', 'overdue', 'bad'], ['revenue', 'Revenue (collected today)', 'revenue_today', 'good'], ['outstanding', 'Outstanding', 'outstanding', 'warn']]),
+    reports: ['jobs_created', 'jobs_completed', 'revenue', 'outstanding', 'avg_turnaround', 'customer_visits', 'staff_activity', 'materials_used'],
+    appointments: { mode: 'optional', defaultDurationMin: 30, slotStepMin: 15, doubleBookingCheck: 'staff', depositField: false },
+    hasAppointments: true,
+    search: { extraKeys: [] },
+    disclaimers: {}
+  };
+
+  /* finishing pass: counters (MP 25), inventory/appointment defaults */
+  SVC_TYPE_ORDER.forEach(function (k) {
+    var t = R[k], has = function (key) { return t.statuses.some(function (s) { return s.key === key; }); };
+    function keysWhere(fn) { return t.statuses.filter(fn).map(function (s) { return s.key; }); }
+    var c = [{ key: 'total', label: 'Total', derived: true }, { key: 'remaining', label: 'Remaining', derived: true }];
+    var w = keysWhere(function (s) { return s.key === 'waiting' || s.key === 'checked_in'; });
+    if (w.length) c.push({ key: 'waiting', label: 'Waiting', statuses: w });
+    if (t.staffAssignment) c.push({ key: 'assigned', label: 'Assigned', derived: true });
+    var wk = keysWhere(function (s) { return s.phase === 1 && s.key !== 'diagnosing' && s.key !== 'inspection' && s.key !== 'awaiting_approval' && s.key !== 'awaiting_parts' && s.key !== 'on_the_way' && s.key !== 'fitting'; });
+    if (wk.length) c.push({ key: 'in_progress', label: 'In Progress', statuses: wk });
+    if (has('awaiting_approval')) c.push({ key: 'awaiting_approval', label: 'Awaiting Approval', statuses: ['awaiting_approval'] });
+    if (has('awaiting_parts')) c.push({ key: 'awaiting_parts', label: 'Awaiting Parts', statuses: ['awaiting_parts'] });
+    var rd = keysWhere(function (s) { return s.phase === 2; });
+    if (rd.length) c.push({ key: 'ready', label: 'Ready', statuses: rd });
+    var dn = keysWhere(function (s) { return s.phase === 3; });
+    if (dn.length) c.push({ key: 'completed', label: t.terms.done, statuses: dn });
+    if (has('cancelled')) c.push({ key: 'cancelled', label: 'Cancelled', statuses: ['cancelled'] });
+    if (has('no_show')) c.push({ key: 'no_show', label: 'No Show', statuses: ['no_show'] });
+    t.counters = c;
+    ['cancelled', 'no_show'].forEach(function (sk) {
+      if (has(sk) && !t.queueGroups.some(function (g) { return g.statuses.indexOf(sk) !== -1; })) t.queueGroups.push({ key: sk === 'no_show' ? 'noshow' : sk, label: sk === 'no_show' ? 'No Show' : 'Cancelled', statuses: [sk], color: sk === 'no_show' ? '#7f8c8d' : '#c0392b', hidden: true });
+    });
+    t.walkInButton = t.terms.walkInButton;
+  });
+  return R;
+})();
+
+/* ===== lookups ===== */
+var SVC_MEMO = { tpl: {}, veh: {}, makes: {} };
+function svcDeepFreeze(o) {
+  if (o && typeof o === 'object' && !Object.isFrozen(o)) {
+    Object.freeze(o);
+    var k, ks = Object.keys(o);
+    for (k = 0; k < ks.length; k++) svcDeepFreeze(o[ks[k]]);
+  }
+  return o;
+}
+function svcClone(o) { return o === undefined ? undefined : JSON.parse(JSON.stringify(o)); }
+function svcIsType(typeKey) { return typeof typeKey === 'string' && Object.prototype.hasOwnProperty.call(SVC_TYPES, typeKey); }
+function svcTypeKeyOrOther(typeKey) { return svcIsType(typeKey) ? typeKey : 'other'; }
+function svcTypeList() { return SVC_TYPE_ORDER.map(function (k) { var t = SVC_TYPES[k]; return { key: k, label: t.label, icon: t.icon, description: t.description }; }); }
+
+/* config records may be passed as {'cfg-statuses-car_wash': rec, 'cfg-customFields': rec, 'cfg-vehicle': rec} or as plain values {statuses, customFields, vehicle} */
+function svcCfgValue(rec) { return rec && typeof rec === 'object' ? (rec.value && typeof rec.value === 'object' ? rec.value : rec) : null; }
+function svcTemplateOverrides(typeKey, override) {
+  var out = { statuses: null, customFields: null, sig: '' };
+  var st = null, cf = null;
+  if (override && typeof override === 'object') {
+    st = override.statuses || svcCfgValue(override['cfg-statuses-' + typeKey]);
+    cf = override.customFields || svcCfgValue(override['cfg-customFields']);
+  } else if (typeof svcConfigGet === 'function') {
+    try {
+      var r1 = svcConfigGet('cfg-statuses-' + typeKey), r2 = svcConfigGet('cfg-customFields');
+      st = svcCfgValue(r1); cf = svcCfgValue(r2);
+      /* svcConfigGet returns the VALUE (no rev/updatedAt), so the memo key is the content itself: a changed config can never serve a stale template */
+      out.sig = '';
+    } catch (e) { st = null; cf = null; }
+  }
+  if (cf && !Array.isArray(cf)) cf = cf.fields;
+  out.statuses = st && typeof st === 'object' ? st : null;
+  out.customFields = Array.isArray(cf) ? cf : null;
+  if (!out.sig) out.sig = JSON.stringify([out.statuses, out.customFields]);
+  return out;
+}
+function svcOptList(list) {
+  return svcArr(list).map(function (o) { return o && typeof o === 'object' ? { v: String(o.v != null ? o.v : o.value), l: String(o.l != null ? o.l : (o.label != null ? o.label : o.v)) } : { v: svcSlug(o) || String(o), l: String(o) }; });
+}
+function svcApplyStatusConfig(t, cfg) {
+  if (!cfg) return;
+  var labels = cfg.labels || {}, hidden = svcArr(cfg.hidden), i, s;
+  for (i = 0; i < t.statuses.length; i++) {
+    s = t.statuses[i];
+    if (labels[s.key] && String(labels[s.key]).trim()) s.label = String(labels[s.key]).trim().slice(0, 40);
+    if (hidden.indexOf(s.key) !== -1 && s.key !== t.initialStatus && s.key !== t.appointmentInitialStatus) s.hidden = true;
+  }
+  var cust = svcArr(cfg.custom);
+  for (i = 0; i < cust.length; i++) {
+    var c = cust[i];
+    if (!c || !/^x_[a-z0-9_]{1,30}$/.test(String(c.key || '')) || !c.label) continue;
+    if (t.statuses.some(function (x) { return x.key === c.key; })) continue;
+    var idx = -1, j;
+    for (j = 0; j < t.statuses.length; j++) if (t.statuses[j].key === c.after) idx = j;
+    if (idx === -1) { for (j = 0; j < t.statuses.length; j++) if (t.statuses[j].phase === 1) idx = j; }
+    if (idx === -1) idx = 0;
+    var after = t.statuses[idx], group = c.group || after.group;
+    var ns = { key: c.key, label: String(c.label).slice(0, 40), icon: c.icon || '🔹', color: c.color || after.color, group: group, phase: after.phase >= 3 ? 1 : after.phase, scope: after.scope === 'appt' ? 'job' : after.scope, terminal: false, successful: null, next: after.next.slice(), requires: [], custom: true };
+    if (ns.next.indexOf(after.key) === -1) ns.next.push(after.key);
+    ns.next = ns.next.filter(function (k) { return k !== c.key; });
+    if (after.next.indexOf(c.key) === -1) after.next = after.next.concat([c.key]);
+    t.statuses.splice(idx + 1, 0, ns);
+    var qg = null, q;
+    for (q = 0; q < t.queueGroups.length; q++) if (t.queueGroups[q].key === group) qg = t.queueGroups[q];
+    if (!qg) for (q = 0; q < t.queueGroups.length; q++) if (t.queueGroups[q].statuses.indexOf(after.key) !== -1) qg = t.queueGroups[q];
+    if (qg) qg.statuses.push(c.key);
+  }
+}
+function svcApplyCustomFields(t, fields) {
+  if (!fields || !fields.length) return;
+  var used = {}, out = [], i, j;
+  t.sections.forEach(function (s) { s.fields.forEach(function (f) { used[f.id] = 1; }); });
+  var list = fields.filter(function (f) { return f && f.active !== false && /^cf_[a-z0-9_]{1,50}$/.test(String(f.id || '')) && svcArr(f.serviceTypes).indexOf(t.key) !== -1 && !used[f.id]; });
+  list.sort(function (a, b) { return (Number(a.order) || 0) - (Number(b.order) || 0); });
+  for (i = 0; i < list.length; i++) {
+    var c = list[i], type = SVC_FIELD_TYPES.indexOf(c.type) !== -1 && c.type !== 'widget' ? c.type : 'text';
+    var f = { id: c.id, type: type, label: String(c.label || c.id), required: !!c.required, storesIn: 'data', custom: true };
+    if (type === 'dropdown' || type === 'chips') f.options = svcOptList(c.options);
+    if (type === 'photo') { f.storesIn = 'job'; f.multiple = true; }
+    if (c.help) f.help = String(c.help);
+    out.push(f);
+  }
+  if (out.length) t.sections.push({ id: 'extra', title: 'Extra details', icon: '➕', phase: 'both', collapsed: false, fields: out });
+  j = 0;
+}
+/* svcGetTemplate(typeKey, cfgOverride?) -> deep-frozen resolved template (unknown type => 'other'; memoised) */
+function svcGetTemplate(typeKey, cfgOverride) {
+  var key = svcTypeKeyOrOther(typeKey), ov = svcTemplateOverrides(key, cfgOverride), memo = key + '|' + ov.sig;
+  var hit = SVC_MEMO.tpl[memo];
+  if (hit) return hit;
+  var t = svcClone(SVC_TYPES[key]);
+  svcApplyStatusConfig(t, ov.statuses);
+  svcApplyCustomFields(t, ov.customFields);
+  svcDeepFreeze(t);
+  var n = 0, k; for (k in SVC_MEMO.tpl) n++;
+  if (n > 60) SVC_MEMO.tpl = {};
+  SVC_MEMO.tpl[memo] = t;
+  return t;
+}
+function svcTypeFromAnything(v) { return svcIsType(v) ? v : ''; }
+function svcTerm(key, typeKey, overrides) {
+  var tk = typeKey;
+  if (svcIsType(key) && !Object.prototype.hasOwnProperty.call(SVC_GENERIC_TERMS, key)) { var sw = key; key = typeKey; tk = sw; }   /* tolerate (typeKey, termKey) */
+  if (!tk) { try { if (typeof svcBusinessType === 'function') tk = svcBusinessType(); } catch (e) { tk = ''; } }
+  tk = svcTypeKeyOrOther(tk);
+  if (overrides && overrides[key]) return String(overrides[key]);
+  var t = SVC_TYPES[tk];
+  if (t.terms && t.terms[key]) return t.terms[key];
+  return SVC_GENERIC_TERMS[key] != null ? SVC_GENERIC_TERMS[key] : String(key == null ? '' : key);
+}
+function svcFillTypeSelect(selectId) {
+  if (typeof document === 'undefined' || !document || !document.getElementById) return false;
+  var el = document.getElementById(selectId || 'signup-biz-type');
+  if (!el) return false;
+  var prev = el.value, html = '', i;
+  for (i = 0; i < SVC_TYPE_ORDER.length; i++) {
+    var t = SVC_TYPES[SVC_TYPE_ORDER[i]];
+    html += '<option value="' + t.key + '">' + t.icon + ' ' + t.label + '</option>';
+  }
+  el.innerHTML = html;
+  el.value = prev && svcIsType(prev) ? prev : 'other';
+  var wrap = document.getElementById((selectId || 'signup-biz-type') + '-wrap');
+  if (wrap && wrap.style) wrap.style.display = '';
+  return true;
+}
+
+/* ===== template helpers (pure) ===== */
+function svcAllFields(tpl) { var out = []; svcArr(tpl && tpl.sections).forEach(function (s) { svcArr(s.fields).forEach(function (f) { out.push(f); }); }); return out; }
+function svcFieldIds(tpl) { return svcAllFields(tpl).map(function (f) { return f.id; }); }
+function svcFindField(tpl, id) { var a = svcAllFields(tpl), i; for (i = 0; i < a.length; i++) if (a[i].id === id) return a[i]; return null; }
+function svcStatusDef(tpl, key) {
+  var list = svcArr(tpl && tpl.statuses), i;
+  for (i = 0; i < list.length; i++) if (list[i].key === key) return list[i];
+  var pretty = String(key == null ? '' : key).replace(/^x_/, '').replace(/_/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  return { key: key, label: pretty || 'Unknown', icon: '🔹', color: '#7f8c8d', group: '', phase: 1, scope: 'job', terminal: false, successful: null, next: [], requires: [], unknown: true };
+}
+function svcStatusLabel(tpl, key) { return svcStatusDef(tpl, key).label; }
+function svcStatusPhase(tpl, key) { return svcStatusDef(tpl, key).phase; }
+function svcIsClosedPhase(phase) { return Number(phase) >= 3; }
+function svcStatusesForScope(tpl, scope, includeHidden) {
+  return svcArr(tpl && tpl.statuses).filter(function (s) { return (includeHidden || !s.hidden) && (s.scope === 'both' || s.scope === scope); });
+}
+function svcStatusNext(tpl, key) {
+  var d = svcStatusDef(tpl, key), out = [];
+  svcArr(d.next).forEach(function (k) { var x = svcStatusDef(tpl, k); if (!x.unknown && !x.hidden) out.push(k); });
+  return out;
+}
+/* svcStatusCheck(tpl, from, to) -> {ok, noop, direct, needsReason, perm, requires[], code}; a jump outside `next` is allowed only with svc:edit + a reason (doc 2.2) */
+function svcStatusCheck(tpl, from, to) {
+  var t = svcStatusDef(tpl, to);
+  if (t.unknown) return { ok: false, noop: false, direct: false, needsReason: false, perm: '', requires: [], code: 'unknown' };
+  if (from === to) return { ok: true, noop: true, direct: true, needsReason: false, perm: 'svc:status', requires: [] };
+  var direct = svcStatusNext(tpl, from).indexOf(to) !== -1;
+  return { ok: true, noop: false, direct: direct, needsReason: !direct, perm: direct ? 'svc:status' : 'svc:edit', requires: svcArr(t.requires).slice(), code: direct ? '' : 'jump' };
+}
+function svcInitialStatus(tpl, source) {
+  if (source === 'appointment' || source === 'booking') return tpl.appointmentInitialStatus || tpl.initialStatus;
+  return tpl.initialStatus;
+}
+function svcQueueGroupOf(tpl, key) {
+  var g = svcArr(tpl && tpl.queueGroups), i;
+  for (i = 0; i < g.length; i++) if (g[i].statuses.indexOf(key) !== -1) return g[i];
+  return null;
+}
+function svcReachableStatuses(tpl) {
+  var seen = {}, stack = [tpl.initialStatus, tpl.appointmentInitialStatus, tpl.appointmentBookedStatus].concat(svcArr(tpl.createStatuses)).filter(Boolean), k;
+  while (stack.length) {
+    k = stack.pop(); if (seen[k]) continue; seen[k] = 1;
+    svcArr(svcStatusDef(tpl, k).next).forEach(function (n) { if (!seen[n]) stack.push(n); });
+  }
+  return Object.keys(seen);
+}
+
+/* ===== vehicle reference data (admin overrides from cfg-vehicle never mutate the built-ins) ===== */
+function svcVehicleCfg(cfg) {
+  var c = svcCfgValue(cfg);
+  if (!c && cfg === undefined && typeof svcConfigGet === 'function') { try { c = svcCfgValue(svcConfigGet('cfg-vehicle')); } catch (e) { c = null; } }
+  return c || {};
+}
+function svcBuiltinModels(make) {
+  var m = SVC_MEMO.makes[make];
+  if (!m) { var s = SVC_VEHICLE_MAKES[make]; m = SVC_MEMO.makes[make] = s ? s.split('|') : []; }
+  return m;
+}
+function svcVehicleMakes(cfg) {
+  var c = svcVehicleCfg(cfg), hidden = svcArr(c.hiddenMakes), out = [], seen = {};
+  Object.keys(SVC_VEHICLE_MAKES).forEach(function (n) { if (n !== 'Other') { out.push(n); seen[n] = 1; } });
+  svcArr(c.makes).forEach(function (m) { if (m && m.name && !seen[m.name] && m.name !== 'Other') { out.push(String(m.name)); seen[m.name] = 1; } if (m && m.hidden) hidden = hidden.concat([m.name]); });
+  out = out.filter(function (n) { return hidden.indexOf(n) === -1; });
+  out.sort(function (a, b) { return a.localeCompare(b); });
+  out.push('Other');
+  return out;
+}
+function svcVehicleModels(make, cfg) {
+  var c = svcVehicleCfg(cfg), out = svcBuiltinModels(make).slice(), seen = {};
+  out.forEach(function (x) { seen[x] = 1; });
+  svcArr(c.makes).forEach(function (m) { if (m && m.name === make) svcArr(m.models).forEach(function (x) { if (x && !seen[x]) { out.push(String(x)); seen[x] = 1; } }); });
+  out.sort(function (a, b) { return a.localeCompare(b); });
+  return out;
+}
+function svcVehicleTypes(cfg) {
+  var c = svcVehicleCfg(cfg), out = SVC_VEHICLE_TYPES.map(function (x) { return { v: x.v, l: x.l }; });
+  svcArr(c.types).forEach(function (t) {
+    if (!t || !t.v) return;
+    var i, f = -1; for (i = 0; i < out.length; i++) if (out[i].v === t.v) f = i;
+    if (t.hidden) { if (f !== -1 && out[f].v !== 'other') out.splice(f, 1); return; }
+    if (f !== -1) { if (t.l) out[f].l = String(t.l); } else out.splice(Math.max(0, out.length - 1), 0, { v: String(t.v), l: String(t.l || t.v) });
+  });
+  return out;
+}
+
+/* ===== notification text ===== */
+function svcDefaultNotifyText(typeKey, eventKey) {
+  var t = SVC_TYPES[svcTypeKeyOrOther(typeKey)], e = t.notify.events[eventKey];
+  return e ? e.tpl : '';
+}
+function svcFillVars(text, vars) {
+  vars = vars || {};
+  return String(text == null ? '' : text).replace(/\{([a-z_]+)\}/g, function (m, k) { return vars[k] != null && vars[k] !== '' ? String(vars[k]) : m; });
+}
+
+/* ===== validation of the templates themselves (used by tests and by svcGetTemplate consumers that accept admin data) ===== */
+function svcValidateTemplate(t) {
+  var err = [];
+  function bad(m) { err.push(m); }
+  if (!t || typeof t !== 'object') return ['not an object'];
+  ['key', 'label', 'icon', 'prefix', 'assetKind'].forEach(function (k) { if (!t[k] || typeof t[k] !== 'string') bad('missing ' + k); });
+  if (typeof t.version !== 'number') bad('version');
+  if (['phone', 'vehicle', 'equipment', 'garment', 'none'].indexOf(t.assetKind) === -1) bad('assetKind ' + t.assetKind);
+  Object.keys(SVC_GENERIC_TERMS).forEach(function (k) { if (!t.terms || typeof t.terms[k] !== 'string' || !t.terms[k]) bad('term ' + k); });
+  var ids = {}, sids = {};
+  svcArr(t.sections).forEach(function (s) {
+    if (!s.id || !s.title) bad('section without id/title');
+    if (sids[s.id]) bad('duplicate section ' + s.id); sids[s.id] = 1;
+    if (['intake', 'work', 'both'].indexOf(s.phase) === -1) bad('section phase ' + s.id);
+    svcArr(s.fields).forEach(function (f) {
+      if (!f.id || !/^[a-z][a-z0-9_]*$/.test(f.id)) bad('bad field id ' + f.id);
+      if (ids[f.id]) bad('duplicate field id ' + f.id); ids[f.id] = f;
+      if (SVC_FIELD_TYPES.indexOf(f.type) === -1) bad('field type ' + f.id + ':' + f.type);
+      if (!f.label) bad('label ' + f.id);
+      if (['data', 'customer', 'asset', 'job'].indexOf(f.storesIn) === -1) bad('storesIn ' + f.id);
+      if (f.storesIn === 'asset' && !f.assetAttr) bad('assetAttr ' + f.id);
+      if (f.type === 'widget' && SVC_WIDGETS_KNOWN.indexOf(f.widget) === -1) bad('widget ' + f.id);
+      if (f.type === 'dropdown' && !f.options && !f.optionsFrom && f.id !== 'status') bad('dropdown without options ' + f.id);
+      if (f.type === 'chips' && !svcArr(f.options).length) bad('chips without options ' + f.id);
+      if (f.required !== true && f.required !== false && f.required !== 'quickOff') bad('required ' + f.id);
+    });
+  });
+  function condRefs(c, where) {
+    if (!c) return;
+    if (c.all || c.any) { svcArr(c.all || c.any).forEach(function (x) { condRefs(x, where); }); return; }
+    if (c.not) { condRefs(c.not, where); return; }
+    if (!c.field || !ids[c.field]) bad('condition in ' + where + ' references unknown field ' + c.field);
+  }
+  Object.keys(ids).forEach(function (id) { condRefs(ids[id].visibleWhen, id); condRefs(ids[id].requiredWhen, id); });
+  svcArr(t.sections).forEach(function (s) { condRefs(s.when, 'section ' + s.id); });
+  if (t.quick) {
+    svcArr(t.quick.fields).forEach(function (id) { if (!ids[id]) bad('quick field ' + id); });
+    svcArr(t.quick.required).forEach(function (id) { if (!ids[id]) bad('quick required ' + id); else if (svcArr(t.quick.fields).indexOf(id) === -1) bad('quick required not shown ' + id); });
+  } else bad('quick');
+  var sk = {}, statuses = svcArr(t.statuses);
+  if (!statuses.length) bad('statuses');
+  statuses.forEach(function (s) {
+    if (!/^[a-z][a-z0-9_]*$/.test(s.key || '')) bad('status key ' + s.key);
+    if (sk[s.key]) bad('duplicate status ' + s.key); sk[s.key] = s;
+    if ([0, 1, 2, 3, 4].indexOf(s.phase) === -1) bad('phase ' + s.key);
+    if (['job', 'appt', 'both'].indexOf(s.scope) === -1) bad('scope ' + s.key);
+    if (!s.label || !s.color) bad('status label/color ' + s.key);
+  });
+  statuses.forEach(function (s) { svcArr(s.next).forEach(function (n) { if (!sk[n]) bad('status ' + s.key + ' -> unknown ' + n); if (n === s.key) bad('self transition ' + s.key); }); svcArr(s.requires).forEach(function (r) { if (['assigned_staff', 'quote_approved', 'deposit', 'services', 'balance_zero'].indexOf(r) === -1) bad('requires ' + r); }); });
+  ['initialStatus', 'appointmentInitialStatus'].forEach(function (k) { if (!sk[t[k]]) bad(k); });
+  svcArr(t.createStatuses).forEach(function (k) { if (!sk[k]) bad('createStatuses ' + k); });
+  if (!statuses.some(function (s) { return s.phase === 3; })) bad('no closed-success status');
+  if (!statuses.some(function (s) { return s.phase === 4; })) bad('no closed-other status');
+  var reach = {}; svcReachableStatuses(t).forEach(function (k) { reach[k] = 1; });
+  statuses.forEach(function (s) { if (!reach[s.key]) bad('unreachable status ' + s.key); });
+  var grouped = {};
+  svcArr(t.queueGroups).forEach(function (g) { if (!g.key || !g.label) bad('queue group'); svcArr(g.statuses).forEach(function (k) { if (!sk[k]) bad('queue group status ' + k); grouped[k] = 1; }); });
+  statuses.forEach(function (s) { if (!grouped[s.key]) bad('status not in a queue group ' + s.key); });
+  var roles = {}; svcArr(t.staffRoles).forEach(function (r) { if (!r.key || !r.label) bad('staff role'); roles[r.key] = 1; });
+  if (!t.staffAssignment || ['single', 'multi'].indexOf(t.staffAssignment.mode) === -1) bad('staffAssignment');
+  var seedIds = {};
+  svcArr(t.catalog && t.catalog.seeds).forEach(function (s) {
+    if (!s.id || seedIds[s.id]) bad('seed id ' + s.id); seedIds[s.id] = 1;
+    if (!s.name || typeof s.price !== 'number' || s.price < 0 || !(s.durationMin > 0)) bad('seed ' + s.name);
+    if (s.staffRole && !roles[s.staffRole] && !SVC_SALON_SPECIALTIES.some(function (x) { return x.key === s.staffRole; })) bad('seed staffRole ' + s.name + ':' + s.staffRole);
+    if (t.catalog.categories.indexOf(s.category) === -1) bad('seed category ' + s.name);
+  });
+  if (!svcArr(t.catalog && t.catalog.seeds).length) bad('no seeds');
+  if (!t.inventory || ['optional', 'off', 'required'].indexOf(t.inventory.mode) === -1) bad('inventory.mode');
+  if (!t.quote || ['off', 'optional', 'required'].indexOf(t.quote.mode) === -1) bad('quote.mode');
+  if (!t.appointments || ['off', 'optional', 'primary'].indexOf(t.appointments.mode) === -1) bad('appointments.mode');
+  if ((t.appointments && t.appointments.mode !== 'off') !== !!t.hasAppointments) bad('hasAppointments');
+  var ev = t.notify && t.notify.events || {};
+  SVC_NOTIFY_EVENTS.forEach(function (e) {
+    if (!ev[e] || !ev[e].tpl) { bad('notify ' + e); return; }
+    ev[e].tpl.replace(/\{([a-z_]+)\}/g, function (m, k) { if (SVC_NOTIFY_VARS.indexOf(k) === -1) bad('notify var ' + k + ' in ' + e); return m; });
+  });
+  svcArr(t.dashboard).forEach(function (d) {
+    var m = String(d.metric || '');
+    if (m.indexOf('group:') === 0) { if (!svcArr(t.queueGroups).some(function (g) { return g.key === m.slice(6); })) bad('dashboard group ' + m); }
+    else if (m.indexOf('status:') === 0) { if (!sk[m.slice(7)]) bad('dashboard status ' + m); }
+    else if (SVC_DASH_METRICS.indexOf(m) === -1) bad('dashboard metric ' + m);
+    if (!d.id || !d.label) bad('dashboard card');
+  });
+  svcArr(t.reports).forEach(function (r) { if (SVC_REPORT_KEYS.indexOf(r) === -1) bad('report ' + r); });
+  if (!svcArr(t.reports).length) bad('reports');
+  if (!t.search || !Array.isArray(t.search.extraKeys)) bad('search');
+  return err;
+}
+</script>

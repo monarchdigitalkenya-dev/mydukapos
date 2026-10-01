@@ -85,8 +85,14 @@ export async function listSales(ctx) {
   if (!level) throw E.forbidden('You cannot see revenue', 'forbidden');
   const f = salesFilter(actor, query, level === 'own' ? [actor.id] : null);
   const limit = Math.min(1000, Math.max(1, parseInt(query.get('limit'), 10) || 1000));     // zip 161: `limit` is optional (default and maximum stay 1000); the totals always cover every sale
-  const [rows, [tot]] = await many(db, [st(db, `${S_SELECT} WHERE ${f.where} ORDER BY s.sold_at DESC, s.id LIMIT ${limit}`, ...f.args), st(db, `SELECT COUNT(*) n, COALESCE(SUM(total),0) revenue, COALESCE(SUM(amount_paid),0) collected FROM crm_sales s WHERE ${f.where}`, ...f.args)]);
-  return { items: rows.map(saleOut), totals: { count: tot.n, revenue: round2(tot.revenue), collected: round2(tot.collected), outstanding: round2(tot.revenue - tot.collected) }, scope: level };
+  // zip 162: `before` = the previous page's nextCursor ("<sold_at>:<id>"), newest sale first. The totals never depend on the cursor (they describe the whole period).
+  const cur = /^(\d{1,15}):(.{1,64})$/.exec(query.get('before') || '');
+  const rowsWhere = cur ? `${f.where} AND (s.sold_at < ? OR (s.sold_at = ? AND s.id > ?))` : f.where;
+  const rowArgs = cur ? [...f.args, Number(cur[1]), Number(cur[1]), cur[2]] : f.args;
+  const [rows, [tot]] = await many(db, [st(db, `${S_SELECT} WHERE ${rowsWhere} ORDER BY s.sold_at DESC, s.id LIMIT ${limit + 1}`, ...rowArgs), st(db, `SELECT COUNT(*) n, COALESCE(SUM(total),0) revenue, COALESCE(SUM(amount_paid),0) collected FROM crm_sales s WHERE ${f.where}`, ...f.args)]);
+  const more = rows.length > limit; if (more) rows.length = limit;
+  const last = rows[rows.length - 1];
+  return { items: rows.map(saleOut), totals: { count: tot.n, revenue: round2(tot.revenue), collected: round2(tot.collected), outstanding: round2(tot.revenue - tot.collected) }, scope: level, hasMore: more, nextCursor: more && last ? `${last.sold_at}:${last.id}` : null };
 }
 async function saleFor(ctx, id) {
   const sc = salesScope(ctx.actor, 's');

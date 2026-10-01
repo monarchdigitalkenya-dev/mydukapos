@@ -57,7 +57,8 @@ export async function listConversations(ctx) {
   // zip 161: keyset paging. `limit` (default and maximum 200, as before) and `before` (the nextCursor of the previous page: "<last_message_at>:<id>"); newest chat first.
   const limit = Math.min(200, Math.max(1, parseInt(query.get('limit'), 10) || 200));
   const cur = /^(\d{1,15}):(.{1,64})$/.exec(query.get('before') || '');
-  if (cur) { where.push('(c.last_message_at < ? OR (c.last_message_at = ? AND c.id > ?) OR c.last_message_at IS NULL)'); args.push(Number(cur[1]), Number(cur[1]), cur[2]); }
+  if (cur && Number(cur[1]) === 0) { where.push('(c.last_message_at IS NULL AND c.id > ?)'); args.push(cur[2]); }     // zip 162: inside the never-messaged tail (cursor "0:<id>") only the later ids follow
+  else if (cur) { where.push('(c.last_message_at < ? OR (c.last_message_at = ? AND c.id > ?) OR c.last_message_at IS NULL)'); args.push(Number(cur[1]), Number(cur[1]), cur[2]); }
   const rows = await all(db, `${C_SELECT} WHERE ${where.join(' AND ')} ORDER BY c.last_message_at DESC, c.id LIMIT ?`, ...args, limit + 1);
   const more = rows.length > limit; if (more) rows.length = limit;
   const last = rows[rows.length - 1];

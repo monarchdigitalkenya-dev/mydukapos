@@ -1,0 +1,628 @@
+<!-- SVC NOTIFY ---------------------------------------------------------------------------------------
+     Services engine block "svc-notify". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B3-N. Nobody else edits this file.
+     STATE: IMPLEMENTED (B3-N). Shared tiny helpers of the three B3-N blocks (svc-notify, svc-perms, svc-custom) are the svcN* functions below.
+     KIND: pure + UI. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcNotifyBuild, svcNotifyOpen, svcNotifyAutoSend (only with provider + flag), Notify drawer tab, ready prompt (svcOn job:status), svcAuditEvents (called by buildAuditEvents), Audit drawer tab, settings pages Notifications + Audit.
+     SPEC: SERVICES_ARCHITECTURE.md 6.5, 6.6, 8.2 B3-N. Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<style>
+/* svc-notify / svc-perms / svc-custom shared look: theme variables only, 44px targets, 16px inputs (no iOS zoom) */
+.svn-in { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px 10px; font-size: 16px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-surface); color: var(--dark); }
+.svn-ta { min-height: 110px; resize: vertical; font-family: inherit; }
+.svn-lbl { display: block; margin: 10px 0 4px; font-size: 13px; font-weight: 600; opacity: .85; }
+.svn-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+@media (min-width: 560px) { .svn-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.svn-acts { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+.svn-acts .svu-btn { margin: 0; }
+.svn-chip { display: inline-flex; align-items: center; min-height: 36px; padding: 0 10px; margin: 0 6px 6px 0; border: 1px solid var(--border-color); border-radius: 18px; background: var(--bg-surface-alt); color: var(--dark); font-size: 13px; cursor: pointer; width: auto; }
+.svn-chk { display: flex; align-items: center; min-height: 44px; gap: 10px; font-size: 15px; cursor: pointer; }
+.svn-chk input { width: 22px; height: 22px; flex: none; margin: 0; }
+.svn-warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); border-radius: 10px; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+.svn-bad { background: var(--tint-danger-bg); color: var(--danger); border-radius: 10px; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+.svn-good { background: var(--tint-success-bg); color: var(--tint-success-text); border-radius: 10px; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+.svn-log { list-style: none; margin: 0; padding: 0; }
+.svn-log li { padding: 8px 0; border-bottom: 1px solid var(--border-color); font-size: 14px; overflow-wrap: anywhere; }
+.svn-log li:last-child { border-bottom: 0; }
+.svn-log .w { font-size: 12px; opacity: .7; }
+.svn-preview { white-space: pre-wrap; padding: 10px 12px; border: 1px dashed var(--border-color); border-radius: 10px; background: var(--bg-surface-alt); font-size: 14px; overflow-wrap: anywhere; }
+.svn-prompt { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); z-index: 3500; max-width: 560px; margin: 0 auto; padding: 12px 14px; border-radius: 14px; background: var(--bg-surface); color: var(--dark); border: 2px solid var(--accent); box-shadow: 0 6px 24px rgba(0, 0, 0, .3); }
+.svn-prompt b { display: block; margin: 0 0 8px; font-size: 15px; }
+.svn-prompt .svn-acts { margin: 0; }
+.svn-seg2 { display: flex; flex-wrap: wrap; gap: 8px; }
+.svn-seg2 .svu-btn.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.svn-banner { border: 3px solid var(--danger); background: var(--tint-danger-bg); color: var(--danger); border-radius: 12px; padding: 12px 14px; margin: 0 0 12px; font-weight: 800; letter-spacing: .03em; }
+.svn-banner small { display: block; margin-top: 4px; font-weight: 500; letter-spacing: 0; color: var(--dark); }
+.svn-tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+.svn-tbl th, .svn-tbl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border-color); vertical-align: top; overflow-wrap: anywhere; }
+.svn-perm-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; }
+@media (min-width: 560px) { .svn-perm-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; } }
+.svn-perm { border: 1px solid var(--border-color); border-radius: 10px; padding: 8px 10px; margin: 8px 0; background: var(--bg-surface); color: var(--dark); }
+</style>
+<script>
+/* ===================================================================================================================
+   SVC NOTIFY (B3-N). Notifications are PREPARED for a human to send (wa.me / sms: / mailto: composers). Nothing is ever sent
+   automatically unless an SMS provider is configured AND the owner switched auto-send on AND the event is ticked.
+   =================================================================================================================== */
+var SVC_NOTIFY_CHANNELS = ['whatsapp', 'sms', 'email'];
+var SVC_NOTIFY_CHANNEL_LABELS = { whatsapp: 'WhatsApp', sms: 'SMS', email: 'Email' };
+var SVC_NOTIFY_EVENT_LABELS = { received: 'Received', ready: 'Ready for collection', approval_needed: 'Approval needed', balance_due: 'Balance due', appointment_confirmed: 'Appointment confirmed', appointment_reminder: 'Appointment reminder', completed_thanks: 'Thank you', custom: 'Custom message' };
+var SVC_NOTIFY_EVENT_ORDER = ['ready', 'received', 'approval_needed', 'balance_due', 'appointment_confirmed', 'appointment_reminder', 'completed_thanks', 'custom'];
+var SVC_NOTIFY_SAMPLE = { customer: 'John Kamau', first_name: 'John', asset: 'Toyota Premio KDA 123A', plate: 'KDA 123A', device: 'Samsung A12', job_no: 'CW-261001-T1-014', business: 'Sparkle Wash', amount: 'KSh 1,500', balance: 'KSh 1,500', paid: 'KSh 0', total: 'KSh 1,500', service: 'Full Wash', staff: 'Peter', ready_time: '14:30', date: '2 Oct 2026', time: '14:30' };
+var SVC_NOTIFY_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+var SVC_NOTIFY_LAST = {};          /* jobId -> {key, at}: a double tap within 3 s neither logs nor opens twice */
+var SVC_NOTIFY_HOOK = null;        /* tests / embedders: function (url, channel) replaces window.open / location */
+var SVC_NOTIFY_PROV = { at: 0, val: null };
+var SVC_NOTIFY_PROMPT_MS = 25000;
+var SVC_NOTIFY_PROMPT_T = 0;
+
+/* ===== small helpers shared by svc-notify, svc-perms and svc-custom (same phase: free to call from each other) ===== */
+function svcNEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcNToast(msg, isErr) { try { if (typeof showToast === 'function') showToast(String(msg), !!isErr); } catch (e) { /* cosmetic */ } }
+function svcNCan(perm) { try { if (typeof svcCan === 'function') return !!svcCan(perm); } catch (e) { /* no permission layer */ } return true; }
+function svcNNow() { try { if (typeof svcNow === 'function') return svcNow(); } catch (e) { /* clock */ } return Date.now(); }
+function svcNActor() { try { if (typeof svcActor === 'function') { var a = svcActor(); if (a) return a; } } catch (e) { /* owner */ } return { id: 'owner', name: 'Owner' }; }
+function svcNArr(v) { return Array.isArray(v) ? v : []; }
+function svcNJob(jobOrId) {
+  if (jobOrId && typeof jobOrId === 'object') return jobOrId;
+  try { if (typeof svcGetJob === 'function') return svcGetJob(jobOrId) || null; } catch (e) { /* none */ }
+  return null;
+}
+function svcNFresh(job) { var j = job && job.id ? svcNJob(job.id) : null; return j || job; }
+function svcNBizCfg() { try { if (typeof svcBizCfg === 'function') return svcBizCfg(null); } catch (e) { /* defaults */ } return { currencyLabel: 'KSh', dialCode: '254' }; }
+function svcNWhen(ms) {
+  var n = Number(ms); if (!n) return '';
+  try { if (typeof svcUiWhen === 'function') return svcUiWhen(n); } catch (e) { /* own format */ }
+  return new Date(n).toISOString().slice(0, 16).replace('T', ' ');
+}
+function svcNOffsetMs() { var raw = svcNBizCfg().tzOffsetHours, h = Number(raw); return (raw !== undefined && raw !== null && raw !== '' && isFinite(h) ? h : 3) * 3600000; }
+/* a fresh inner mount: drawer bodies are reused between tabs, so listeners must live on an element that is recreated on every render */
+function svcNMount(el) { el.innerHTML = ''; var d = el.ownerDocument.createElement('div'); el.appendChild(d); return d; }
+function svcNDate(ms) { var d = new Date(Number(ms) + svcNOffsetMs()); return d.getUTCDate() + ' ' + SVC_NOTIFY_MONTHS[d.getUTCMonth()] + ' ' + d.getUTCFullYear(); }
+function svcNTime(ms) { var d = new Date(Number(ms) + svcNOffsetMs()), p = function (n) { return (n < 10 ? '0' : '') + n; }; return p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()); }
+function svcNBusinessName() {
+  try { if (typeof businessName !== 'undefined' && businessName) return String(businessName); } catch (e) { /* not declared yet */ }
+  try { var v = localStorage.getItem('pos_biz_name'); if (v) return String(v); } catch (e2) { /* storage blocked */ }
+  return 'us';
+}
+function svcNId(prefix) { try { if (typeof svcId === 'function') return svcId(prefix); } catch (e) { /* fallback */ } return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+function svcNTpl(typeKey) { try { if (typeof svcGetTemplate === 'function') return svcGetTemplate(typeKey); } catch (e) { /* none */ } return null; }
+function svcNDrawerRefresh() {
+  try { if (typeof svcUiTop === 'function') { var d = svcUiTop('svu-drawer'); if (d && typeof d.refresh === 'function') d.refresh(); } } catch (e) { /* the drawer repaints on its next action */ }
+}
+/* writes config (manageConfig only) through the store; returns {ok, ...} */
+function svcNConfigWrite(id, value, what) {
+  if (!svcNCan('svc:manageConfig')) return { ok: false, code: 'perm', error: 'Only the owner or someone with "manage service configuration" can change this.' };
+  if (typeof svcConfigSet !== 'function') return { ok: false, code: 'store', error: 'The Services store is not available.' };
+  var r = svcConfigSet(id, value, { what: what });
+  try { if (r && r.ok && typeof logAdminActivity === 'function') logAdminActivity('settings-section-services'); } catch (e) { /* optional */ }
+  return r;
+}
+
+/* ===== templates (MP 33): shop overrides in cfg-notify.templates, else the type's default text ===== */
+function svcNotifyCfg() {
+  try { if (typeof svcConfigGet === 'function') { var c = svcConfigGet('cfg-notify'); if (c && typeof c === 'object') return c; } } catch (e) { /* defaults */ }
+  return {};
+}
+function svcNotifyChannel(ch) {
+  var c = String(ch == null ? '' : ch).toLowerCase();
+  if (c === 'wa' || c === 'whatsapp') return 'whatsapp';
+  if (c === 'sms' || c === 'text') return 'sms';
+  if (c === 'email' || c === 'mail' || c === 'e-mail') return 'email';
+  return '';
+}
+function svcNotifyEvents(typeKey) {
+  var tpl = svcNTpl(typeKey), out = [], have = {};
+  var ev = tpl && tpl.notify && tpl.notify.events ? tpl.notify.events : {};
+  SVC_NOTIFY_EVENT_ORDER.forEach(function (k) { if (k === 'custom' || ev[k]) { out.push(k); have[k] = 1; } });
+  Object.keys(ev).forEach(function (k) { if (!have[k]) { out.push(k); have[k] = 1; } });
+  if (!have.custom) out.push('custom');
+  return out;
+}
+function svcNotifyEventLabel(k) { return SVC_NOTIFY_EVENT_LABELS[k] || String(k || '').replace(/_/g, ' ').replace(/^./, function (c) { return c.toUpperCase(); }); }
+function svcNotifyDefault(typeKey, eventKey) {
+  var d = '';
+  try { if (typeof svcDefaultNotifyText === 'function') d = svcDefaultNotifyText(typeKey, eventKey) || ''; } catch (e) { d = ''; }
+  return d;
+}
+function svcNotifyTemplateKeys(typeKey, eventKey, channel) {
+  var ch = svcNotifyChannel(channel), keys = [];
+  if (ch) keys.push(typeKey + '.' + eventKey + '.' + ch);
+  keys.push(typeKey + '.' + eventKey);
+  if (ch) keys.push(eventKey + '.' + ch);
+  keys.push(eventKey);
+  return keys;
+}
+function svcNotifyTemplate(typeKey, eventKey, channel) {
+  var cfg = svcNotifyCfg(), t = cfg.templates && typeof cfg.templates === 'object' ? cfg.templates : {}, keys = svcNotifyTemplateKeys(typeKey, eventKey, channel), i;
+  for (i = 0; i < keys.length; i++) { var v = t[keys[i]]; if (typeof v === 'string' && v.trim()) return v; }
+  return svcNotifyDefault(typeKey, eventKey) || (eventKey === 'custom' ? '' : 'Hello {first_name}, an update about {job_no} from {business}.');
+}
+function svcNotifyIsCustomised(typeKey, eventKey, channel) {
+  var cfg = svcNotifyCfg(), t = cfg.templates && typeof cfg.templates === 'object' ? cfg.templates : {};
+  var k = typeKey + '.' + eventKey + (svcNotifyChannel(channel) ? '.' + svcNotifyChannel(channel) : '');
+  return typeof t[k] === 'string' && t[k].trim() !== '';
+}
+
+/* ===== variables + fill (pure) ===== */
+function svcNotifyVars(job, eventKey, opts) {
+  job = job || {}; opts = opts || {};
+  var cust = job.customer || {}, snap = job.assetSnap || {}, tot = {}, money = function (n) { try { if (typeof svcFormatMoney === 'function') return svcFormatMoney(n); } catch (e) { /* fall through */ } return 'KSh ' + n; };
+  try { if (typeof svcTotals === 'function') tot = svcTotals(job) || {}; } catch (e0) { tot = {}; }
+  var plate = snap.plate ? (typeof svcNormPlate === 'function' ? svcNormPlate(snap.plate) : String(snap.plate)) : '';
+  var services = svcNArr(job.jobServices).filter(function (s) { return s && !s.removedAt && !s.voidedAt && s.name; }).map(function (s) { return s.name; }).join(', ');
+  var seen = {}, staffNames = svcNArr(job.jobStaff).filter(function (s) { if (!s || s.removedAt || !s.name || seen[s.name]) return false; seen[s.name] = 1; return true; }).map(function (s) { return s.name; }).join(', ');
+  var now = opts.now != null ? opts.now : svcNNow(), hasPrice = Number(tot.total) > 0;
+  var when = job.dueAt || job.createdAt || now;
+  var amount = '';
+  if (hasPrice) amount = eventKey === 'approval_needed' ? money(tot.total) : money(tot.balance);
+  var device = snap.label || [snap.brand, snap.model].filter(Boolean).join(' ');
+  return {
+    customer: String(cust.name || ''), first_name: typeof svcFirstName === 'function' ? svcFirstName(cust.name) : String(cust.name || '').split(/\s+/)[0] || '',
+    asset: String(snap.label || ''), plate: plate, device: String(device || ''), job_no: String(job.no || ''), business: opts.business != null ? String(opts.business) : svcNBusinessName(),
+    amount: amount, balance: hasPrice ? money(tot.balance) : '', paid: Number(tot.paid) > 0 ? money(tot.paid) : (hasPrice ? money(0) : ''), total: hasPrice ? money(tot.total) : '',
+    service: services, staff: staffNames, ready_time: svcNTime(job.readyAt || now), date: svcNDate(when), time: svcNTime(when)
+  };
+}
+/* known variable with no value -> replaced by '' and listed in `missing`; unknown {name} stays visible and is listed in `unknown` */
+function svcNotifyFill(text, vars) {
+  vars = vars || {};
+  var missing = [], unknown = [], hadEmpty = false, known = {};
+  try { if (typeof SVC_NOTIFY_VARS !== 'undefined') SVC_NOTIFY_VARS.forEach(function (k) { known[k] = 1; }); } catch (e) { /* templates block absent */ }
+  Object.keys(vars).forEach(function (k) { known[k] = 1; });
+  var out = String(text == null ? '' : text).replace(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g, function (m, k) {
+    if (!known[k]) { if (unknown.indexOf(k) === -1) unknown.push(k); return m; }
+    var v = vars[k];
+    if (v == null || String(v).trim() === '') { if (missing.indexOf(k) === -1) missing.push(k); hadEmpty = true; return ''; }
+    return String(v);
+  });
+  if (hadEmpty) out = out.replace(/[ \t]{2,}/g, ' ').replace(/\s+([.,!?;:])/g, '$1').trim();
+  return { text: out, missing: missing, unknown: unknown };
+}
+
+/* ===== recipient + URLs (pure) ===== */
+function svcNotifyRecipient(job, channel) {
+  var c = (job && job.customer) || {}, ch = svcNotifyChannel(channel);
+  if (ch === 'email') {
+    var em = String(c.email || '').trim();
+    if (/^[^\s@,;<>()]+@[^\s@,;<>()]+\.[^\s@,;<>()]{2,}$/.test(em)) return { ok: true, email: em, to: em, toKey: em.toLowerCase() };
+    return { ok: false, reason: em ? 'The email address is not valid' : 'No email address on file for this customer' };
+  }
+  var cands = [c.phone, c.altPhone], i, r;
+  for (i = 0; i < cands.length; i++) {
+    if (!cands[i]) continue;
+    try { r = typeof svcNormPhone === 'function' ? svcNormPhone(cands[i]) : null; } catch (e) { r = null; }
+    if (r && r.ok) return { ok: true, e164: r.e164, digits: String(r.e164).replace(/\D/g, ''), to: r.e164, toKey: r.key || String(r.e164).replace(/\D/g, '').slice(-9), level: r.level };
+  }
+  return { ok: false, reason: cands[0] ? 'The phone number is not valid' : 'No phone number on file for this customer' };
+}
+function svcNotifyPlatform(p) {
+  if (p) return String(p);
+  try {
+    var ua = String(navigator.userAgent || '');
+    if (/iPhone|iPad|iPod/i.test(ua)) return 'ios';
+    if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return 'ios';
+    if (/Android/i.test(ua)) return 'android';
+  } catch (e) { /* no navigator */ }
+  return 'other';
+}
+function svcNotifyEncode(s, mail) {
+  var t = encodeURIComponent(String(s == null ? '' : s).replace(/\r\n/g, '\n'));
+  return mail ? t.replace(/%0A/g, '%0D%0A') : t;
+}
+/* wa.me/<international digits>?text=  |  sms:<e164>?body= (Android, desktop) or sms:<e164>&body= (iOS)  |  mailto:<email>?subject=&body= */
+function svcNotifyUrl(channel, rec, text, subject, platform) {
+  var ch = svcNotifyChannel(channel);
+  if (!rec || !rec.ok) return '';
+  if (ch === 'whatsapp') return 'https://wa.me/' + rec.digits + '?text=' + svcNotifyEncode(text);
+  if (ch === 'sms') return 'sms:' + rec.e164 + (svcNotifyPlatform(platform) === 'ios' ? '&body=' : '?body=') + svcNotifyEncode(text);
+  if (ch === 'email') return 'mailto:' + rec.email + '?subject=' + svcNotifyEncode(subject || '', true) + '&body=' + svcNotifyEncode(text, true);
+  return '';
+}
+/* svcNotifyBuild(job, eventKey, channel, opts{text, platform, subject, now}) -> {ok, reason, channel, event, to, toKey, text, subject, url, vars, missing[], unknown[]} */
+function svcNotifyBuild(job, eventKey, channel, opts) {
+  opts = opts || {};
+  var j = svcNJob(job), ch = svcNotifyChannel(channel), ev = eventKey || 'ready';
+  var res = { ok: false, reason: '', channel: ch, event: ev, to: '', toKey: '', text: '', subject: '', url: '', vars: {}, missing: [], unknown: [] };
+  if (!j) { res.reason = 'Job not found'; return res; }
+  if (!ch) { res.reason = 'Unknown channel'; return res; }
+  var vars = svcNotifyVars(j, ev, opts), raw = typeof opts.text === 'string' && opts.text.trim() ? opts.text : svcNotifyTemplate(j.serviceType, ev, ch);
+  var f = svcNotifyFill(raw, vars);
+  res.vars = vars; res.text = f.text; res.missing = f.missing; res.unknown = f.unknown;
+  res.subject = opts.subject ? svcNotifyFill(opts.subject, vars).text : (svcNotifyEventLabel(ev) + ' - ' + vars.business + (vars.job_no ? ' (' + vars.job_no + ')' : ''));
+  if (!res.text) { res.reason = 'The message is empty'; return res; }
+  var rec = svcNotifyRecipient(j, ch);
+  if (!rec.ok) { res.reason = rec.reason; return res; }
+  res.to = rec.to; res.toKey = rec.toKey; res.url = svcNotifyUrl(ch, rec, res.text, res.subject, opts.platform);
+  res.ok = !!res.url;
+  return res;
+}
+
+/* ===== opening a composer (prepared, never "sent"): records "notification initiated by" in the job audit ===== */
+function svcNotifyLaunch(url, channel) {
+  if (!url) return false;
+  try {
+    if (typeof SVC_NOTIFY_HOOK === 'function') { SVC_NOTIFY_HOOK(url, channel); return true; }
+    if (channel === 'whatsapp') { var w = window.open(url, '_blank', 'noopener'); if (!w) window.location.href = url; }
+    else window.location.href = url;
+    return true;
+  } catch (e) { return false; }
+}
+function svcNotifyLog(jobId, entry, auditNote) {
+  if (typeof svcCommit !== 'function') return { ok: false, code: 'store' };
+  return svcCommit(function (j) {
+    j.notify = svcNArr(j.notify).concat([entry]);
+    return j;
+  }, { list: 'svcJobs', id: jobId, audit: { act: 'notify', ref: entry.event, to: entry.channel, note: auditNote }, event: 'job:updated', payload: { notify: true } });
+}
+function svcNotifyOpen(jobOrId, channel, opts) {
+  opts = opts || {};
+  var job = svcNJob(jobOrId), ch = svcNotifyChannel(channel);
+  if (!job) { svcNToast('That job could not be found.', true); return ''; }
+  if (!ch) { svcNToast('Choose WhatsApp, SMS or Email.', true); return ''; }
+  if (!(svcNCan('svc:status') || svcNCan('svc:customers'))) { svcNToast('You do not have permission to contact customers.', true); return ''; }
+  var ev = opts.event || 'ready', b = svcNotifyBuild(job, ev, ch, opts);
+  if (!b.ok) { svcNToast(b.reason || 'Could not prepare the message.', true); return ''; }
+  var now = svcNNow(), key = ch + '|' + ev + '|' + b.toKey, last = SVC_NOTIFY_LAST[job.id], dup = !!(last && last.key === key && now - last.at < 3000);
+  SVC_NOTIFY_LAST[job.id] = { key: key, at: now };
+  if (dup) return b.url;                                   /* double tap: same URL back, no second log row, no second composer */
+  if (!job._legacy) {
+    var actor = svcNActor();
+    var r = svcNotifyLog(job.id, { id: svcNId('nt-'), at: now, by: actor.name, channel: ch, event: ev, toKey: b.toKey, preview: b.text.slice(0, 80), state: 'opened' }, 'Prepared ' + SVC_NOTIFY_CHANNEL_LABELS[ch] + ' message (' + svcNotifyEventLabel(ev) + ')');
+    if (r && r.ok === false && r.code !== 'legacy') { svcNToast('Could not record the notification.', true); }
+  }
+  if (opts.open !== false) svcNotifyLaunch(b.url, ch);
+  return b.url;
+}
+
+/* ===== optional provider send: ONLY when a provider is configured AND auto-send is on AND the event is ticked ===== */
+function svcNotifyProviderStatus(force) {
+  var now = Date.now();
+  if (!force && SVC_NOTIFY_PROV.val && now - SVC_NOTIFY_PROV.at < 60000) return Promise.resolve(SVC_NOTIFY_PROV.val);
+  var none = { sms: false, email: false, known: false };
+  if (typeof fetch !== 'function') return Promise.resolve(none);
+  var url = '/api/sms-config?status=1';
+  try { if (typeof apiUrl === 'function') url = apiUrl(url); } catch (e) { /* relative */ }
+  return fetch(url).then(function (r) { return r.json(); }).then(function (j) {
+    var v = { sms: !!(j && j.configured), email: false, known: true };     /* shops have no email provider of their own: mailto only */
+    SVC_NOTIFY_PROV = { at: Date.now(), val: v }; return v;
+  }, function () { return none; });
+}
+function svcNotifyShouldAuto(eventKey, channel, provider, cfg) {
+  cfg = cfg || svcNotifyCfg(); provider = provider || {};
+  var ch = svcNotifyChannel(channel);
+  if (ch !== 'sms' && ch !== 'email') return false;        /* WhatsApp has no sending API here: wa.me only */
+  var flag = ch === 'sms' ? cfg.autoSms === true : cfg.autoEmail === true;
+  var prov = ch === 'sms' ? provider.sms === true : provider.email === true;
+  var evs = Array.isArray(cfg.autoEvents) ? cfg.autoEvents : [];
+  return !!(flag && prov && evs.indexOf(eventKey) !== -1);
+}
+function svcNotifyAutoSend(jobOrId, eventKey, opts) {
+  opts = opts || {};
+  var job = svcNJob(jobOrId), ev = eventKey || 'ready', cfg = svcNotifyCfg();
+  if (!job || job._legacy) return Promise.resolve({ ok: false, sent: false, reason: 'no job' });
+  if (cfg.autoSms !== true && cfg.autoEmail !== true) return Promise.resolve({ ok: false, sent: false, reason: 'auto-send is off' });   /* no network call at all */
+  var prov = opts.provider ? Promise.resolve(opts.provider) : svcNotifyProviderStatus();
+  return prov.then(function (p) {
+    if (!svcNotifyShouldAuto(ev, 'sms', p, cfg)) return { ok: false, sent: false, reason: 'auto-send is off or no provider is configured' };
+    var b = svcNotifyBuild(job, ev, 'sms', opts);
+    if (!b.ok) return { ok: false, sent: false, reason: b.reason };
+    var url = '/api/sms-send';
+    try { if (typeof apiUrl === 'function') url = apiUrl(url); } catch (e) { /* relative */ }
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to: b.to, message: b.text }) }).then(function (r) { return r.json(); }).then(function (d) {
+      var ok = !!(d && d.success);
+      svcNotifyLog(job.id, { id: svcNId('nt-'), at: svcNNow(), by: svcNActor().name + ' (auto)', channel: 'sms', event: ev, toKey: b.toKey, preview: b.text.slice(0, 80), state: ok ? 'sent' : 'failed' }, (ok ? 'Auto-sent SMS (' : 'Auto SMS failed (') + svcNotifyEventLabel(ev) + ')');
+      return { ok: ok, sent: ok, reason: ok ? '' : String((d && d.error) || 'The provider refused the message'), to: b.to };
+    }, function () { return { ok: false, sent: false, reason: 'network' }; });
+  });
+}
+
+/* ===== "ready" prompt: a dismissible bar right after a status with notifyOn (svcOn job:status) ===== */
+function svcNotifyPromptClose() {
+  try { var old = document.getElementById('svc-notify-prompt'); if (old && old.parentNode) old.parentNode.removeChild(old); if (SVC_NOTIFY_PROMPT_T) { clearTimeout(SVC_NOTIFY_PROMPT_T); SVC_NOTIFY_PROMPT_T = 0; } } catch (e) { /* no DOM */ }
+}
+function svcNotifyPrompt(jobOrId, eventKey) {
+  if (typeof document === 'undefined' || !document.body) return null;
+  var job = svcNJob(jobOrId); if (!job || job._legacy) return null;
+  if (!(svcNCan('svc:status') || svcNCan('svc:customers'))) return null;
+  var ev = eventKey || 'ready', chans = SVC_NOTIFY_CHANNELS.filter(function (c) { return svcNotifyRecipient(job, c).ok; });
+  if (!chans.length) return null;                            /* nobody to tell: no noise */
+  svcNotifyPromptClose();
+  var vars = svcNotifyVars(job, ev), first = vars.first_name || 'the customer', what = ev === 'ready' ? (vars.asset || 'the job') + ' is ready' : svcNotifyEventLabel(ev);
+  var el = document.createElement('div');
+  el.id = 'svc-notify-prompt'; el.className = 'svn-prompt'; el.setAttribute('role', 'alertdialog'); el.setAttribute('aria-label', 'Notify customer');
+  el.innerHTML = '<b>Tell ' + svcNEsc(first) + ' - ' + svcNEsc(what) + '?</b><div class="svn-acts">' +
+    chans.map(function (c) { return '<button type="button" class="svu-btn svu-primary svu-sm" data-svn-ch="' + c + '">' + svcNEsc(SVC_NOTIFY_CHANNEL_LABELS[c]) + '</button>'; }).join('') +
+    '<button type="button" class="svu-btn svu-sm" data-svn-skip="1">Skip</button></div>';
+  el.addEventListener('click', function (ev2) {
+    var b = ev2.target && ev2.target.closest ? ev2.target.closest('button') : null; if (!b) return;
+    var ch = b.getAttribute('data-svn-ch');
+    if (ch) svcNotifyOpen(job.id, ch, { event: ev });
+    svcNotifyPromptClose();
+  });
+  document.body.appendChild(el);
+  SVC_NOTIFY_PROMPT_T = setTimeout(svcNotifyPromptClose, SVC_NOTIFY_PROMPT_MS);
+  return el;
+}
+function svcNotifyOnStatus(p) {
+  try {
+    var job = p && (p.job || p.rec); if (!job || job._legacy) return;
+    var to = p.to || job.status, tpl = svcNTpl(job.serviceType), def = null;
+    svcNArr(tpl && tpl.statuses).forEach(function (s) { if (s && s.key === to) def = s; });
+    var ev = def && def.notifyOn; if (!ev) return;
+    svcNotifyPrompt(job, ev);
+    svcNotifyAutoSend(job, ev).then(function (r) { if (r && r.sent) svcNToast('SMS sent to ' + (r.to || 'customer') + '.'); }, function () { /* never blocks a status change */ });
+  } catch (e) { /* listeners must never break the status change */ }
+}
+
+/* ===== saving templates / auto-send switches (manageConfig) ===== */
+function svcNotifySaveTemplate(typeKey, eventKey, channel, text) {
+  var t = String(text == null ? '' : text).trim();
+  if (!typeKey || !eventKey) return { ok: false, code: 'args' };
+  if (t.length > 600) return { ok: false, code: 'long', error: 'Keep the message under 600 characters.' };
+  var ch = svcNotifyChannel(channel), key = typeKey + '.' + eventKey + (ch ? '.' + ch : '');
+  var cur = Object.assign({}, svcNotifyCfg()), tpls = Object.assign({}, cur.templates || {});
+  if (!t) delete tpls[key]; else tpls[key] = t;
+  cur.templates = tpls;
+  var r = svcNConfigWrite('cfg-notify', cur, (t ? 'edited template ' : 'reset template ') + key);
+  if (r && r.ok && t) r.warnings = { unknown: svcNotifyFill(t, SVC_NOTIFY_SAMPLE).unknown };
+  return r;
+}
+function svcNotifySetAuto(o) {
+  o = o || {};
+  var cur = Object.assign({}, svcNotifyCfg());
+  if (o.autoSms !== undefined) cur.autoSms = o.autoSms === true;
+  if (o.autoEmail !== undefined) cur.autoEmail = o.autoEmail === true;
+  if (Array.isArray(o.autoEvents)) cur.autoEvents = o.autoEvents.filter(function (x) { return typeof x === 'string'; }).slice(0, 12);
+  if ((cur.autoSms || cur.autoEmail) && !(Array.isArray(cur.autoEvents) && cur.autoEvents.length)) cur.autoEvents = ['ready'];
+  delete cur.autoWhatsapp;                                   /* WhatsApp is never automatic */
+  return svcNConfigWrite('cfg-notify', cur, 'auto-send settings');
+}
+
+/* ===== Notify drawer tab ===== */
+function svcNotifyTab(job0, host) {
+  var el = svcNMount(host);
+  var st = { event: '', channel: 'whatsapp', text: '', dirty: false };
+  var evs = svcNotifyEvents(job0.serviceType), tpl = svcNTpl(job0.serviceType), def = null;
+  svcNArr(tpl && tpl.statuses).forEach(function (s) { if (s && s.key === job0.status) def = s; });
+  st.event = def && def.notifyOn && evs.indexOf(def.notifyOn) !== -1 ? def.notifyOn : (evs.indexOf('ready') !== -1 ? 'ready' : evs[0]);
+  function build(job, ch) { return svcNotifyBuild(job, st.event, ch, { text: st.dirty ? st.text : undefined }); }
+  function paint() {
+    var job = svcNFresh(job0) || job0, b = build(job, st.channel), html = '';
+    if (!st.dirty) st.text = b.text;
+    var cust = job.customer || {};
+    html += '<div class="svu-box"><h4>Customer</h4><div class="svu-rows"><div class="svu-row"><div class="k">Name</div><div class="v">' + svcNEsc(cust.name || '-') + '</div></div>';
+    SVC_NOTIFY_CHANNELS.forEach(function (c) {
+      var r = svcNotifyRecipient(job, c);
+      html += '<div class="svu-row"><div class="k">' + svcNEsc(SVC_NOTIFY_CHANNEL_LABELS[c]) + '</div><div class="v">' + (r.ok ? svcNEsc(r.to) : '<span class="svu-sub">' + svcNEsc(r.reason) + '</span>') + '</div></div>';
+    });
+    html += '</div></div><div class="svu-box"><h4>Message</h4><label class="svn-lbl" for="svn-ev">What is this about?</label><select id="svn-ev" class="svn-in" data-svn="event">' +
+      evs.map(function (k) { return '<option value="' + svcNEsc(k) + '"' + (k === st.event ? ' selected' : '') + '>' + svcNEsc(svcNotifyEventLabel(k)) + '</option>'; }).join('') + '</select>' +
+      '<label class="svn-lbl" for="svn-text">Message (you can edit it before sending)</label><textarea id="svn-text" class="svn-in svn-ta" data-svn="text" maxlength="600">' + svcNEsc(st.text) + '</textarea>';
+    if (b.missing.length) html += '<div class="svn-warn">Nothing to put in: ' + svcNEsc(b.missing.join(', ')) + '. Edit the message if it reads oddly.</div>';
+    if (b.unknown.length) html += '<div class="svn-warn">Unknown placeholder' + (b.unknown.length > 1 ? 's' : '') + ' left as written: ' + svcNEsc(b.unknown.map(function (u) { return '{' + u + '}'; }).join(' ')) + '</div>';
+    html += '<div class="svu-sub" style="margin-top:6px">This opens your own app with the message ready. Nothing is sent until you press send there.</div><div class="svn-acts">';
+    SVC_NOTIFY_CHANNELS.forEach(function (c) {
+      var r = svcNotifyRecipient(job, c);
+      html += '<button type="button" class="svu-btn svu-primary" data-svn-open="' + c + '"' + (r.ok ? '' : ' disabled') + '>' + (c === 'whatsapp' ? '💬 ' : c === 'sms' ? '✉️ ' : '📧 ') + svcNEsc(SVC_NOTIFY_CHANNEL_LABELS[c]) + '</button>';
+    });
+    html += '<button type="button" class="svu-btn" data-svn-copy="1">📋 Copy text</button></div></div>';
+    var log = svcNArr(job.notify).slice().sort(function (a, c) { return (Number(c.at) || 0) - (Number(a.at) || 0); });
+    html += '<div class="svu-box"><h4>Notifications for this job</h4>' + (log.length ? '<ul class="svn-log">' + log.map(function (n) {
+      return '<li><b>' + svcNEsc(SVC_NOTIFY_CHANNEL_LABELS[n.channel] || n.channel || '') + '</b> - ' + svcNEsc(svcNotifyEventLabel(n.event)) + ' <span class="svu-sub">(' + (n.state === 'sent' ? 'sent by provider' : n.state === 'failed' ? 'failed' : 'prepared, not confirmed delivered') + ')</span><div>' + svcNEsc(n.preview || '') + '</div><div class="w">' + svcNEsc(svcNWhen(n.at)) + ' - ' + svcNEsc(n.by || '') + '</div></li>';
+    }).join('') + '</ul>' : '<div class="svu-sub">Nothing has been sent for this job yet.</div>') + '</div>';
+    el.innerHTML = html;
+  }
+  {
+    el.addEventListener('change', function (e) {
+      var t = e.target; if (!t || t.getAttribute('data-svn') !== 'event') return;
+      st.event = t.value; st.dirty = false; paint();
+    });
+    el.addEventListener('input', function (e) { var t = e.target; if (t && t.getAttribute && t.getAttribute('data-svn') === 'text') { st.text = t.value; st.dirty = true; } });
+    el.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('button') : null; if (!b || !el.contains(b) || b.disabled) return;
+      var ch = b.getAttribute('data-svn-open');
+      if (ch) { st.channel = ch; svcNotifyOpen(job0.id, ch, { event: st.event, text: st.dirty ? st.text : undefined }); paint(); return; }
+      if (b.getAttribute('data-svn-copy')) { svcNotifyCopy(st.dirty ? st.text : build(svcNFresh(job0) || job0, st.channel).text); }
+    });
+  }
+  paint();
+}
+function svcNotifyCopy(text) {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(function () { svcNToast('Message copied.'); }, function () { svcNToast('Could not copy.', true); }); return true; }
+    var ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
+    var ok = document.execCommand && document.execCommand('copy'); document.body.removeChild(ta); svcNToast(ok ? 'Message copied.' : 'Could not copy.', !ok); return !!ok;
+  } catch (e) { svcNToast('Could not copy.', true); return false; }
+}
+
+/* ===== audit trail (MP 38) ===== */
+var SVC_AUDIT_LABELS = { created: 'Job created', edited: 'Job edited', assigned: 'Staff assigned', unassigned: 'Staff unassigned', task: 'Task updated', status: 'Status changed', payment: 'Payment recorded', cancel: 'Job cancelled', 'delete': 'Job deleted',
+  notify: 'Notification initiated', valuables: 'Valuables recorded', ack: 'Valuables acknowledged', condition: 'Vehicle condition recorded', photo: 'Photo added', reopen: 'Job reopened', config: 'Configuration changed',
+  'quote.draft': 'Quote drafted', 'quote.send': 'Quote sent', 'quote.approve': 'Quote approved', 'quote.reject': 'Quote rejected', 'charge.add': 'Charge added', 'charge.void': 'Charge voided', 'material.use': 'Inventory recorded', 'material.reverse': 'Inventory reversed' };
+var SVC_AUDIT_GROUPS = { all: null, status: ['status', 'reopen', 'cancel', 'delete'], money: ['payment', 'charge.add', 'charge.void', 'quote.draft', 'quote.send', 'quote.await', 'quote.approve', 'quote.reject', 'quote.expire', 'quote.revise'], staff: ['assigned', 'unassigned', 'task'],
+  stock: ['material.use', 'material.reverse'], notify: ['notify'], edits: ['created', 'edited', 'valuables', 'ack', 'condition', 'photo'], config: ['config', 'perm'] };
+function svcAuditLabel(act) {
+  var a = String(act == null ? '' : act);
+  if (SVC_AUDIT_LABELS[a]) return SVC_AUDIT_LABELS[a];
+  var m = /^([a-z]+)\.([a-z_]+)$/.exec(a);
+  if (m) return (m[1].charAt(0).toUpperCase() + m[1].slice(1)) + ' ' + m[2].replace(/_/g, ' ');
+  return a ? a.replace(/[._]/g, ' ').replace(/^./, function (c) { return c.toUpperCase(); }) : 'Change';
+}
+function svcAuditStatusLabel(job, key) {
+  var tpl = svcNTpl(job && job.serviceType), out = key;
+  svcNArr(tpl && tpl.statuses).forEach(function (s) { if (s && s.key === key && s.label) out = s.label; });
+  return out;
+}
+function svcAuditDetail(job, a) {
+  var d = '';
+  if (a.act === 'status' || a.act === 'cancel' || a.act === 'reopen') d = (a.from ? svcAuditStatusLabel(job, a.from) + ' -> ' : '') + (a.to ? svcAuditStatusLabel(job, a.to) : '') + (a.note ? ' (' + a.note + ')' : '');
+  else if (a.act === 'assigned' || a.act === 'unassigned') d = [a.to, a.note].filter(Boolean).join(' - ');
+  else d = [a.ref && a.act === 'notify' ? '' : a.ref, a.note].filter(Boolean).join(' - ');
+  return String(d || '');
+}
+/* svcAuditEvents(filter{jobId, act (string|array|group key), by, since, until, q, limit, includeConfig}) -> [{at,user,module:'Services',action,detail,ref,jobId,act}] newest first */
+function svcAuditEvents(filter) {
+  filter = filter || {};
+  var out = [], jobs = [];
+  try { if (typeof svcJobs !== 'undefined' && Array.isArray(svcJobs)) jobs = svcJobs; } catch (e) { jobs = []; }
+  var acts = filter.act ? (Array.isArray(filter.act) ? filter.act : (SVC_AUDIT_GROUPS[filter.act] || [filter.act])) : null;
+  var by = filter.by ? String(filter.by).toLowerCase() : '', q = filter.q ? String(filter.q).toLowerCase() : '';
+  function keep(ev) {
+    if (filter.since != null && ev.at < filter.since) return false;
+    if (filter.until != null && ev.at > filter.until) return false;
+    if (by && String(ev.user).toLowerCase().indexOf(by) === -1) return false;
+    if (q && (ev.user + ' ' + ev.action + ' ' + ev.detail + ' ' + ev.ref).toLowerCase().indexOf(q) === -1) return false;
+    return true;
+  }
+  jobs.forEach(function (job) {
+    if (!job || (filter.jobId && job.id !== filter.jobId)) return;
+    svcNArr(job.audit).forEach(function (a) {
+      if (!a) return;
+      if (acts && acts.indexOf(a.act) === -1) return;
+      var ev = { at: Number(a.at) || 0, user: String(a.by || ''), module: 'Services', action: svcAuditLabel(a.act), detail: svcAuditDetail(job, a), ref: job.no || job.id, jobId: job.id, act: a.act, byId: a.byId };
+      if (keep(ev)) out.push(ev);
+    });
+  });
+  if (!filter.jobId && filter.includeConfig !== false && (!acts || acts.indexOf('config') !== -1 || acts.indexOf('perm') !== -1)) {
+    var cfgs = []; try { if (typeof svcConfig !== 'undefined' && Array.isArray(svcConfig)) cfgs = svcConfig; } catch (e2) { cfgs = []; }
+    cfgs.forEach(function (rec) {
+      if (!rec) return;
+      if (rec.id !== 'cfg-permlog') svcNArr(rec.log).forEach(function (l) {
+        if (!l) return;
+        var ev = { at: Number(l.at) || 0, user: String(l.by || ''), module: 'Services', action: 'Configuration changed', detail: String(l.what || ''), ref: rec.id, jobId: '', act: 'config', byId: '' };
+        if (keep(ev)) out.push(ev);
+      });
+      if (rec.id === 'cfg-permlog' && rec.value) {
+        svcNArr(rec.value.log).forEach(function (l) {
+          if (!l) return;
+          var ev = { at: Number(l.at) || 0, user: String(l.by || ''), module: 'Services', action: 'Permissions changed', detail: String(l.detail || ''), ref: String(l.name || l.staffId || ''), jobId: '', act: 'perm', byId: '' };
+          if (keep(ev)) out.push(ev);
+        });
+      }
+    });
+  }
+  out.sort(function (a, b) { return b.at - a.at; });
+  return filter.limit ? out.slice(0, Number(filter.limit)) : out;
+}
+function svcAuditListHtml(list, withRef) {
+  if (!list.length) return '<div class="svu-sub">No matching events yet.</div>';
+  return '<ul class="svn-log">' + list.map(function (e) {
+    return '<li><b>' + svcNEsc(e.action) + '</b>' + (e.detail ? ' - ' + svcNEsc(e.detail) : '') + '<div class="w">' + svcNEsc(svcNWhen(e.at)) + (e.user ? ' - ' + svcNEsc(e.user) : '') + (withRef && e.ref ? ' - ' + svcNEsc(e.ref) : '') + '</div></li>';
+  }).join('') + '</ul>';
+}
+function svcAuditTab(job, el) {
+  var list = svcAuditEvents({ jobId: job.id });
+  el.innerHTML = '<div class="svu-box"><h4>Audit trail</h4>' + (job._legacy ? '<div class="svu-sub">Classic jobs keep no detailed audit trail. Use Upgrade to full job to start one.</div>' : svcAuditListHtml(list, false)) + '</div>';
+}
+var SVC_AUDIT_UI = { group: 'all', shown: 60, q: '' };
+function svcAuditSettingsPage(el) {
+  function paint() {
+    var list = svcAuditEvents({ act: SVC_AUDIT_UI.group, q: SVC_AUDIT_UI.q }), shown = list.slice(0, SVC_AUDIT_UI.shown);
+    el.innerHTML = '<div class="svu-box"><h4>Recent Services activity</h4><div class="svn-seg2" role="group" aria-label="Filter">' +
+      Object.keys(SVC_AUDIT_GROUPS).map(function (g) { return '<button type="button" class="svu-btn svu-sm' + (g === SVC_AUDIT_UI.group ? ' is-on' : '') + '" data-svn-grp="' + g + '">' + svcNEsc(g === 'all' ? 'All' : g.charAt(0).toUpperCase() + g.slice(1)) + '</button>'; }).join('') + '</div>' +
+      '<label class="svn-lbl" for="svn-aq">Search</label><input id="svn-aq" class="svn-in" type="search" data-svn-q="1" value="' + svcNEsc(SVC_AUDIT_UI.q) + '" placeholder="Person, job number, action">' +
+      '<div style="margin-top:10px">' + svcAuditListHtml(shown, true) + '</div>' +
+      (list.length > shown.length ? '<div class="svn-acts"><button type="button" class="svu-btn" data-svn-more="1">Show more (' + (list.length - shown.length) + ')</button></div>' : '') + '<div class="svu-sub" style="margin-top:8px">The full trail for every event also appears in the main Audit tab under the Services module.</div></div>';
+  }
+  if (!el.__svnBound) {
+    el.__svnBound = true;
+    el.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('button') : null; if (!b) return;
+      if (b.getAttribute('data-svn-grp')) { SVC_AUDIT_UI.group = b.getAttribute('data-svn-grp'); SVC_AUDIT_UI.shown = 60; paint(); }
+      else if (b.getAttribute('data-svn-more')) { SVC_AUDIT_UI.shown += 60; paint(); }
+    });
+    el.addEventListener('change', function (e) { var t = e.target; if (t && t.getAttribute && t.getAttribute('data-svn-q')) { SVC_AUDIT_UI.q = t.value; SVC_AUDIT_UI.shown = 60; paint(); } });
+  }
+  paint();
+}
+
+/* ===== Settings > Services > Notifications ===== */
+var SVC_NOTIFY_UI = { type: '', event: 'ready', channel: '' };
+function svcNotifySettingsPage(el) {
+  var canEdit = svcNCan('svc:manageConfig');
+  if (!SVC_NOTIFY_UI.type) { try { SVC_NOTIFY_UI.type = typeof svcBusinessType === 'function' ? svcBusinessType() : 'other'; } catch (e) { SVC_NOTIFY_UI.type = 'other'; } }
+  var types = []; try { types = typeof svcTypeList === 'function' ? svcTypeList() : []; } catch (e1) { types = []; }
+  function paint(keepText) {
+    var evs = svcNotifyEvents(SVC_NOTIFY_UI.type); if (evs.indexOf(SVC_NOTIFY_UI.event) === -1) SVC_NOTIFY_UI.event = evs[0];
+    var cur = keepText != null ? keepText : svcNotifyTemplate(SVC_NOTIFY_UI.type, SVC_NOTIFY_UI.event, SVC_NOTIFY_UI.channel);
+    var prev = svcNotifyFill(cur, SVC_NOTIFY_SAMPLE), cfg = svcNotifyCfg(), custom = svcNotifyIsCustomised(SVC_NOTIFY_UI.type, SVC_NOTIFY_UI.event, SVC_NOTIFY_UI.channel);
+    var dis = canEdit ? '' : ' disabled';
+    var html = '<div class="svu-box"><h4>Message templates</h4>' + (canEdit ? '' : '<div class="svn-warn">Only the owner can change templates.</div>') +
+      '<div class="svn-grid two"><div><label class="svn-lbl" for="svn-st">Business type</label><select id="svn-st" class="svn-in" data-svn="type">' +
+      types.map(function (t) { return '<option value="' + svcNEsc(t.key) + '"' + (t.key === SVC_NOTIFY_UI.type ? ' selected' : '') + '>' + svcNEsc(t.icon + ' ' + t.label) + '</option>'; }).join('') + '</select></div>' +
+      '<div><label class="svn-lbl" for="svn-se">Message</label><select id="svn-se" class="svn-in" data-svn="event">' + evs.map(function (k) { return '<option value="' + svcNEsc(k) + '"' + (k === SVC_NOTIFY_UI.event ? ' selected' : '') + '>' + svcNEsc(svcNotifyEventLabel(k)) + '</option>'; }).join('') + '</select></div></div>' +
+      '<label class="svn-lbl" for="svn-sc">Applies to</label><select id="svn-sc" class="svn-in" data-svn="channel"><option value="">All channels</option>' + SVC_NOTIFY_CHANNELS.map(function (c) { return '<option value="' + c + '"' + (c === SVC_NOTIFY_UI.channel ? ' selected' : '') + '>' + SVC_NOTIFY_CHANNEL_LABELS[c] + ' only</option>'; }).join('') + '</select>' +
+      '<label class="svn-lbl" for="svn-tx">Text ' + (custom ? '(customised)' : '(default)') + '</label><textarea id="svn-tx" class="svn-in svn-ta" data-svn="text" maxlength="600"' + dis + '>' + svcNEsc(cur) + '</textarea>' +
+      '<div class="svu-sub" style="margin:6px 0">Tap a placeholder to add it:</div><div>' + (typeof SVC_NOTIFY_VARS !== 'undefined' ? SVC_NOTIFY_VARS : Object.keys(SVC_NOTIFY_SAMPLE)).map(function (v) { return '<button type="button" class="svn-chip" data-svn-var="' + v + '"' + dis + '>{' + v + '}</button>'; }).join('') + '</div>' +
+      (prev.unknown.length ? '<div class="svn-warn">Unknown placeholder: ' + svcNEsc(prev.unknown.map(function (u) { return '{' + u + '}'; }).join(' ')) + ' (it will show as written)</div>' : '') +
+      '<label class="svn-lbl">Preview with sample data</label><div class="svn-preview" id="svn-prev">' + svcNEsc(prev.text) + '</div>' +
+      '<div class="svn-acts"><button type="button" class="svu-btn svu-primary" data-svn-save="1"' + dis + '>Save message</button><button type="button" class="svu-btn" data-svn-reset="1"' + dis + '>Use default</button></div><div id="svn-msg" class="svu-sub" role="status" style="margin-top:6px"></div></div>';
+    html += '<div class="svu-box"><h4>Automatic sending</h4><div id="svn-prov" class="svu-sub">Checking for an SMS provider...</div>' +
+      '<label class="svn-chk"><input type="checkbox" id="svn-auto" data-svn-auto="1"' + (cfg.autoSms === true ? ' checked' : '') + ' disabled> Send SMS automatically when a job reaches the events below</label><div id="svn-autoev"></div>' +
+      '<div class="svu-sub">Default: the app only opens WhatsApp, SMS or email with the message filled in, and you press send. WhatsApp is never automatic.</div></div>';
+    el.innerHTML = html;
+    paintProvider();
+  }
+  function paintProvider() {
+    svcNotifyProviderStatus().then(function (p) {
+      var box = el.querySelector('#svn-prov'), chk = el.querySelector('#svn-auto'), evBox = el.querySelector('#svn-autoev'); if (!box || !chk) return;
+      var cfg = svcNotifyCfg();
+      if (p && p.sms) { box.innerHTML = '<div class="svn-good">An SMS provider is connected.</div>'; chk.disabled = !canEdit; }
+      else { box.innerHTML = '<div class="svn-warn">' + (p && p.known ? 'No SMS provider is set up (Settings > SMS). ' : 'Could not check the SMS provider (offline?). ') + 'Until one is connected, messages are only prepared for you to send.</div>'; chk.disabled = true; }
+      evBox.innerHTML = svcNotifyEvents(SVC_NOTIFY_UI.type).filter(function (k) { return k !== 'custom'; }).map(function (k) {
+        return '<label class="svn-chk"><input type="checkbox" data-svn-autoev="' + k + '"' + (svcNArr(cfg.autoEvents).indexOf(k) !== -1 ? ' checked' : '') + (chk.disabled ? ' disabled' : '') + '> ' + svcNEsc(svcNotifyEventLabel(k)) + '</label>';
+      }).join('');
+    });
+  }
+  if (!el.__svnBound) {
+    el.__svnBound = true;
+    el.addEventListener('change', function (e) {
+      var t = e.target; if (!t || !t.getAttribute) return;
+      var k = t.getAttribute('data-svn');
+      if (k === 'type') { SVC_NOTIFY_UI.type = t.value; paint(); }
+      else if (k === 'event') { SVC_NOTIFY_UI.event = t.value; paint(); }
+      else if (k === 'channel') { SVC_NOTIFY_UI.channel = t.value; paint(); }
+      else if (t.getAttribute('data-svn-auto') || t.getAttribute('data-svn-autoev')) {
+        var evs = [].slice.call(el.querySelectorAll('[data-svn-autoev]:checked')).map(function (x) { return x.getAttribute('data-svn-autoev'); });
+        var r = svcNotifySetAuto({ autoSms: !!(el.querySelector('#svn-auto') || {}).checked, autoEvents: evs });
+        if (!r || !r.ok) svcNToast((r && r.error) || 'Could not save.', true); else svcNToast('Saved.');
+      }
+    });
+    el.addEventListener('input', function (e) {
+      var t = e.target; if (!t || !t.getAttribute || t.getAttribute('data-svn') !== 'text') return;
+      var pv = el.querySelector('#svn-prev'); if (pv) pv.textContent = svcNotifyFill(t.value, SVC_NOTIFY_SAMPLE).text;
+    });
+    el.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('button') : null; if (!b || b.disabled) return;
+      var ta = el.querySelector('#svn-tx'), msg = el.querySelector('#svn-msg');
+      if (b.getAttribute('data-svn-var') && ta) {
+        var v = '{' + b.getAttribute('data-svn-var') + '}', s = ta.selectionStart == null ? ta.value.length : ta.selectionStart, en = ta.selectionEnd == null ? s : ta.selectionEnd;
+        ta.value = ta.value.slice(0, s) + v + ta.value.slice(en); try { ta.focus(); ta.setSelectionRange(s + v.length, s + v.length); } catch (e2) { /* jsdom */ }
+        var pv = el.querySelector('#svn-prev'); if (pv) pv.textContent = svcNotifyFill(ta.value, SVC_NOTIFY_SAMPLE).text;
+      } else if (b.getAttribute('data-svn-save') && ta) {
+        var r = svcNotifySaveTemplate(SVC_NOTIFY_UI.type, SVC_NOTIFY_UI.event, SVC_NOTIFY_UI.channel, ta.value);
+        if (r && r.ok) { paint(ta.value); var m1 = el.querySelector('#svn-msg'); if (m1) m1.textContent = 'Saved.'; }
+        else if (msg) msg.textContent = (r && r.error) || 'Could not save.';
+      } else if (b.getAttribute('data-svn-reset')) {
+        var r2 = svcNotifySaveTemplate(SVC_NOTIFY_UI.type, SVC_NOTIFY_UI.event, SVC_NOTIFY_UI.channel, '');
+        if (r2 && r2.ok) { paint(); var m2 = el.querySelector('#svn-msg'); if (m2) m2.textContent = 'Back to the default text.'; } else if (msg) msg.textContent = (r2 && r2.error) || 'Could not save.';
+      }
+    });
+  }
+  paint();
+}
+
+/* ===== registration (registries come from svc-ui-home; guarded so a partial page never throws) ===== */
+try {
+  if (typeof svcDrawerRegister === 'function') {
+    svcDrawerRegister('notify', { label: 'Notify', order: 70, render: svcNotifyTab });
+    svcDrawerRegister('audit', { label: 'Audit', order: 95, render: svcAuditTab, visibleWhen: function (job) { return svcNCan('svc:history'); } });
+  }
+  if (typeof svcSettingsRegister === 'function') {
+    svcSettingsRegister('notifications', { label: 'Notifications', order: 40, render: svcNotifySettingsPage });
+    svcSettingsRegister('audit', { label: 'Audit', order: 95, render: svcAuditSettingsPage });
+  }
+  if (typeof svcOn === 'function') svcOn('job:status', svcNotifyOnStatus);
+} catch (svcNotifyRegErr) { /* registries absent: the functions above still work */ }
+</script>

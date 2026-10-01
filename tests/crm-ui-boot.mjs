@@ -20,6 +20,17 @@ export async function bootCrm({ stub, storage = {}, hash = '', wait = 350 } = {}
       Object.entries(storage).forEach(([k, v]) => w.localStorage.setItem(k, v));
       w.fetch = stub.fetch; w.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
       w.HTMLCanvasElement.prototype.getContext = () => null; w.scrollTo = () => {}; w.Element.prototype.scrollIntoView = () => {};
+      // zip 162: jsdom does not fetch <script src>; the page appends crm-admin-more.js (reports / staff / settings / audit) on first use, so run the file the way a browser would and fire onload
+      const appendChild = w.HTMLHeadElement.prototype.appendChild;
+      w.HTMLHeadElement.prototype.appendChild = function (el) {
+        if (el && el.tagName === 'SCRIPT' && el.src) {
+          const file = path.join(CRMDIR, path.basename(new URL(el.src).pathname));
+          w.__lazyLoads = (w.__lazyLoads || []).concat(path.basename(file));
+          setTimeout(() => { try { if (fs.existsSync(file)) { w.eval(fs.readFileSync(file, 'utf8')); el.onload && el.onload(); } else { el.onerror && el.onerror(new Error('404')); } } catch (e) { errors.push('lazy script: ' + e.message); el.onerror && el.onerror(e); } }, 5);
+          return el;
+        }
+        return appendChild.call(this, el);
+      };
     },
   });
   await sleep(wait);

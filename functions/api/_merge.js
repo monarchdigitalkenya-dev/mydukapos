@@ -53,7 +53,9 @@ export function recordKey(r) {
 // Without this, a till that was asleep or slow to sync and still held the record only had to TOUCH it (a reminder flag, a takeaway status) to
 // give it a newer `updatedAt` than the tombstone, and the settled bill reappeared on every till after its next refresh. (Lists keyed by `code`
 // — inventory — are different: the same code is deliberately added again, so a newer record still replaces the tombstone there.)
-export const FINAL_TOMBSTONE_FIELDS = ['bills', 'debts', 'suppliers', 'deliveryZones', 'recurringExpenses', 'contracts'];
+export const FINAL_TOMBSTONE_FIELDS = ['bills', 'debts', 'suppliers', 'deliveryZones', 'recurringExpenses', 'contracts',
+  // Services engine (SERVICES_ARCHITECTURE.md 3.4): unique ids that are never re-created, so a deleted job / appointment / catalog entry stays deleted.
+  'svcJobs', 'svcAppointments', 'svcCatalog'];
 
 // A bill only ever moves FORWARD: voided, then closed (settled), then more money paid, then more payments recorded. A till that was slow to
 // sync still holds the bill as it was (open, unpaid); when it pushes it with a newer time it must not put the bill back to that state — that
@@ -193,13 +195,24 @@ export const NESTED_MERGE = {
     const rank = (x) => (x && x.removedAt ? 2 : x && x.status === 'uploaded' ? 1 : 0);
     return rank(b) > rank(a) ? b : a;
   } },
+  // Services engine (SERVICES_ARCHITECTURE.md 3.4). A job's hot-path arrays are append-only and unioned by element id, so two tills adding a
+  // charge / material / payment / status entry to the same job at the same moment both survive; an element edited in place (voided, reversed)
+  // carries a higher per-element `rev` and wins. `rankBy:'phase'`: a job already closed (phase 3/4) is never put back to open by a stale copy.
+  svcJobs: { arrays: ['statusHistory', 'charges', 'materials', 'payments', 'audit', 'notify', 'jobStaff', 'valuables', 'photos', 'quoteVersions', 'quoteLog'],
+    status: {}, rankBy: 'phase',
+    better: (a, b) => (((b && b.rev) || 0) > ((a && a.rev) || 0) ? b : (b && b.voidedAt && !(a && a.voidedAt) ? b : a)) },
+  // An asset keeps its visit history after the jobs are archived; the rings of two tills are unioned by id (history entries use the job id).
+  svcAssets: { arrays: ['history', 'ownerHistory'], status: {}, better: (a, b) => (((b && b.at) || 0) > ((a && a.at) || 0) ? b : a) },
 };
 export function mergeNestedRecord(field, stored, incoming) {
   const spec = NESTED_MERGE[field];
   const st = Number(stored && stored.updatedAt) || 0, it = Number(incoming && incoming.updatedAt) || 0;
   let base = it >= st ? incoming : stored;
   const other = base === incoming ? stored : incoming;
-  const rank = (r) => (r && spec.status[r.status] !== undefined ? spec.status[r.status] : -1);
+  // rankBy: rank from a numeric field of the record (svcJobs: `phase`) instead of a status map
+  const rank = spec.rankBy
+    ? (r) => (r && r[spec.rankBy] != null && Number.isFinite(Number(r[spec.rankBy])) ? Number(r[spec.rankBy]) : -1)
+    : (r) => (r && spec.status[r.status] !== undefined ? spec.status[r.status] : -1);
   if (rank(other) > rank(base)) base = other;                                   // the further-along record decides the rest
   const out = { ...base };
   spec.arrays.forEach((f) => {
@@ -463,6 +476,9 @@ export const MERGE_BY_ID_FIELDS = [
   // Aqua POS raw materials (caps, labels, preforms ...). Were replaced as ONE whole list, so any device's push put back every
   // other device's material edits and stock counts. Now per record (its stock is ledger-managed: see CELL_SPECS).
   'rawMaterials',
+  // Services engine (SERVICES_ARCHITECTURE.md 3.1): jobs (NESTED_MERGE.svcJobs), vehicles/devices, price catalogue, appointments and per-kind
+  // settings records. All merged per record by id. (The legacy serviceJobs / bookings are deliberately NOT here: they stay whole-value.)
+  'svcJobs', 'svcAssets', 'svcCatalog', 'svcAppointments', 'svcConfig',
 ];
 
 // --- Quantity reconciliation (fixes the lost-update problem) ---------------

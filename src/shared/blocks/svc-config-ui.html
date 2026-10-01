@@ -1,0 +1,65 @@
+<!-- SVC CONFIG UI ---------------------------------------------------------------------------------------
+     Services engine block "svc-config-ui". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B1-U (Business Type page) / B3-N adds pages only via svcSettingsRegister from its own blocks. Nobody else edits this file.
+     STATE: IMPLEMENTED by B1-U for B1 (Settings > Services shell + Business Type page); B3-N adds pages through svcSettingsRegister from its own blocks.
+     KIND: DOM. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: the Settings > Services shell (#settings-section-services): Business Type page in B1; other pages register themselves.
+     SPEC: SERVICES_ARCHITECTURE.md 5.1, 7.1 S9, 8.1. Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+
+<script>
+/* ===== Settings > Services: shell + Business Type page (other pages register themselves with svcSettingsRegister) ===== */
+var SVC_CFG_UI = { page: 'business' };
+
+function svcConfigUiBoot() {
+  var btn = document.getElementById('svc-settings-tab-btn');
+  if (btn) btn.style.display = '';                         /* the page ships it hidden; the engine reveals it */
+  return !!btn;
+}
+function svcRenderSettings() {
+  var root = document.getElementById('svc-settings-root'); if (!root) return false;
+  svcConfigUiBoot();
+  var pages = svcUiSorted(SVC_UI.settingsPages);
+  if (!pages.some(function (p) { return p.key === SVC_CFG_UI.page; })) SVC_CFG_UI.page = pages.length ? pages[0].key : '';
+  root.innerHTML = '<div class="svu-home"><div class="svu-head"><div class="svu-head-t"><span class="svu-ico">🔧</span><div><h2 class="svu-h2">Services</h2><div class="svu-sub">Settings for the Services screens</div></div></div></div>' +
+    (pages.length > 1 ? '<div class="svu-setnav" role="tablist">' + pages.map(function (p) { return '<button type="button" role="tab" data-svc-page="' + svcUiEsc(p.key) + '" class="' + (p.key === SVC_CFG_UI.page ? 'is-on' : '') + '" aria-selected="' + (p.key === SVC_CFG_UI.page) + '">' + svcUiEsc(p.label) + '</button>'; }).join('') + '</div>' : '') +
+    '<div id="svc-settings-page"></div></div>';
+  if (!root.__svcBound) {
+    root.__svcBound = true;
+    root.addEventListener('click', function (ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest('[data-svc-page]') : null; if (!b || !root.contains(b)) return;
+      SVC_CFG_UI.page = b.getAttribute('data-svc-page'); svcRenderSettings();
+    });
+  }
+  var host = document.getElementById('svc-settings-page'), page = SVC_UI.settingsPages[SVC_CFG_UI.page];
+  if (host && page) { try { page.render(host); } catch (e) { host.innerHTML = '<div class="svu-note bad">This page could not be shown. ' + svcUiEsc(e && e.message) + '</div>'; } }
+  return true;
+}
+function svcRenderBusinessTypePage(el) {
+  var mode = svcUiMode(), canEdit = svcUiCan('svc:manageConfig'), pick = mode.type, current = mode.chosen ? mode.type : '';
+  var info = svcUiTypeInfo(mode.type);
+  el.innerHTML = '<div class="svu-box"><h4>Business type</h4>' +
+    '<p style="margin:0 0 6px">' + (mode.chosen ? 'Current type: <b>' + svcUiEsc(info.icon + ' ' + info.label) + '</b>.' : 'You have not chosen a business type yet, so the Services tab still shows the classic counter.') + '</p>' +
+    '<p class="svu-sub" style="margin:0 0 10px">Changing the type never deletes or rewrites old jobs. Jobs keep the type they were created with, and the “All types” switch on the Services screen keeps them visible.</p>' +
+    (canEdit ? '' : '<div class="svu-note warn">Only the owner can change the business type.</div>') +
+    '<div class="svu-types-mount"></div><div style="margin-top:12px"><button type="button" class="svu-btn svu-primary" id="svc-bt-save" style="width:100%"></button></div></div>';
+  var mount = el.querySelector('.svu-types-mount'), save = el.querySelector('#svc-bt-save');
+  function paint() {
+    svcRenderTypePicker(mount, { selected: pick, current: current, onPick: function (k) { if (!canEdit) return; pick = k; paint(); } });
+    var same = mode.chosen && pick === mode.type;
+    save.textContent = same ? 'Current type: ' + svcUiTypeInfo(pick).label : (mode.chosen ? 'Change to ' : 'Use ') + svcUiTypeInfo(pick).label;
+    save.disabled = !canEdit || same;
+  }
+  paint();
+  save.addEventListener('click', function () {
+    if (save.disabled) return;
+    var label = svcUiTypeInfo(pick).label;
+    var ok = true; try { if (typeof confirm === 'function' && mode.chosen) ok = confirm('Switch the Services screens to ' + label + '?\n\nChanging the type never deletes or rewrites old jobs.'); } catch (e) { ok = true; }
+    if (!ok) return;
+    save.disabled = true;
+    svcUiApplyType(pick, 'settings', function () { svcRenderSettings(); });
+  });
+  return true;
+}
+svcSettingsRegister('business', { label: 'Business Type', order: 0, render: svcRenderBusinessTypePage });
+</script>

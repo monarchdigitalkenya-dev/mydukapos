@@ -172,6 +172,16 @@ export const PRODUCTS = {
 };
 const DEFAULT_PRODUCT = 'shop';
 
+// Services POS business types (SERVICES_ARCHITECTURE.md 5.1): the question asked at sign-up / when an owner generates a Services link. Keys are the
+// engine's SVC_TYPE_ORDER; 'other' is also what anything unknown becomes. Keep in sync with SVC_TYPES in src/shared/blocks/svc-templates.html.
+export const SVC_BUSINESS_TYPES = ['phone_repair', 'car_wash', 'garage', 'salon', 'barber', 'laundry', 'cleaning', 'electronics_repair', 'tailoring', 'other'];
+// '' = not chosen (the app then asks the owner itself); a recognised key stays; any other non-empty text means 'other'.
+export function normalizeSvcType(v) {
+  if (typeof v !== 'string' || !v.trim()) return '';
+  const k = v.trim().toLowerCase();
+  return SVC_BUSINESS_TYPES.includes(k) ? k : 'other';
+}
+
 export function listProducts() {
   return Object.keys(PRODUCTS).map((key) => ({ id: key, ...PRODUCTS[key] }));
 }
@@ -371,6 +381,8 @@ export async function createClient(env, type, label, product, extra = {}) {
     slug,
     type: type === 'permanent' ? 'permanent' : 'demo',
     product: PRODUCTS[product] ? product : DEFAULT_PRODUCT,
+    // Services POS only: the business type chosen at sign-up / link generation (optional; the app pre-selects it, see license-status.js).
+    svcType: product === 'services' ? normalizeSvcType(extra.svcType) : '',
     label: label || '',
     createdAt: now,
     expiresAt: type === 'permanent' ? null : now + durationMs,

@@ -64,6 +64,7 @@ console.log(`\n${canonical.size} distinct shared functions (${moved} copies remo
 
 // --- whole shared HTML/script blocks ----------------------------------
 for (const [name, def] of Object.entries(SHARED_BLOCKS)) {
+  if (def.only) continue;      // `only` blocks (the svc-* Services engine) are authored in src/shared/blocks/, never extracted from an app
   let canonical = null;
   for (const m of MODULES) {
     const html = read(m);

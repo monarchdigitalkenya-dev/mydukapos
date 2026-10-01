@@ -3,6 +3,8 @@
 # Code signing (optional, recommended — SmartScreen warns about unsigned installers): repository secrets CSC_LINK (base64 of the .pfx)
 # and CSC_KEY_PASSWORD. Without them the installers are unsigned (they install; Windows shows "Unknown publisher").
 name: windows
+permissions:
+  contents: read
 on:
   push:
     branches: [ 'claude/**', 'main' ]
@@ -38,7 +40,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release/part | Out-Null
-          Get-ChildItem native/windows/dist -Recurse -Include *.exe,*.msi | Where-Object { $_.DirectoryName -notmatch 'unpacked' } | ForEach-Object { Copy-Item $_.FullName release/part/ }
+          Get-ChildItem native/windows/dist -Recurse -Include *.exe,*.msi | Where-Object { $_.DirectoryName -notmatch 'unpacked' -and $_.Name -notmatch '^__uninstaller' } | ForEach-Object { Copy-Item $_.FullName release/part/ }
           if ((Get-ChildItem release/part).Count -lt 2) { throw "expected the .exe and the .msi of ${{ matrix.app }}" }
       - uses: actions/upload-artifact@v4
         with: { name: 'part-${{ matrix.app }}', path: release/part, if-no-files-found: error, retention-days: 2 }
@@ -56,7 +58,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force release/windows | Out-Null
           $rows = @()
-          Get-ChildItem release/parts -Include *.exe,*.msi -Recurse | ForEach-Object {
+          Get-ChildItem release/parts -Include *.exe,*.msi -Recurse | Where-Object { $_.Name -notmatch '^__uninstaller' } | ForEach-Object {
             Copy-Item $_.FullName release/windows/
             $sig = Get-AuthenticodeSignature $_.FullName
             $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()

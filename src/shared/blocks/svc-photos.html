@@ -1,0 +1,130 @@
+<!-- SVC PHOTOS ---------------------------------------------------------------------------------------
+     Services engine block "svc-photos". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B3-C. Nobody else edits this file.
+     STATE: STUB (marker-only, created by B1-S). The owner adds the block content below this comment: one script element (plus style element / markup for DOM blocks). Never write a literal script open tag inside this comment.
+     KIND: DOM + IndexedDB. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcPhotoAdd, svcPhotoFlush, svcPhotoUrl, IndexedDB store svc_photos, /api/media kind "ref" upload.
+     SPEC: SERVICES_ARCHITECTURE.md 3.9, 8.2 B3-C. Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+
+<script>
+/* ===== Services photos (B3-C). Compressed on the device, kept in IndexedDB until uploaded, stored privately in R2 (kind "ref"). The same
+   picture twice has the same id, so it is stored once. A job keeps only the ids (never the bytes) in job.photos. ===== */
+var SVC_PH_DB = 'svc_photos', SVC_PH_MEM = {}, SVC_PH_URLS = {}, SVC_PH_FLUSHING = false, SVC_PH_MAXTRIES = 8;
+function svcPhEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcPhToast(m, err) { try { if (typeof showToast === 'function') showToast(m, !!err); } catch (e) { /* cosmetic */ } }
+function svcPhHref(p) { try { return typeof apiUrl === 'function' ? apiUrl(p) : p; } catch (e) { return p; } }
+function svcPhOpenDb() {
+  return new Promise(function (resolve) {
+    try {
+      if (typeof indexedDB === 'undefined' || !indexedDB) return resolve(null);
+      var rq = indexedDB.open(SVC_PH_DB, 1);
+      rq.onupgradeneeded = function () { try { rq.result.createObjectStore('p', { keyPath: 'id' }); } catch (e) { /* exists */ } };
+      rq.onsuccess = function () { resolve(rq.result); };
+      rq.onerror = function () { resolve(null); };
+      rq.onblocked = function () { resolve(null); };
+    } catch (e) { resolve(null); }
+  });
+}
+function svcPhIdb(mode, fn) {
+  return svcPhOpenDb().then(function (db) {
+    if (!db) return { unsupported: true };
+    return new Promise(function (resolve) {
+      try {
+        var tx = db.transaction('p', mode), st = tx.objectStore('p'), out = fn(st);
+        tx.oncomplete = function () { try { db.close(); } catch (e) { /* closed */ } resolve({ ok: true, value: out && out.result }); };
+        tx.onerror = tx.onabort = function () { try { db.close(); } catch (e) { /* closed */ } resolve({ ok: false }); };
+      } catch (e) { resolve({ ok: false }); }
+    });
+  });
+}
+function svcPhPut(row) { SVC_PH_MEM[row.id] = row; return svcPhIdb('readwrite', function (st) { return st.put(row); }); }
+function svcPhDel(id) { delete SVC_PH_MEM[id]; return svcPhIdb('readwrite', function (st) { return st.delete(id); }); }
+function svcPhGet(id) { if (SVC_PH_MEM[id]) return Promise.resolve(SVC_PH_MEM[id]); return svcPhIdb('readonly', function (st) { return st.get(id); }).then(function (r) { return (r && r.value) || null; }); }
+function svcPhAll() { return svcPhIdb('readonly', function (st) { return st.getAll(); }).then(function (r) { var l = (r && r.value) || []; Object.keys(SVC_PH_MEM).forEach(function (k) { if (!l.some(function (x) { return x.id === k; })) l.push(SVC_PH_MEM[k]); }); return l; }); }
+function svcPhHash(dataUrl) {
+  try {
+    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(dataUrl)).then(function (buf) { return 'svc-' + Array.prototype.slice.call(new Uint8Array(buf), 0, 10).map(function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); });
+  } catch (e) { return Promise.resolve('svc-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12)); }
+}
+function svcPhOnline() { try { return typeof window.posNetOffline === 'function' ? !window.posNetOffline() : navigator.onLine !== false; } catch (e) { return true; } }
+
+/* svcPhotoAdd(file, {kind, jobId, field, slot})  (also accepted: svcPhotoAdd(jobId, kind, file)).  Resolves to {id, kind, slot, at, by, bytes, state}
+   or null when the picture is refused. With opts.jobId of a saved job the entry is also written onto job.photos (audited). */
+function svcPhotoAdd(a, b, c) {
+  var file = a, opts = b || {};
+  if (typeof a === 'string' && c) { file = c; opts = { jobId: a, kind: b }; }
+  if (!file) return Promise.resolve(null);
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type || '')) { svcPhToast('Use a JPEG, PNG or WebP picture.', true); return Promise.resolve(null); }
+  if (file.size > 15 * 1024 * 1024) { svcPhToast('That picture is too big (over 15 MB).', true); return Promise.resolve(null); }
+  var compress = window.__refCompress || (typeof compressImageToTarget === 'function' ? compressImageToTarget : null);
+  if (!compress) return Promise.resolve(null);
+  return Promise.resolve(compress(file, { maxW: 1400, maxH: 1400, maxBytes: 300 * 1024 })).then(function (res) {
+    return svcPhHash(res.dataUrl).then(function (id) {
+      var by = ''; try { by = svcActor().name; } catch (e) { by = ''; }
+      var entry = { id: id, kind: String(opts.kind || 'other'), slot: opts.slot || opts.field || '', at: Date.now(), by: by, bytes: res.compressedBytes || 0, state: 'pending' };
+      return svcPhPut({ id: id, jobId: opts.jobId || '', dataUrl: res.dataUrl, tries: 0, at: entry.at }).then(function () {
+        if (opts.jobId && typeof svcCommit === 'function') {
+          var r = svcCommit(function (job) { job.photos = (Array.isArray(job.photos) ? job.photos : []).filter(function (p) { return p && p.id !== id; }).concat([entry]); try { job.audit = (job.audit || []).concat([]); } catch (e) { /* audit by commit */ } return job; }, { id: opts.jobId, reason: 'photo' });
+          if (r && r.ok === false && r.code !== 'notfound') { svcPhToast('Could not attach the picture to the job.', true); }
+        }
+        setTimeout(svcPhotoFlush, 50);
+        return entry;
+      });
+    });
+  }).catch(function (e) { svcPhToast((e && e.message) || 'Could not read the picture.', true); return null; });
+}
+/* svcPhotoFlush(): upload every waiting picture; a row leaves the queue only when the server confirmed it. */
+function svcPhotoFlush() {
+  if (SVC_PH_FLUSHING || !svcPhOnline()) return Promise.resolve(0);
+  SVC_PH_FLUSHING = true;
+  return svcPhAll().then(function (rows) {
+    var sent = 0, chain = Promise.resolve();
+    rows.forEach(function (row) {
+      chain = chain.then(function () {
+        if (!row || !row.dataUrl || (row.tries || 0) >= SVC_PH_MAXTRIES) return null;
+        return fetch(svcPhHref('/api/media'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ k: 'ref', id: row.id, dataUrl: row.dataUrl }) }).then(function (r) {
+          if (r.ok) { sent++; return svcPhDel(row.id).then(function () { svcPhMarkUploaded(row.id); }); }
+          row.tries = (row.tries || 0) + (r.status >= 400 && r.status < 500 ? SVC_PH_MAXTRIES : 1); return svcPhPut(row);
+        }).catch(function () { row.tries = (row.tries || 0) + 1; return svcPhPut(row); });
+      });
+    });
+    return chain.then(function () { return sent; });
+  }).then(function (n) { SVC_PH_FLUSHING = false; return n; }, function () { SVC_PH_FLUSHING = false; return 0; });
+}
+function svcPhMarkUploaded(id) {
+  try { (typeof svcJobs !== 'undefined' ? svcJobs : []).forEach(function (j) { if (j && Array.isArray(j.photos) && j.photos.some(function (p) { return p && p.id === id && p.state === 'pending'; })) svcCommit(function (job) { job.photos = job.photos.map(function (p) { return p.id === id ? Object.assign({}, p, { state: 'uploaded' }) : p; }); return job; }, { id: j.id, reason: 'photo', noAudit: true }); }); } catch (e) { /* cosmetic */ }
+}
+function svcPhotoPending() { return svcPhAll().then(function (rows) { return rows.length; }); }
+/* svcPhotoUrl(id) -> Promise<object URL | ''>: this device's own copy first, else the private server copy. */
+function svcPhotoUrl(id) {
+  if (!id) return Promise.resolve('');
+  if (SVC_PH_URLS[id]) return Promise.resolve(SVC_PH_URLS[id]);
+  return svcPhGet(id).then(function (row) {
+    if (row && row.dataUrl) return row.dataUrl;
+    if (!svcPhOnline()) return '';
+    return fetch(svcPhHref('/api/media?k=ref&id=' + encodeURIComponent(id))).then(function (r) { if (!r.ok) throw new Error('missing'); return r.blob(); }).then(function (bl) { var u = URL.createObjectURL(bl); SVC_PH_URLS[id] = u; return u; });
+  }).catch(function () { return ''; });
+}
+
+/* ---- the job drawer's Photos tab ---- */
+var SVC_PH_KINDS = [['condition', 'Condition when received'], ['before', 'Before'], ['after', 'After'], ['valuable', 'Valuables'], ['other', 'Other']];
+function svcPhRenderTab(job, el) {
+  if (!el || !job) return;
+  var can = true; try { can = typeof svcCan !== 'function' || svcCan('svc:edit') || svcCan('svc:status'); } catch (e) { can = true; }
+  var photos = (Array.isArray(job.photos) ? job.photos : []).filter(function (p) { return p && p.id; });
+  var h = '<div class="svc-ph-tab">';
+  if (can) h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;"><select data-svc-ph-kind style="min-height:44px;flex:1;min-width:150px;">' + SVC_PH_KINDS.map(function (k) { return '<option value="' + k[0] + '">' + svcPhEsc(k[1]) + '</option>'; }).join('') + '</select><label class="btn-main" style="min-height:44px;display:inline-flex;align-items:center;cursor:pointer;margin:0;">📷 Add photo<input type="file" accept="image/*" capture="environment" multiple data-svc-ph-file style="display:none;"></label></div>';
+  h += '<div data-svc-ph-grid style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;">' + (photos.length ? photos.map(function (p) { return '<figure style="margin:0;"><div data-svc-ph-img="' + svcPhEsc(p.id) + '" style="aspect-ratio:1;border-radius:8px;background:var(--light,#ecf0f1);display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:12px;color:#7f8c8d;">…</div><figcaption style="font-size:11px;color:#7f8c8d;">' + svcPhEsc(p.kind || '') + (p.state === 'pending' ? ' · uploading' : '') + '</figcaption></figure>'; }).join('') : '<p style="grid-column:1/-1;color:#7f8c8d;">No photos yet.</p>') + '</div></div>';
+  el.innerHTML = h;
+  el.querySelectorAll('[data-svc-ph-img]').forEach(function (box) { svcPhotoUrl(box.getAttribute('data-svc-ph-img')).then(function (u) { if (u && box.isConnected) { box.innerHTML = ''; var im = document.createElement('img'); im.src = u; im.alt = ''; im.style.cssText = 'width:100%;height:100%;object-fit:cover;'; box.appendChild(im); } else if (box.isConnected) box.textContent = 'On the server'; }); });
+  var inp = el.querySelector('[data-svc-ph-file]');
+  if (inp) inp.addEventListener('change', function () {
+    var kind = (el.querySelector('[data-svc-ph-kind]') || {}).value || 'other', files = Array.prototype.slice.call(inp.files || []);
+    inp.value = '';
+    files.reduce(function (p, f) { return p.then(function () { return svcPhotoAdd(f, { kind: kind, jobId: job.id }); }); }, Promise.resolve()).then(function () { try { var j2 = svcGetJob(job.id); if (j2) svcPhRenderTab(j2, el); } catch (e) { /* closed */ } });
+  });
+}
+try { if (typeof svcDrawerRegister === 'function') svcDrawerRegister('photos', { label: 'Photos', order: 50, render: svcPhRenderTab, visibleWhen: function (job) { return !!job && !job._legacy && !job._deleted; } }); } catch (svcPhRegErr) { /* registry not ready */ }
+try { window.addEventListener('online', function () { svcPhotoFlush(); }); setInterval(function () { if (!document.hidden) svcPhotoFlush(); }, 60000); setTimeout(svcPhotoFlush, 4000); } catch (svcPhEvErr) { /* no window */ }
+</script>

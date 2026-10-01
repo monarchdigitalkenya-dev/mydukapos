@@ -51,6 +51,7 @@ for (const m of BLOCK_TARGETS) {
   for (const name of Object.keys(SHARED_BLOCKS)) {
     if (!(SHARED_BLOCKS[name].owner || MODULES.includes(m))) continue;   // e.g. the Hardware popup is not for the owner console
     if ((SHARED_BLOCKS[name].skip || []).includes(m)) continue;         // e.g. the Orders tab is not for Aqua POS (water)
+    if (SHARED_BLOCKS[name].only && !SHARED_BLOCKS[name].only.includes(m)) continue;   // e.g. the svc-* Services engine blocks exist ONLY in services/index.html
     // a block can carry different content per module (the user guides): src/shared/blocks/<name>/<module>.html, module = shop | hotel | hospital | ...
     const moduleKey = m === 'index.html' ? 'shop' : m.split('/')[0];
     const canon = fs.readFileSync(SHARED_BLOCKS[name].perModule ? `${BLOCK_DIR}/${name}/${moduleKey}.html` : `${BLOCK_DIR}/${name}.html`, 'utf8');

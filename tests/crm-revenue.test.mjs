@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { makeCrm, lead, newPhone } from './crm-harness.mjs';
 import { waHook, msg, adRef, WA_SECRET } from './crm-rev-helpers.mjs';
 
+// zip 162: "this month" reports lose yesterday's rows on the 1st of a month. Pin the clock to the 15th, 09:00 UTC (midday EAT); it still ticks.
+{ const real = Date.now.bind(Date), d = new Date(real()); d.setUTCDate(15); d.setUTCHours(9, 0, 0, 0); const off = d.getTime() - real(); Date.now = () => real() + off; }
 const pid = (c, key) => c.q('select id from crm_products where key = ?', key)[0].id;
 const today = () => new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
 

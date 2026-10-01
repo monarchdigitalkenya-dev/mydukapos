@@ -1,0 +1,709 @@
+<!-- SVC METRICS ---------------------------------------------------------------------------------------
+     Services engine block "svc-metrics". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B2-Q. Nobody else edits this file.
+     STATE: IMPLEMENTED (B2-Q).
+     KIND: pure (DOM-free, vm-loadable). Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcQueueGroups(typeKey, opts) -> array of groups (+ .counts .counters .visible), svcDashboardMetrics(typeKey, range, opts) -> {cards, values, counts, range},
+               svcSearch(query, opts) (ranked, exact scanned IMEI / plate first, legacy rows included, index rebuilt only when the job lists change), svcDueJobs() (overdue engine jobs in the
+               legacy shape the due bell reads), svcJobOverdue(job, now), svcSearchIndexStats().
+     SPEC: SERVICES_ARCHITECTURE.md 6.7, 8.2 B2-Q (master prompt 14, 25, 26, 32). Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<script>
+/* ===== svc-metrics: state ===== */
+var SVC_MX = { all: null, allSig: '', idx: null, idxSig: '', aidx: null, aidxSig: '', metricsCache: {}, metricsSig: '', builds: 0, abuilds: 0 };
+/* the counters of master prompt 25, in that order ('diagnosing' is an extra that only phone repair / garage / electronics show) */
+var SVC_MX_COUNTERS = [
+  { key: 'total', label: 'Total' }, { key: 'remaining', label: 'Remaining' }, { key: 'waiting', label: 'Waiting' }, { key: 'assigned', label: 'Assigned' },
+  { key: 'diagnosing', label: 'Diagnosing' }, { key: 'in_progress', label: 'In Progress' }, { key: 'awaiting_approval', label: 'Awaiting Approval' }, { key: 'awaiting_parts', label: 'Awaiting Parts' },
+  { key: 'ready', label: 'Ready' }, { key: 'completed', label: 'Completed' }, { key: 'cancelled', label: 'Cancelled' }, { key: 'no_show', label: 'No Show' }
+];
+var SVC_MX_DAY_MS = 86400000;
+var SVC_MX_NEVER = 8640000000000000;
+
+/* ===== small helpers ===== */
+function svcMxNow(o) {
+  if (o && o.now != null && isFinite(Number(o.now))) return Number(o.now);
+  try { if (typeof svcNow === 'function') return svcNow(); } catch (e) { /* use the clock */ }
+  return Date.now();
+}
+function svcMxArr(v) { return Array.isArray(v) ? v : []; }
+function svcMxStr(v) { return v == null ? '' : String(v); }
+function svcMxNum(v) { var n = typeof v === 'number' ? v : parseFloat(svcMxStr(v).replace(/,/g, '')); return isFinite(n) ? n : 0; }
+function svcMxLower(v) { return svcMxStr(v).toLowerCase(); }
+function svcMxMs(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  var s = svcMxStr(v).trim();
+  if (/^\d{9,}$/.test(s)) return Number(s);
+  var t = Date.parse(s);
+  return isFinite(t) ? t : 0;
+}
+function svcMxHash(s, h) {
+  s = svcMxStr(s); h = h | 0;
+  for (var i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  return h;
+}
+function svcMxTpl(typeKey) {
+  try { if (typeof svcGetTemplate === 'function') { var t = svcGetTemplate(typeKey); if (t) return t; } } catch (e) { /* fall through */ }
+  try { if (typeof SVC_TYPES !== 'undefined' && SVC_TYPES && SVC_TYPES[typeKey]) return SVC_TYPES[typeKey]; } catch (e2) { /* no templates */ }
+  return { key: typeKey || 'other', statuses: [], queueGroups: [], terms: {}, dashboard: [] };
+}
+function svcMxTerm(key, typeKey) {
+  try { if (typeof svcTerm === 'function') { var v = svcTerm(key, typeKey); if (v) return v; } } catch (e) { /* fall through */ }
+  var t = svcMxTpl(typeKey);
+  return (t.terms && t.terms[key]) || svcMxStr(key);
+}
+function svcMxMoney(n) {
+  try { if (typeof svcFormatMoney === 'function') return svcFormatMoney(n); } catch (e) { /* fall through */ }
+  var v = Math.round(svcMxNum(n) * 100) / 100, s = String(v).split('.'); s[0] = s[0].replace(/\B(?=(\d{3})+(?!\d))/g, ','); return 'KSh ' + s.join('.');
+}
+function svcMxDayKey(ms) {
+  try { if (typeof svcDayKey === 'function') return svcDayKey(ms); } catch (e) { /* fall through */ }
+  var d = new Date(Number(ms) + 3 * 3600000);
+  return d.getUTCFullYear() + '-' + ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2);
+}
+/* first / last millisecond of a business day (Kenya time unless the app's bizDayBounds says otherwise) */
+function svcMxDayBounds(key) {
+  try { if (typeof bizDayBounds === 'function') { var b = bizDayBounds(key); if (b && isFinite(b.from) && isFinite(b.to)) return { from: b.from, to: b.to }; } } catch (e) { /* fall through */ }
+  var from = Date.parse(key + 'T00:00:00+03:00');
+  if (!isFinite(from)) from = 0;
+  return { from: from, to: from + SVC_MX_DAY_MS - 1 };
+}
+/* range: 'today' | 'yesterday' | 'week' (7 days) | 'month' (30 days) | 'all' | {from,to,label} -> {key,label,from,to} */
+function svcMxRange(range, now) {
+  now = now == null ? svcMxNow() : now;
+  var r = range && typeof range === 'object' ? range : { key: range || 'today' };
+  if (r.from != null || r.to != null) return { key: r.key || 'custom', label: r.label || 'Selected period', from: svcMxMs(r.from) || 0, to: r.to != null && svcMxMs(r.to) ? svcMxMs(r.to) : SVC_MX_NEVER };
+  var key = r.key, today = svcMxDayBounds(svcMxDayKey(now)), days;
+  if (key === 'all') return { key: 'all', label: 'All time', from: 0, to: SVC_MX_NEVER };
+  if (key === 'yesterday') { var y = svcMxDayBounds(svcMxDayKey(today.from - 1)); return { key: 'yesterday', label: 'Yesterday', from: y.from, to: y.to }; }
+  if (key === 'week' || key === 'month') {
+    days = key === 'week' ? 7 : 30;
+    var st = svcMxDayBounds(svcMxDayKey(today.from - (days - 1) * SVC_MX_DAY_MS + 3600000));
+    return { key: key, label: key === 'week' ? 'Last 7 days' : 'Last 30 days', from: st.from, to: today.to };
+  }
+  return { key: 'today', label: 'Today', from: today.from, to: today.to };
+}
+
+/* ===== signatures: the job lists (and, for money, the bills) change => caches are rebuilt. Cheap: one pass over the legacy rows ===== */
+function svcMxLegacyRows() {
+  try { return typeof serviceJobs !== 'undefined' && Array.isArray(serviceJobs) ? serviceJobs : []; } catch (e) { return []; }
+}
+function svcMxLegacySig() {
+  var a = svcMxLegacyRows(), h = 0, i, j;
+  for (i = 0; i < a.length; i++) {
+    j = a[i]; if (!j) continue;
+    h = svcMxHash(j.id, h); h = svcMxHash(j.status, h); h = svcMxHash(j.clientName, h); h = svcMxHash(j.clientPhone, h); h = svcMxHash(svcMxStr(j.itemDetails).slice(0, 160), h);
+    h = svcMxHash(j.promisedPickup, h); h = svcMxHash(svcMxStr(j.finalAmount) + '|' + svcMxStr(j.quoteAmount) + '|' + svcMxStr(j.laborFee) + '|' + svcMxStr(j.billId) + '|' + svcMxStr(j.saleId) + '|' + svcMxStr(j.completedAt), h);
+    h = (h + svcMxArr(j.components).length + svcMxArr(j.servicesRequired).length) | 0;
+  }
+  return a.length + ':' + h;
+}
+function svcMxBillsSig() {
+  var a = [], i, n = 0, s = 0;
+  try { a = typeof bills !== 'undefined' && Array.isArray(bills) ? bills : []; } catch (e) { a = []; }
+  for (i = 0; i < a.length; i++) { if (a[i]) { n++; s += svcMxNum(a[i].amountPaid) + svcMxArr(a[i].paymentHistory).length; } }
+  return n + ':' + Math.round(s * 100);
+}
+function svcMxSig(withMoney) {
+  var v = 0, n = 0, an = 0;
+  try { if (typeof svcStVer !== 'undefined') v = svcStVer; } catch (e) { v = 0; }
+  try { if (typeof svcJobs !== 'undefined' && Array.isArray(svcJobs)) n = svcJobs.length; } catch (e2) { n = 0; }
+  try { if (typeof svcAssets !== 'undefined' && Array.isArray(svcAssets)) an = svcAssets.length; } catch (e3) { an = 0; }
+  var s = v + '|' + n + '|' + an + '|' + svcMxLegacySig();
+  if (withMoney) s += '|' + svcMxBillsSig();
+  return s;
+}
+/* the merged job view (engine jobs + legacy rows not promoted), cached until the lists change. Not sorted (callers sort what they need). */
+function svcMxAll() {
+  var sig = svcMxSig(false);
+  if (SVC_MX.all && SVC_MX.allSig === sig) return SVC_MX.all;
+  var list = [];
+  try { if (typeof svcAllJobs === 'function') list = svcAllJobs({ includeLegacy: true }) || []; } catch (e) { list = []; }
+  SVC_MX.all = list; SVC_MX.allSig = sig;
+  return list;
+}
+function svcMxJobsFor(typeKey, o) {
+  var src = o && Array.isArray(o.jobs) ? o.jobs : svcMxAll(), out = [], i, j;
+  for (i = 0; i < src.length; i++) {
+    j = src[i];
+    if (!j || j._deleted) continue;
+    if (typeKey && j.serviceType && j.serviceType !== typeKey) continue;
+    out.push(j);
+  }
+  return out;
+}
+function svcMxApptsFor(typeKey, o) {
+  if (o && Array.isArray(o.appts)) return o.appts;
+  var list = [];
+  try { if (typeof svcAllApptsView === 'function') list = svcAllApptsView({ includeLegacy: true }) || []; } catch (e) { list = []; }
+  return list.filter(function (a) { return a && !a._deleted && (!typeKey || a._legacy || !a.serviceType || a.serviceType === typeKey); });
+}
+
+/* ===== status semantics ===== */
+function svcMxStatusDef(tpl, key) {
+  var list = svcMxArr(tpl && tpl.statuses), i;
+  for (i = 0; i < list.length; i++) { if (list[i] && list[i].key === key) return list[i]; }
+  return null;
+}
+function svcMxPhase(tpl, job) {
+  var d = svcMxStatusDef(tpl, job && job.status);
+  if (d && d.phase != null && isFinite(Number(d.phase))) return Number(d.phase);
+  if (job && job.phase != null && isFinite(Number(job.phase))) return Number(job.phase);
+  return 1;
+}
+function svcMxClosed(tpl, job) {
+  if (!job) return false;
+  if (job.phase != null && isFinite(Number(job.phase)) && Number(job.phase) >= 3) return true;
+  return svcMxPhase(tpl, job) >= 3;
+}
+/* waiting | diagnosing | awaiting_approval | awaiting_parts | in_progress | ready | completed | cancelled | no_show */
+function svcMxCategoryOfKey(tpl, key, fallbackPhase) {
+  var d = svcMxStatusDef(tpl, key), grp = d && d.group ? String(d.group) : '', k = String(key || '');
+  if (k === 'no_show' || grp === 'noshow') return 'no_show';
+  if (k === 'cancelled' || grp === 'cancelled') return 'cancelled';
+  if (k === 'awaiting_approval' || grp === 'approval') return 'awaiting_approval';
+  if (k === 'awaiting_parts' || grp === 'parts') return 'awaiting_parts';
+  if (k === 'diagnosing' || k === 'inspection' || grp === 'diagnosing') return 'diagnosing';
+  var p = d && d.phase != null && isFinite(Number(d.phase)) ? Number(d.phase) : (fallbackPhase != null && isFinite(Number(fallbackPhase)) ? Number(fallbackPhase) : 1);
+  if (p <= 0) return 'waiting';
+  if (p === 1) return 'in_progress';
+  if (p === 2) return 'ready';
+  if (p === 3) return 'completed';
+  return 'cancelled';
+}
+function svcMxCategory(tpl, job) { return svcMxCategoryOfKey(tpl, job && job.status, job && job.phase); }
+function svcMxActiveStaff(job) { return svcMxArr(job && job.jobStaff).filter(function (s) { return s && !s.removedAt && (s.staffId || s.name); }); }
+function svcMxStaffNames(job) {
+  var out = [];
+  svcMxActiveStaff(job).forEach(function (s) { var n = svcMxStr(s.name).trim(); if (n && out.indexOf(n) === -1) out.push(n); });
+  return out;
+}
+/* late = still open and promised for a time that has passed */
+function svcJobOverdue(job, now) {
+  if (!job || job._deleted) return false;
+  var due = svcMxMs(job.dueAt); if (!due) return false;
+  var closed = job.closedAt != null || (job.phase != null && Number(job.phase) >= 3);
+  if (closed) return false;
+  return due < (now == null ? svcMxNow() : now);
+}
+
+/* ===== queue groups (master prompt 14 + 25) ===== */
+function svcMxGroupIndex(tpl) {
+  var qgs = svcMxArr(tpl && tpl.queueGroups), groups = [], byKey = {}, statusTo = {}, catTo = {};
+  qgs.forEach(function (g) {
+    if (!g) return;
+    var sts = svcMxArr(g.statuses), defs = sts.map(function (k) { return svcMxStatusDef(tpl, k); }).filter(Boolean);
+    var grp = { key: g.key, label: g.label || g.key, color: g.color || '#7f8c8d', statuses: sts.slice(), hidden: !!g.hidden, jobs: [], count: 0,
+      closed: defs.length > 0 && defs.every(function (d) { return Number(d.phase) >= 3; }), apptOnly: defs.length > 0 && defs.every(function (d) { return d.scope === 'appt'; }) };
+    groups.push(grp); byKey[g.key] = grp;
+    sts.forEach(function (s) { if (!statusTo[s]) statusTo[s] = grp; });
+  });
+  svcMxArr(tpl && tpl.statuses).forEach(function (d) {
+    if (!d || d.scope === 'appt' || !statusTo[d.key]) return;
+    var c = svcMxCategoryOfKey(tpl, d.key, d.phase);
+    if (!catTo[c]) catTo[c] = statusTo[d.key];
+  });
+  var other = null;
+  return {
+    groups: groups, byKey: byKey,
+    groupOf: function (job) {
+      var g = statusTo[job.status];
+      if (g) return g;
+      var d = svcMxStatusDef(tpl, job.status);
+      if (d && d.group && byKey[d.group]) return byKey[d.group];
+      g = catTo[svcMxCategory(tpl, job)];
+      if (g) return g;
+      if (!other) { other = { key: 'other', label: 'Other', color: '#7f8c8d', statuses: [], hidden: false, jobs: [], count: 0, closed: false, apptOnly: false, extra: true }; groups.push(other); byKey.other = other; }
+      return other;
+    }
+  };
+}
+/* which counters apply to a type: only those with at least one status in the template (master prompt 25) */
+function svcMxVisibleCounters(tpl) {
+  var sts = svcMxArr(tpl && tpl.statuses).filter(function (d) { return d && !d.hidden; }), seen = {};
+  sts.forEach(function (d) { seen[svcMxCategoryOfKey(tpl, d.key, d.phase)] = 1; });
+  var out = ['total', 'remaining', 'waiting'];
+  if (tpl && tpl.staffAssignment) out.push('assigned');
+  ['diagnosing', 'in_progress', 'awaiting_approval', 'awaiting_parts', 'ready', 'completed', 'cancelled', 'no_show'].forEach(function (k) { if (seen[k]) out.push(k); });
+  return out;
+}
+/* terminology per type: Waiting is the label of the type's first status (Received / Booked / Waiting), Ready and Completed come from the type's own words */
+function svcMxCounterLabel(tpl, key, typeKey) {
+  var base = key, i;
+  for (i = 0; i < SVC_MX_COUNTERS.length; i++) { if (SVC_MX_COUNTERS[i].key === key) base = SVC_MX_COUNTERS[i].label; }
+  var t = (tpl && tpl.terms) || {};
+  if (key === 'waiting') { var d = svcMxStatusDef(tpl, tpl && tpl.initialStatus); return d && d.label ? d.label : base; }
+  if (key === 'ready') return t.ready || base;
+  if (key === 'completed') return t.done || base;
+  if (key === 'in_progress') {
+    var gi = svcMxGroupIndex(tpl), g;
+    for (i = 0; i < gi.groups.length; i++) {
+      g = gi.groups[i];
+      if (g.closed || g.apptOnly) continue;
+      var has = g.statuses.some(function (s) { return svcMxCategoryOfKey(tpl, s, 1) === 'in_progress'; });
+      if (has) return g.label;
+    }
+  }
+  return base;
+}
+function svcMxSortOpen(a, b, now) {
+  var oa = svcJobOverdue(a, now) ? 0 : 1, ob = svcJobOverdue(b, now) ? 0 : 1;
+  if (oa !== ob) return oa - ob;
+  var da = svcMxMs(a.dueAt) || SVC_MX_NEVER, db = svcMxMs(b.dueAt) || SVC_MX_NEVER;
+  if (da !== db) return da - db;
+  return (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0) || (String(a.id) < String(b.id) ? -1 : 1);
+}
+/* svcQueueGroups(typeKey, opts | jobs[], now)  ->  [{key,label,color,statuses,hidden,closed,jobs[],count}]
+   The array also carries .counts {total, remaining, waiting, assigned, diagnosing, in_progress, awaiting_approval, awaiting_parts, ready, completed, cancelled, no_show},
+   .counters [{key,label,value}] (only the counters the type has, in master-prompt order, with the type's wording), .visible [keys], .typeKey, .now, .scope.
+   Scope 'today' (default): every OPEN job of the type + jobs closed today; 'all': everything. Waiting includes the assigned ones (Assigned = waiting jobs that already have staff).
+   opts: {jobs, appts, now, scope, staffId, includeLegacy:false drops classic rows} */
+function svcQueueGroups(typeKey, arg, nowArg) {
+  var o = Array.isArray(arg) ? { jobs: arg } : (arg && typeof arg === 'object' ? arg : {});
+  var now = svcMxNow(nowArg != null ? { now: nowArg } : o), tpl = svcMxTpl(typeKey), scope = o.scope || 'today';
+  var jobs = svcMxJobsFor(typeKey, o), gi = svcMxGroupIndex(tpl), day = svcMxDayBounds(svcMxDayKey(now));
+  var counts = { total: 0, remaining: 0, waiting: 0, assigned: 0, diagnosing: 0, in_progress: 0, awaiting_approval: 0, awaiting_parts: 0, ready: 0, completed: 0, cancelled: 0, no_show: 0 };
+  var i, j, cat, closed, g, at;
+  for (i = 0; i < jobs.length; i++) {
+    j = jobs[i];
+    if (o.includeLegacy === false && j._legacy) continue;
+    closed = svcMxClosed(tpl, j);
+    if (closed && scope !== 'all') { at = Number(j.closedAt) || Number(j.statusAt) || Number(j.createdAt) || 0; if (at < day.from || at > day.to) continue; }
+    if (o.staffId && !svcMxActiveStaff(j).some(function (s) { return s.staffId === o.staffId; })) continue;
+    cat = svcMxCategory(tpl, j);
+    counts.total++;
+    if (!closed) counts.remaining++;
+    counts[cat]++;
+    if (cat === 'waiting' && svcMxActiveStaff(j).length) counts.assigned++;
+    g = gi.groupOf(j); g.jobs.push(j); g.count++;
+  }
+  var appts = svcMxApptsFor(typeKey, o);
+  for (i = 0; i < appts.length; i++) {       /* appointment-scoped statuses (salon no-show) live on the appointment, not on a job */
+    var a = appts[i], when = Number(a.startAt) || svcMxMs(a.date ? a.date + 'T' + (a.start || '00:00') + ':00+03:00' : 0);
+    if (a && a.status === 'no_show' && (scope === 'all' || (when >= day.from && when <= day.to))) counts.no_show++;
+  }
+  gi.groups.forEach(function (grp) {
+    if (grp.closed) grp.jobs.sort(function (a, b) { return (Number(b.closedAt) || Number(b.statusAt) || 0) - (Number(a.closedAt) || Number(a.statusAt) || 0); });
+    else grp.jobs.sort(function (a, b) { return svcMxSortOpen(a, b, now); });
+  });
+  var visible = svcMxVisibleCounters(tpl);
+  var out = gi.groups.slice();
+  out.counts = counts; out.visible = visible; out.typeKey = typeKey; out.now = now; out.scope = scope;
+  out.counters = visible.map(function (k) { return { key: k, label: svcMxCounterLabel(tpl, k, typeKey), value: counts[k] }; });
+  return out;
+}
+
+/* ===== money: revenue = amounts actually PAID inside the range (payments / bill instalments), never quotes or balances ===== */
+function svcMxBillById(id) {
+  if (!id) return null;
+  var a = []; try { a = typeof bills !== 'undefined' && Array.isArray(bills) ? bills : []; } catch (e) { a = []; }
+  for (var i = 0; i < a.length; i++) { if (a[i] && a[i].id === id) return a[i]; }
+  return null;
+}
+function svcMxPaidIn(job, from, to) {
+  var sum = 0, n = 0, i, p, at;
+  var ps = svcMxArr(job && job.payments);
+  for (i = 0; i < ps.length; i++) {
+    p = ps[i]; if (!p || p.voidedAt) continue;
+    at = svcMxMs(p.at);
+    if (at >= from && at <= to) { sum += svcMxNum(p.amount); n++; }
+  }
+  if (job && job._legacy) {                                         /* classic rows: the bill's instalments, or a settled sale at completion time */
+    var b = svcMxBillById(job.billId);
+    if (b) {
+      var hist = svcMxArr(b.paymentHistory);
+      for (i = 0; i < hist.length; i++) { p = hist[i]; if (!p) continue; at = svcMxMs(p.timestamp != null ? p.timestamp : p.at); if (at >= from && at <= to) { sum += svcMxNum(p.amount); n++; } }
+    } else if (job.saleId && !job.billId) {
+      at = svcMxMs(job.completedAt) || svcMxMs(job.createdAt);
+      if (at >= from && at <= to) { var t = typeof svcTotals === 'function' ? svcTotals(job) : null; if (t) { sum += svcMxNum(t.total); n++; } }
+    }
+  }
+  return { amount: Math.round(sum * 100) / 100, count: n };
+}
+function svcMxOwed(job) {
+  if (!job || job._deleted) return 0;
+  if (job._legacy && job.moneyKnown === false) return 0;          /* the classic screens never priced / billed it: its quote is not a receivable */
+  var cat = job.status === 'cancelled' ? 'cancelled' : '';
+  if (cat) return 0;
+  var t = typeof svcTotals === 'function' ? svcTotals(job) : null;
+  return t && t.total > 0 && t.balance > 0.005 ? t.balance : 0;
+}
+
+/* ===== dashboards (master prompt 26) ===== */
+var SVC_MX_DEFAULT_DASH = [
+  { id: 'remaining', label: 'Remaining', metric: 'remaining', tone: 'info' }, { id: 'waiting', label: 'Waiting', metric: 'group:waiting', tone: 'warn' },
+  { id: 'working', label: 'In progress', metric: 'group:working', tone: 'info' }, { id: 'ready', label: 'Ready', metric: 'group:ready', tone: 'good' },
+  { id: 'done', label: 'Completed', metric: 'group:done', tone: 'good' }, { id: 'today', label: "Today's jobs", metric: 'today', tone: 'neutral' },
+  { id: 'revenue', label: 'Revenue (collected today)', metric: 'revenue_today', tone: 'good' }, { id: 'outstanding', label: 'Outstanding', metric: 'outstanding', tone: 'warn' }
+];
+function svcMxStaffPool(tpl, o) {
+  var all = [];
+  if (o && Array.isArray(o.staff)) all = o.staff; else { try { all = typeof staff !== 'undefined' && Array.isArray(staff) ? staff : []; } catch (e) { all = []; } }
+  all = all.filter(function (m) { return m && m.id != null && !m._deleted && !m.disabled && !m.inactive && m.active !== false; });
+  var roles = svcMxArr(tpl && tpl.staffRoles).map(function (r) { return r.key; });
+  var spec = all.filter(function (m) { return svcMxArr(m.svcSpecialties).some(function (s) { return roles.indexOf(s) !== -1; }); });
+  return spec.length ? spec : all;
+}
+function svcMxCompute(typeKey, range, o) {
+  var now = svcMxNow(o), tpl = svcMxTpl(typeKey), r = svcMxRange(range, now), jobs = svcMxJobsFor(typeKey, o), gi = svcMxGroupIndex(tpl);
+  var day = svcMxDayBounds(svcMxDayKey(now));
+  var v = { remaining: 0, total: 0, today: 0, walkins_today: 0, overdue: 0, overdueOldest: null, outstanding: 0, outstandingCount: 0, revenue_today: 0, revenuePayments: 0, createdToday: 0,
+    appointments_upcoming: 0, noshows_today: 0, available_staff: 0, availableNames: [], queue: 0, queueLabels: [], groups: {}, groupKind: {}, nextAppt: null };
+  gi.groups.forEach(function (g) { v.groups[g.key] = 0; v.groupKind[g.key] = g.apptOnly ? 'appt' : (g.closed ? 'closed' : 'open'); });
+  var busy = {}, i, j, closed, pay, created, owed, g;
+  for (i = 0; i < jobs.length; i++) {
+    j = jobs[i];
+    closed = svcMxClosed(tpl, j);
+    created = Number(j.createdAt) || 0;
+    if (created >= r.from && created <= r.to) { v.today++; if (j.source !== 'appointment' && j.source !== 'promoted' && !j.appointmentId) v.walkins_today++; }
+    if (created >= day.from && created <= day.to) v.createdToday++;
+    pay = svcMxPaidIn(j, r.from, r.to); v.revenue_today += pay.amount; v.revenuePayments += pay.count;
+    g = gi.groupOf(j);
+    if (!closed) {
+      v.remaining++;
+      if (svcJobOverdue(j, now)) { v.overdue++; var dd = svcMxMs(j.dueAt); if (v.overdueOldest === null || dd < v.overdueOldest.at) v.overdueOldest = { at: dd, job: j }; }
+      if (svcMxCategory(tpl, j) !== 'waiting') svcMxActiveStaff(j).forEach(function (s) { if (s.staffId) busy[s.staffId] = 1; });
+      v.groups[g.key] = (v.groups[g.key] || 0) + 1;
+    } else {
+      var at = Number(j.closedAt) || Number(j.statusAt) || created;
+      if (at >= r.from && at <= r.to) v.groups[g.key] = (v.groups[g.key] || 0) + 1;
+    }
+    owed = svcMxOwed(j);
+    if (owed > 0) { v.outstanding += owed; v.outstandingCount++; }
+  }
+  v.revenue_today = Math.round(v.revenue_today * 100) / 100; v.outstanding = Math.round(v.outstanding * 100) / 100;
+  v.total = v.today;
+  /* appointments: upcoming (not yet arrived, in the future), no-shows in range (appointment status or job status) */
+  var appts = svcMxApptsFor(typeKey, o), a, when;
+  for (i = 0; i < appts.length; i++) {
+    a = appts[i];
+    when = Number(a.startAt) || svcMxMs(a.date ? a.date + 'T' + (a.start || '00:00') + ':00+03:00' : 0);
+    if (a.status === 'no_show') { if (when >= r.from && when <= r.to) { v.noshows_today++; v.groups.noshow = (v.groups.noshow || 0) + 1; } continue; }
+    if ((a.status === 'booked' || a.status === 'confirmed' || a.status === 'scheduled') && !a.jobId && when >= now) {
+      v.appointments_upcoming++;
+      if (!v.nextAppt || when < v.nextAppt.at) v.nextAppt = { at: when, name: a.customer && a.customer.name || '' };
+    }
+  }
+  if (tpl && tpl.appointments && tpl.appointments.mode === 'primary') {         /* cleaning / salon: scheduled jobs that carry a start time are "upcoming" too */
+    jobs.forEach(function (x) {
+      if (svcMxClosed(tpl, x) || svcMxCategory(tpl, x) !== 'waiting') return;
+      var due = svcMxMs(x.dueAt); if (due && due >= now) { v.appointments_upcoming++; if (!v.nextAppt || due < v.nextAppt.at) v.nextAppt = { at: due, name: x.customer && x.customer.name || '' }; }
+    });
+  }
+  jobs.forEach(function (x) { if (svcMxCategory(tpl, x) === 'no_show') { var at2 = Number(x.closedAt) || Number(x.statusAt) || 0; if (at2 >= r.from && at2 <= r.to) v.noshows_today++; } });
+  var pool = svcMxStaffPool(tpl, o);
+  pool.forEach(function (m) { if (!busy[m.id]) { v.available_staff++; v.availableNames.push(svcMxStr(m.name)); } });
+  v.queue = v.remaining;
+  var open = jobs.filter(function (x) { return !svcMxClosed(tpl, x); }).sort(function (x, y) { return svcMxSortOpen(x, y, now); }).slice(0, 3);
+  v.queueLabels = open.map(function (x) { return (x.assetSnap && (x.assetSnap.plate || x.assetSnap.label)) || (x.customer && x.customer.name) || x.no || ''; }).filter(Boolean);
+  return { v: v, r: r, tpl: tpl, gi: gi, now: now, jobsN: jobs.length };
+}
+function svcMxCard(def, c, typeKey) {
+  var v = c.v, m = String(def.metric || ''), card = { key: def.id, id: def.id, label: def.label, metric: m, tone: def.tone || 'neutral', value: 0, sub: '', money: false, target: { view: 'board', group: '' } };
+  var g = m.indexOf('group:') === 0 ? m.slice(6) : '';
+  var rl = c.r.label.toLowerCase();
+  if (g) {
+    card.value = v.groups[g] || 0; card.target.group = g;
+    var kind = v.groupKind[g] || 'open';
+    card.sub = kind === 'closed' || g === 'noshow' ? rl : (kind === 'appt' ? 'scheduled' : 'right now');
+  } else if (m === 'remaining') { card.value = v.remaining; card.sub = 'of ' + v.createdToday + ' started today'; }
+  else if (m === 'today' || m === 'total') { card.value = v.today; card.sub = rl; card.target.group = ''; }
+  else if (m === 'revenue_today') { card.value = v.revenue_today; card.money = true; card.sub = v.revenuePayments + ' payment' + (v.revenuePayments === 1 ? '' : 's') + ' · ' + rl; card.target = null; }
+  else if (m === 'outstanding') { card.value = v.outstanding; card.money = true; card.sub = v.outstandingCount + ' job' + (v.outstandingCount === 1 ? '' : 's') + ' unpaid'; card.target = null; }
+  else if (m === 'overdue') { card.value = v.overdue; card.sub = v.overdueOldest ? 'oldest ' + (v.overdueOldest.job.no || '') : 'none late'; card.target = { view: 'board', group: '', overdue: true }; }
+  else if (m === 'queue') { card.value = v.queue; card.sub = v.queueLabels.join(', ') || 'empty'; }
+  else if (m === 'appointments_upcoming') { card.value = v.appointments_upcoming; card.sub = v.nextAppt ? 'next ' + svcMxClock(v.nextAppt.at) + (v.nextAppt.name ? ' ' + v.nextAppt.name : '') : 'none booked'; card.target = null; }
+  else if (m === 'walkins_today') { card.value = v.walkins_today; card.sub = rl; card.target = null; }
+  else if (m === 'available_staff') { card.value = v.available_staff; card.sub = v.availableNames.slice(0, 3).join(', '); card.target = null; }
+  else if (m === 'noshows_today') { card.value = v.noshows_today; card.sub = rl; card.target = null; }
+  else { card.value = 0; card.target = null; }
+  card.text = card.money ? svcMxMoney(card.value) : String(card.value);
+  return card;
+}
+function svcMxClock(ms) {
+  var d = new Date(Number(ms)); if (!isFinite(d.getTime())) return '';
+  return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+}
+/* svcDashboardMetrics(typeKey, range, opts) -> {typeKey, range:{key,label,from,to}, cards:[{key,label,value,text,sub,tone,metric,money,target}], values, counts, counters}
+   Cards come from the template's own `dashboard` list (the four headline types match master prompt 26 exactly). Revenue = PAID amounts in the range. range: 'today' (default) | 'week' | 'month' | 'all' | {from,to} */
+function svcDashboardMetrics(typeKey, range, o) {
+  o = o || {};
+  var now = svcMxNow(o), rng = svcMxRange(range, now), ck = typeKey + '|' + rng.key + '|' + rng.from + '|' + Math.floor(now / 60000);
+  var cacheable = !(o.jobs || o.appts || o.staff), sig = cacheable ? svcMxSig(true) : '';
+  if (cacheable) {
+    if (SVC_MX.metricsSig !== sig) { SVC_MX.metricsCache = {}; SVC_MX.metricsSig = sig; }
+    if (SVC_MX.metricsCache[ck]) return SVC_MX.metricsCache[ck];
+  }
+  var c = svcMxCompute(typeKey, range, o), tpl = c.tpl, defs = svcMxArr(tpl.dashboard).length ? tpl.dashboard : SVC_MX_DEFAULT_DASH;
+  var cards = defs.map(function (d) { return svcMxCard(d, c, typeKey); });
+  var qg = svcQueueGroups(typeKey, { jobs: o.jobs, appts: o.appts, now: now });
+  var out = { typeKey: typeKey, range: c.r, cards: cards, values: c.v, counts: qg.counts, counters: qg.counters, visible: qg.visible, now: now, updatedAt: now };
+  if (cacheable) SVC_MX.metricsCache[ck] = out;
+  return out;
+}
+
+/* ===== due bell (getDueServiceJobs seam): ENGINE jobs only (the classic rows are already listed by the old code) ===== */
+/* -> [{id, clientName, itemDetails, promisedPickup (ISO), no, serviceType, dueAt, overdueMin, _svc:true}] oldest first. opts: {now, types, withinMin, includeLegacy} */
+function svcDueJobs(o) {
+  o = o || {};
+  var now = svcMxNow(o), list = svcMxAll(), out = [], i, j, due, types = o.types ? (Array.isArray(o.types) ? o.types : [o.types]) : null, horizon = svcMxNum(o.withinMin) * 60000;
+  for (i = 0; i < list.length; i++) {
+    j = list[i];
+    if (!j || j._deleted || (j._legacy && !o.includeLegacy)) continue;
+    if (types && types.indexOf(j.serviceType) === -1) continue;
+    due = svcMxMs(j.dueAt); if (!due) continue;
+    if (j.closedAt != null || (j.phase != null && Number(j.phase) >= 3)) continue;
+    if (due > now + horizon) continue;
+    var snap = j.assetSnap || {}, sv = svcMxArr(j.jobServices).map(function (s) { return s && s.name; }).filter(Boolean).slice(0, 2).join(', ');
+    out.push({ id: j.id, clientName: (j.customer && j.customer.name) || 'Walk-in', itemDetails: [j.no, snap.label, sv].filter(Boolean).join(' - ').slice(0, 120), promisedPickup: new Date(due).toISOString(),
+      no: j.no, serviceType: j.serviceType, dueAt: due, overdueMin: Math.max(0, Math.round((now - due) / 60000)), _svc: true });
+  }
+  out.sort(function (a, b) { return a.dueAt - b.dueAt || (a.id < b.id ? -1 : 1); });
+  return out;
+}
+
+/* ===== universal search (master prompt 32) ===== */
+var SVC_MX_SECRET_FIELD = /pass|pin$|pwd|secret/i;
+function svcMxAlnum(s) { return svcMxStr(s).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+/* identifiers inside free text (classic rows keep the IMEI / serial inside itemDetails): 14-16 digit runs, "S/N xxxx", plate-like and serial-like tokens */
+function svcMxExtractIds(text, add) {
+  var s = svcMxStr(text), m, d;
+  if (!s) return;
+  var reI = /\d(?:[\s\-]?\d){13,15}/g;
+  while ((m = reI.exec(s))) { d = m[0].replace(/\D/g, ''); if (d.length >= 14 && d.length <= 16) add(d, 'imei'); }
+  var reS = /(?:s\/n|serial(?:\s*(?:no\.?|number|#))?)\s*[:#\-]?\s*([A-Za-z0-9]{4,})/gi;
+  while ((m = reS.exec(s))) add(m[1].toUpperCase(), 'serial');
+  var reP = /\bK[A-Z]{2}\s?\d{3}[A-Z]\b/gi;
+  while ((m = reP.exec(s))) add(svcMxAlnum(m[0]), 'plate');
+  var reT = /\b(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{6,20}\b/g;
+  while ((m = reT.exec(s))) add(m[0].toUpperCase(), 'serial');
+}
+function svcMxSensitiveIds(tpl) {
+  var out = {};
+  svcMxArr(tpl && tpl.sections).forEach(function (sec) { svcMxArr(sec && sec.fields).forEach(function (f) { if (f && f.sensitive) out[f.id] = 1; }); });
+  return out;
+}
+function svcMxDaysOf(j) {
+  var days = {}, add = function (ms) { ms = Number(ms); if (ms > 0) days[svcMxDayKey(ms)] = 1; };
+  add(j.createdAt); add(j.dueAt); add(j.closedAt); add(j.readyAt); add(j.completedAt);
+  return days;
+}
+function svcMxJobEntry(j, assetsById, tplCache) {
+  var tpl = tplCache[j.serviceType] || (tplCache[j.serviceType] = svcMxTpl(j.serviceType));
+  var secret = tplCache['secret|' + j.serviceType] || (tplCache['secret|' + j.serviceType] = svcMxSensitiveIds(tpl));
+  var keys = {}, parts = [], phones = [];
+  var addKey = function (k, kind) { k = svcMxAlnum(k); if (k.length >= 3 && !keys[k]) keys[k] = kind; };
+  var snap = j.assetSnap || {}, cust = j.customer || {}, data = j.data || {}, k;
+  addKey(j.no, 'no'); addKey(j.id, 'id');
+  var plateKeys = [];
+  if (snap.plate) { addKey(snap.plate, 'plate'); plateKeys.push(svcMxAlnum(snap.plate)); }
+  if (snap.imei) addKey(String(snap.imei).replace(/\D/g, '') || snap.imei, 'imei');
+  if (snap.serial) addKey(snap.serial, 'serial');
+  var asset = j.assetId ? assetsById[j.assetId] : null;
+  if (asset) {
+    var at = asset.attrs || {};
+    if (asset.key) addKey(asset.key, asset.kind === 'vehicle' ? 'plate' : (/^\d{14,16}$/.test(asset.key) ? 'imei' : 'serial'));
+    if (at.plate) { addKey(at.plate, 'plate'); plateKeys.push(svcMxAlnum(at.plate)); }
+    if (at.imei) addKey(String(at.imei).replace(/\D/g, '') || at.imei, 'imei');
+    if (at.imei2) addKey(String(at.imei2).replace(/\D/g, '') || at.imei2, 'imei');
+    if (at.serial) addKey(at.serial, 'serial');
+    parts.push(asset.label, at.make, at.model, at.brand, at.color);
+  }
+  Object.keys(snap).forEach(function (sk) { if (typeof snap[sk] === 'string' || typeof snap[sk] === 'number') parts.push(snap[sk]); });
+  Object.keys(data).forEach(function (dk) {
+    if (secret[dk] || SVC_MX_SECRET_FIELD.test(dk)) return;
+    var dv = data[dk];
+    if (typeof dv !== 'string' && typeof dv !== 'number') return;
+    parts.push(dv);
+    if (/imei|serial/.test(dk)) { var dig = String(dv).replace(/\D/g, ''); if (/imei/.test(dk) && dig.length >= 14) addKey(dig, 'imei'); else addKey(dv, 'serial'); }
+    else if (/plate/.test(dk)) { addKey(dv, 'plate'); plateKeys.push(svcMxAlnum(dv)); }
+    else if (dk === 'leg_item_details') svcMxExtractIds(dv, function (id, kind) { addKey(id, kind); if (kind === 'plate') plateKeys.push(id); });
+  });
+  var pk = svcMxStr(cust.phoneKey); if (pk) phones.push(pk);
+  ['phone', 'altPhone'].forEach(function (f) { var d = svcMxStr(cust[f]).replace(/\D/g, ''); if (d.length >= 7) { var key9 = d.slice(-9); if (phones.indexOf(key9) === -1) phones.push(key9); } });
+  var svcNames = svcMxArr(j.jobServices).map(function (s) { return s && s.name; }).filter(Boolean).join(' ').toLowerCase();
+  var staffNames = svcMxStaffNames(j).join(' ').toLowerCase();
+  var def = svcMxStatusDef(tpl, j.status), stat = (svcMxStr(def && def.label) + ' ' + svcMxStr(j.status).replace(/_/g, ' ')).toLowerCase();
+  var name = svcMxLower(cust.name), label = svcMxLower(snap.label);
+  var hay = [j.no, cust.name, cust.phone, cust.altPhone, cust.email, phones.join(' '), snap.label, parts.join(' '), svcNames, staffNames, stat, j.notes, svcMxArr(j.tags).join(' '), tpl && tpl.label, plateKeys.join(' ')].join(' \n ').toLowerCase();
+  var closed = svcMxClosed(tpl, j);
+  return { kind: 'job', id: j.id, job: j, typeKey: j.serviceType, keys: keys, phones: phones, days: svcMxDaysOf(j), name: name, label: label, svc: svcNames, staff: staffNames, stat: stat, hay: hay,
+    noKey: svcMxAlnum(j.no), plates: plateKeys, open: !closed, created: Number(j.createdAt) || 0, legacy: !!j._legacy };
+}
+/* the index: rebuilt only when the job lists / assets change (svcMxSig), never per keystroke */
+function svcMxIndex() {
+  var sig = svcMxSig(false);
+  if (SVC_MX.idx && SVC_MX.idxSig === sig) return SVC_MX.idx;
+  var assetsById = {}, assets = [], custs = {}, i, tplCache = {};
+  try { if (typeof svcAssets !== 'undefined' && Array.isArray(svcAssets)) assets = svcAssets; } catch (e) { assets = []; }
+  for (i = 0; i < assets.length; i++) { if (assets[i] && !assets[i]._deleted) assetsById[assets[i].id] = assets[i]; }
+  var jobs = svcMxAll(), entries = [], e, j, ckey;
+  for (i = 0; i < jobs.length; i++) {
+    j = jobs[i]; if (!j || j._deleted) continue;
+    e = svcMxJobEntry(j, assetsById, tplCache); entries.push(e);
+    ckey = svcMxStr(j.customer && j.customer.phoneKey) || (j.customer && j.customer.id) || '';
+    if (ckey && j.customer && j.customer.name !== undefined) {
+      var c = custs[ckey];
+      if (!c) c = custs[ckey] = { kind: 'customer', id: j.customer.id || ('cu-' + ckey), name: svcMxStr(j.customer.name), phone: svcMxStr(j.customer.phone), pk: svcMxStr(j.customer.phoneKey), jobs: 0, last: 0, types: {} };
+      c.jobs++; c.types[j.serviceType] = 1; if ((Number(j.createdAt) || 0) >= c.last) { c.last = Number(j.createdAt) || 0; if (j.customer.name) c.name = svcMxStr(j.customer.name); }
+    }
+  }
+  var custList = [], k;
+  try {
+    var cl = typeof customers !== 'undefined' && Array.isArray(customers) ? customers : [];
+    cl.forEach(function (cu) {
+      if (!cu || cu._deleted) return;
+      var pk2 = ''; try { pk2 = typeof svcPhoneKey === 'function' ? svcPhoneKey(cu.phone) : svcMxStr(cu.phone).replace(/\D/g, '').slice(-9); } catch (e2) { pk2 = ''; }
+      if (pk2 && custs[pk2]) { if (!custs[pk2].id || String(custs[pk2].id).indexOf('cu-') === 0) custs[pk2].id = cu.id || custs[pk2].id; return; }
+      if (pk2 || cu.name) custs[pk2 || ('n:' + cu.id)] = { kind: 'customer', id: cu.id || ('cu-' + pk2), name: svcMxStr(cu.name), phone: svcMxStr(cu.phone), pk: pk2, jobs: 0, last: 0, types: {} };
+    });
+  } catch (e3) { /* customers list optional */ }
+  for (k in custs) { if (Object.prototype.hasOwnProperty.call(custs, k)) { var cc = custs[k]; cc.lname = cc.name.toLowerCase(); cc.lphone = cc.phone.toLowerCase(); custList.push(cc); } }
+  var assetEntries = assets.filter(function (a) { return a && !a._deleted; }).map(function (a) {
+    var at = a.attrs || {}, keys = {}, add = function (x, kind) { x = svcMxAlnum(x); if (x.length >= 3) keys[x] = kind; };
+    if (a.key) add(a.key, 'asset'); add(at.plate, 'plate'); add(at.imei, 'imei'); add(at.imei2, 'imei'); add(at.serial, 'serial');
+    return { kind: 'asset', id: a.id, asset: a, keys: keys, label: svcMxLower(a.label), hay: [a.label, a.ownerName, a.ownerPhone, at.make, at.model, at.brand, at.color, at.plate, at.imei, at.imei2, at.serial].join(' \n ').toLowerCase(), typeKey: '' };
+  });
+  SVC_MX.idx = { jobs: entries, custs: custList, assets: assetEntries, sig: sig };
+  SVC_MX.idxSig = sig; SVC_MX.builds++;
+  return SVC_MX.idx;
+}
+function svcMxApptIndex() {
+  var sig = svcMxSig(false), an = 0, ab = 0, bh = 0, rows = [];
+  try { if (typeof svcAppointments !== 'undefined' && Array.isArray(svcAppointments)) an = svcAppointments.length; } catch (e) { an = 0; }
+  try { rows = typeof bookings !== 'undefined' && Array.isArray(bookings) ? bookings : []; } catch (e2) { rows = []; }
+  ab = rows.length; rows.forEach(function (b) { if (b) { bh = svcMxHash(svcMxStr(b.id) + svcMxStr(b.status) + svcMxStr(b.date) + svcMxStr(b.customerName), bh); } });
+  sig = sig + '|' + an + '|' + ab + '|' + bh;
+  if (SVC_MX.aidx && SVC_MX.aidxSig === sig) return SVC_MX.aidx;
+  var list = svcMxApptsFor('', {}), out = list.map(function (a) {
+    var cust = a.customer || {}, sv = svcMxArr(a.services).map(function (s) { return s && s.name; }).filter(Boolean).join(' ');
+    var staffN = svcMxArr(a.staffIds).map(function (id) { try { var m = typeof staff !== 'undefined' && Array.isArray(staff) ? staff.filter(function (x) { return x && x.id === id; })[0] : null; return m ? m.name : ''; } catch (e) { return ''; } }).join(' ');
+    var pk = svcMxStr(cust.phoneKey) || svcMxStr(cust.phone).replace(/\D/g, '').slice(-9);
+    return { kind: 'appt', id: a.id, appt: a, typeKey: a.serviceType, phones: pk ? [pk] : [], name: svcMxLower(cust.name), day: svcMxStr(a.date), hay: [cust.name, cust.phone, sv, staffN, a.status, a.date, a.start, a.notes, a.no].join(' \n ').toLowerCase() };
+  });
+  SVC_MX.aidx = out; SVC_MX.aidxSig = sig; SVC_MX.abuilds++;
+  return out;
+}
+function svcSearchIndexStats() { return { builds: SVC_MX.builds, apptBuilds: SVC_MX.abuilds, jobs: SVC_MX.idx ? SVC_MX.idx.jobs.length : 0, sig: SVC_MX.idxSig }; }
+function svcSearchReset() { SVC_MX.all = null; SVC_MX.allSig = ''; SVC_MX.idx = null; SVC_MX.idxSig = ''; SVC_MX.aidx = null; SVC_MX.aidxSig = ''; SVC_MX.metricsCache = {}; SVC_MX.metricsSig = ''; return true; }
+
+var SVC_MX_MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+/* a typed date -> business day key 'YYYY-MM-DD' or ''. Understands 2026-09-30, 30/09/2026, 30-9, 30 sep, sep 30, today, yesterday */
+function svcMxParseDate(q, now) {
+  var s = svcMxStr(q).trim().toLowerCase(), m, y, mo, d, ny = Number(svcMxDayKey(now).slice(0, 4));
+  var pad = function (n) { return ('0' + n).slice(-2); };
+  if (s === 'today') return svcMxDayKey(now);
+  if (s === 'yesterday') return svcMxDayKey(now - SVC_MX_DAY_MS);
+  if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s))) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+  else if ((m = /^(\d{1,2})[\/.\-](\d{1,2})(?:[\/.\-](\d{2,4}))?$/.exec(s))) { d = +m[1]; mo = +m[2]; y = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : ny; }
+  else if ((m = /^(\d{1,2})\s+([a-z]{3})[a-z]*(?:\s+(\d{4}))?$/.exec(s)) && SVC_MX_MONTHS[m[2]]) { d = +m[1]; mo = SVC_MX_MONTHS[m[2]]; y = m[3] ? +m[3] : ny; }
+  else if ((m = /^([a-z]{3})[a-z]*\s+(\d{1,2})(?:\s+(\d{4}))?$/.exec(s)) && SVC_MX_MONTHS[m[1]]) { mo = SVC_MX_MONTHS[m[1]]; d = +m[2]; y = m[3] ? +m[3] : ny; }
+  else return '';
+  if (!(mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && y >= 2000 && y <= 2100)) return '';
+  return y + '-' + pad(mo) + '-' + pad(d);
+}
+function svcMxWordStart(str, t) { return !!str && (str.indexOf(t) === 0 || str.indexOf(' ' + t) !== -1 || str.indexOf('-' + t) !== -1); }
+var SVC_MX_KEY_SCORE = { imei: 1000, plate: 1000, serial: 980, no: 950, id: 900, asset: 990 };
+/* score of ONE job entry for the parsed query (0 = no match) */
+function svcMxScoreJob(e, p) {
+  var s = 0, why = '', i, k, t;
+  if (p.qKey.length >= 3 && e.keys[p.qKey]) { s = SVC_MX_KEY_SCORE[e.keys[p.qKey]] || 900; why = e.keys[p.qKey]; }
+  if (p.phoneLike && p.qDigits.length >= 5) {
+    var pk9 = p.qDigits.slice(-9), sc = 0;
+    for (i = 0; i < e.phones.length; i++) {
+      if (e.phones[i] === pk9 && p.qDigits.length >= 9) sc = Math.max(sc, 900);
+      else if (p.qDigits.length >= 7 && e.phones[i].indexOf(p.qDigits.replace(/^0+/, '').replace(/^254/, '')) !== -1) sc = Math.max(sc, 640);
+      else if (e.phones[i].indexOf(p.qDigits) !== -1) sc = Math.max(sc, 600);
+    }
+    if (sc > s) { s = sc; why = 'phone'; }
+    if (p.qDigits.length >= 6 && s < 560) {
+      for (k in e.keys) { if (e.keys[k] === 'imei' && k.indexOf(p.qDigits) !== -1) { var isec = k.slice(-p.qDigits.length) === p.qDigits ? 600 : 560; if (isec > s) { s = isec; why = 'imei'; } } }
+    }
+  }
+  if (s < 700 && p.qKey.length >= 3 && e.noKey && e.noKey.indexOf(p.qKey) !== -1) { var ns = e.noKey.slice(-p.qKey.length) === p.qKey ? 700 : 450; if (ns > s) { s = ns; why = 'no'; } }
+  if (s < 520 && p.qKey.length >= 2) {
+    for (i = 0; i < e.plates.length; i++) {
+      if (e.plates[i].indexOf(p.qKey) === 0) { if (520 > s) { s = 520; why = 'plate'; } }
+      else if (p.qKey.length >= 3 && e.plates[i].indexOf(p.qKey) !== -1) { if (420 > s) { s = 420; why = 'plate'; } }
+    }
+  }
+  if (p.day && e.days[p.day] && 320 > s) { s = 320; why = 'date'; }
+  if (s < 500 && p.tokens.length) {                              /* words: every token must appear somewhere; the best field of each token decides */
+    var total = 0, ok = true;
+    for (i = 0; i < p.tokens.length; i++) {
+      t = p.tokens[i];
+      if (e.hay.indexOf(t) === -1) { ok = false; break; }
+      var ts = svcMxWordStart(e.name, t) ? 420 : (svcMxWordStart(e.label, t) ? 400 : (svcMxWordStart(e.svc, t) ? 340 : (svcMxWordStart(e.staff, t) ? 330 : (svcMxWordStart(e.stat, t) ? 320 : (svcMxWordStart(e.hay, t) ? 260 : 200)))));
+      total += ts;
+    }
+    if (ok) { var ws = Math.round(total / p.tokens.length) + (p.tokens.length > 1 ? 20 : 0); if (ws > s) { s = ws; why = why || 'text'; } }
+  }
+  if (!s) return null;
+  return { score: s + (e.open ? 25 : 0), why: why };
+}
+function svcMxJobTitle(j) {
+  var snap = j.assetSnap || {}, a = snap.plate || snap.label || '';
+  return [j.no || j.id, a].filter(Boolean).join(' · ');
+}
+function svcMxJobSub(j, e) {
+  var cust = j.customer || {}, tpl = svcMxTpl(j.serviceType), d = svcMxStatusDef(tpl, j.status), st = (d && d.label) || svcMxStr(j.status).replace(/_/g, ' ');
+  return [cust.name || 'Walk-in', cust.phone, st].filter(Boolean).join(' · ');
+}
+/* svcSearch(query, opts) -> [{kind:'job'|'customer'|'asset'|'appt', id, title, sub, score, match, typeKey, status, legacy}] best first.
+   Order: exact scanned IMEI / plate / serial / job number (vehicle or device card first, then its jobs, newest first), exact phone, partial identifiers, words (name, vehicle, service, staff, status), date.
+   opts: {types (array | null = all), limit (default 50, max 200), kinds (default all four), now} */
+function svcSearch(query, o) {
+  o = o || {};
+  var raw = svcMxStr(query).trim();
+  if (!raw) return [];
+  var limit = Math.max(1, Math.min(Number(o.limit) || 50, 200)), now = svcMxNow(o);
+  var kinds = o.kinds ? (Array.isArray(o.kinds) ? o.kinds : [o.kinds]) : ['job', 'customer', 'asset', 'appt'];
+  var types = o.types ? (Array.isArray(o.types) ? o.types : [o.types]) : null;
+  var low = raw.toLowerCase(), qDigits = raw.replace(/\D/g, '');
+  var p = { raw: raw, low: low, qKey: svcMxAlnum(raw), qDigits: qDigits, phoneLike: /^[\d\s+\-().]+$/.test(raw) && qDigits.length >= 5, day: svcMxParseDate(raw, now), tokens: low.split(/\s+/).filter(Boolean).slice(0, 6) };
+  var idx = svcMxIndex(), out = [], i, e, r, s;
+  var typeOk = function (tk) { return !types || !tk || types.indexOf(tk) !== -1; };
+  if (kinds.indexOf('job') !== -1) {
+    for (i = 0; i < idx.jobs.length; i++) {
+      e = idx.jobs[i];
+      if (!typeOk(e.typeKey)) continue;
+      r = svcMxScoreJob(e, p);
+      if (r) out.push({ kind: 'job', id: e.id, title: svcMxJobTitle(e.job), sub: svcMxJobSub(e.job, e), score: r.score, match: r.why, typeKey: e.typeKey, status: e.job.status, legacy: e.legacy, created: e.created });
+    }
+  }
+  if (kinds.indexOf('asset') !== -1) {
+    for (i = 0; i < idx.assets.length; i++) {
+      e = idx.assets[i]; s = 0;
+      if (p.qKey.length >= 3 && e.keys[p.qKey]) s = 1100;
+      else if (p.qKey.length >= 3 && Object.keys(e.keys).some(function (k) { return k.indexOf(p.qKey) !== -1; })) s = 480;
+      else if (p.tokens.length && p.tokens.every(function (t) { return e.hay.indexOf(t) !== -1; })) s = 300;
+      if (s) out.push({ kind: 'asset', id: e.id, title: svcMxStr(e.asset.label) || svcMxStr(e.asset.key), sub: [e.asset.kind, e.asset.ownerName, e.asset.ownerPhone].filter(Boolean).join(' · '), score: s, match: s >= 1000 ? 'key' : 'text', typeKey: '', created: Number(e.asset.lastJobAt) || 0 });
+    }
+  }
+  if (kinds.indexOf('customer') !== -1) {
+    for (i = 0; i < idx.custs.length; i++) {
+      e = idx.custs[i]; s = 0;
+      if (p.phoneLike && e.pk) { if (p.qDigits.length >= 9 && e.pk === p.qDigits.slice(-9)) s = 900; else if (e.pk.indexOf(p.qDigits.replace(/^0+/, '').replace(/^254/, '')) !== -1 || e.lphone.replace(/\D/g, '').indexOf(p.qDigits) !== -1) s = 600; }
+      if (!s && p.tokens.length && p.tokens.every(function (t) { return e.lname.indexOf(t) !== -1; })) s = p.tokens.every(function (t) { return svcMxWordStart(e.lname, t); }) ? 380 : 250;
+      if (s && types) { var tk = Object.keys(e.types); if (tk.length && !tk.some(function (x) { return types.indexOf(x) !== -1; })) continue; }
+      if (s) out.push({ kind: 'customer', id: e.id, title: e.name || e.phone, sub: [e.phone, e.jobs ? e.jobs + ' job' + (e.jobs === 1 ? '' : 's') : ''].filter(Boolean).join(' · '), score: s, match: s >= 600 ? 'phone' : 'name', typeKey: '', created: e.last });
+    }
+  }
+  if (kinds.indexOf('appt') !== -1) {
+    var ai = svcMxApptIndex();
+    for (i = 0; i < ai.length; i++) {
+      e = ai[i]; s = 0;
+      if (!typeOk(e.typeKey) && !e.appt._legacy) continue;
+      if (p.phoneLike && e.phones.length && e.phones.some(function (x) { return x === p.qDigits.slice(-9) || (p.qDigits.length >= 6 && x.indexOf(p.qDigits) !== -1); })) s = 850;
+      else if (p.day && e.day === p.day) s = 320;
+      else if (p.tokens.length && p.tokens.every(function (t) { return e.hay.indexOf(t) !== -1; })) s = p.tokens.every(function (t) { return svcMxWordStart(e.name, t); }) ? 360 : 220;
+      if (s) out.push({ kind: 'appt', id: e.id, title: (e.appt.customer && e.appt.customer.name || 'Appointment') + ' · ' + svcMxStr(e.appt.date) + ' ' + svcMxStr(e.appt.start), sub: [svcMxArr(e.appt.services).map(function (x) { return x && x.name; }).filter(Boolean).join(', '), e.appt.status].filter(Boolean).join(' · '),
+        score: s, match: 'appt', typeKey: e.typeKey, status: e.appt.status, legacy: !!e.appt._legacy, created: Number(e.appt.startAt) || 0 });
+    }
+  }
+  out.sort(function (a, b) { return b.score - a.score || (b.created || 0) - (a.created || 0) || (String(a.id) < String(b.id) ? -1 : 1); });
+  if (out.length > limit) out.length = limit;
+  return out;
+}
+</script>

@@ -1,0 +1,1016 @@
+<!-- SVC FORM ---------------------------------------------------------------------------------------
+     Services engine block "svc-form". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B1-F. Nobody else edits this file.
+     STATE: IMPLEMENTED by B1-F (style element + one script element below).
+     KIND: pure validator + DOM renderer. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcRenderForm, svcReadForm, svcFieldHtml, svcFieldIdsOf, svcVisibleFields, svcValidate, svcSplitValues, svcRegisterWidget, svcRenderJobSummary (+ svcForm* / SVC_FORM_* internals).
+     SPEC: SERVICES_ARCHITECTURE.md 2.3, 8.3 (svc-form). Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<style>
+/* svc-form: mobile-first (single column < 900px, two columns >= 900px), 44px touch targets, theme variables only */
+.svc-form{display:block;max-width:100%;color:var(--dark,#2C3E50)}
+.svc-sec{margin:0 0 14px;border:1px solid var(--border-color,#e1e6ea);border-radius:10px;background:var(--bg-surface,#fff)}
+.svc-sec-h{display:flex;align-items:center;min-height:44px;padding:0 14px;font-weight:700;font-size:16px;cursor:pointer;list-style:none}
+.svc-sec-h::-webkit-details-marker{display:none}
+.svc-sec>.svc-grid{padding:4px 14px 14px}
+.svc-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+@media (min-width:900px){.svc-grid{grid-template-columns:repeat(2,minmax(0,1fr));column-gap:16px}.svc-f--full{grid-column:1/-1}}
+.svc-f{min-width:0}
+.svc-lbl{display:block;margin:0 0 4px;font-size:14px;font-weight:600}
+.svc-req{color:var(--danger,#E74C3C)}
+.svc-in{box-sizing:border-box;width:100%;min-height:44px;padding:8px 10px;font-size:16px;border:1px solid var(--border-color,#e1e6ea);border-radius:8px;background:var(--bg-surface,#fff);color:inherit}
+.svc-ta{min-height:88px;resize:vertical}
+.svc-k-plate,.svc-k-imei{text-transform:uppercase;letter-spacing:.04em}
+.svc-in:focus-visible,.svc-btn:focus-visible{outline:3px solid var(--accent,#3498DB);outline-offset:1px}
+.svc-invalid .svc-in{border-color:var(--danger,#E74C3C)}
+.svc-hint,.svc-help{font-size:13px;opacity:.75;margin-top:3px}
+.svc-err{min-height:0;font-size:13px;color:var(--danger,#E74C3C);margin-top:3px}
+.svc-err:empty{display:none}
+.svc-err-warn{color:var(--tint-warning-text,#7a5b00)}
+.svc-btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;min-width:44px;padding:0 14px;font-size:16px;border:1px solid var(--border-color,#e1e6ea);border-radius:8px;background:var(--bg-surface-alt,#f4f6f7);color:inherit;cursor:pointer}
+.svc-btn-primary{background:var(--accent,#3498DB);border-color:var(--accent,#3498DB);color:#fff;font-weight:700}
+.svc-check{display:flex;align-items:center;gap:10px;min-height:44px;font-size:16px}
+.svc-check input,.svc-chip input,.svc-seg-o input{width:22px;height:22px;flex:none}
+.svc-chips{display:flex;flex-wrap:wrap;gap:8px}
+.svc-chip{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 12px;border:1px solid var(--border-color,#e1e6ea);border-radius:22px;background:var(--bg-surface-alt,#f4f6f7)}
+.svc-seg{display:inline-flex;gap:8px}
+.svc-seg-o{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:0 14px;border:1px solid var(--border-color,#e1e6ea);border-radius:8px}
+.svc-dt{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.svc-rows{display:flex;flex-direction:column;gap:8px;margin-bottom:8px}
+.svc-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr)) 44px;gap:8px;align-items:end;padding:8px;border:1px solid var(--border-color,#e1e6ea);border-radius:8px;background:var(--bg-surface-alt,#f4f6f7)}
+.svc-row-name{grid-column:1/-1;font-weight:600}
+.svc-cell{display:block;min-width:0}.svc-cell-l{display:block;font-size:12px;opacity:.75;margin-bottom:2px}
+.svc-add-bar{display:grid;grid-template-columns:1fr;gap:8px}
+@media (min-width:640px){.svc-add-bar{grid-template-columns:1fr 1fr auto}}
+.svc-thumbs{list-style:none;margin:0 0 8px;padding:0;display:flex;flex-wrap:wrap;gap:8px}
+.svc-thumb{display:inline-flex;align-items:center;gap:6px;padding:0 0 0 10px;border:1px solid var(--border-color,#e1e6ea);border-radius:8px}
+.svc-vh{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;clip:rect(0 0 0 0)}
+.svc-photo-btn:focus-within{outline:3px solid var(--accent,#3498DB)}
+.svc-obj{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.svc-asset:not(:empty){margin-top:6px;padding:10px;border:1px solid var(--accent,#3498DB);border-radius:8px;background:var(--tint-info-bg,#EAF4FB)}
+.svc-asset-hist{margin:6px 0;padding-left:18px;font-size:13px}.svc-warn-t{color:var(--tint-warning-text,#7a5b00);font-weight:600}
+.svc-heading{margin:8px 0 0;font-size:16px}
+.svc-sticky{position:sticky;bottom:0;z-index:5;display:flex;gap:8px;padding:10px 0 calc(10px + env(safe-area-inset-bottom,0px));background:var(--bg-page,#f5f6fa)}
+.svc-sticky .svc-btn{flex:1;min-height:48px}
+.svc-dl{display:grid;grid-template-columns:minmax(90px,35%) 1fr;gap:4px 12px;margin:0}.svc-dl dt{font-weight:600;opacity:.8}.svc-dl dd{margin:0;overflow-wrap:anywhere}
+@media (prefers-reduced-motion:reduce){.svc-form *{transition:none!important}}
+</style>
+<script>
+/* ===== svc-form: pure string builders + validator (no DOM access at parse time) ===== */
+var SVC_FORM_SEQ = 0;
+var SVC_FORM_WIDGETS = {};        // widget name -> [{ spec, priority }]
+var SVC_FORM_VALIDATORS = {};     // custom validator name -> fn(value, field, values, ctx) -> null | string | {msg, level}
+var SVC_FORM_FALLBACK_LISTS = {
+  vehicleTypes: ['Sedan', 'Hatchback', 'SUV', 'Crossover', 'Pickup', 'Van', 'Minibus', 'Bus', 'Truck', 'Motorcycle', 'Other'],
+  vehicleMakes: ['Toyota', 'Nissan', 'Subaru', 'Mazda', 'Honda', 'Mercedes-Benz', 'BMW', 'Volkswagen', 'Mitsubishi', 'Isuzu', 'Ford', 'Hyundai', 'Kia', 'Suzuki', 'Peugeot', 'Land Rover', 'Lexus', 'Audi', 'Volvo', 'Other'],
+  phoneBrands: ['Samsung', 'Apple', 'Tecno', 'Infinix', 'Itel', 'Xiaomi', 'Oppo', 'Vivo', 'Huawei', 'Nokia', 'Realme', 'Google', 'OnePlus', 'Other']
+};
+// Fallback dynamic-required rules (MP 30). Applied only to ids that are VISIBLE in the schema and only outside quick mode, so they can never
+// validate a field of another industry. Templates normally carry the same flags themselves; this keeps the rule even for a schema that does not.
+var SVC_FORM_TYPE_RULES = {
+  car_wash: ['veh_plate', 'veh_make', 'veh_model'],
+  garage: ['veh_plate', 'veh_make', 'veh_model', 'cmp_problem'],
+  phone_repair: ['dev_brand', 'dev_model', 'rep_problem'],
+  salon: ['cust_name', 'services'],
+  barber: ['cust_name', 'services']
+};
+var SVC_FORM_PRESETS = {
+  materials: [{ id: 'name', label: 'Item', type: 'text' }, { id: 'qty', label: 'Qty', type: 'number' }, { id: 'unit', label: 'Unit', type: 'text' }, { id: 'price', label: 'Price', type: 'money' }],
+  valuables: [{ id: 'description', label: 'Item / description', type: 'text' }, { id: 'qty', label: 'Qty', type: 'number' }, { id: 'notes', label: 'Notes', type: 'text' }],
+  charges: [{ id: 'name', label: 'Charge', type: 'text' }, { id: 'amount', label: 'Amount', type: 'money' }]
+};
+var SVC_FORM_OBJ_WIDGETS = {
+  quote: [{ k: 'estimate', l: 'Estimate', t: 'money' }, { k: 'note', l: 'Quote notes', t: 'text' }],
+  payment: [{ k: 'deposit', l: 'Deposit', t: 'money' }, { k: 'method', l: 'Method', t: 'select', o: ['cash', 'mpesa', 'bank', 'card', 'other'] }, { k: 'ref', l: 'Reference', t: 'text' }]
+};
+var SVC_FORM_ALIAS = {
+  text: 'text', string: 'text', email: 'email', phone: 'phone', tel: 'phone', number: 'number', money: 'money', year: 'year', odometer: 'odometer',
+  date: 'date', time: 'time', datetime: 'datetime', plate: 'plate', imei: 'imei', longtext: 'longtext', textarea: 'longtext',
+  dropdown: 'dropdown', select: 'dropdown', combo: 'combo', 'searchable-select': 'combo', searchable: 'combo',
+  chips: 'chips', multiselect: 'chips', checkbox: 'checkbox', yesno: 'yesno', repeater: 'repeater', photo: 'photo', file: 'photo',
+  heading: 'heading', section: 'heading', 'service-picker': 'services', services: 'services', 'staff-picker': 'staff', staff: 'staff'
+};
+
+function svcFormEsc(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof escapeHtml === 'function') return escapeHtml(String(v));
+  return String(v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+}
+function svcFormNow() { return (typeof svcNow === 'function') ? svcNow() : Date.now(); }
+function svcFormIsObj(x) { return x !== null && typeof x === 'object'; }
+function svcFormTerm(key, typeKey) {
+  if (typeof svcTerm !== 'function') return '';
+  try { var r = svcTerm(key, typeKey); return r ? String(r) : ''; } catch (e) { return ''; }
+}
+// label / title text: field.labelTerm pulls the label from svcTerm; "{{term:job}}" tokens inside a label are replaced too
+function svcFormLabel(field, typeKey) {
+  var t = field && field.labelTerm ? svcFormTerm(field.labelTerm, typeKey) : '';
+  var s = t || (field && field.label) || (field && field.id) || '';
+  return svcFormTokens(s, typeKey);
+}
+function svcFormTokens(s, typeKey) {
+  return String(s).replace(/\{\{term:([\w.-]+)\}\}/g, function (m, k) { return svcFormTerm(k, typeKey) || k; });
+}
+function svcFormKind(field) {
+  if (!field) return 'text';
+  var t = field.type ? String(field.type) : '';
+  if (t === 'widget' || (!t && field.widget)) {
+    var w = String(field.widget || '');
+    if (w === 'services') return 'services';
+    if (w === 'staff') return 'staff';
+    if (w === 'photos' || w === 'photo') return 'photo';
+    if (w === 'condition') return 'longtext';
+    if (w === 'materials' || w === 'valuables' || w === 'charges') return 'repeater';
+    if (w === 'quote' || w === 'payment') return 'obj';
+    return 'widget';
+  }
+  return SVC_FORM_ALIAS[t] || (t ? 'widget' : 'text');
+}
+function svcFormWidgetName(field) {
+  if (field.widget) return String(field.widget);
+  var k = svcFormKind(field);
+  if (k === 'services' || k === 'staff') return k;
+  if (field.type && !SVC_FORM_ALIAS[field.type]) return String(field.type);
+  return '';
+}
+function svcFormWidgetSpec(field) {
+  var n = svcFormWidgetName(field);
+  var list = n ? SVC_FORM_WIDGETS[n] : null;
+  if (!list || !list.length) return null;
+  var best = list[0];
+  for (var i = 1; i < list.length; i++) if (list[i].priority >= best.priority) best = list[i];
+  return best.spec;
+}
+// a registered widget that supplies its own markup / renderer overrides the built-in control of the same name
+function svcFormCustomSpec(field) {
+  var sp = svcFormWidgetSpec(field);
+  return sp && (typeof sp.html === 'function' || typeof sp.render === 'function') ? sp : null;
+}
+function svcRegisterWidget(name, spec, opts) {
+  if (!name || !spec) return false;
+  var pr = opts && typeof opts.priority === 'number' ? opts.priority : 0;
+  var list = SVC_FORM_WIDGETS[name] || (SVC_FORM_WIDGETS[name] = []);
+  list.push({ spec: spec, priority: pr });
+  return true;
+}
+function svcFormRegisterValidator(name, fn) { if (name && typeof fn === 'function') SVC_FORM_VALIDATORS[name] = fn; }
+
+/* ---- schema resolution ---- */
+function svcFormResolve(schemaOrKey) {
+  var s = schemaOrKey, key = '';
+  if (typeof s === 'string') {
+    key = s; s = null;
+    if (typeof svcGetTemplate === 'function') { try { s = svcGetTemplate(key); } catch (e) { s = null; } }
+    if (!s && typeof SVC_TYPES !== 'undefined' && SVC_TYPES && SVC_TYPES[key]) s = SVC_TYPES[key];
+  }
+  var out;
+  if (Array.isArray(s)) out = { key: key, sections: [{ id: 'main', title: '', fields: s }] };
+  else if (svcFormIsObj(s)) {
+    out = { key: s.key || key, sections: Array.isArray(s.sections) ? s.sections : [{ id: 'main', title: '', fields: Array.isArray(s.fields) ? s.fields : [] }] };
+    if (s.quick) out.quick = s.quick;
+    if (s.assetKind) out.assetKind = s.assetKind;
+    if (s.staffAssignment) out.staffAssignment = s.staffAssignment;
+    if (s.submitLabel) out.submitLabel = s.submitLabel;
+  } else out = { key: key, sections: [] };
+  // custom-field hook (svc-custom, phase 3): appended as a final "extra" section when the template did not already include them
+  if (out.key && typeof svcCustomFieldsFor === 'function') {
+    var extra = [];
+    try { extra = svcCustomFieldsFor(out.key) || []; } catch (e) { extra = []; }
+    if (extra.length) {
+      var have = {};
+      out.sections.forEach(function (sec) { (sec.fields || []).forEach(function (f) { have[f.id] = true; }); });
+      var add = extra.filter(function (f) { return f && f.id && !have[f.id] && f.active !== false; });
+      if (add.length) out.sections = out.sections.concat([{ id: 'extra', title: 'Extra details', fields: add }]);
+    }
+  }
+  return out;
+}
+function svcFormPairs(schema) {
+  var out = [];
+  (schema.sections || []).forEach(function (sec) { (sec.fields || []).forEach(function (f) { if (f && f.id) out.push({ field: f, section: sec }); }); });
+  return out;
+}
+function svcFormCond(c, v) {
+  if (!c) return true;
+  v = v || {};
+  if (c.all) return c.all.every(function (x) { return svcFormCond(x, v); });
+  if (c.any) return c.any.some(function (x) { return svcFormCond(x, v); });
+  if (c.not) return !svcFormCond(c.not, v);
+  var x = v[c.field];
+  if (c['in']) { return Array.isArray(x) ? x.some(function (y) { return c['in'].indexOf(y) >= 0; }) : c['in'].indexOf(x) >= 0; }
+  if (c.nin) return c.nin.indexOf(x) < 0;
+  if (c.hasOwnProperty('eq')) return x === c.eq || (x !== undefined && x !== null && String(x) === String(c.eq));
+  if (c.hasOwnProperty('neq')) return !(x === c.neq || (x !== undefined && x !== null && String(x) === String(c.neq)));
+  if (c.truthy === true) return svcFormIsObj(x) ? !svcFormEmpty(x) : (!!x && x !== 'no');
+  if (c.truthy === false || c.falsy) return svcFormIsObj(x) ? svcFormEmpty(x) : (!x || x === 'no');
+  return true;
+}
+function svcFormQuickIds(schema) {
+  var q = schema.quick, ids = {};
+  if (q && Array.isArray(q.fields)) { q.fields.forEach(function (id) { ids[id] = true; }); return ids; }
+  svcFormPairs(schema).forEach(function (p) { if (p.field.required === true) ids[p.field.id] = true; });
+  return ids;
+}
+// PURE. Fields that apply for these values (visibleWhen evaluated, section.when evaluated, quick mode narrowed). Headings are included.
+function svcVisibleFields(schemaOrKey, values, mode) {
+  var schema = svcFormResolve(schemaOrKey), v = values || {};
+  var quick = mode === 'quick' ? svcFormQuickIds(schema) : null;
+  var out = [];
+  (schema.sections || []).forEach(function (sec) {
+    if (sec.when && !svcFormCond(sec.when, v)) return;
+    (sec.fields || []).forEach(function (f) {
+      if (!f || !f.id) return;
+      if (quick && !quick[f.id]) return;
+      if (f.visibleWhen && !svcFormCond(f.visibleWhen, v)) return;
+      out.push(f);
+    });
+  });
+  return out;
+}
+function svcFieldIdsOf(schemaOrKey, values, mode) {
+  var schema = svcFormResolve(schemaOrKey), seen = {}, out = [];
+  var list = values === undefined && !mode ? svcFormPairs(schema).map(function (p) { return p.field; }) : svcVisibleFields(schema, values, mode);
+  list.forEach(function (f) { if (svcFormKind(f) !== 'heading' && !seen[f.id]) { seen[f.id] = 1; out.push(f.id); } });
+  return out;
+}
+
+/* ---- values ---- */
+function svcFormEmpty(v, field) {
+  if (v === null || v === undefined) return true;
+  if (typeof v === 'string') return v.replace(/\s+/g, '') === '';
+  if (typeof v === 'number') return isNaN(v);
+  if (Array.isArray(v)) {
+    if (!v.length) return true;
+    return v.every(function (r) { return svcFormIsObj(r) && !Array.isArray(r) && Object.keys(r).every(function (k) { return svcFormEmpty(r[k]); }); });
+  }
+  if (svcFormIsObj(v)) return Object.keys(v).every(function (k) { return svcFormEmpty(v[k]); });
+  return false;
+}
+function svcFormNum(v) {
+  if (typeof v === 'number') return isFinite(v) ? v : NaN;
+  if (v === null || v === undefined) return NaN;
+  var s = String(v).replace(/ksh|kes|,|\s/gi, '');
+  if (s === '' || !/^-?\d*\.?\d+$/.test(s)) return NaN;
+  return parseFloat(s);
+}
+function svcFormMoney(n) {
+  var x = Math.round(Number(n || 0) * 100) / 100, neg = x < 0; x = Math.abs(x);
+  var s = (x % 1 ? x.toFixed(2) : String(x)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (neg ? '-' : '') + 'KSh ' + s;
+}
+function svcFormPad(n) { return (n < 10 ? '0' : '') + n; }
+function svcFormDateStr(ms) { var d = new Date(ms); return isNaN(d.getTime()) ? '' : d.getFullYear() + '-' + svcFormPad(d.getMonth() + 1) + '-' + svcFormPad(d.getDate()); }
+function svcFormTimeStr(ms) { var d = new Date(ms); return isNaN(d.getTime()) ? '' : svcFormPad(d.getHours()) + ':' + svcFormPad(d.getMinutes()); }
+function svcFormOptions(field, ctx, values) {
+  var raw = null, name = field.optionsFrom || '', base = String(name).split(':')[0], arg = String(name).split(':')[1] || '';
+  ctx = ctx || {};
+  if (Array.isArray(field.options)) raw = field.options;
+  else if (name) {
+    try {
+      if (typeof ctx.options === 'function') raw = ctx.options(name, values || {}, field);
+      if (!raw && ctx.lists && Array.isArray(ctx.lists[name])) raw = ctx.lists[name];
+      if (!raw && base === 'vehicleMakes' && typeof ctx.vehicleMakes === 'function') raw = ctx.vehicleMakes();
+      if (!raw && base === 'vehicleModels' && typeof ctx.vehicleModels === 'function') raw = ctx.vehicleModels((values || {})[arg] || '');
+      if (!raw && base === 'vehicleTypes' && typeof ctx.vehicleTypes === 'function') raw = ctx.vehicleTypes();
+      if (!raw && base === 'phoneBrands' && typeof ctx.phoneBrands === 'function') raw = ctx.phoneBrands();
+      if (!raw && base === 'staff' && typeof ctx.staff === 'function') raw = (ctx.staff(arg || field.role) || []).map(function (s) { return { v: s.id, l: s.name }; });
+    } catch (e) { raw = null; }
+    if (!raw && SVC_FORM_FALLBACK_LISTS[base]) raw = SVC_FORM_FALLBACK_LISTS[base];
+  }
+  var out = (raw || []).map(function (o) { return svcFormIsObj(o) ? { v: o.v !== undefined ? o.v : (o.value !== undefined ? o.value : o.id), l: o.l !== undefined ? o.l : (o.label !== undefined ? o.label : (o.name !== undefined ? o.name : o.v)) } : { v: o, l: o }; });
+  if (field.allowOther && !out.some(function (o) { return String(o.v).toLowerCase() === 'other'; })) out.push({ v: 'Other', l: 'Other' });
+  return out;
+}
+
+/* ---- validation (PURE) ---- */
+function svcFormPhoneInfo(raw) {
+  var s = String(raw === null || raw === undefined ? '' : raw).trim();
+  if (!s) return { ok: true, empty: true };
+  if (typeof svcNormPhone === 'function') {
+    var r = null;
+    try { r = svcNormPhone(s); } catch (e) { r = null; }
+    if (r && typeof r === 'object') return { ok: !!r.ok, level: r.level === 'warn' ? 'warn' : 'error', e164: r.e164 || '', reason: r.reason || '' };
+  }
+  var digits = s.replace(/[^\d+]/g, ''), rest = '';
+  if (/^\+254/.test(digits)) rest = digits.slice(4); else if (/^254/.test(digits)) rest = digits.slice(3); else if (/^0/.test(digits)) rest = digits.slice(1);
+  if (rest && /^[17]\d{8}$/.test(rest)) return { ok: true, level: 'ok', e164: '+254' + rest };
+  if (/^\+\d{8,15}$/.test(digits)) return { ok: true, level: 'warn', e164: digits, reason: 'Not a Kenyan number - check the country code' };
+  return { ok: false, level: 'error', e164: '', reason: 'Enter a valid phone number (e.g. 0712 345 678)' };
+}
+function svcFormPlateNorm(raw) {
+  var s = String(raw === null || raw === undefined ? '' : raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  var m = /^([A-Z]{2,4})(\d{1,4})([A-Z]?)$/.exec(s);
+  return m ? m[1] + ' ' + m[2] + m[3] : String(raw === null || raw === undefined ? '' : raw).toUpperCase().replace(/\s+/g, ' ').trim();
+}
+function svcFormLuhn(d) {
+  var sum = 0, alt = false;
+  for (var i = d.length - 1; i >= 0; i--) { var n = d.charCodeAt(i) - 48; if (alt) { n *= 2; if (n > 9) n -= 9; } sum += n; alt = !alt; }
+  return sum % 10 === 0;
+}
+// one check -> null | {msg, level}
+function svcFormCheck(kind, v, field, values, ctx) {
+  var label = svcFormLabel(field, ctx && ctx.typeKey), n, lvl = field.level === 'warn' ? 'warn' : (field.level === 'error' ? 'error' : '');
+  function res(msg, dflt) { return { msg: msg, level: lvl || dflt }; }
+  switch (kind) {
+    case 'email': if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v).trim())) return res('Enter a valid email address', 'error'); return null;
+    case 'phone': case 'phoneOptional': {
+      var p = svcFormPhoneInfo(v);
+      if (!p.ok) return res(p.reason || 'Enter a valid phone number', 'error');
+      if (p.level === 'warn') return res(p.reason || 'Check the phone number', 'warn');
+      return null;
+    }
+    case 'plate': {
+      var pc = null;
+      if (typeof svcCheckPlate === 'function') { try { pc = svcCheckPlate(v); } catch (e) { pc = null; } }
+      if (pc && typeof pc === 'object') { if (pc.ok === false || pc.level === 'warn') return res('Plate format looks unusual - check it', 'warn'); return null; }
+      var ps = String(v).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!/^(K[A-Z]{2}\d{3}[A-Z]|KM[A-Z]{2}\d{3}[A-Z]|G[KF]\d{3}[A-Z]?|[A-Z]{2,4}\d{1,4}[A-Z]?)$/.test(ps)) return res('Plate format looks unusual - check it', 'warn');
+      return null;
+    }
+    case 'imei': {
+      var dg = String(v).replace(/\D/g, '');
+      var iv = null;
+      if (typeof svcValidImei === 'function') { try { iv = svcValidImei(v); } catch (e) { iv = null; } }
+      if (iv && typeof iv === 'object') { if (!iv.ok) return res('IMEI should be 15 digits', 'warn'); if (iv.luhn === false) return res('IMEI checksum does not match - check the digits', 'warn'); return null; }
+      if (dg.length !== 15) return res('IMEI should be 15 digits', 'warn');
+      if (!svcFormLuhn(dg)) return res('IMEI checksum does not match - check the digits', 'warn');
+      return null;
+    }
+    case 'number': case 'money': case 'odometer': case 'year': {
+      n = svcFormNum(v);
+      if (isNaN(n)) return res(label + ' must be a number', 'error');
+      var mn = field.min, mx = field.max;
+      if ((kind === 'money' || kind === 'odometer') && mn === undefined) mn = 0;
+      if (kind === 'year') { if (mn === undefined) mn = 1950; if (mx === undefined) mx = new Date(svcFormNow()).getFullYear() + 1; if (n % 1) return res('Enter a valid year', 'error'); }
+      if (mn !== undefined && n < mn) return res(label + ' must be at least ' + mn, 'error');
+      if (mx !== undefined && n > mx) return res(label + ' must be at most ' + mx, 'error');
+      return null;
+    }
+    case 'date': {
+      var dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v)), dd = dm ? new Date(+dm[1], +dm[2] - 1, +dm[3]) : null;
+      if (!dd || dd.getMonth() !== +dm[2] - 1 || dd.getDate() !== +dm[3]) return res('Enter a valid date', 'error');
+      return null;
+    }
+    case 'time': if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v))) return res('Enter a valid time', 'error'); return null;
+    case 'datetime': if (isNaN(typeof v === 'number' ? v : new Date(v).getTime())) return res('Enter a valid date and time', 'error'); return null;
+    default: {
+      var fn = SVC_FORM_VALIDATORS[kind] || ((typeof SVC_VALIDATORS !== 'undefined' && SVC_VALIDATORS) ? SVC_VALIDATORS[kind] : null);
+      if (typeof fn === 'function') {
+        var r = null;
+        try { r = fn(v, field, values, ctx); } catch (e) { r = null; }
+        if (!r) return null;
+        if (typeof r === 'string') return res(r, 'error');
+        if (r.ok === true) return null;
+        if (r.msg || r.message) return res(r.msg || r.message, r.level || 'error');
+      }
+      return null;
+    }
+  }
+}
+function svcFormIsRequired(field, values, mode, schema) {
+  var r = field.required;
+  if (mode === 'quick') {
+    var q = schema && schema.quick && Array.isArray(schema.quick.required) ? schema.quick.required : null;
+    if (q) return q.indexOf(field.id) >= 0;
+    return r === true;
+  }
+  if (r === true || r === 'quickOff') return true;
+  if (field.requiredWhen && svcFormCond(field.requiredWhen, values)) return true;
+  return false;
+}
+// PURE. Validates ONLY the fields visible for these values (MP 30). errors block, warnings do not.
+function svcValidate(schemaOrKey, values, opts) {
+  opts = opts || {};
+  var schema = svcFormResolve(schemaOrKey), v = values || {}, mode = opts.mode || 'create';
+  var typeKey = schema.key || (typeof schemaOrKey === 'string' ? schemaOrKey : '');
+  var ctx = { typeKey: typeKey, cfg: opts.cfg, context: opts.context };
+  var vis = svcVisibleFields(schema, v, mode), errors = [], warnings = [], byE = {}, byW = {};
+  var rules = (mode !== 'quick' && typeKey && SVC_FORM_TYPE_RULES[typeKey]) || [];
+  function push(f, msg, level) {
+    var e = { id: f.id, field: f.id, msg: msg, message: msg, level: level };
+    if (level === 'warn') { warnings.push(e); if (!byW[f.id]) byW[f.id] = msg; } else { errors.push(e); if (!byE[f.id]) byE[f.id] = msg; }
+  }
+  vis.forEach(function (f) {
+    var kind = svcFormKind(f);
+    if (kind === 'heading') return;
+    var val = v[f.id], label = svcFormLabel(f, typeKey), empty = svcFormEmpty(val, f);
+    var req = svcFormIsRequired(f, v, mode, schema) || rules.indexOf(f.id) >= 0;
+    if (kind === 'checkbox' && req && val !== true) { push(f, label + ' must be ticked', 'error'); return; }
+    if (kind === 'yesno' && req && val !== 'yes' && val !== 'no' && val !== true && val !== false) { push(f, 'Choose yes or no for ' + label, 'error'); return; }
+    if (req && empty) { push(f, label + ' is required', 'error'); return; }
+    if (empty) return;
+    var checks = [];
+    if (['email', 'phone', 'plate', 'imei', 'number', 'money', 'year', 'odometer', 'date', 'time', 'datetime'].indexOf(kind) >= 0) checks.push(kind);
+    if (f.validate && typeof f.validate === 'string' && checks.indexOf(f.validate) < 0) checks.push(f.validate);
+    checks.forEach(function (k) { var r = svcFormCheck(k, val, f, v, ctx); if (r) push(f, r.msg, r.level); });
+    if (typeof val === 'string') {
+      if (f.maxLength && val.length > f.maxLength) push(f, label + ' is too long (max ' + f.maxLength + ')', 'error');
+      if (f.pattern) { try { if (!new RegExp(f.pattern).test(val)) push(f, f.patternMessage || (label + ' is not in the expected format'), f.level === 'warn' ? 'warn' : 'error'); } catch (e) { /* bad pattern ignored */ } }
+    }
+    if (kind === 'dropdown' && Array.isArray(f.options) && typeof val === 'string') {
+      var okOpt = svcFormOptions(f, {}, v).some(function (o) { return String(o.v) === val; });
+      if (!okOpt) push(f, 'Choose a valid option for ' + label, 'error');
+    }
+    if (kind === 'services' && Array.isArray(val)) {
+      val.forEach(function (r) { if (r && (svcFormNum(r.qty) <= 0 || isNaN(svcFormNum(r.price)) || svcFormNum(r.price) < 0)) push(f, 'Check quantity and price on the selected services', 'error'); });
+    }
+    var spec = svcFormWidgetSpec(f);
+    if (spec && typeof spec.validate === 'function') {
+      var wr = null;
+      try { wr = spec.validate(val, ctx); } catch (e) { wr = null; }
+      (Array.isArray(wr) ? wr : (wr ? [wr] : [])).forEach(function (x) { if (typeof x === 'string') push(f, x, 'error'); else if (x && (x.msg || x.message)) push(f, x.msg || x.message, x.level === 'warn' ? 'warn' : 'error'); });
+    }
+  });
+  return { ok: errors.length === 0, errors: errors, warnings: warnings, errorsById: byE, warningsById: byW, visible: vis.filter(function (f) { return svcFormKind(f) !== 'heading'; }).map(function (f) { return f.id; }) };
+}
+
+/* ---- split values into customer / asset / job / data (PURE) ---- */
+var SVC_FORM_CUSTOMER_KEYS = { cust_name: 'name', cust_phone: 'phone', cust_alt_phone: 'altPhone', cust_email: 'email', cust_notes: 'notes' };
+function svcSplitValues(schemaOrKey, values, mode) {
+  var schema = svcFormResolve(schemaOrKey), v = values || {};
+  var out = { customer: {}, asset: { kind: schema.assetKind || '', attrs: {} }, job: {}, data: {}, services: [] };
+  svcVisibleFields(schema, v, mode || 'create').forEach(function (f) {
+    var kind = svcFormKind(f), val = v[f.id];
+    if (kind === 'heading' || val === undefined) return;
+    if (kind === 'services') { out.services = Array.isArray(val) ? val : []; return; }
+    var where = f.storesIn || (SVC_FORM_CUSTOMER_KEYS[f.id] ? 'customer' : 'data');
+    if (where === 'customer') out.customer[SVC_FORM_CUSTOMER_KEYS[f.id] || f.id.replace(/^cust_/, '')] = val;
+    else if (where === 'asset') out.asset.attrs[f.assetAttr || f.id.replace(/^[a-z]+_/, '')] = val;
+    else if (where === 'job') out.job[f.id] = val;
+    else out.data[f.id] = val;
+  });
+  return out;
+}
+
+/* ===== HTML builders (PURE strings) ===== */
+function svcFormAttrs(o) {
+  var s = '';
+  Object.keys(o).forEach(function (k) { var v = o[k]; if (v === false || v === null || v === undefined) return; s += ' ' + k + (v === true ? '' : '="' + svcFormEsc(v) + '"'); });
+  return s;
+}
+function svcFormDefaultWidth(kind) {
+  return ['longtext', 'chips', 'repeater', 'services', 'staff', 'photo', 'obj', 'widget', 'yesno', 'heading'].indexOf(kind) >= 0 ? 'full' : 'half';
+}
+function svcFormOptionsHtml(list, sel, placeholder) {
+  var h = placeholder === false ? '' : '<option value="">' + svcFormEsc(placeholder || 'Select...') + '</option>', found = false;
+  list.forEach(function (o) { var s = String(o.v) === String(sel); if (s) found = true; h += '<option value="' + svcFormEsc(o.v) + '"' + (s ? ' selected' : '') + '>' + svcFormEsc(o.l) + '</option>'; });
+  if (!found && sel !== undefined && sel !== null && sel !== '') h += '<option value="' + svcFormEsc(sel) + '" selected>' + svcFormEsc(sel) + '</option>';
+  return h;
+}
+function svcFormCellHtml(col, val, ctx, idBase) {
+  var t = SVC_FORM_ALIAS[col.type] || col.type || 'text', id = idBase + '-' + col.id;
+  var lbl = '<span class="svc-cell-l">' + svcFormEsc(svcFormTokens(col.label || col.id, ctx && ctx.typeKey)) + '</span>';
+  var ro = ctx && ctx.readOnly ? { disabled: true } : {};
+  var inp;
+  if (t === 'dropdown') inp = '<select' + svcFormAttrs(Object.assign({ 'class': 'svc-in', 'data-col': col.id, id: id }, ro)) + '>' + svcFormOptionsHtml(svcFormOptions(col, ctx, (ctx && ctx.values) || {}), val) + '</select>';
+  else if (t === 'number' || t === 'money') inp = '<input' + svcFormAttrs(Object.assign({ 'class': 'svc-in', type: 'text', inputmode: 'decimal', 'data-col': col.id, 'data-num': '1', id: id, value: val === undefined || val === null ? '' : val }, ro)) + '>';
+  else if (t === 'date') inp = '<input' + svcFormAttrs(Object.assign({ 'class': 'svc-in', type: 'date', 'data-col': col.id, id: id, value: val || '' }, ro)) + '>';
+  else inp = '<input' + svcFormAttrs(Object.assign({ 'class': 'svc-in', type: 'text', 'data-col': col.id, id: id, value: val === undefined || val === null ? '' : val, placeholder: col.placeholder }, ro)) + '>';
+  return '<label class="svc-cell" for="' + svcFormEsc(id) + '">' + lbl + inp + '</label>';
+}
+function svcFormRowShell(inner, ctx, attrs, label) {
+  return '<div class="svc-row"' + svcFormAttrs(Object.assign({ 'data-row': true }, attrs || {})) + '>' + inner +
+    (ctx && ctx.readOnly ? '' : '<button type="button" class="svc-btn svc-rm" data-act="rm-row" aria-label="Remove ' + svcFormEsc(label || 'row') + '">&times;</button>') + '</div>';
+}
+function svcFormRepeaterCols(field) { return Array.isArray(field.columns) && field.columns.length ? field.columns : (SVC_FORM_PRESETS[field.widget] || SVC_FORM_PRESETS.materials); }
+function svcFormRepeaterRowHtml(field, row, ctx, idx) {
+  row = row || {};
+  var base = (ctx && ctx.uid ? ctx.uid : 'f') + '-' + field.id + '-r' + (idx === undefined ? Math.floor(Math.random() * 1e6) : idx);
+  var cells = svcFormRepeaterCols(field).map(function (c) { return svcFormCellHtml(c, row[c.id], ctx, base); }).join('');
+  return svcFormRowShell(cells, ctx, null, svcFormLabel(field, ctx && ctx.typeKey));
+}
+function svcFormServiceRowHtml(item, ctx, idx) {
+  item = item || {};
+  var base = (ctx && ctx.uid ? ctx.uid : 'f') + '-svc' + (idx === undefined ? Math.floor(Math.random() * 1e6) : idx);
+  var qty = item.qty === undefined ? 1 : item.qty, price = item.price === undefined ? 0 : item.price;
+  var baseP = item.basePrice !== undefined ? item.basePrice : price;
+  var ro = ctx && ctx.readOnly ? { disabled: true } : {};
+  var inner = '<span class="svc-row-name">' + svcFormEsc(item.name) + '</span>' +
+    '<label class="svc-cell" for="' + base + '-q"><span class="svc-cell-l">Qty</span><input' + svcFormAttrs(Object.assign({ 'class': 'svc-in', id: base + '-q', type: 'text', inputmode: 'numeric', 'data-col': 'qty', 'data-num': '1', value: qty }, ro)) + '></label>' +
+    '<label class="svc-cell" for="' + base + '-p"><span class="svc-cell-l">Price</span><input' + svcFormAttrs(Object.assign({ 'class': 'svc-in', id: base + '-p', type: 'text', inputmode: 'decimal', 'data-col': 'price', 'data-num': '1', value: price }, ro)) + '></label>';
+  return svcFormRowShell(inner, ctx, { 'data-sid': item.id || '', 'data-name': item.name || '', 'data-base': baseP }, item.name || 'service');
+}
+function svcFormStaffRowHtml(row, list, ctx, field, idx) {
+  row = row || {};
+  var base = (ctx && ctx.uid ? ctx.uid : 'f') + '-stf' + (idx === undefined ? Math.floor(Math.random() * 1e6) : idx);
+  var ro = ctx && ctx.readOnly ? { disabled: true } : {};
+  var tasks = (field && field.taskLabels) || (ctx && ctx.staffAssignment && ctx.staffAssignment.taskLabels) || [];
+  var roles = (field && field.roles) || (ctx && ctx.staffRoles) || [];
+  var inner = '<label class="svc-cell" for="' + base + '-s"><span class="svc-cell-l">Staff</span><select' + svcFormAttrs(Object.assign({ 'class': 'svc-in', id: base + '-s', 'data-col': 'staffId' }, ro)) + '>' + svcFormOptionsHtml(list, row.staffId, 'Choose staff...') + '</select></label>';
+  if (roles.length) inner += '<label class="svc-cell" for="' + base + '-r"><span class="svc-cell-l">Role</span><select' + svcFormAttrs(Object.assign({ 'class': 'svc-in', id: base + '-r', 'data-col': 'role' }, ro)) + '>' + svcFormOptionsHtml(roles.map(function (r) { return svcFormIsObj(r) ? { v: r.key || r.v, l: r.label || r.l } : { v: r, l: r }; }), row.role, 'Role...') + '</select></label>';
+  if (tasks.length) inner += '<label class="svc-cell" for="' + base + '-t"><span class="svc-cell-l">Task</span><select' + svcFormAttrs(Object.assign({ 'class': 'svc-in', id: base + '-t', 'data-col': 'task' }, ro)) + '>' + svcFormOptionsHtml(tasks.map(function (t) { return { v: t, l: t }; }), row.task, 'Task...') + '</select></label>';
+  return svcFormRowShell(inner, ctx, null, 'staff');
+}
+function svcFormAssetCardHtml(asset, ctx) {
+  if (!asset) return '';
+  var owner = asset.owner || asset.customer || {}, hist = Array.isArray(asset.history) ? asset.history.slice(0, 3) : [];
+  var h = '<div class="svc-asset-in"><strong>' + svcFormEsc((ctx && ctx.knownLabel) || 'Known asset') + ': ' + svcFormEsc(asset.title || asset.label || asset.key || asset.id || '') + '</strong>';
+  if (owner.name || owner.phone) h += '<div>' + svcFormEsc(owner.name || '') + (owner.phone ? ' &middot; ' + svcFormEsc(owner.phone) : '') + '</div>';
+  if (asset.lastService) h += '<div>Last service: ' + svcFormEsc(asset.lastService) + '</div>';
+  if (asset.balance) h += '<div class="svc-warn-t">Outstanding: ' + svcFormEsc(svcFormMoney(asset.balance)) + '</div>';
+  if (asset.notes) h += '<div>' + svcFormEsc(asset.notes) + '</div>';
+  if (hist.length) h += '<ul class="svc-asset-hist">' + hist.map(function (x) { return '<li>' + svcFormEsc([x.at ? svcFormDateStr(x.at) : (x.date || ''), x.title || x.name || '', x.total !== undefined ? svcFormMoney(x.total) : ''].filter(Boolean).join(' - ')) + '</li>'; }).join('') + '</ul>';
+  return h + '<button type="button" class="svc-btn" data-act="use-asset">Use these details</button></div>';
+}
+function svcFormPhotosHtml(list) {
+  return (Array.isArray(list) ? list : []).map(function (p, i) {
+    return '<li class="svc-thumb" data-pid="' + svcFormEsc(p.id) + '"><span>' + svcFormEsc(p.name || p.id) + (p.pending ? ' (queued)' : '') + '</span><button type="button" class="svc-btn svc-rm" data-act="rm-photo" data-i="' + i + '" aria-label="Remove photo">&times;</button></li>';
+  }).join('');
+}
+
+// The control (without label wrapper). Returns { html, group:boolean }.
+function svcFormControl(field, value, ctx, ids) {
+  var kind = svcFormKind(field), id = ids.id, ro = ctx.readOnly ? { disabled: true } : {};
+  var desc = ids.desc, inv = ids.invalid ? 'true' : 'false';
+  var common = { id: id, name: field.id, 'data-input': true, 'aria-invalid': inv, 'aria-describedby': desc, 'aria-required': ids.required ? 'true' : false };
+  var str = value === undefined || value === null ? '' : value, h;
+  var cs = svcFormCustomSpec(field);
+  if (cs) {
+    if (typeof cs.html === 'function') { try { return { group: true, html: String(cs.html(field, value, ctx)) }; } catch (e) { /* fall back to a mount point */ } }
+    return { group: true, html: '<div class="svc-widget" data-widget-mount data-wname="' + svcFormEsc(svcFormWidgetName(field)) + '"></div>' };
+  }
+  switch (kind) {
+    case 'text': case 'email': case 'phone': case 'plate': case 'imei': case 'number': case 'money': case 'year': case 'odometer': {
+      var at = { 'class': 'svc-in svc-k-' + kind, type: kind === 'email' ? 'email' : (kind === 'phone' ? 'tel' : 'text'), value: str, placeholder: field.placeholder, maxlength: field.maxLength };
+      if (kind === 'phone') { at.inputmode = 'tel'; at.autocomplete = 'tel'; }
+      else if (kind === 'email') { at.inputmode = 'email'; at.autocomplete = 'email'; }
+      else if (kind === 'number' || kind === 'money' || kind === 'year' || kind === 'odometer') { at.inputmode = (kind === 'year' || kind === 'odometer') ? 'numeric' : 'decimal'; at['data-num'] = '1'; }
+      else if (kind === 'plate' || kind === 'imei') { at.autocapitalize = 'characters'; at.autocomplete = 'off'; at.spellcheck = 'false'; if (kind === 'imei') at.inputmode = 'numeric'; }
+      if (field.keyboard) at.inputmode = field.keyboard;
+      if (kind === 'plate' || kind === 'imei') at['data-lookup'] = kind;
+      h = '<input' + svcFormAttrs(Object.assign({}, common, at, ro)) + '>';
+      if (kind === 'phone') { var pi = svcFormPhoneInfo(str); h += '<div class="svc-hint" data-hint aria-live="polite">' + (pi.e164 ? 'Will be saved as ' + svcFormEsc(pi.e164) : '') + '</div>'; }
+      if ((kind === 'plate' || kind === 'imei') && typeof ctx.findAsset === 'function') h += '<div class="svc-asset" data-asset-card></div>';
+      return { html: h };
+    }
+    case 'longtext':
+      return { html: '<textarea' + svcFormAttrs(Object.assign({}, common, { 'class': 'svc-in svc-ta', rows: field.rows || 3, placeholder: field.placeholder, maxlength: field.maxLength }, ro)) + '>' + svcFormEsc(str) + '</textarea>' };
+    case 'date': return { html: '<input' + svcFormAttrs(Object.assign({}, common, { 'class': 'svc-in', type: 'date', value: str, min: field.min, max: field.max }, ro)) + '>' };
+    case 'time': return { html: '<input' + svcFormAttrs(Object.assign({}, common, { 'class': 'svc-in', type: 'time', value: str, step: field.step }, ro)) + '>' };
+    case 'datetime': {
+      var ms = typeof value === 'number' ? value : (value ? new Date(value).getTime() : NaN);
+      var d = isNaN(ms) ? '' : svcFormDateStr(ms), t = isNaN(ms) ? '' : svcFormTimeStr(ms);
+      return { group: true, html: '<div class="svc-dt"><input' + svcFormAttrs(Object.assign({ 'class': 'svc-in', type: 'date', id: id, 'data-part': 'date', 'aria-label': 'Date', 'aria-invalid': inv, 'aria-describedby': desc, value: d }, ro)) + '><input' + svcFormAttrs(Object.assign({ 'class': 'svc-in', type: 'time', id: id + '-t', 'data-part': 'time', 'aria-label': 'Time', value: t }, ro)) + '></div>' };
+    }
+    case 'dropdown':
+      return { html: '<select' + svcFormAttrs(Object.assign({}, common, { 'class': 'svc-in' }, ro)) + '>' + svcFormOptionsHtml(svcFormOptions(field, ctx, ctx.values), str, field.placeholder) + '</select>' };
+    case 'combo': {
+      var opts = svcFormOptions(field, ctx, ctx.values), dl = id + '-dl', dep = String(field.optionsFrom || '').split(':')[1] || '';
+      h = '<input' + svcFormAttrs(Object.assign({}, common, { 'class': 'svc-in svc-k-combo', type: 'text', value: str, list: dl, autocomplete: 'off', placeholder: field.placeholder || 'Type to search...', 'data-dep': dep || false, 'data-list': field.optionsFrom || false }, ro)) + '>';
+      h += '<datalist id="' + svcFormEsc(dl) + '">' + opts.map(function (o) { return '<option value="' + svcFormEsc(o.v) + '">' + (o.l !== o.v ? svcFormEsc(o.l) : '') + '</option>'; }).join('') + '</datalist>';
+      if (ctx.canManageLists && typeof ctx.addOption === 'function' && !ctx.readOnly) h += '<button type="button" class="svc-btn svc-add-opt" data-act="add-option">Add to list</button>';
+      return { html: h };
+    }
+    case 'checkbox':
+      return { checkbox: true, html: '<label class="svc-check" for="' + svcFormEsc(id) + '"><input' + svcFormAttrs(Object.assign({}, common, { type: 'checkbox', checked: value === true || value === 'yes' || value === 'true' }, ro)) + '><span>' + svcFormEsc(svcFormLabel(field, ctx.typeKey)) + '</span></label>' };
+    case 'yesno': {
+      var cur = value === true ? 'yes' : (value === false ? 'no' : str), nm = ctx.uid + '-' + field.id;
+      return { group: true, html: '<div class="svc-seg" role="radiogroup" aria-labelledby="' + svcFormEsc(id) + '-l">' + ['yes', 'no'].map(function (x) {
+        return '<label class="svc-seg-o"><input' + svcFormAttrs(Object.assign({ type: 'radio', name: nm, value: x, 'data-yn': true, checked: cur === x, id: id + '-' + x }, ro)) + '><span>' + (x === 'yes' ? 'Yes' : 'No') + '</span></label>'; }).join('') + '</div>' };
+    }
+    case 'chips': {
+      var sel = Array.isArray(value) ? value.map(String) : [], co = svcFormOptions(field, ctx, ctx.values);
+      return { group: true, html: '<div class="svc-chips" role="group" aria-labelledby="' + svcFormEsc(id) + '-l">' + co.map(function (o, i) {
+        return '<label class="svc-chip"><input' + svcFormAttrs(Object.assign({ type: 'checkbox', value: o.v, 'data-chip': true, checked: sel.indexOf(String(o.v)) >= 0, id: id + '-c' + i }, ro)) + '><span>' + svcFormEsc(o.l) + '</span></label>'; }).join('') + '</div>' };
+    }
+    case 'repeater': {
+      var rows = Array.isArray(value) ? value : [], min = field.min || 0;
+      while (rows.length < min) rows = rows.concat([{}]);
+      h = '<div class="svc-rep" data-rep><div class="svc-rows" data-rows>' + rows.map(function (r, i) { return svcFormRepeaterRowHtml(field, r, ctx, i); }).join('') + '</div>';
+      if (!ctx.readOnly) h += '<button type="button" class="svc-btn svc-add" data-act="add-row">' + svcFormEsc(field.addLabel || '+ Add') + '</button>';
+      return { group: true, html: h + '</div>' };
+    }
+    case 'services': {
+      var items = Array.isArray(value) ? value : [], cat = [];
+      try { cat = typeof ctx.catalog === 'function' ? (ctx.catalog(ctx.values) || []) : (Array.isArray(ctx.catalog) ? ctx.catalog : []); } catch (e) { cat = []; }
+      h = '<div class="svc-rep svc-svc" data-rep data-svcpick><div class="svc-rows" data-rows>' + items.map(function (r, i) { return svcFormServiceRowHtml(r, ctx, i); }).join('') + '</div>';
+      if (!ctx.readOnly) {
+        h += '<div class="svc-add-bar"><select class="svc-in" data-add-svc aria-label="Add a service"><option value="">+ Add service...</option>' + cat.filter(function (c) { return c && c.active !== false; }).map(function (c) {
+          return '<option value="' + svcFormEsc(c.id) + '">' + svcFormEsc(c.name) + (c.price !== undefined ? ' - ' + svcFormEsc(svcFormMoney(c.price)) : '') + '</option>'; }).join('') + '</select>' +
+          '<input class="svc-in" type="text" data-custom-svc placeholder="Other service name" aria-label="Other service name"><button type="button" class="svc-btn" data-act="add-custom-svc">Add</button></div>';
+      }
+      return { group: true, html: h + '</div>' };
+    }
+    case 'staff': {
+      var list = [], role = field.role || String(field.optionsFrom || '').split(':')[1] || '';
+      try { list = typeof ctx.staff === 'function' ? (ctx.staff(role, ctx.values) || []).map(function (s) { return { v: s.id, l: s.name }; }) : svcFormOptions(field, ctx, ctx.values); } catch (e) { list = []; }
+      var multi = field.multiple === true || (field.multiple === undefined && field.type !== 'staff' && ctx.staffAssignment && ctx.staffAssignment.mode === 'multi');
+      if (!multi) return { html: '<select' + svcFormAttrs(Object.assign({}, common, { 'class': 'svc-in', 'data-staff-single': true }, ro)) + '>' + svcFormOptionsHtml(list, Array.isArray(value) ? (value[0] && value[0].staffId) : str, 'Choose staff...') + '</select>' };
+      var srows = Array.isArray(value) ? value : [];
+      h = '<div class="svc-rep svc-stf" data-rep data-staffpick data-multi="1"><div class="svc-rows" data-rows>' + srows.map(function (r, i) { return svcFormStaffRowHtml(r, list, ctx, field, i); }).join('') + '</div>';
+      if (!ctx.readOnly) h += '<button type="button" class="svc-btn svc-add" data-act="add-staff">+ Add staff</button>';
+      return { group: true, html: h + '</div>' };
+    }
+    case 'photo': {
+      var ph = Array.isArray(value) ? value : [];
+      h = '<div class="svc-photo" data-photo data-photos="' + svcFormEsc(JSON.stringify(ph)) + '"><ul class="svc-thumbs" data-thumbs>' + svcFormPhotosHtml(ph) + '</ul>';
+      if (!ctx.readOnly) h += '<label class="svc-btn svc-photo-btn" for="' + svcFormEsc(id) + '">&#128247; ' + svcFormEsc(field.addLabel || 'Add photo') + '<input' + svcFormAttrs({ type: 'file', accept: 'image/*', capture: 'environment', multiple: field.multiple !== false, 'class': 'svc-vh', id: id, 'data-photo-input': true, 'aria-describedby': desc }) + '></label>';
+      return { group: true, html: h + '</div>' };
+    }
+    case 'obj': {
+      var def = SVC_FORM_OBJ_WIDGETS[field.widget] || [], ov = svcFormIsObj(value) ? value : {};
+      return { group: true, html: '<div class="svc-obj" data-obj>' + def.map(function (c) {
+        var cid = id + '-' + c.k, inp = c.t === 'select' ? '<select' + svcFormAttrs(Object.assign({ 'class': 'svc-in', id: cid, 'data-sub': c.k }, ro)) + '>' + svcFormOptionsHtml(c.o.map(function (x) { return { v: x, l: x }; }), ov[c.k]) + '</select>'
+          : '<input' + svcFormAttrs(Object.assign({ 'class': 'svc-in', id: cid, type: 'text', 'data-sub': c.k, inputmode: c.t === 'money' ? 'decimal' : false, 'data-num': c.t === 'money' ? '1' : false, value: ov[c.k] === undefined ? '' : ov[c.k] }, ro)) + '>';
+        return '<label class="svc-cell" for="' + cid + '"><span class="svc-cell-l">' + svcFormEsc(c.l) + '</span>' + inp + '</label>'; }).join('') + '</div>' };
+    }
+    default: {
+      var spec = svcFormWidgetSpec(field);
+      if (spec && typeof spec.html === 'function') { try { return { group: true, html: String(spec.html(field, value, ctx)) }; } catch (e) { /* fall through */ } }
+      return { group: true, html: '<div class="svc-widget" data-widget-mount data-wname="' + svcFormEsc(svcFormWidgetName(field)) + '"></div>' };
+    }
+  }
+}
+// PURE. One field wrapper: label, control, help, inline error.
+function svcFieldHtml(field, value, ctx) {
+  ctx = ctx || {};
+  if (!field || !field.id) return '';
+  var kind = svcFormKind(field);
+  var typeKey = ctx.typeKey, uid = ctx.uid || 'f', id = uid + '-' + field.id;
+  if (kind === 'heading') return '<h3 class="svc-heading" data-fid="' + svcFormEsc(field.id) + '" data-ftype="heading">' + svcFormEsc(svcFormLabel(field, typeKey)) + '</h3>';
+  var err = ctx.errors && ctx.errors[field.id], warn = !err && ctx.warnings && ctx.warnings[field.id];
+  var required = svcFormIsRequired(field, ctx.values || {}, ctx.mode || 'create', ctx.schema || null) || (ctx.requiredIds ? ctx.requiredIds.indexOf(field.id) >= 0 : false);
+  var desc = id + '-err' + (field.help ? ' ' + id + '-help' : '');
+  var c = svcFormControl(field, value, Object.assign({}, ctx, { uid: uid }), { id: id, desc: desc, invalid: !!err, required: required });
+  var width = field.width || svcFormDefaultWidth(kind);
+  var label = svcFormLabel(field, typeKey);
+  var termAttr = field.labelTerm ? ' data-svc-term="' + svcFormEsc(field.labelTerm) + '"' : '';
+  var lab = '';
+  if (!c.checkbox) {
+    var lt = '<span class="svc-lbl-t"' + termAttr + '>' + svcFormEsc(label) + '</span>' + (required ? '<span class="svc-req" aria-hidden="true"> *</span>' : '');
+    lab = c.group ? '<div class="svc-lbl" id="' + svcFormEsc(id) + '-l">' + lt + '</div>' : '<label class="svc-lbl" id="' + svcFormEsc(id) + '-l" for="' + svcFormEsc(id) + '">' + lt + '</label>';
+  }
+  var cls = 'svc-f svc-f--' + width + ' svc-t-' + kind + (err ? ' svc-invalid' : '') + (warn ? ' svc-warned' : '') + (required ? ' svc-required' : '');
+  var wname = svcFormWidgetName(field);
+  return '<div class="' + cls + '" data-fid="' + svcFormEsc(field.id) + '" data-ftype="' + svcFormEsc(kind) + '"' + (wname ? ' data-widget="' + svcFormEsc(wname) + '"' : '') + (svcFormCustomSpec(field) ? ' data-custom="1"' : '') + (required ? ' data-required="1"' : '') + '>' +
+    lab + c.html +
+    (field.help ? '<div class="svc-help" id="' + svcFormEsc(id) + '-help">' + svcFormEsc(field.help) + '</div>' : '') +
+    '<div class="svc-err' + (warn && !err ? ' svc-err-warn' : '') + '" id="' + svcFormEsc(id) + '-err" data-err' + (err ? ' role="alert"' : ' aria-live="polite"') + '>' + svcFormEsc(err || warn || '') + '</div></div>';
+}
+// PURE. The whole form body (sections + fields) for the given values.
+function svcFormHtml(schema, values, ctx, mode) {
+  ctx = Object.assign({}, ctx || {}, { mode: mode || 'create', values: values || {}, schema: schema, typeKey: (ctx && ctx.typeKey) || schema.key });
+  var vis = svcVisibleFields(schema, values, mode), ok = {};
+  vis.forEach(function (f) { ok[f.id] = true; });
+  var h = '';
+  (schema.sections || []).forEach(function (sec) {
+    var fs = (sec.fields || []).filter(function (f) { return f && ok[f.id]; });
+    if (!fs.length) return;
+    var title = sec.title ? svcFormTokens(sec.title, ctx.typeKey) : '', icon = sec.icon ? sec.icon + ' ' : '';
+    var body = '<div class="svc-grid">' + fs.map(function (f) { return svcFieldHtml(f, (values || {})[f.id], ctx); }).join('') + '</div>';
+    if (!title) h += '<section class="svc-sec" data-sec="' + svcFormEsc(sec.id) + '">' + body + '</section>';
+    else h += '<details class="svc-sec" data-sec="' + svcFormEsc(sec.id) + '"' + (sec.collapsed && mode !== 'quick' ? '' : ' open') + '><summary class="svc-sec-h">' + svcFormEsc(icon + title) + '</summary>' + body + '</details>';
+  });
+  return h;
+}
+
+/* ===== DOM (the ONLY DOM-touching functions of this block; nothing runs at parse time) ===== */
+function svcFormClosest(el, sel) { while (el && el.nodeType === 1) { if (el.matches && el.matches(sel)) return el; el = el.parentNode; } return null; }
+function svcFormCellVal(inp) {
+  if (inp.getAttribute('data-num')) { var n = svcFormNum(inp.value); return inp.value.trim() === '' ? '' : (isNaN(n) ? inp.value : n); }
+  return inp.value;
+}
+function svcFormReadRows(wrap, sel) {
+  var rows = [];
+  [].forEach.call(wrap.querySelectorAll(sel || '[data-row]'), function (r) {
+    var o = {};
+    [].forEach.call(r.querySelectorAll('[data-col]'), function (i) { o[i.getAttribute('data-col')] = svcFormCellVal(i); });
+    rows.push({ el: r, o: o });
+  });
+  return rows;
+}
+function svcFormReadEl(w, keepEmpty) {
+  var kind = w.getAttribute('data-ftype'), i;
+  if (kind === 'heading') return undefined;
+  if (w.getAttribute('data-custom')) {
+    var cn = w.getAttribute('data-widget'), cl = SVC_FORM_WIDGETS[cn], cb = null;
+    (cl || []).forEach(function (x) { if (!cb || x.priority >= cb.priority) cb = x; });
+    if (cb && typeof cb.spec.read === 'function') { try { return cb.spec.read(w.querySelector('[data-widget-mount]') || w); } catch (e) { return undefined; } }
+    return undefined;
+  }
+  var inp = w.querySelector('[data-input]');
+  switch (kind) {
+    case 'text': case 'email': case 'phone': case 'plate': case 'imei': return inp ? String(inp.value).trim() : '';
+    case 'number': case 'money': case 'year': case 'odometer': { if (!inp) return ''; var n = svcFormNum(inp.value); return inp.value.trim() === '' ? '' : (isNaN(n) ? inp.value.trim() : n); }
+    case 'longtext': case 'date': case 'time': case 'dropdown': case 'combo': return inp ? inp.value : '';
+    case 'datetime': {
+      var d = w.querySelector('[data-part=date]'), t = w.querySelector('[data-part=time]');
+      if (!d || !d.value) return '';
+      var p = d.value.split('-'), tt = (t && t.value ? t.value : '00:00').split(':');
+      return new Date(+p[0], +p[1] - 1, +p[2], +tt[0], +tt[1]).getTime();
+    }
+    case 'checkbox': return !!(inp && inp.checked);
+    case 'yesno': { var r = w.querySelector('[data-yn]:checked'); return r ? r.value : ''; }
+    case 'chips': return [].map.call(w.querySelectorAll('[data-chip]:checked'), function (c) { return c.value; });
+    case 'repeater': return svcFormReadRows(w).map(function (r) { return r.o; }).filter(function (o) { return keepEmpty || !svcFormEmpty(o); });
+    case 'services': return svcFormReadRows(w).map(function (r) {
+      var el = r.el, base = svcFormNum(el.getAttribute('data-base')), q = svcFormNum(r.o.qty), pr = svcFormNum(r.o.price);
+      var x = { id: el.getAttribute('data-sid') || '', name: el.getAttribute('data-name') || '', qty: isNaN(q) ? 1 : q, price: isNaN(pr) ? 0 : pr, basePrice: isNaN(base) ? (isNaN(pr) ? 0 : pr) : base };
+      if (x.price !== x.basePrice) x.override = true;
+      return x;
+    });
+    case 'staff': {
+      if (!w.querySelector('[data-staffpick]')) { return inp ? inp.value : ''; }
+      return svcFormReadRows(w).map(function (r) {
+        var sel = r.el.querySelector('[data-col=staffId]'), opt = sel && sel.options[sel.selectedIndex];
+        return { staffId: r.o.staffId || '', name: opt && r.o.staffId ? opt.text : '', role: r.o.role || '', task: r.o.task || '' };
+      }).filter(function (x) { return x.staffId; });
+    }
+    case 'photo': { var ph = w.querySelector('[data-photo]'); try { return JSON.parse(ph.getAttribute('data-photos') || '[]'); } catch (e) { return []; } }
+    case 'obj': {
+      var o = {};
+      [].forEach.call(w.querySelectorAll('[data-sub]'), function (s) {
+        var v = s.value;
+        if (s.getAttribute('data-num') && v.trim() !== '') { var n2 = svcFormNum(v); v = isNaN(n2) ? v : n2; }
+        if (v !== '' && v !== undefined) o[s.getAttribute('data-sub')] = v;
+      });
+      return o;
+    }
+    default: {
+      var mount = w.querySelector('[data-widget-mount]') || w, name = w.getAttribute('data-widget'), list = SVC_FORM_WIDGETS[name];
+      var best = null; (list || []).forEach(function (x) { if (!best || x.priority >= best.priority) best = x; });
+      if (best && typeof best.spec.read === 'function') { try { return best.spec.read(mount); } catch (e) { return undefined; } }
+      return undefined;
+    }
+  }
+}
+// Reads every MOUNTED field of a rendered form -> { fieldId: value }. Unmounted (conditionally hidden) fields are simply not there.
+function svcReadForm(container, keepEmpty) {
+  var out = {};
+  if (!container || !container.querySelectorAll) return out;
+  [].forEach.call(container.querySelectorAll('[data-fid]'), function (w) {
+    var v = svcFormReadEl(w, keepEmpty);
+    if (v !== undefined) out[w.getAttribute('data-fid')] = v;
+  });
+  return out;
+}
+function svcFormPaintErrors(container, errors, warnings) {
+  [].forEach.call(container.querySelectorAll('[data-fid]'), function (w) {
+    var id = w.getAttribute('data-fid'), e = errors && errors[id], wn = !e && warnings && warnings[id];
+    var box = w.querySelector('[data-err]'), inv = !!e;
+    w.classList.toggle('svc-invalid', inv); w.classList.toggle('svc-warned', !!wn);
+    if (box) { box.textContent = e || wn || ''; box.classList.toggle('svc-err-warn', !!wn); box.setAttribute(inv ? 'role' : 'aria-live', inv ? 'alert' : 'polite'); box.removeAttribute(inv ? 'aria-live' : 'role'); }
+    [].forEach.call(w.querySelectorAll('[data-input],[data-part=date]'), function (i) { i.setAttribute('aria-invalid', inv ? 'true' : 'false'); });
+  });
+}
+function svcFormNormOpts(a, b) {
+  var o = {};
+  if (b !== undefined && b !== null) { o = Object.assign({}, b); o.schema = svcFormResolve(a); if (typeof a === 'string') o.typeKey = a; }
+  else if (a && typeof a === 'object' && (a.typeKey || a.schema || a.template || a.fields || a.sections)) {
+    o = Object.assign({}, a);
+    var src = a.schema || a.template || a.typeKey || (a.sections || a.fields ? a : null);
+    o.schema = svcFormResolve(src);
+    if (!o.typeKey && typeof src === 'string') o.typeKey = src;
+  } else o = { schema: svcFormResolve(a) };
+  if (!o.schema) o.schema = svcFormResolve(null);
+  if (o.typeKey && !o.schema.key) o.schema.key = o.typeKey;
+  o.mode = o.mode || 'create';
+  o.context = o.context || o.ctx || {};
+  return o;
+}
+
+function svcRenderForm(container, a, b) {
+  if (!container) return null;
+  var o = svcFormNormOpts(a, b), schema = o.schema, mode = o.mode, doc = container.ownerDocument;
+  var uid = 'f' + (++SVC_FORM_SEQ), state = { values: {}, stash: {}, errors: {}, warnings: {}, asset: null, destroyed: false, timer: null, sig: '' };
+  var fmap = {}; svcFormPairs(schema).forEach(function (p) { fmap[p.field.id] = p.field; });
+  var init = o.values || {};
+  Object.keys(init).forEach(function (k) { state.values[k] = init[k]; });
+  Object.keys(fmap).forEach(function (id) { if (state.values[id] === undefined && fmap[id].default !== undefined && mode !== 'edit') state.values[id] = fmap[id].default; });
+  var listeners = [], handle;
+
+  function ctxNow() {
+    return Object.assign({}, o.context, { typeKey: o.typeKey || schema.key, mode: mode, uid: uid, readOnly: !!o.readOnly, errors: state.errors, warnings: state.warnings, values: state.values, schema: schema,
+      staffAssignment: o.context.staffAssignment || schema.staffAssignment });
+  }
+  function sigOf(vis) { return vis.map(function (f) { return f.id; }).join('|'); }
+  function sync() { var r = svcReadForm(container, true); Object.keys(r).forEach(function (k) { state.values[k] = r[k]; }); }
+  function api(field) {
+    return { get: function (id) { sync(); return state.values[id === undefined ? field.id : id]; }, set: function (id, v) { state.values[id] = v; render(); }, job: o.context.job, template: schema, mode: mode,
+      emit: function () { changed(field.id); }, rerender: function () { sync(); render(); }, can: function (p) { return typeof svcCan === 'function' ? !!svcCan(p) : true; } };
+  }
+  function render() {
+    var act = doc && doc.activeElement, fk = null;
+    if (act && container.contains(act)) { var w = svcFormClosest(act, '[data-fid]'); if (w) { var all = [].slice.call(w.querySelectorAll('input,select,textarea')); fk = { fid: w.getAttribute('data-fid'), idx: all.indexOf(act), s: act.selectionStart, e: act.selectionEnd }; } }
+    var vis = svcVisibleFields(schema, state.values, mode), seen = {};
+    vis.forEach(function (f) { seen[f.id] = true; });
+    Object.keys(fmap).forEach(function (id) {
+      if (!seen[id] && state.values[id] !== undefined) { state.stash[id] = state.values[id]; delete state.values[id]; }
+      else if (seen[id] && state.values[id] === undefined && state.stash[id] !== undefined) state.values[id] = state.stash[id];
+    });
+    state.sig = sigOf(vis);
+    var ctx = ctxNow(), html = svcFormHtml(schema, state.values, ctx, mode);
+    var actions = '';
+    if (!o.readOnly && (typeof o.onSubmit === 'function' || typeof o.onDraft === 'function' || typeof o.onAutosave === 'function')) {
+      actions = '<div class="svc-actions svc-sticky">' + (typeof o.onSubmit === 'function' ? '<button type="submit" class="svc-btn svc-btn-primary" data-act="submit">' + svcFormEsc(o.submitLabel || (schema.quick && mode === 'quick' && schema.quick.submitLabel) || (mode === 'edit' ? 'Save changes' : 'Create')) + '</button>' : '') + '</div>';
+    }
+    container.classList.add('svc-form-host');
+    container.innerHTML = '<form class="svc-form svc-form--' + svcFormEsc(mode) + '" novalidate data-svc-form data-type="' + svcFormEsc(ctx.typeKey || '') + '" data-mode="' + svcFormEsc(mode) + '">' + html + actions + '</form>';
+    [].forEach.call(container.querySelectorAll('[data-widget-mount]'), function (m) {
+      var w = svcFormClosest(m, '[data-fid]'), f = w && fmap[w.getAttribute('data-fid')], spec = f && svcFormWidgetSpec(f);
+      if (spec && typeof spec.render === 'function') { try { spec.render(f, m, api(f)); if (typeof spec.setValue === 'function' && state.values[f.id] !== undefined) spec.setValue(m, state.values[f.id]); } catch (e) { m.textContent = 'This control could not be loaded.'; } }
+    });
+    svcFormPaintErrors(container, state.errors, state.warnings);
+    if (fk) {
+      var nw = container.querySelector('[data-fid="' + fk.fid + '"]');
+      if (nw) { var ni = [].slice.call(nw.querySelectorAll('input,select,textarea'))[Math.max(fk.idx, 0)]; if (ni) { try { ni.focus(); if (fk.s !== null && fk.s !== undefined && ni.setSelectionRange && /^(text|tel|search|url|password)$/.test(ni.type || '')) ni.setSelectionRange(fk.s, fk.e); } catch (e) { /* not selectable */ } } }
+    }
+  }
+  function schedule() {
+    var cb = o.onDraft || o.onAutosave;
+    if (typeof cb !== 'function' || state.destroyed) return;
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = setTimeout(function () { state.timer = null; if (!state.destroyed) { try { cb(handle.getValues(), handle); } catch (e) { /* caller error must not break the form */ } } }, o.draftDelay || o.draftMs || 800);
+  }
+  function changed(fid, extra) {
+    sync();
+    var vis = svcVisibleFields(schema, state.values, mode);
+    if (sigOf(vis) !== state.sig) render();
+    if (fid && state.errors[fid]) { delete state.errors[fid]; var w = container.querySelector('[data-fid="' + fid + '"]'); if (w) svcFormPaintErrors(container, state.errors, state.warnings); }
+    // dependent lists (vehicle model follows make)
+    [].forEach.call(container.querySelectorAll('input[data-dep]'), function (inp) {
+      if (inp.getAttribute('data-dep') !== fid) return;
+      var f = fmap[svcFormClosest(inp, '[data-fid]').getAttribute('data-fid')], dl = container.querySelector('#' + inp.getAttribute('list'));
+      if (f && dl) dl.innerHTML = svcFormOptions(f, ctxNow(), state.values).map(function (x) { return '<option value="' + svcFormEsc(x.v) + '">' + (x.l !== x.v ? svcFormEsc(x.l) : '') + '</option>'; }).join('');
+    });
+    if (typeof o.onChange === 'function') { try { o.onChange(handle, { field: fid || null, value: fid ? state.values[fid] : undefined }); } catch (e) { /* caller error */ } }
+    schedule();
+  }
+  function on(type, fn) { container.addEventListener(type, fn); listeners.push([type, fn]); }
+
+  function addPhoto(w, f, files) {
+    var holder = w.querySelector('[data-photo]'), cur = [];
+    try { cur = JSON.parse(holder.getAttribute('data-photos') || '[]'); } catch (e) { cur = []; }
+    var jobs = [].map.call(files, function (file) {
+      var entry = { id: 'pq-' + svcFormNow().toString(36) + '-' + Math.floor(Math.random() * 1e6).toString(36), name: file.name || 'photo', kind: f.id, at: svcFormNow(), pending: true };
+      var res = null;
+      if (typeof svcPhotoAdd === 'function') { try { res = svcPhotoAdd(file, { field: f.id, kind: f.photoKind || f.id, jobId: o.context.job && o.context.job.id }); } catch (e) { res = null; } }
+      if (typeof o.context.onPhoto === 'function') { try { o.context.onPhoto(file, entry, f); } catch (e) { /* caller error */ } }
+      return Promise.resolve(res).then(function (r) { if (r && typeof r === 'object' && r.id) return Object.assign({ name: entry.name, kind: f.id, at: entry.at }, r); return entry; }, function () { return entry; });
+    });
+    return Promise.all(jobs).then(function (added) {
+      if (state.destroyed) return;
+      var w2 = container.querySelector('[data-fid="' + f.id + '"]'); if (!w2) return;
+      var h2 = w2.querySelector('[data-photo]'); var list = [];
+      try { list = JSON.parse(h2.getAttribute('data-photos') || '[]'); } catch (e) { list = []; }
+      list = list.concat(added);
+      h2.setAttribute('data-photos', JSON.stringify(list)); h2.querySelector('[data-thumbs]').innerHTML = svcFormPhotosHtml(list);
+      changed(f.id);
+    });
+  }
+  function useAsset(w) {
+    var asset = w.__svcAsset; if (!asset) return;
+    state.asset = asset; sync();
+    var attrs = asset.attrs || {}, own = asset.owner || asset.customer || {};
+    Object.keys(fmap).forEach(function (id) {
+      var f = fmap[id], key = f.assetAttr || '';
+      if (f.storesIn === 'asset' && attrs[key || id] !== undefined && (state.values[id] === undefined || state.values[id] === '')) state.values[id] = attrs[key || id];
+      else if (attrs[id] !== undefined && (state.values[id] === undefined || state.values[id] === '')) state.values[id] = attrs[id];
+    });
+    if (own.name && !state.values.cust_name) state.values.cust_name = own.name;
+    if (own.phone && !state.values.cust_phone) state.values.cust_phone = own.phone;
+    if (typeof o.context.onAssetSelect === 'function') { try { o.context.onAssetSelect(asset); } catch (e) { /* caller error */ } }
+    render(); changed(null);
+  }
+
+  on('input', function (ev) {
+    var t = ev.target, w = svcFormClosest(t, '[data-fid]'); if (!w) return;
+    var fid = w.getAttribute('data-fid'), kind = w.getAttribute('data-ftype');
+    if ((kind === 'plate' || kind === 'imei') && t.matches('[data-input]')) { var up = t.value.toUpperCase(); if (up !== t.value) { var s = t.selectionStart; t.value = up; try { t.setSelectionRange(s, s); } catch (e) { /* ignore */ } } }
+    if (kind === 'phone') { var hint = w.querySelector('[data-hint]'), pi = svcFormPhoneInfo(t.value); if (hint) hint.textContent = pi.e164 ? 'Will be saved as ' + pi.e164 : ''; }
+    changed(fid);
+  });
+  on('change', function (ev) {
+    var t = ev.target, w = svcFormClosest(t, '[data-fid]'); if (!w) return;
+    var fid = w.getAttribute('data-fid'), f = fmap[fid];
+    if (t.matches('[data-photo-input]')) { if (t.files && t.files.length) addPhoto(w, f, t.files); return; }
+    if (t.matches('[data-add-svc]')) {
+      var cat = []; try { cat = typeof o.context.catalog === 'function' ? o.context.catalog(state.values) : (o.context.catalog || []); } catch (e) { cat = []; }
+      var item = (cat || []).filter(function (c) { return String(c.id) === t.value; })[0]; t.value = '';
+      if (!item) return;
+      var price = item.price; if (typeof o.context.priceFor === 'function') { try { var pp = o.context.priceFor(item, state.values); if (pp !== undefined && pp !== null) price = pp; } catch (e) { /* keep list price */ } }
+      w.querySelector('[data-rows]').insertAdjacentHTML('beforeend', svcFormServiceRowHtml({ id: item.id, name: item.name, qty: 1, price: price, basePrice: price }, ctxNow()));
+      changed(fid); return;
+    }
+    if (t.type === 'radio' || t.type === 'checkbox' || t.tagName === 'SELECT' || t.type === 'date' || t.type === 'time') changed(fid);
+  });
+  on('focusout', function (ev) {
+    var t = ev.target, w = svcFormClosest(t, '[data-fid]'); if (!w || !t.matches) return;
+    var fid = w.getAttribute('data-fid'), f = fmap[fid];
+    if (t.matches('[data-lookup]') && t.value.trim() && typeof o.context.findAsset === 'function') {
+      var key = t.value.trim(), card = w.querySelector('[data-asset-card]');
+      var r = null; try { r = o.context.findAsset({ field: fid, kind: t.getAttribute('data-lookup'), key: key, assetKind: schema.assetKind, values: state.values }); } catch (e) { r = null; }
+      Promise.resolve(r).then(function (asset) { if (state.destroyed || !card) return; w.__svcAsset = asset || null; card.innerHTML = asset ? svcFormAssetCardHtml(asset, o.context) : ''; }, function () { /* lookup failed: stay silent */ });
+    }
+    // inline validation of just this field (only once the user has left it)
+    if (f && t.matches('[data-input],[data-part],[data-col]')) {
+      sync();
+      var r2 = svcValidate(schema, state.values, { mode: mode, context: o.context });
+      if (r2.errorsById[fid]) state.errors[fid] = r2.errorsById[fid]; else delete state.errors[fid];
+      if (r2.warningsById[fid]) state.warnings[fid] = r2.warningsById[fid]; else delete state.warnings[fid];
+      svcFormPaintErrors(container, state.errors, state.warnings);
+    }
+  });
+  on('click', function (ev) {
+    var b = svcFormClosest(ev.target, '[data-act]'); if (!b) return;
+    var act = b.getAttribute('data-act'), w = svcFormClosest(b, '[data-fid]'), fid = w && w.getAttribute('data-fid'), f = fid && fmap[fid];
+    if (act === 'rm-row') { var row = svcFormClosest(b, '[data-row]'); if (row) row.parentNode.removeChild(row); changed(fid); }
+    else if (act === 'add-row' && f) {
+      var rows = w.querySelector('[data-rows]'); if (f.max && rows.querySelectorAll('[data-row]').length >= f.max) return;
+      rows.insertAdjacentHTML('beforeend', svcFormRepeaterRowHtml(f, {}, ctxNow())); var first = rows.lastElementChild && rows.lastElementChild.querySelector('input,select'); if (first) first.focus(); changed(fid);
+    } else if (act === 'add-staff' && f) {
+      var ctx = ctxNow(), list = []; try { list = typeof ctx.staff === 'function' ? (ctx.staff(f.role || String(f.optionsFrom || '').split(':')[1] || '', state.values) || []).map(function (s) { return { v: s.id, l: s.name }; }) : svcFormOptions(f, ctx, state.values); } catch (e) { list = []; }
+      w.querySelector('[data-rows]').insertAdjacentHTML('beforeend', svcFormStaffRowHtml({}, list, ctx, f)); changed(fid);
+    } else if (act === 'add-custom-svc' && f) {
+      var inp = w.querySelector('[data-custom-svc]'), name = inp ? inp.value.trim() : ''; if (!name) { if (inp) inp.focus(); return; }
+      w.querySelector('[data-rows]').insertAdjacentHTML('beforeend', svcFormServiceRowHtml({ id: '', name: name, qty: 1, price: 0, basePrice: 0 }, ctxNow())); inp.value = ''; changed(fid);
+    } else if (act === 'rm-photo' && f) {
+      var h = w.querySelector('[data-photo]'), list2 = []; try { list2 = JSON.parse(h.getAttribute('data-photos') || '[]'); } catch (e) { list2 = []; }
+      list2.splice(+b.getAttribute('data-i'), 1); h.setAttribute('data-photos', JSON.stringify(list2)); h.querySelector('[data-thumbs]').innerHTML = svcFormPhotosHtml(list2); changed(fid);
+    } else if (act === 'add-option' && f) {
+      var ci = w.querySelector('[data-input]'), txt = ci ? ci.value.trim() : '';
+      if (txt && typeof o.context.addOption === 'function') { try { o.context.addOption(f.optionsFrom || f.id, txt, state.values); } catch (e) { /* caller error */ } var dl = container.querySelector('#' + ci.getAttribute('list')); if (dl) dl.insertAdjacentHTML('beforeend', '<option value="' + svcFormEsc(txt) + '"></option>'); }
+    } else if (act === 'use-asset' && w) useAsset(w);
+  });
+  on('submit', function (ev) {
+    ev.preventDefault();
+    var r = handle.validate();
+    if (!r.ok) { handle.focusFirstError(); return; }
+    if (typeof o.onSubmit === 'function') o.onSubmit(handle.getValues(), handle);
+  });
+
+  handle = {
+    el: container, schema: schema, mode: mode, uid: uid,
+    getValues: function () { sync(); var out = {}; Object.keys(state.values).forEach(function (k) { if (fmap[k] && fmap[k].type !== 'heading') out[k] = state.values[k]; }); var dom = svcReadForm(container); Object.keys(dom).forEach(function (k) { out[k] = dom[k]; }); return out; },
+    setValue: function (id, v) { sync(); state.values[id] = v; delete state.stash[id]; render(); changed(null); },
+    setValues: function (obj) { sync(); Object.keys(obj || {}).forEach(function (k) { state.values[k] = obj[k]; delete state.stash[k]; }); render(); },
+    validate: function () { sync(); var r = svcValidate(schema, state.values, { mode: mode, context: o.context }); state.errors = r.errorsById; state.warnings = r.warningsById; svcFormPaintErrors(container, state.errors, state.warnings); return r; },
+    focusFirstError: function () {
+      var w = container.querySelector('.svc-invalid'); if (!w) return false;
+      var d = svcFormClosest(w, 'details'); if (d && !d.open) d.open = true;
+      var i = w.querySelector('input,select,textarea,button'); if (i) { i.focus(); }
+      if (w.scrollIntoView) { try { w.scrollIntoView({ block: 'center' }); } catch (e) { /* jsdom */ } }
+      return true;
+    },
+    visibleIds: function () { return svcVisibleFields(schema, state.values, mode).map(function (f) { return f.id; }); },
+    getAsset: function () { return state.asset; },
+    saveDraftNow: function () { var cb = o.onDraft || o.onAutosave; if (state.timer) { clearTimeout(state.timer); state.timer = null; } if (typeof cb === 'function') cb(handle.getValues(), handle); },
+    destroy: function () { state.destroyed = true; if (state.timer) clearTimeout(state.timer); listeners.forEach(function (l) { container.removeEventListener(l[0], l[1]); }); listeners = []; container.innerHTML = ''; }
+  };
+  render();
+  return handle;
+}
+
+/* ===== read-only summary rendered from the same schema ===== */
+function svcFormJobValue(job, f) {
+  var id = f.id, d = job.data || {}, c = job.customer || {}, a = (job.asset && job.asset.attrs) || {};
+  if (d[id] !== undefined) return d[id];
+  if (job[id] !== undefined) return job[id];
+  if (SVC_FORM_CUSTOMER_KEYS[id] && c[SVC_FORM_CUSTOMER_KEYS[id]] !== undefined) return c[SVC_FORM_CUSTOMER_KEYS[id]];
+  var ak = f.assetAttr || id.replace(/^[a-z]+_/, '');
+  if (a[ak] !== undefined) return a[ak];
+  if (id === 'services' && Array.isArray(job.services)) return job.services;
+  return undefined;
+}
+function svcFormShow(f, v, ctx) {
+  var kind = svcFormKind(f);
+  if (kind === 'services') return (v || []).map(function (s) { return s.name + (s.qty > 1 ? ' x' + s.qty : '') + (s.price !== undefined ? ' @ ' + svcFormMoney(s.price) : ''); }).join(', ');
+  if (kind === 'staff') return Array.isArray(v) ? v.map(function (s) { return (s.name || s.staffId) + (s.task ? ' (' + s.task + ')' : ''); }).join(', ') : String(v);
+  if (kind === 'money') return isNaN(svcFormNum(v)) ? String(v) : svcFormMoney(v);
+  if (kind === 'checkbox') return v === true ? 'Yes' : 'No';
+  if (kind === 'yesno') return v === 'yes' || v === true ? 'Yes' : 'No';
+  if (kind === 'datetime') return typeof v === 'number' ? svcFormDateStr(v) + ' ' + svcFormTimeStr(v) : String(v);
+  if (kind === 'photo') return Array.isArray(v) ? v.length + ' photo' + (v.length === 1 ? '' : 's') : '';
+  if (kind === 'chips') return Array.isArray(v) ? v.join(', ') : String(v);
+  if (kind === 'repeater') return Array.isArray(v) ? v.map(function (r) { return Object.keys(r).map(function (k) { return r[k]; }).filter(function (x) { return x !== '' && x !== undefined; }).join(' '); }).join('; ') : String(v);
+  if (kind === 'obj' || (svcFormIsObj(v) && !Array.isArray(v))) return Object.keys(v).map(function (k) { return k + ': ' + v[k]; }).join(', ');
+  if (kind === 'dropdown') { var o = svcFormOptions(f, ctx, {}).filter(function (x) { return String(x.v) === String(v); })[0]; return o ? String(o.l) : String(v); }
+  return String(v);
+}
+function svcRenderJobSummary(job, tplOrMount, opts) {
+  job = job || {};
+  var mount = tplOrMount && tplOrMount.nodeType === 1 ? tplOrMount : null;
+  var src = mount ? (job.serviceType || job.typeKey || 'other') : (tplOrMount || job.serviceType || job.typeKey || 'other');
+  var schema = svcFormResolve(src), ctx = { typeKey: schema.key || job.serviceType }, known = {}, h = '';
+  svcFormPairs(schema).forEach(function (p) { known[p.field.id] = true; });
+  (schema.sections || []).forEach(function (sec) {
+    var rows = '';
+    (sec.fields || []).forEach(function (f) {
+      if (!f || !f.id || f.sensitive || svcFormKind(f) === 'heading') return;
+      var v = svcFormJobValue(job, f);
+      if (v === undefined || svcFormEmpty(v, f)) return;
+      rows += '<dt>' + svcFormEsc(svcFormLabel(f, ctx.typeKey)) + '</dt><dd>' + svcFormEsc(svcFormShow(f, v, ctx)) + '</dd>';
+    });
+    if (rows) h += '<section class="svc-sum-sec"><h4>' + svcFormEsc(svcFormTokens(sec.title || '', ctx.typeKey)) + '</h4><dl class="svc-dl">' + rows + '</dl></section>';
+  });
+  var other = '', labels = (job.customFieldLabels || (opts && opts.labels)) || {};
+  Object.keys(job.data || {}).forEach(function (k) {
+    if (known[k] || svcFormEmpty(job.data[k])) return;
+    other += '<dt>' + svcFormEsc(labels[k] || k.replace(/^cf_/, '').replace(/[_-]+/g, ' ').replace(/^./, function (c) { return c.toUpperCase(); })) + '</dt><dd>' + svcFormEsc(typeof job.data[k] === 'object' ? JSON.stringify(job.data[k]) : job.data[k]) + '</dd>';
+  });
+  if (other) h += '<section class="svc-sum-sec"><h4>Other details</h4><dl class="svc-dl">' + other + '</dl></section>';
+  h = '<div class="svc-summary">' + h + '</div>';
+  if (mount) mount.innerHTML = h;
+  return h;
+}
+</script>

@@ -1,0 +1,416 @@
+<!-- SVC PERMS ---------------------------------------------------------------------------------------
+     Services engine block "svc-perms". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B3-N. Nobody else edits this file.
+     STATE: IMPLEMENTED (B3-N). One style element + one script element below this comment.
+     KIND: DOM. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_ (private helpers svcPerm* / SVC_PERM_*).
+     CONTRACT: svcStaffPermHtml(member) (called by renderStaffPanel), the 16 Services permissions with presets (worker / receptionist / cashier / supervisor / manager / full), specialties
+               (staff[].svcSpecialties + cfg-roles), the Secondary-Admin "Services settings" tick, svcPermSet / svcPermToggle / svcPermApplyPreset / svcPermReset / svcPermSetSpecialty,
+               svcStaffBySpecialty, svcPermResolveMember, Settings > Services > Staff Roles page, permission change log (cfg-permlog, shown by svcAuditEvents).
+     ENFORCEMENT: the engine asks svcCan(perm) (svc-core, used by svc-store / the UI blocks). Roles are plain strings in staff[].roles ("svc:view" ...). A member with NO "svc:" role keeps the implicit
+               legacy grant (everything except approve / manageServices / manageConfig when they hold a Services tab); the first tick switches the member to EXPLICIT mode, marked with the
+               inert role "svc:custom" so that un-ticking every box really means "nothing" instead of falling back to the implicit grant.
+     SPEC: SERVICES_ARCHITECTURE.md 6.4, 8.2 B3-N. Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<style>
+/* svc-perms: theme variables only, 44px touch targets, 16px inputs */
+.svp-box { margin: 10px 0; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); }
+.svp-box > summary { display: flex; align-items: center; min-height: 44px; padding: 0 12px; cursor: pointer; font-weight: 700; font-size: 14px; list-style: none; }
+.svp-box > summary::-webkit-details-marker { display: none; }
+.svp-box > summary .svp-count { margin-left: auto; font-weight: 600; font-size: 12px; opacity: .7; }
+.svp-body { padding: 4px 12px 12px; }
+.svp-note { margin: 6px 0; padding: 8px 10px; border-radius: 8px; font-size: 13px; background: var(--tint-info-bg); color: var(--dark); }
+.svp-note.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); }
+.svp-h { margin: 12px 0 4px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; opacity: .7; }
+.svp-presets { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+.svp-btn { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 14px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-surface-alt); color: var(--dark); font-size: 14px; cursor: pointer; width: auto; margin: 0; }
+.svp-btn.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.svp-btn:focus-visible, .svp-perm input:focus-visible { outline: 3px solid var(--accent); outline-offset: 1px; }
+.svp-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 12px; }
+@media (min-width: 560px) { .svp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.svp-perm { display: flex; align-items: flex-start; gap: 10px; min-height: 44px; padding: 6px 0; font-size: 14px; cursor: pointer; width: auto; margin: 0; }
+.svp-perm input { width: 22px; height: 22px; flex: none; margin: 2px 0 0; }
+.svp-perm small { display: block; font-size: 12px; opacity: .7; font-weight: 400; }
+.svp-perm b { font-weight: 600; }
+.svp-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.svp-tbl th, .svp-tbl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border-color); vertical-align: top; }
+.svp-in { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px 10px; font-size: 16px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-surface); color: var(--dark); }
+</style>
+<script>
+/* ===================================================================================================================
+   SVC PERMS (B3-N): who may do what in Services. The enforcement point is svcCan() in svc-core; this block only edits the strings it reads.
+   =================================================================================================================== */
+var SVC_PERM_INFO = [
+  { key: 'svc:view', label: 'View services', hint: 'Open the Services screens and see jobs', group: 'jobs' },
+  { key: 'svc:create', label: 'Create jobs', hint: 'Check in a new job or walk-in', group: 'jobs' },
+  { key: 'svc:edit', label: 'Edit jobs', hint: 'Change job details', group: 'jobs' },
+  { key: 'svc:assign', label: 'Assign jobs', hint: 'Put staff on a job', group: 'jobs' },
+  { key: 'svc:status', label: 'Change status', hint: 'Move a job along its workflow', group: 'jobs' },
+  { key: 'svc:cancel', label: 'Cancel jobs', hint: 'Cancel or delete a job (needs a reason)', group: 'jobs' },
+  { key: 'svc:history', label: 'View history', hint: 'Customer and asset history, audit trail', group: 'jobs' },
+  { key: 'svc:quote', label: 'Create quotes', hint: 'Draft and send quotes', group: 'money' },
+  { key: 'svc:approve', label: 'Approve quotes', hint: 'Record the customer\'s approval', group: 'money' },
+  { key: 'svc:charge', label: 'Add charges', hint: 'Additional work, fees and discounts', group: 'money' },
+  { key: 'svc:pay', label: 'Record payments', hint: 'Deposits, balances and refunds', group: 'money' },
+  { key: 'svc:financials', label: 'View financials', hint: 'Totals, margins and reports', group: 'money' },
+  { key: 'svc:inventory', label: 'Record inventory', hint: 'Record products and parts used', group: 'stock' },
+  { key: 'svc:customers', label: 'View customers', hint: 'Customer details and contact (also needed to notify)', group: 'stock' },
+  { key: 'svc:manageServices', label: 'Manage services', hint: 'Edit the service catalog and prices', group: 'admin' },
+  { key: 'svc:manageConfig', label: 'Manage service configuration', hint: 'Business type, statuses, templates, custom fields', group: 'admin' }
+];
+var SVC_PERM_GROUPS = [{ key: 'jobs', label: 'Jobs' }, { key: 'money', label: 'Quotes, charges and money' }, { key: 'stock', label: 'Stock and customers' }, { key: 'admin', label: 'Setup' }];
+var SVC_PERM_MARK = 'svc:custom';
+var SVC_PERM_PRESETS = {
+  worker: ['svc:view', 'svc:create', 'svc:edit', 'svc:status', 'svc:inventory'],
+  receptionist: ['svc:view', 'svc:create', 'svc:edit', 'svc:assign', 'svc:status', 'svc:quote', 'svc:customers', 'svc:pay', 'svc:history'],
+  cashier: ['svc:view', 'svc:customers', 'svc:pay', 'svc:financials', 'svc:history'],
+  supervisor: ['svc:view', 'svc:create', 'svc:edit', 'svc:assign', 'svc:status', 'svc:cancel', 'svc:quote', 'svc:approve', 'svc:charge', 'svc:inventory', 'svc:customers', 'svc:pay', 'svc:history'],
+  manager: ['svc:view', 'svc:create', 'svc:edit', 'svc:assign', 'svc:status', 'svc:cancel', 'svc:quote', 'svc:approve', 'svc:charge', 'svc:inventory', 'svc:customers', 'svc:pay', 'svc:financials', 'svc:history', 'svc:manageServices'],
+  full: ['svc:view', 'svc:create', 'svc:edit', 'svc:assign', 'svc:status', 'svc:cancel', 'svc:quote', 'svc:approve', 'svc:charge', 'svc:inventory', 'svc:customers', 'svc:pay', 'svc:financials', 'svc:history', 'svc:manageServices', 'svc:manageConfig']
+};
+var SVC_PERM_BUNDLE_LABELS = { worker: 'Technician', receptionist: 'Receptionist', cashier: 'Cashier', supervisor: 'Supervisor', manager: 'Manager', full: 'Full access' };
+var SVC_PERM_ADMIN_SECTION = 'settings-section-services';
+var SVC_PERM_OPEN = {};            /* staff id -> true while that member's Services box is open (the staff panel repaints after every change) */
+var SVC_PERM_BOUND = false;
+var SVC_PERM_LOG_CAP = 100;
+
+/* ===== small helpers ===== */
+function svcPermEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcPermToast(msg, isErr) { try { if (typeof showToast === 'function') showToast(String(msg), !!isErr); } catch (e) { /* cosmetic */ } }
+function svcPermNow() { try { if (typeof svcNow === 'function') return svcNow(); } catch (e) { /* clock */ } return Date.now(); }
+function svcPermArr(v) { return Array.isArray(v) ? v : []; }
+function svcPermStaffList() { try { if (typeof staff !== 'undefined' && Array.isArray(staff)) return staff; } catch (e) { /* not declared */ } return []; }
+function svcPermFind(id) { var l = svcPermStaffList(), i; for (i = 0; i < l.length; i++) { if (l[i] && String(l[i].id) === String(id)) return l[i]; } return null; }
+function svcPermIsKey(p) { var i; for (i = 0; i < SVC_PERM_INFO.length; i++) { if (SVC_PERM_INFO[i].key === p) return true; } return false; }
+function svcPermCurrentId() { try { if (typeof currentServer !== 'undefined' && currentServer) return String(currentServer.id); } catch (e) { /* owner */ } return ''; }
+/* who may edit permissions: the owner (no staff session) or someone with manage-configuration */
+function svcPermCanEdit() {
+  if (!svcPermCurrentId()) return true;
+  try { return typeof svcCan === 'function' ? !!svcCan('svc:manageConfig') : false; } catch (e) { return false; }
+}
+function svcPermTypeKey() { try { if (typeof svcBusinessType === 'function') return svcBusinessType() || 'other'; } catch (e) { /* default */ } return 'other'; }
+function svcPermTpl(typeKey) { try { if (typeof svcGetTemplate === 'function') return svcGetTemplate(typeKey); } catch (e) { /* none */ } return null; }
+
+/* ===== member resolution =====
+   currentServer (the signed-in staff member) is only {id, name} in the app; the roles live on the staff record. svcCan() (svc-core) reads svcCurrentMember(), so
+   it must see the full record or every staff member would be denied everything. This is idempotent: a member that already carries roles / isManager is returned as is. */
+function svcPermResolveMember(m) {
+  if (!m || typeof m !== 'object') return m;
+  if (Array.isArray(m.roles) || m.isManager) return m;
+  var rec = svcPermFind(m.id);
+  return rec || Object.assign({}, m, { roles: [] });
+}
+try {
+  if (typeof svcCurrentMember === 'function' && !svcCurrentMember.svcPermPatched) {
+    var svcPermOrigMember = svcCurrentMember;
+    svcCurrentMember = function () { return svcPermResolveMember(svcPermOrigMember()); };
+    svcCurrentMember.svcPermPatched = true;
+  }
+} catch (svcPermPatchErr) { /* svc-core absent: nothing to patch */ }
+
+/* ===== reading a member's rights ===== */
+function svcPermIsExplicit(member) {
+  var r = svcPermArr(member && member.roles), i;
+  for (i = 0; i < r.length; i++) { if (String(r[i]).indexOf('svc:') === 0) return true; }
+  return false;
+}
+/* 'manager' | 'explicit' | 'default' (implicit legacy grant or none) */
+function svcPermMode(member) {
+  if (member && member.isManager) return 'manager';
+  return svcPermIsExplicit(member) ? 'explicit' : 'default';
+}
+/* the permissions svcCan() grants this member right now (the same function the engine uses) */
+function svcPermEffective(member) {
+  var out = [], i;
+  for (i = 0; i < SVC_PERM_INFO.length; i++) {
+    var k = SVC_PERM_INFO[i].key, ok = false;
+    try { ok = typeof svcCan === 'function' ? !!svcCan(k, member) : false; } catch (e) { ok = false; }
+    if (ok) out.push(k);
+  }
+  return out;
+}
+function svcPermHasServicesTab(member) {
+  var r = svcPermArr(member && member.roles);
+  return r.indexOf('services-counter-tab') !== -1 || r.indexOf('client-registry-tab') !== -1;
+}
+function svcPermBundleFor(typeKey) {
+  var tpl = svcPermTpl(typeKey), roles = svcPermArr(tpl && tpl.staffRoles), by = {};
+  roles.forEach(function (r) { if (r && r.bundle) (by[r.bundle] = by[r.bundle] || []).push(r.label || r.key); });
+  return by;
+}
+/* the presets offered for the current business type: [{key, label, perms[]}] */
+function svcPermPresets(typeKey) {
+  var by = svcPermBundleFor(typeKey || svcPermTypeKey()), out = [];
+  ['worker', 'receptionist', 'cashier', 'supervisor', 'manager'].forEach(function (b) {
+    var lab = by[b] && by[b].length ? by[b].slice(0, 3).join(' / ') : SVC_PERM_BUNDLE_LABELS[b];
+    out.push({ key: b, label: lab, perms: SVC_PERM_PRESETS[b].slice() });
+  });
+  return out;
+}
+
+/* ===== writing =====
+   Persists like the app's own updateStaffRole(): staff record -> pos_staff -> push -> repaint. */
+function svcPermPersist(member) {
+  member.salesTabMigrated = true;
+  member.updatedAt = Date.now();
+  try {
+    if (typeof safeSetItem === 'function') safeSetItem('pos_staff', JSON.stringify(svcPermStaffList()));
+    else localStorage.setItem('pos_staff', JSON.stringify(svcPermStaffList()));
+  } catch (e) { /* storage full: the in-memory change still applies this session */ }
+  try {
+    if (svcPermCurrentId() === String(member.id)) {
+      if (typeof renderLockTabsList === 'function') renderLockTabsList();
+      if (typeof applyServerVisibility === 'function') applyServerVisibility();
+    }
+  } catch (e2) { /* repaint is best effort */ }
+  try { if (typeof pushNowOrWarn === 'function') pushNowOrWarn('Staff roles'); else if (typeof queuePush === 'function') queuePush(); } catch (e3) { /* sync retries later */ }
+  try { if (typeof renderStaffPanel === 'function') renderStaffPanel(); } catch (e4) { /* panel not on screen */ }
+}
+function svcPermLogRead() {
+  try { if (typeof svcConfigGet === 'function') { var c = svcConfigGet('cfg-permlog'); if (c && Array.isArray(c.log)) return c.log; } } catch (e) { /* none */ }
+  return [];
+}
+/* "who changed whose rights": cfg-permlog.value.log (newest last, ring of 100). svcAuditEvents shows it as "Permissions changed". */
+function svcPermLog(member, detail) {
+  if (typeof svcConfigSet !== 'function') return { ok: false, code: 'store' };
+  var actor = 'Owner';
+  try { if (typeof svcActor === 'function') { var a = svcActor(); if (a && a.name) actor = a.name; } } catch (e) { /* owner */ }
+  var log = svcPermLogRead().slice(-(SVC_PERM_LOG_CAP - 1));
+  log.push({ at: svcPermNow(), by: actor, staffId: String(member.id), name: String(member.name || ''), detail: String(detail || '').slice(0, 300) });
+  return svcConfigSet('cfg-permlog', { log: log }, { what: 'permissions of ' + (member.name || member.id) });
+}
+function svcPermLabel(p) { var i; for (i = 0; i < SVC_PERM_INFO.length; i++) { if (SVC_PERM_INFO[i].key === p) return SVC_PERM_INFO[i].label; } return p; }
+function svcPermDiffText(before, after) {
+  var add = after.filter(function (p) { return before.indexOf(p) === -1; }).map(svcPermLabel), rem = before.filter(function (p) { return after.indexOf(p) === -1; }).map(svcPermLabel), parts = [];
+  if (add.length) parts.push('granted: ' + add.join(', '));
+  if (rem.length) parts.push('removed: ' + rem.join(', '));
+  return parts.join('; ') || 'no change';
+}
+/* svcPermSet(staffId, perms[]) -> {ok, roles, effective} : EXPLICIT mode with exactly these permissions (unknown keys are ignored) */
+function svcPermSet(staffId, perms, opts) {
+  opts = opts || {};
+  if (!svcPermCanEdit()) return { ok: false, code: 'perm', error: 'Only the owner can change Services permissions.' };
+  var m = svcPermFind(staffId); if (!m) return { ok: false, code: 'notfound' };
+  var want = [], i;
+  svcPermArr(perms).forEach(function (p) { if (svcPermIsKey(p) && want.indexOf(p) === -1) want.push(p); });
+  var before = svcPermMode(m) === 'manager' ? SVC_PERM_PRESETS.full.slice() : svcPermEffective(m);
+  var keep = svcPermArr(m.roles).filter(function (r) { return String(r).indexOf('svc:') !== 0; });
+  m.roles = keep.concat([SVC_PERM_MARK]).concat(want);
+  svcPermPersist(m);
+  var detail = (opts.label ? opts.label + ' - ' : '') + svcPermDiffText(before, want);
+  svcPermLog(m, detail);
+  svcPermToast(m.name + ': ' + (opts.label ? opts.label + ' permissions applied.' : 'permissions updated.'));
+  i = 0;
+  return { ok: true, roles: m.roles.slice(), effective: svcPermEffective(m) };
+}
+function svcPermToggle(staffId, perm, checked) {
+  var m = svcPermFind(staffId); if (!m) return { ok: false, code: 'notfound' };
+  if (!svcPermIsKey(perm)) return { ok: false, code: 'perm_key' };
+  var base = svcPermMode(m) === 'explicit' ? svcPermArr(m.roles).filter(svcPermIsKey) : svcPermEffective(m);   /* leaving the implicit grant keeps what the member could do */
+  var next = base.filter(function (p) { return p !== perm; });
+  if (checked) next.push(perm);
+  return svcPermSet(staffId, next);
+}
+function svcPermApplyPreset(staffId, presetKey) {
+  var b = SVC_PERM_PRESETS[presetKey]; if (!b) return { ok: false, code: 'preset' };
+  var p = svcPermPresets().filter(function (x) { return x.key === presetKey; })[0];
+  return svcPermSet(staffId, b, { label: p ? p.label : SVC_PERM_BUNDLE_LABELS[presetKey] });
+}
+/* back to the implicit grant that comes with the Services tabs */
+function svcPermReset(staffId) {
+  if (!svcPermCanEdit()) return { ok: false, code: 'perm', error: 'Only the owner can change Services permissions.' };
+  var m = svcPermFind(staffId); if (!m) return { ok: false, code: 'notfound' };
+  var before = svcPermEffective(m);
+  m.roles = svcPermArr(m.roles).filter(function (r) { return String(r).indexOf('svc:') !== 0; });
+  svcPermPersist(m);
+  svcPermLog(m, 'back to default access (' + svcPermDiffText(before, svcPermEffective(m)) + ')');
+  svcPermToast(m.name + ': default Services access restored.');
+  return { ok: true, roles: m.roles.slice(), effective: svcPermEffective(m) };
+}
+
+/* ===== specialties (assignable skills): staff[].svcSpecialties = ['braider', ...] ===== */
+function svcPermRolesCfg() {
+  try { if (typeof svcConfigGet === 'function') { var c = svcConfigGet('cfg-roles'); if (c && typeof c === 'object') return c; } } catch (e) { /* none */ }
+  return {};
+}
+/* [{key, label, custom}] for the current type, the other types the shop offers, and the owner's own additions */
+function svcPermSpecialtyList() {
+  var out = [], seen = {}, types = [svcPermTypeKey()];
+  try { if (typeof svcBusinessConfig === 'function') { var bc = svcBusinessConfig(); svcPermArr(bc && bc.enabledTypes).forEach(function (t) { if (types.indexOf(t) === -1) types.push(t); }); } } catch (e) { /* current type only */ }
+  types.forEach(function (t) {
+    svcPermArr((svcPermTpl(t) || {}).staffRoles).forEach(function (r) {
+      if (r && r.key && r.bundle === 'worker' && !seen[r.key]) { seen[r.key] = 1; out.push({ key: r.key, label: r.label || r.key, custom: false }); }
+    });
+  });
+  svcPermArr(svcPermRolesCfg().specialties).forEach(function (s) {
+    if (s && s.key && !s.hidden && !seen[s.key]) { seen[s.key] = 1; out.push({ key: String(s.key), label: String(s.label || s.key), custom: true }); }
+  });
+  return out;
+}
+function svcPermSetSpecialty(staffId, key, checked) {
+  if (!svcPermCanEdit()) return { ok: false, code: 'perm', error: 'Only the owner can change specialties.' };
+  var m = svcPermFind(staffId); if (!m) return { ok: false, code: 'notfound' };
+  key = String(key == null ? '' : key).replace(/[^a-z0-9_]/gi, '').slice(0, 40); if (!key) return { ok: false, code: 'key' };
+  var cur = svcPermArr(m.svcSpecialties).filter(function (x) { return x !== key; });
+  if (checked) cur.push(key);
+  m.svcSpecialties = cur;
+  svcPermPersist(m);
+  svcPermLog(m, (checked ? 'specialty added: ' : 'specialty removed: ') + key);
+  return { ok: true, specialties: cur.slice() };
+}
+/* staff for an assignment picker: people with the specialty first, then everybody else, removed staff never */
+function svcStaffBySpecialty(roleKey) {
+  var all = svcPermStaffList().filter(function (s) { return s && !s.removed && s.id != null && s.name; });
+  var a = [], b = [];
+  all.forEach(function (s) {
+    var has = !!roleKey && svcPermArr(s.svcSpecialties).indexOf(roleKey) !== -1;
+    (has ? a : b).push({ id: s.id, name: String(s.name), specialty: has });
+  });
+  return a.concat(b);
+}
+function svcPermAddSpecialty(label) {
+  if (!(typeof svcCan === 'function' ? svcCan('svc:manageConfig') : true)) return { ok: false, code: 'perm', error: 'Only the owner can change specialties.' };
+  var t = String(label == null ? '' : label).trim().slice(0, 40);
+  if (!t) return { ok: false, code: 'label', error: 'Type a name for the specialty.' };
+  var key = t.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40);
+  if (!key) return { ok: false, code: 'label', error: 'Use letters or numbers in the name.' };
+  if (svcPermSpecialtyList().some(function (s) { return s.key === key; })) return { ok: false, code: 'dup', error: 'That specialty already exists.' };
+  var cfg = Object.assign({}, svcPermRolesCfg()), list = svcPermArr(cfg.specialties).slice();
+  list.push({ key: key, label: t, types: [] });
+  cfg.specialties = list;
+  var r = typeof svcConfigSet === 'function' ? svcConfigSet('cfg-roles', cfg, { what: 'added specialty ' + t }) : { ok: false, code: 'store' };
+  return r && r.ok ? { ok: true, key: key, label: t } : r;
+}
+function svcPermRemoveSpecialty(key) {
+  if (!(typeof svcCan === 'function' ? svcCan('svc:manageConfig') : true)) return { ok: false, code: 'perm', error: 'Only the owner can change specialties.' };
+  var cfg = Object.assign({}, svcPermRolesCfg()), list = svcPermArr(cfg.specialties), hit = false;
+  var next = list.map(function (s) { if (s && s.key === key) { hit = true; return Object.assign({}, s, { hidden: true }); } return s; });
+  if (!hit) return { ok: false, code: 'notfound' };
+  cfg.specialties = next;
+  return typeof svcConfigSet === 'function' ? svcConfigSet('cfg-roles', cfg, { what: 'removed specialty ' + key }) : { ok: false, code: 'store' };
+}
+
+/* ===== the box inside each staff card ===== */
+function svcPermBoxHtml(member, edit) {
+  var mode = svcPermMode(member), eff = mode === 'manager' ? SVC_PERM_PRESETS.full.slice() : svcPermEffective(member), id = svcPermEsc(member.id);
+  var dis = edit && mode !== 'manager' ? '' : ' disabled', h = '';
+  if (mode === 'manager') h += '<div class="svp-note">Managers can do everything in Services. Un-tick Manager above to set individual permissions.</div>';
+  else if (mode === 'explicit') h += '<div class="svp-note">Custom permissions: only the ticked boxes are allowed.</div>';
+  else h += '<div class="svp-note">Default access: anyone with the Services tabs below can do everything except approve quotes, manage services and change configuration. Changing any box switches this person to custom permissions.</div>';
+  var classic = false; try { classic = typeof svcClassicMode === 'function' && svcClassicMode(); } catch (e) { classic = false; }
+  if (classic) h += '<div class="svp-note">These rights apply as soon as the new Services screens are switched on (Settings &gt; Services &gt; Business Type).</div>';
+  if (mode !== 'manager' && eff.length && !svcPermHasServicesTab(member)) h += '<div class="svp-note warn">This person cannot open the Services screens yet: tick 🔧 Services Counter in Allowed tabs above.</div>';
+  if (!edit) h += '<div class="svp-note warn">Only the owner can change these.</div>';
+  h += '<div class="svp-h">Quick setup</div><div class="svp-presets">' + svcPermPresets().map(function (p) {
+    return '<button type="button" class="svp-btn" data-svp-preset="' + svcPermEsc(p.key) + '" data-svp-staff="' + id + '"' + dis + '>' + svcPermEsc(p.label) + '</button>';
+  }).join('') + (mode === 'explicit' ? '<button type="button" class="svp-btn" data-svp-reset="1" data-svp-staff="' + id + '"' + dis + '>Back to default</button>' : '') + '</div>';
+  SVC_PERM_GROUPS.forEach(function (g) {
+    h += '<div class="svp-h">' + svcPermEsc(g.label) + '</div><div class="svp-grid">' + SVC_PERM_INFO.filter(function (p) { return p.group === g.key; }).map(function (p) {
+      return '<label class="svp-perm"><input type="checkbox" data-svp-perm="' + svcPermEsc(p.key) + '" data-svp-staff="' + id + '"' + (eff.indexOf(p.key) !== -1 ? ' checked' : '') + dis + '><span><b>' + svcPermEsc(p.label) + '</b><small>' + svcPermEsc(p.hint) + '</small></span></label>';
+    }).join('') + '</div>';
+  });
+  var specs = svcPermSpecialtyList(), mine = svcPermArr(member.svcSpecialties);
+  mine.forEach(function (k) { if (!specs.some(function (s) { return s.key === k; })) specs.push({ key: k, label: k.replace(/_/g, ' '), custom: true }); });
+  if (specs.length) {
+    h += '<div class="svp-h">Specialties (what this person can be assigned to)</div><div class="svp-grid">' + specs.map(function (s) {
+      return '<label class="svp-perm"><input type="checkbox" data-svp-spec="' + svcPermEsc(s.key) + '" data-svp-staff="' + id + '"' + (mine.indexOf(s.key) !== -1 ? ' checked' : '') + (edit ? '' : ' disabled') + '><span><b>' + svcPermEsc(s.label) + '</b></span></label>';
+    }).join('') + '</div>';
+  }
+  var admin = svcPermArr(member.adminPermissions).indexOf(SVC_PERM_ADMIN_SECTION) !== -1;
+  h += '<div class="svp-h">Secondary Admin</div><label class="svp-perm"><input type="checkbox" data-svp-admin="1" data-svp-staff="' + id + '"' + (admin ? ' checked' : '') + (edit ? '' : ' disabled') + '><span><b>Can change Services settings</b><small>Lets this person open Settings &gt; Services (business type, catalog, statuses, custom fields). Same as "Manage service configuration".</small></span></label>';
+  return h;
+}
+/* svcStaffPermHtml(member): called by renderStaffPanel inside every staff card. Returns a string; never throws. */
+function svcStaffPermHtml(member) {
+  try {
+    if (!member || member.id == null) return '';
+    svcPermBind();
+    var edit = svcPermCanEdit(), mode = svcPermMode(member), n = mode === 'manager' ? SVC_PERM_INFO.length : svcPermEffective(member).length;
+    var count = mode === 'manager' ? 'Manager: all' : (mode === 'explicit' ? n + ' of ' + SVC_PERM_INFO.length + ' (custom)' : 'Default access');
+    return '<details class="svp-box" data-svp-box="' + svcPermEsc(member.id) + '"' + (SVC_PERM_OPEN[String(member.id)] ? ' open' : '') + '><summary>🔧 Services permissions<span class="svp-count">' + svcPermEsc(count) + '</span></summary><div class="svp-body">' + svcPermBoxHtml(member, edit) + '</div></details>';
+  } catch (e) { return ''; }
+}
+
+/* ===== events (delegated on the document: the staff panel repaints its HTML after every change) ===== */
+function svcPermOnChange(ev) {
+  var t = ev && ev.target; if (!t || !t.getAttribute || t.disabled) return;
+  var sid = t.getAttribute('data-svp-staff'); if (!sid) return;
+  var r = null, p = t.getAttribute('data-svp-perm'), sp = t.getAttribute('data-svp-spec');
+  SVC_PERM_OPEN[sid] = true;
+  if (p) r = svcPermToggle(sid, p, !!t.checked);
+  else if (sp) r = svcPermSetSpecialty(sid, sp, !!t.checked);
+  else if (t.getAttribute('data-svp-admin')) {
+    var m = svcPermFind(sid);
+    if (!m) return;
+    if (!svcPermCanEdit()) { svcPermToast('Only the owner can change this.', true); return; }
+    if (typeof updateStaffAdminPermission === 'function') updateStaffAdminPermission(sid, SVC_PERM_ADMIN_SECTION, !!t.checked);
+    else { var cur = svcPermArr(m.adminPermissions).filter(function (x) { return x !== SVC_PERM_ADMIN_SECTION; }); if (t.checked) cur.push(SVC_PERM_ADMIN_SECTION); m.adminPermissions = cur; svcPermPersist(m); }
+    svcPermLog(m, t.checked ? 'can now change Services settings' : 'can no longer change Services settings');
+    return;
+  } else return;
+  if (r && r.ok === false) { svcPermToast(r.error || 'Could not save.', true); try { if (typeof renderStaffPanel === 'function') renderStaffPanel(); } catch (e) { /* ignore */ } }
+}
+function svcPermOnClick(ev) {
+  var b = ev && ev.target && ev.target.closest ? ev.target.closest('button') : null;
+  if (!b || b.disabled || !b.getAttribute) return;
+  var sid = b.getAttribute('data-svp-staff'); if (!sid) return;
+  var pr = b.getAttribute('data-svp-preset'), r = null;
+  SVC_PERM_OPEN[sid] = true;
+  if (pr) r = svcPermApplyPreset(sid, pr);
+  else if (b.getAttribute('data-svp-reset')) r = svcPermReset(sid);
+  else return;
+  if (r && r.ok === false) { svcPermToast(r.error || 'Could not save.', true); }
+}
+function svcPermOnToggle(ev) {
+  var d = ev && ev.target; if (!d || !d.getAttribute || !d.getAttribute('data-svp-box')) return;
+  SVC_PERM_OPEN[d.getAttribute('data-svp-box')] = !!d.open;
+}
+function svcPermBind() {
+  if (SVC_PERM_BOUND || typeof document === 'undefined' || !document.addEventListener) return false;
+  SVC_PERM_BOUND = true;
+  document.addEventListener('change', svcPermOnChange);
+  document.addEventListener('click', svcPermOnClick);
+  document.addEventListener('toggle', svcPermOnToggle, true);
+  return true;
+}
+
+/* ===== Settings > Services > Staff Roles ===== */
+function svcPermRolesPage(el) {
+  var edit = typeof svcCan === 'function' ? !!svcCan('svc:manageConfig') : true, tk = svcPermTypeKey();
+  function paint(msg) {
+    var specs = svcPermSpecialtyList(), people = svcPermStaffList().filter(function (s) { return s && !s.removed; });
+    var h = '<div class="svu-box"><h4>Who can do what</h4><p class="svu-sub" style="margin:0 0 8px">Set each person\'s permissions in Settings &gt; Staff Accounts (open a person and tap Services permissions). The quick setups below show what each one allows.</p>' +
+      '<div style="overflow-x:auto"><table class="svp-tbl"><thead><tr><th>Permission</th>' + svcPermPresets(tk).map(function (p) { return '<th>' + svcPermEsc(p.label) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      SVC_PERM_INFO.map(function (i) { return '<tr><td>' + svcPermEsc(i.label) + '</td>' + svcPermPresets(tk).map(function (p) { return '<td>' + (p.perms.indexOf(i.key) !== -1 ? '✓' : '') + '</td>'; }).join('') + '</tr>'; }).join('') +
+      '</tbody></table></div></div>';
+    h += '<div class="svu-box"><h4>Staff</h4>' + (people.length ? '<table class="svp-tbl"><tbody>' + people.map(function (s) {
+      var m = svcPermMode(s), eff = m === 'manager' ? SVC_PERM_INFO.length : svcPermEffective(s).length;
+      return '<tr><td><b>' + svcPermEsc(s.name) + '</b></td><td>' + (m === 'manager' ? 'Manager (everything)' : (m === 'explicit' ? 'Custom: ' + eff + ' of ' + SVC_PERM_INFO.length : 'Default access')) + '</td><td>' + svcPermEsc(svcPermArr(s.svcSpecialties).join(', ')) + '</td></tr>';
+    }).join('') + '</tbody></table>' : '<div class="svu-sub">No staff added yet.</div>') + '</div>';
+    h += '<div class="svu-box"><h4>Specialties</h4><p class="svu-sub" style="margin:0 0 8px">Tags like Braider or Mechanic. Pickers list people with the matching specialty first.</p>' +
+      (specs.length ? specs.map(function (s) {
+        return '<div style="display:flex;align-items:center;min-height:44px;border-bottom:1px solid var(--border-color)"><span style="flex:1">' + svcPermEsc(s.label) + (s.custom ? '' : ' <span class="svu-sub">(built in)</span>') + '</span>' +
+          (s.custom && edit ? '<button type="button" class="svp-btn" data-svp-rmspec="' + svcPermEsc(s.key) + '" aria-label="Remove ' + svcPermEsc(s.label) + '">Remove</button>' : '') + '</div>';
+      }).join('') : '<div class="svu-sub">No specialties yet.</div>') +
+      (edit ? '<label for="svp-newspec" class="svu-sub" style="display:block;margin-top:10px">Add your own</label><div style="display:flex;gap:8px"><input id="svp-newspec" class="svp-in" maxlength="40" placeholder="e.g. Colour specialist" autocomplete="off"><button type="button" class="svp-btn" data-svp-addspec="1">Add</button></div>' : '<div class="svp-note warn">Only the owner can change this.</div>') +
+      '<div role="status" class="svu-sub" style="margin-top:6px">' + svcPermEsc(msg || '') + '</div></div>';
+    el.innerHTML = h;
+  }
+  if (!el.__svpBound) {
+    el.__svpBound = true;
+    el.addEventListener('click', function (ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest('button') : null; if (!b || b.disabled) return;
+      if (b.getAttribute('data-svp-addspec')) {
+        var inp = el.querySelector('#svp-newspec'), r = svcPermAddSpecialty(inp ? inp.value : '');
+        paint(r && r.ok ? 'Added ' + r.label + '.' : ((r && r.error) || 'Could not add.'));
+      } else if (b.getAttribute('data-svp-rmspec')) {
+        var r2 = svcPermRemoveSpecialty(b.getAttribute('data-svp-rmspec'));
+        paint(r2 && r2.ok ? 'Removed.' : ((r2 && r2.error) || 'Could not remove.'));
+      }
+    });
+  }
+  paint('');
+}
+
+/* ===== registration ===== */
+try { if (typeof svcSettingsRegister === 'function') svcSettingsRegister('roles', { label: 'Staff Roles', order: 30, render: svcPermRolesPage }); } catch (svcPermRegErr) { /* registry absent: the functions above still work */ }
+</script>

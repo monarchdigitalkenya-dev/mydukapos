@@ -35,17 +35,31 @@
     mount(listPane, h('div', { class: 'p-head' }, q), h('div', { class: 'p-head row', style: { minHeight: '0', padding: '6px 12px' } }, unreadT, mineT), convs);
     q.addEventListener('input', C.debounce(() => { conv.q = q.value.trim(); loadList(); }, 250));
     let listSeq = 0;
-    async function loadList() {
-      mount(convs, loading()); const my = ++listSeq;
+    // zip 162: the list is paged (50 conversations, then "Load more"), using the API's limit + before cursor
+    const INBOX_PAGE = 50; let nextCur = null, moreBusy = false;
+    const moreBox = h('div', { class: 'loadmore', style: { textAlign: 'center', padding: '8px' } });
+    const drawMore = () => mount(moreBox, nextCur ? btn(moreBusy ? 'Loading...' : 'Load more', loadMoreConvs, '', { disabled: moreBusy }) : null);
+    const convRow = (c) => {
+      const name = pick(c, 'name', 'contactName', 'contact_name', 'leadName', 'lead_name') || pick(c, 'phone', 'waId', 'wa_id') || 'Unknown'; const un = Number(pick(c, 'unread', 'unreadCount', 'unread_count') || 0); const st = pick(c, 'status', 'leadStatus', 'lead_status'); const staff = pick(c, 'staffName', 'staff_name', 'ownerName', 'owner_name');
+      return h('button', { class: 'conv' + (un ? ' unread' : ''), type: 'button', role: 'option', 'aria-selected': String(c.id) === String(activeId) ? 'true' : 'false', onclick: () => C.go('#/inbox/' + c.id) }, C.avatar(name),
+        h('div', { class: 'grow' }, h('div', { class: 'row between' }, h('span', { class: 'name trunc' }, name), h('span', { class: 'tiny ' + (un ? '' : 'faint'), style: un ? { color: 'var(--green-mid)', fontWeight: 700 } : null }, rel(pick(c, 'lastAt', 'last_at', 'lastMessageAt', 'last_message_at', 'updatedAt')))),
+          h('div', { class: 'row between' }, h('span', { class: 'last trunc' }, lastText(c) || h('i', null, 'No messages yet')), un ? h('span', { class: 'badge', 'aria-label': un + ' unread' }, String(un)) : null),
+          h('div', { class: 'row wrap', style: { marginTop: '2px' } }, st ? C.cfgPill('statuses', st) : null, staff ? h('span', { class: 'tiny faint' }, staff) : null)));
+    };
+    async function loadMoreConvs() {
+      if (moreBusy || !nextCur) return; moreBusy = true; drawMore(); const my = listSeq;
       try {
-        const d = await api('/inbox/conversations', { query: { q: conv.q, unread: conv.unread, mine: conv.mine } }); if (!ctx.alive() || my !== listSeq) return; if (d && d.apiConfigured != null) { status = { apiConfigured: !!d.apiConfigured }; statusKnown = true; } conv.list = listOf(d, 'conversations');
-        mount(convs, conv.list.length ? conv.list.map((c) => {
-          const name = pick(c, 'name', 'contactName', 'contact_name', 'leadName', 'lead_name') || pick(c, 'phone', 'waId', 'wa_id') || 'Unknown'; const un = Number(pick(c, 'unread', 'unreadCount', 'unread_count') || 0); const st = pick(c, 'status', 'leadStatus', 'lead_status'); const staff = pick(c, 'staffName', 'staff_name', 'ownerName', 'owner_name');
-          return h('button', { class: 'conv' + (un ? ' unread' : ''), type: 'button', role: 'option', 'aria-selected': String(c.id) === String(activeId) ? 'true' : 'false', onclick: () => C.go('#/inbox/' + c.id) }, C.avatar(name),
-            h('div', { class: 'grow' }, h('div', { class: 'row between' }, h('span', { class: 'name trunc' }, name), h('span', { class: 'tiny ' + (un ? '' : 'faint'), style: un ? { color: 'var(--green-mid)', fontWeight: 700 } : null }, rel(pick(c, 'lastAt', 'last_at', 'lastMessageAt', 'last_message_at', 'updatedAt')))),
-              h('div', { class: 'row between' }, h('span', { class: 'last trunc' }, lastText(c) || h('i', null, 'No messages yet')), un ? h('span', { class: 'badge', 'aria-label': un + ' unread' }, String(un)) : null),
-              h('div', { class: 'row wrap', style: { marginTop: '2px' } }, st ? C.cfgPill('statuses', st) : null, staff ? h('span', { class: 'tiny faint' }, staff) : null)));
-        }) : empty(conv.q || conv.unread || conv.mine ? 'No conversations match.' : 'No conversations yet. WhatsApp chats appear here when customers message you.', 'chat'));
+        const d = await api('/inbox/conversations', { query: { q: conv.q, unread: conv.unread, mine: conv.mine, limit: INBOX_PAGE, before: nextCur } }); if (!ctx.alive() || my !== listSeq) return;
+        const more = listOf(d, 'conversations'); nextCur = d.nextCursor || null; conv.list = conv.list.concat(more);
+        more.forEach((c) => convs.insertBefore(convRow(c), moreBox));
+      } catch (e) { fail(e); } finally { moreBusy = false; if (ctx.alive()) drawMore(); }
+    }
+    async function loadList() {
+      mount(convs, loading()); const my = ++listSeq; moreBusy = false;
+      try {
+        const d = await api('/inbox/conversations', { query: { q: conv.q, unread: conv.unread, mine: conv.mine, limit: INBOX_PAGE } }); if (!ctx.alive() || my !== listSeq) return; if (d && d.apiConfigured != null) { status = { apiConfigured: !!d.apiConfigured }; statusKnown = true; } conv.list = listOf(d, 'conversations'); nextCur = d.nextCursor || null;
+        drawMore();
+        mount(convs, conv.list.length ? [conv.list.map(convRow), moreBox] : empty(conv.q || conv.unread || conv.mine ? 'No conversations match.' : 'No conversations yet. WhatsApp chats appear here when customers message you.', 'chat'));
       } catch (e) { if (ctx.alive()) mount(convs, errbox(e, loadList)); }
     }
 

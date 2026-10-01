@@ -314,6 +314,38 @@
   /* ---------- router + shell ---------- */
   function route(name, fn, meta) { CRM.routes[name] = fn; if (meta) CRM.nav.push(Object.assign({ name }, meta)); }
   CRM.route = route;
+
+  /* ---------- zip 162: the admin screens that are fetched on first use ----------
+     crm-admin-more.js (reports, staff, settings, audit log) is not loaded with the page. C.lazyAdmin(name) gives the router a screen that fetches it once, then runs the real
+     screen. With the CRM service worker (crm/sw.js) every shell file is served from ONE consistent set and the worker stamps each answer with X-Crm-Set; if the set changed since
+     this page started (a new release was switched in) the page reloads once instead of mixing an old crm-core.js with a new crm-admin-more.js. */
+  const swControlled = () => { try { return !!(navigator.serviceWorker && navigator.serviceWorker.controller); } catch (e) { return false; } };
+  const setOfResponse = (r) => { try { return r && r.headers && r.headers.get('X-Crm-Set') || null; } catch (e) { return null; } };
+  CRM.shellSet = swControlled() ? fetch('/crm/icon.svg').then(setOfResponse).catch(() => null) : Promise.resolve(null);
+  let adminLoading = null;
+  CRM.loadAdminMore = function () {
+    if (CRM.adminMore) return Promise.resolve(CRM.adminMore);
+    if (adminLoading) return adminLoading;
+    adminLoading = (async () => {
+      if (swControlled()) {
+        const born = await CRM.shellSet; let now = null;
+        try { now = setOfResponse(await fetch('/crm/icon.svg')); } catch (e) { /* offline: the script request below tells */ }
+        if (born && now && born !== now) {
+          let done = null; try { done = sessionStorage.getItem('crm_reloaded_for'); } catch (e) { /* no storage */ }
+          if (done !== now) { try { sessionStorage.setItem('crm_reloaded_for', now); } catch (e) { /* no storage */ } location.reload(); return new Promise(() => {}); }
+        }
+      }
+      await new Promise((resolve, reject) => {
+        const el = document.createElement('script'); el.src = 'crm-admin-more.js'; el.async = true;
+        el.onload = () => resolve(); el.onerror = () => { el.remove(); reject(new Error('This screen could not be loaded. Check your connection and try again.')); };
+        document.head.appendChild(el);
+      });
+      if (!CRM.adminMore) throw new Error('This screen could not be loaded. Reload the page and try again.');
+      return CRM.adminMore;
+    })().finally(() => { adminLoading = null; });
+    return adminLoading;
+  };
+  CRM.lazyAdmin = (name) => async (ctx) => { const m = await CRM.loadAdminMore(); if (!ctx.alive()) return; return m[name](ctx); };
   // decodeURIComponent throws on a stray "%" (a pasted / mangled link): the raw text is kept instead of crashing the router
   const dec = (v) => { try { return decodeURIComponent(v); } catch (e) { return v; } };
   function parseHash() {

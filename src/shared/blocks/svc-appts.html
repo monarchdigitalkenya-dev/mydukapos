@@ -1,0 +1,1169 @@
+<!-- SVC APPOINTMENTS ---------------------------------------------------------------------------------------
+     Services engine block "svc-appts". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B2-A. Nobody else edits this file.
+     STATE: IMPLEMENTED (B2-A): one style element and one script element below this comment. Never write a literal script open tag inside this comment.
+     KIND: pure part + UI. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_. Private helpers are named svcAx*.
+     CONTRACT: svcApptClashes, svcFreeSlots, svcApptCreate / svcApptUpdate / svcApptCancel (+ svcApptSetStatus, svcApptConfirm, svcApptCheckIn, svcApptNoShow), svcApptToJob, svcQuickIntake, svcRenderAppts (day / week / list),
+       svcOpenAppt, svcOpenApptForm, svcOpenQuickIntake, svcApptReminderLink (wa.me LINKS only, never auto-sent). Registers the home view "appts" (svcHomeViewRegister), the drawer tab "appointment" (svcDrawerRegister) and
+       mounts the same screen in #bookings-tab while the new Services screens are on. Events emitted: appt:changed. Reads: svcAllApptsView (legacy bookings included), svcCommit('svcAppointments').
+     SPEC: SERVICES_ARCHITECTURE.md 6.8, 8.2 B2-A. Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<style id="svc-appts-css">
+/* svc-appts (sax-*): colours only from the app tokens (dark-mode safe); touch targets >= 44px; inputs 16px so phones do not zoom. */
+.sax { color: var(--dark); font-size: 15px; line-height: 1.4; }
+.sax * { box-sizing: border-box; }
+.sax-bar { display: flex; flex-wrap: wrap; align-items: center; margin: 0 0 8px; }
+.sax-bar > * { margin: 0 8px 8px 0; }
+.sax-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 14px; margin: 0; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); font-size: 15px; font-weight: 600; cursor: pointer; width: auto; text-align: center; text-decoration: none; }
+.sax-btn:active { transform: translateY(1px); }
+.sax-btn[disabled] { opacity: .55; cursor: not-allowed; }
+.sax-btn.is-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sax-btn.is-good { background: var(--success); border-color: var(--success); color: #fff; }
+.sax-btn.is-bad { background: var(--danger); border-color: var(--danger); color: #fff; }
+.sax-btn.is-sm { min-height: 40px; padding: 0 12px; font-size: 14px; }
+.sax-seg { display: inline-flex; }
+.sax-seg button { min-height: 44px; padding: 0 16px; border: 1px solid var(--border-color); background: var(--bg-surface-alt); color: var(--dark); font-size: 14px; font-weight: 600; cursor: pointer; width: auto; }
+.sax-seg button:first-child { border-radius: 10px 0 0 10px; }
+.sax-seg button:last-child { border-radius: 0 10px 10px 0; }
+.sax-seg button + button { border-left: 0; }
+.sax-seg button.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sax-in { width: 100%; min-height: 48px; padding: 10px 12px; font-size: 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); margin: 0; }
+.sax-in.is-inline { width: auto; min-width: 120px; }
+textarea.sax-in { min-height: 72px; }
+.sax-field { margin: 0 0 12px; }
+.sax-field > label, .sax-lbl { display: block; font-size: 13px; font-weight: 600; opacity: .8; margin: 0 0 4px; }
+.sax-row2 { display: flex; flex-wrap: wrap; margin: 0 -6px; }
+.sax-row2 > .sax-field { flex: 1 1 150px; margin: 0 6px 12px; }
+.sax-note { background: var(--tint-info-bg); border-radius: 10px; padding: 10px 12px; margin: 6px 0 10px; font-size: 14px; }
+.sax-note.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); }
+.sax-note.bad { background: var(--tint-danger-bg); color: var(--danger); }
+.sax-note.good { background: var(--tint-success-bg); color: var(--tint-success-text); }
+.sax-nav { display: flex; align-items: center; flex-wrap: wrap; margin: 0 0 8px; }
+.sax-nav > * { margin: 0 8px 8px 0; }
+.sax-title { font-size: 17px; font-weight: 700; margin: 0 8px 8px 0; }
+.sax-chips { display: flex; flex-wrap: wrap; margin: 0 0 6px; }
+.sax-chip { min-height: 44px; margin: 0 8px 8px 0; padding: 0 14px; border: 1px solid var(--border-color); border-radius: 22px; background: var(--bg-surface); color: var(--dark); font-size: 14px; cursor: pointer; width: auto; }
+.sax-chip.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sax-pill { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; color: #fff; background: #7f8c8d; white-space: nowrap; }
+.sax-list { margin: 6px 0; }
+.sax-dayh { margin: 14px 0 6px; font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; opacity: .75; }
+.sax-card { display: block; width: 100%; text-align: left; margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--border-color); border-left: 5px solid var(--sax-c, #7f8c8d); border-radius: 12px; background: var(--bg-surface); color: var(--dark); }
+.sax-card .t { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+.sax-card .t b { font-size: 16px; margin-right: 8px; }
+.sax-card .n { font-weight: 600; margin-top: 4px; }
+.sax-card .s { margin-top: 3px; font-size: 13px; opacity: .85; }
+.sax-card .a { display: flex; flex-wrap: wrap; margin-top: 8px; }
+.sax-card .a > * { margin: 0 8px 8px 0; }
+.sax-open { background: none; border: 0; color: var(--accent); font-size: 14px; font-weight: 600; min-height: 44px; padding: 0; cursor: pointer; width: auto; text-align: left; }
+.sax-tag { display: inline-block; margin: 2px 6px 2px 0; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--bg-surface-alt); border: 1px solid var(--border-color); }
+.sax-tag.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); border-color: transparent; }
+.sax-empty { text-align: center; padding: 26px 14px; border: 2px dashed var(--border-color); border-radius: 14px; margin: 10px 0; }
+.sax-grid { display: flex; border: 1px solid var(--border-color); border-radius: 12px; overflow: auto; background: var(--bg-surface); -webkit-overflow-scrolling: touch; max-height: 70vh; }
+.sax-gut { flex: 0 0 52px; position: sticky; left: 0; z-index: 2; background: var(--bg-surface); border-right: 1px solid var(--border-color); }
+.sax-gut div { height: 60px; font-size: 11px; opacity: .7; padding: 2px 4px; border-bottom: 1px solid var(--border-color); }
+.sax-colh { height: 34px; flex: 0 0 auto; font-size: 12px; font-weight: 700; padding: 8px 6px; border-bottom: 1px solid var(--border-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: sticky; top: 0; z-index: 3; background: var(--bg-surface-alt); }
+.sax-col { flex: 1 0 150px; min-width: 150px; border-right: 1px solid var(--border-color); position: relative; }
+.sax-col .sax-body { position: relative; background-image: linear-gradient(var(--border-color) 1px, transparent 1px); background-size: 100% 60px; }
+.sax-blk { position: absolute; overflow: hidden; text-align: left; padding: 3px 6px; border: 0; border-left: 4px solid var(--sax-c, #7f8c8d); border-radius: 6px; background: var(--bg-surface-alt); color: var(--dark); font-size: 12px; line-height: 1.25; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.25); width: auto; }
+.sax-blk b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sax-blk.is-clash { outline: 2px solid var(--danger); }
+.sax-now { position: absolute; left: 0; right: 0; height: 2px; background: var(--danger); z-index: 1; pointer-events: none; }
+.sax-week { display: block; }
+.sax-wd { border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-surface); margin: 0 0 8px; padding: 8px; }
+.sax-wd.is-today { border-color: var(--accent); }
+.sax-wd h4 { margin: 0 0 6px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+.sax-wi { display: block; width: 100%; text-align: left; min-height: 44px; margin: 0 0 4px; padding: 6px 8px; border: 0; border-left: 4px solid var(--sax-c, #7f8c8d); border-radius: 6px; background: var(--bg-surface-alt); color: var(--dark); font-size: 13px; cursor: pointer; }
+@media (min-width: 760px) { .sax-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; } .sax-wd { margin: 0; } }
+.sax-slots { display: flex; flex-wrap: wrap; margin: 4px 0 0; }
+.sax-slots button { min-height: 44px; min-width: 64px; margin: 0 6px 6px 0; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); font-size: 14px; cursor: pointer; width: auto; }
+.sax-slots button.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sax-token { font-size: 44px; font-weight: 800; text-align: center; margin: 8px 0; letter-spacing: .05em; }
+.sax-log { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13px; }
+.sax-log li { padding: 4px 0; border-bottom: 1px solid var(--border-color); }
+.sax-box { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px; margin: 0 0 12px; }
+@media (prefers-reduced-motion: reduce) { .sax-btn:active { transform: none; } }
+</style>
+<script>
+/* ===================================================================================================================
+   SVC APPOINTMENTS (B2-A): bookings + walk-ins. Pure part first (clashes, free slots, create / update / status / convert, quick intake),
+   then the screens (day / week / list, booking form, detail, quick intake). Every state change goes through svcCommit('svcAppointments').
+   Times are Kenya wall-clock (UTC+3, no DST); startAt / endAt are real instants in ms. Legacy bookings are read through
+   svcAllApptsView and NEVER written: they take part in clash checks and can be converted to a job.
+   =================================================================================================================== */
+var SVC_AX_STATUSES = ['booked', 'confirmed', 'checked_in', 'completed', 'cancelled', 'no_show'];
+var SVC_AX_OCCUPY = { booked: 1, confirmed: 1, checked_in: 1, completed: 1 };      /* statuses that hold the time slot (cancelled / no-show free it) */
+var SVC_AX_OPEN = { booked: 1, confirmed: 1, checked_in: 1 };
+var SVC_AX_NEXT = { booked: ['confirmed', 'checked_in', 'cancelled', 'no_show'], confirmed: ['booked', 'checked_in', 'cancelled', 'no_show'], checked_in: ['completed', 'cancelled'], completed: [], cancelled: [], no_show: [] };
+var SVC_AX_LABELS = { booked: 'Booked', confirmed: 'Confirmed', checked_in: 'Checked in', completed: 'Completed', cancelled: 'Cancelled', no_show: 'No show' };
+var SVC_AX_COLORS = { booked: '#95a5a6', confirmed: '#2980b9', checked_in: '#e67e22', completed: '#16a085', cancelled: '#c0392b', no_show: '#7f8c8d' };
+var SVC_AX_TZ = 3 * 3600000;
+var SVC_AX_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+var SVC_AX_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+var SVC_AX = { mounted: [], sub: false, busy: {}, regTimer: 0, tabObs: null };
+
+/* ===== tiny helpers ===== */
+function svcAxEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcAxArr(v) { return Array.isArray(v) ? v : []; }
+function svcAxStr(v) { return v == null ? '' : String(v); }
+function svcAxPad(n) { return n < 10 ? '0' + n : String(n); }
+function svcAxNow() { try { if (typeof svcNow === 'function') return svcNow(); } catch (e) { /* use the clock */ } return Date.now(); }
+function svcAxCan(perm) { try { return typeof svcCan === 'function' ? !!svcCan(perm) : true; } catch (e) { return true; } }
+function svcAxActor() { try { if (typeof svcActor === 'function') { var a = svcActor(); if (a && a.name) return a; } } catch (e) { /* owner */ } return { id: 'owner', name: 'Owner' }; }
+function svcAxType() { try { if (typeof svcBusinessType === 'function') { var t = svcBusinessType(); if (t) return String(t); } } catch (e) { /* default */ } return 'other'; }
+function svcAxTpl(type) { try { if (typeof svcGetTemplate === 'function') return svcGetTemplate(type || svcAxType()) || {}; } catch (e) { /* no template */ } return {}; }
+function svcAxTerm(key, type) { try { if (typeof svcTerm === 'function') return svcTerm(key, type || svcAxType()); } catch (e) { /* fall back */ } return key; }
+function svcAxStripPlus(s) { return String(s || '').replace(/^\s*\+\s*/, ''); }
+function svcAxToast(msg, isErr) { try { if (typeof showToast === 'function') showToast(String(msg), !!isErr); } catch (e) { /* cosmetic */ } }
+function svcAxMoney(n) { try { if (typeof svcFormatMoney === 'function') return svcFormatMoney(n); } catch (e) { /* fall back */ } return 'KSh ' + (Math.round(Number(n) || 0)).toLocaleString('en-US'); }
+function svcAxLs(key, val) { try { if (val === undefined) return localStorage.getItem(key); localStorage.setItem(key, val); } catch (e) { /* storage blocked */ } return null; }
+function svcAxNewId(prefix) {
+  try { if (typeof svcId === 'function') return svcId(prefix); } catch (e) { /* fall back */ }
+  return prefix + Date.now() + '-' + Math.random().toString(36).slice(2, 12);
+}
+function svcAxBizCfg() { try { if (typeof svcBusinessConfig === 'function') return svcBusinessConfig() || {}; } catch (e) { /* defaults */ } return {}; }
+function svcAxStaffList() {
+  try { return typeof staff !== 'undefined' && Array.isArray(staff) ? staff.filter(function (s) { return s && s.id != null && !s.removed && !s._deleted && !s.disabled; }) : []; } catch (e) { return []; }
+}
+function svcAxStaffName(id) { var l = svcAxStaffList(), i; for (i = 0; i < l.length; i++) { if (String(l[i].id) === String(id)) return svcAxStr(l[i].name); } return ''; }
+
+/* ===== dates (Kenya wall clock) ===== */
+function svcAxIsDate(s) { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(s))) return false; var d = new Date(s + 'T00:00:00Z'); return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s; }
+function svcAxIsTime(s) { return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(s)); }
+function svcApptMs(date, time) { if (!svcAxIsDate(date) || !svcAxIsTime(time)) return 0; var t = Date.parse(date + 'T' + time + ':00+03:00'); return isFinite(t) ? t : 0; }
+function svcAxDateOf(ms) { return new Date(Number(ms) + SVC_AX_TZ).toISOString().slice(0, 10); }
+function svcAxTimeOf(ms) { var d = new Date(Number(ms) + SVC_AX_TZ); return svcAxPad(d.getUTCHours()) + ':' + svcAxPad(d.getUTCMinutes()); }
+function svcAxToday() { return svcAxDateOf(svcAxNow()); }
+function svcAxAddDays(date, n) { var d = new Date(date + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function svcAxDow(date) { return new Date(date + 'T00:00:00Z').getUTCDay(); }
+function svcAxMonday(date) { return svcAxAddDays(date, -((svcAxDow(date) + 6) % 7)); }
+function svcAxMin(t) { var p = String(t).split(':'); return (+p[0]) * 60 + (+p[1]); }
+function svcAxHM(min) { min = ((Math.round(min) % 1440) + 1440) % 1440; return svcAxPad(Math.floor(min / 60)) + ':' + svcAxPad(min % 60); }
+function svcAxPretty(date) { if (!svcAxIsDate(date)) return svcAxStr(date); var p = date.split('-'); return SVC_AX_DAYS[svcAxDow(date)] + ' ' + (+p[2]) + ' ' + SVC_AX_MONTHS[(+p[1]) - 1]; }
+/* business hours for a date: cfg-business.hours = {open:'08:00', close:'19:00', closedDays:[0]} or per day {mon:{open,close,closed}, ...}; default 08:00-19:00 every day */
+function svcAxHours(date) {
+  var h = svcAxBizCfg().hours, open = '08:00', close = '19:00', closed = false, dow = svcAxDow(date);
+  if (h && typeof h === 'object') {
+    var d = h[dow] || h[SVC_AX_DAYS[dow].toLowerCase()], src = d && typeof d === 'object' ? d : h;
+    if (src.open && svcAxIsTime(src.open)) open = src.open;
+    if (src.close && svcAxIsTime(src.close)) close = src.close;
+    if (d && typeof d === 'object' && d.closed === true) closed = true;
+    if (Array.isArray(h.closedDays) && h.closedDays.indexOf(dow) !== -1) closed = true;
+  }
+  var o = svcAxMin(open), c = svcAxMin(close);
+  if (c <= o) c = 24 * 60;
+  return { open: o, close: c, closed: closed };
+}
+
+/* ===== reading appointments ===== */
+function svcAxPool(opts) {
+  if (opts && Array.isArray(opts.pool)) return opts.pool;
+  try { if (typeof svcAllApptsView === 'function') return svcAllApptsView({ includeLegacy: true }); } catch (e) { /* fall back to the engine list */ }
+  try { return typeof svcAppointments !== 'undefined' && Array.isArray(svcAppointments) ? svcAppointments.filter(function (a) { return a && !a._deleted; }) : []; } catch (e2) { return []; }
+}
+function svcAxFind(id) {
+  var p = svcAxPool(), i;
+  for (i = 0; i < p.length; i++) { if (p[i] && String(p[i].id) === String(id)) return p[i]; }
+  return null;
+}
+function svcAxSpan(a) {
+  a = a || {};
+  var s = Number(a.startAt) || svcApptMs(a.date, a.start), e = Number(a.endAt) || 0;
+  if (!e && s) { if (a.end && svcAxIsTime(a.end)) { e = svcApptMs(a.date, a.end); if (e && e <= s) e += 86400000; } else e = s + (Number(a.durationMin) || 30) * 60000; }
+  return { s: s, e: e };
+}
+function svcAxDur(a) { var sp = svcAxSpan(a); return sp.s && sp.e > sp.s ? Math.round((sp.e - sp.s) / 60000) : (Number(a && a.durationMin) || 30); }
+
+/* ===== svcApptClashes(appt, opts) -> [{withId, staffId, kind:'staff'|'resource', overlapMin, date, start, end, customerName, legacy, status}]
+   Same staff (or same resource) at overlapping times. Touching ends (10:00-11:00 then 11:00-12:00) is NOT a clash. Cancelled / no-show bookings free their slot.
+   Legacy bookings are always part of the pool. A template with doubleBookingCheck 'none' (laundry) skips the staff check. ===== */
+function svcApptClashes(appt, opts) {
+  opts = opts || {};
+  var a = appt || {}, sp = svcAxSpan(a), out = [];
+  if (!(sp.s > 0 && sp.e > sp.s)) return out;
+  var tpl = svcAxTpl(a.serviceType), mode = opts.mode || (tpl.appointments && tpl.appointments.doubleBookingCheck) || 'staff';
+  var mine = svcAxArr(a.staffIds).filter(function (x) { return x != null && x !== ''; }).map(String), res = a.resourceId ? String(a.resourceId) : '';
+  svcAxPool(opts).forEach(function (b) {
+    if (!b || b._deleted || String(b.id) === String(a.id) || !SVC_AX_OCCUPY[b.status]) return;
+    if (opts.ignoreId && String(b.id) === String(opts.ignoreId)) return;
+    var bs = svcAxSpan(b); if (!(bs.s > 0 && bs.e > bs.s)) return;
+    var ov = Math.min(sp.e, bs.e) - Math.max(sp.s, bs.s);
+    if (!(ov > 0)) return;
+    var info = { withId: b.id, overlapMin: Math.round(ov / 60000), date: b.date, start: b.start, end: b.end, customerName: (b.customer && b.customer.name) || '', legacy: !!b._legacy, status: b.status };
+    if (mode !== 'none') {
+      svcAxArr(b.staffIds).map(String).forEach(function (sid) { if (sid && mine.indexOf(sid) !== -1) out.push(Object.assign({ staffId: sid, kind: 'staff' }, info)); });
+    }
+    if (res && b.resourceId && String(b.resourceId) === res) out.push(Object.assign({ staffId: '', kind: 'resource' }, info));
+  });
+  return out;
+}
+
+/* ===== svcFreeSlots(date, durationMin, staffId, opts) -> [{start, end, startAt, endAt, staffIds}]
+   staffId given: free for that person. Empty / 'any': free when at least one bookable staff member is free (opts.staffIds overrides who is bookable); no staff at all: only the opening hours apply.
+   Past slots of today are skipped unless opts.includePast; opts.ignoreId lets a booking being moved ignore itself. ===== */
+function svcFreeSlots(date, durationMin, staffId, opts) {
+  opts = opts || {};
+  if (!svcAxIsDate(date)) return [];
+  var tpl = svcAxTpl(opts.type), ap = tpl.appointments || {};
+  var dur = Number(durationMin) > 0 ? Math.round(Number(durationMin)) : (Number(ap.defaultDurationMin) || 30);
+  var step = Number(opts.stepMin) > 0 ? Number(opts.stepMin) : (Number(ap.slotStepMin) || 15);
+  var hrs = svcAxHours(date); if (hrs.closed) return [];
+  var base = svcApptMs(date, '00:00'), pool = svcAxPool(opts), busy = {}, i;
+  var any = !staffId || staffId === 'any';
+  var cands = any ? (Array.isArray(opts.staffIds) ? opts.staffIds.map(String) : svcAxStaffList().map(function (s) { return String(s.id); })) : [String(staffId)];
+  pool.forEach(function (b) {
+    if (!b || b._deleted || !SVC_AX_OCCUPY[b.status] || (opts.ignoreId && String(b.id) === String(opts.ignoreId))) return;
+    var bs = svcAxSpan(b); if (!(bs.s > 0)) return;
+    svcAxArr(b.staffIds).map(String).forEach(function (sid) { (busy[sid] = busy[sid] || []).push(bs); });
+  });
+  var now = svcAxNow(), out = [], t;
+  for (t = hrs.open; t + dur <= hrs.close; t += step) {
+    var s = base + t * 60000, e = s + dur * 60000;
+    if (!opts.includePast && s < now) continue;
+    var free = cands.filter(function (sid) { return !(busy[sid] || []).some(function (x) { return s < x.e && x.s < e; }); });
+    if (cands.length && !free.length) continue;
+    out.push({ start: svcAxHM(t), end: svcAxHM(t + dur), startAt: s, endAt: e, staffIds: free });
+    i = 0;
+  }
+  return out;
+}
+
+/* ===== building / validating a record ===== */
+function svcAxCleanServices(list) {
+  var out = [];
+  svcAxArr(list).forEach(function (s) {
+    if (!s || typeof s !== 'object') return;
+    var name = svcAxStr(s.name).trim(); if (!name) return;
+    var price = Number(s.price), dur = Number(s.durationMin);
+    var o = { catalogId: s.catalogId || null, name: name.slice(0, 80), price: isFinite(price) && price >= 0 ? Math.round(price * 100) / 100 : 0 };
+    if (isFinite(dur) && dur > 0) o.durationMin = Math.round(dur);
+    if (s.qty != null && Number(s.qty) > 0 && Number(s.qty) !== 1) o.qty = Number(s.qty);
+    if (s.code != null) o.code = s.code;
+    out.push(o);
+  });
+  return out.slice(0, 20);
+}
+function svcAxCatalogLines(ids, type) {
+  var out = [], cat = [];
+  try { cat = typeof svcCatalog !== 'undefined' && Array.isArray(svcCatalog) ? svcCatalog : []; } catch (e) { cat = []; }
+  svcAxArr(ids).forEach(function (id) {
+    var c = null, i; for (i = 0; i < cat.length; i++) { if (cat[i] && cat[i].id === id && !cat[i]._deleted) { c = cat[i]; break; } }
+    if (!c) return;
+    var price = Number(c.price) || 0;
+    try { if (typeof svcPriceFor === 'function') { var p = svcPriceFor(c, null); if (typeof p === 'number' && isFinite(p)) price = p; else if (p && typeof p.price === 'number') price = p.price; } } catch (e2) { /* catalog price */ }
+    out.push({ catalogId: c.id, name: c.name, price: price, durationMin: Number(c.durationMin) || undefined, category: c.category || '' });
+  });
+  return out;
+}
+function svcAxAssetFrom(inp, base, tpl) {
+  var kind = inp.assetKind || (tpl && tpl.assetKind) || 'none', key = svcAxStr(inp.assetKey).trim();
+  if (inp.assetSnap && typeof inp.assetSnap === 'object') {
+    var sn = {}; Object.keys(inp.assetSnap).forEach(function (k) { if (typeof inp.assetSnap[k] === 'string' || typeof inp.assetSnap[k] === 'number') sn[k] = inp.assetSnap[k]; });
+    return { assetId: inp.assetId || null, assetSnap: Object.keys(sn).length ? sn : null };
+  }
+  if (inp.assetKey === undefined && inp.assetId === undefined) return { assetId: base.assetId || null, assetSnap: base.assetSnap || null };
+  if (!key || kind === 'none' || kind === 'garment') return { assetId: null, assetSnap: null };
+  var found = null;
+  try { if (typeof svcFindAssetByKey === 'function') found = svcFindAssetByKey(kind, key); } catch (e) { found = null; }
+  if (found) {
+    var at = found.attrs || {}, snap = { kind: found.kind, label: found.label || key };
+    ['plate', 'make', 'model', 'type', 'brand', 'imei', 'serial', 'color'].forEach(function (k) { if (at[k] != null && at[k] !== '') snap[k] = at[k]; });
+    return { assetId: found.id, assetSnap: snap };
+  }
+  var norm = key; try { if (kind === 'vehicle' && typeof svcNormPlate === 'function') norm = svcNormPlate(key); } catch (e2) { norm = key; }
+  var s2 = { kind: kind, label: norm.toUpperCase() };
+  if (kind === 'vehicle') s2.plate = norm.toUpperCase(); else if (kind === 'phone' && /^\d{15}$/.test(key.replace(/\D/g, ''))) s2.imei = key.replace(/\D/g, ''); else s2.serial = key.toUpperCase();
+  return { assetId: null, assetSnap: s2 };
+}
+/* -> {rec, errors:[{id,msg,level}], warnings:[{id,msg,level}]}; base = the stored record when editing */
+function svcAxBuild(inp, base, tpl, o) {
+  inp = inp || {}; base = base || {}; o = o || {};
+  var errors = [], warnings = [], ap = (tpl && tpl.appointments) || {};
+  function err(id, msg) { errors.push({ id: id, msg: msg, level: 'error' }); }
+  function warn(id, msg) { warnings.push({ id: id, msg: msg, level: 'warn' }); }
+  var cu = Object.assign({}, base.customer || {}, inp.customer && typeof inp.customer === 'object' ? inp.customer : {});
+  if (inp.customerName !== undefined) cu.name = inp.customerName;
+  if (inp.customerPhone !== undefined) cu.phone = inp.customerPhone;
+  if (inp.customerEmail !== undefined) cu.email = inp.customerEmail;
+  var name = svcAxStr(cu.name).trim().slice(0, 80), phone = svcAxStr(cu.phone).trim().slice(0, 30);
+  if (!name && !phone) err('name', 'Enter the customer name or phone number');
+  if (phone) {
+    try { if (typeof svcNormPhone === 'function') { var np = svcNormPhone(phone); if (!np.ok) warn('phone', np.reason || 'Check the phone number'); else if (np.level === 'warn' && np.reason) warn('phone', np.reason); } } catch (e) { /* phone check is advisory */ }
+  }
+  var snap = { id: null, name: name, phone: phone, phoneKey: '' };
+  try { if (typeof svcEnsureCustomer === 'function') snap = svcEnsureCustomer({ name: name, phone: phone, email: cu.email, allowCreate: false }) || snap; } catch (e2) { /* keep the typed values */ }
+  if (cu.email) snap.email = svcAxStr(cu.email).trim().slice(0, 80);
+  var date = inp.date !== undefined ? svcAxStr(inp.date).trim() : svcAxStr(base.date), start = inp.start !== undefined ? svcAxStr(inp.start).trim() : svcAxStr(base.start);
+  if (!svcAxIsDate(date)) err('date', 'Choose a valid date');
+  if (!svcAxIsTime(start)) err('start', 'Choose a valid start time (HH:MM)');
+  var services = inp.services !== undefined || inp.serviceIds !== undefined ? svcAxCleanServices(svcAxArr(inp.services).concat(svcAxCatalogLines(inp.serviceIds, tpl && tpl.key))) : svcAxArr(base.services);
+  var dur = Number(inp.durationMin), startAt = svcApptMs(date, start);
+  if (!(dur > 0) && inp.end !== undefined && svcAxIsTime(inp.end) && startAt) { dur = (svcAxMin(inp.end) - svcAxMin(start)); if (dur <= 0) dur += 1440; }
+  if (!(dur > 0) && (inp.services !== undefined || inp.serviceIds !== undefined)) { dur = services.reduce(function (n, s) { return n + (Number(s.durationMin) || 0) * (Number(s.qty) || 1); }, 0); }
+  if (!(dur > 0)) dur = Number(base.durationMin) || Number(ap.defaultDurationMin) || 30;
+  dur = Math.round(dur);
+  if (dur < 5 || dur > 720) err('durationMin', 'Duration must be between 5 minutes and 12 hours');
+  var staffIds = inp.staffIds !== undefined || inp.staffId !== undefined ? svcAxArr(inp.staffIds !== undefined ? inp.staffIds : [inp.staffId]).map(svcAxStr).filter(function (x, i, a) { return x && a.indexOf(x) === i; }) : svcAxArr(base.staffIds);
+  var resourceId = inp.resourceId !== undefined ? svcAxStr(inp.resourceId).trim().slice(0, 40) : svcAxStr(base.resourceId);
+  var dep = base.deposit || null;
+  if (inp.deposit !== undefined || inp.depositAmount !== undefined) {
+    var d = inp.deposit === null ? null : (inp.deposit && typeof inp.deposit === 'object' ? inp.deposit : { amount: inp.depositAmount, method: inp.depositMethod, ref: inp.depositRef });
+    if (!d || d.amount === '' || d.amount == null || Number(d.amount) === 0) dep = null;
+    else if (!(Number(d.amount) > 0) || !isFinite(Number(d.amount))) { err('deposit', 'Deposit must be an amount above zero'); }
+    else {
+      var act = svcAxActor(), keep = base.deposit && Number(base.deposit.amount) === Number(d.amount) ? base.deposit : null;
+      dep = Object.assign({}, keep || {}, { amount: Math.round(Number(d.amount) * 100) / 100, method: svcAxStr(d.method || (keep && keep.method) || 'cash').toLowerCase().slice(0, 12), ref: svcAxStr(d.ref != null ? d.ref : (keep && keep.ref) || '').trim().slice(0, 30) });
+      if (!dep.at) { dep.at = svcAxNow(); dep.by = act.name; }
+    }
+  }
+  var asset = svcAxAssetFrom(inp, base, tpl);
+  var rec = Object.assign({}, base, {
+    customer: snap, date: date, start: start, durationMin: dur, services: services, staffIds: staffIds, resourceId: resourceId || undefined, deposit: dep,
+    notes: inp.notes !== undefined ? svcAxStr(inp.notes).trim().slice(0, 500) : svcAxStr(base.notes), special: inp.special !== undefined ? svcAxStr(inp.special).trim().slice(0, 500) : svcAxStr(base.special),
+    assetId: asset.assetId, assetSnap: asset.assetSnap
+  });
+  if (!rec.resourceId) delete rec.resourceId;
+  if (svcAxIsDate(date) && svcAxIsTime(start)) {
+    rec.startAt = startAt; rec.endAt = startAt + dur * 60000; rec.end = svcAxTimeOf(rec.endAt);
+    if (o.create && startAt < svcAxNow() - 5 * 60000) warn('date', 'This time is already in the past');
+    var hrs = svcAxHours(date);
+    if (hrs.closed) warn('date', 'The shop is marked closed on this day');
+    else if (svcAxMin(start) < hrs.open || svcAxMin(start) + dur > hrs.close + 0) warn('start', 'This is outside the opening hours (' + svcAxHM(hrs.open) + ' - ' + svcAxHM(hrs.close) + ')');
+  }
+  return { rec: rec, errors: errors, warnings: warnings };
+}
+function svcAxSlot(rec) { return svcAxStr(rec.date) + ' ' + svcAxStr(rec.start) + '-' + svcAxStr(rec.end); }
+function svcAxLogRow(rec, act, from, to, note) {
+  var a = svcAxActor(), row = { at: svcAxNow(), by: a.name, act: act };
+  if (from) row.from = from; if (to) row.to = to; if (note) row.note = svcAxStr(note).slice(0, 200);
+  rec.log = svcAxArr(rec.log).concat([row]);
+  return rec;
+}
+function svcAxNextNo(date) {
+  var ymd = svcAxStr(date).replace(/-/g, '').slice(2), pre = 'AP-' + ymd + '-', n = 0, used = {};
+  svcAxPool().forEach(function (a) { if (a && a.no) used[a.no] = 1; });
+  do { n++; } while (used[pre + svcAxPad(n < 10 ? 0 : 0) + (n < 100 ? (n < 10 ? '00' : '0') : '') + n]);
+  return pre + (n < 100 ? (n < 10 ? '00' : '0') : '') + n;
+}
+function svcAxCommit(mutator, id, create, event, act) {
+  return svcCommit(mutator, { list: 'svcAppointments', id: id, create: !!create, audit: false, event: 'appt:changed', payload: { apptId: id, act: act || event || '' } });
+}
+function svcAxClashPlain(c) {
+  return { withId: c.withId, staffId: c.staffId, kind: c.kind, overlapMin: c.overlapMin, customerName: c.customerName, date: c.date, start: c.start, end: c.end, legacy: c.legacy };
+}
+
+/* ===== svcApptCreate(input, opts) -> {ok, appt, clashes, warnings, duplicate?} | {ok:false, code:'invalid'|'clash'|'perm'|..., errors?, clashes?}
+   input: {id?, idemKey?, serviceType?, customer:{name,phone,email} | customerName/customerPhone, date, start, durationMin | end, services[] | serviceIds[], staffIds[] | staffId, resourceId,
+           notes, special, deposit:{amount,method,ref}, assetKey, assetKind, status}
+   A double booking is a WARNING that the caller must acknowledge: without opts.overrideReason the call returns code 'clash' and saves nothing. ===== */
+function svcApptCreate(input, opts) {
+  input = input || {}; opts = opts || {};
+  if (input.id) { var ex = svcAxFind(input.id); if (ex) return { ok: true, appt: ex, duplicate: true, clashes: [], warnings: [] }; }
+  if (input.idemKey) { var pool = svcAxPool(), i; for (i = 0; i < pool.length; i++) { if (pool[i] && pool[i].idem === input.idemKey) return { ok: true, appt: pool[i], duplicate: true, clashes: [], warnings: [] }; } }
+  if (!svcAxCan('svc:create')) return { ok: false, code: 'perm', why: 'You are not allowed to create bookings.' };
+  var type = input.serviceType || svcAxType(), tpl = svcAxTpl(type);
+  var b = svcAxBuild(input, {}, tpl, { create: true });
+  if (b.errors.length) return { ok: false, code: 'invalid', errors: b.errors, warnings: b.warnings };
+  var act = svcAxActor(), now = svcAxNow(), rec = b.rec;
+  var status = SVC_AX_STATUSES.indexOf(input.status) !== -1 && SVC_AX_OPEN[input.status] ? input.status : (tpl.appointmentBookedStatus && SVC_AX_STATUSES.indexOf(tpl.appointmentBookedStatus) !== -1 ? tpl.appointmentBookedStatus : 'booked');
+  rec.id = input.id || svcAxNewId('sp-'); rec.serviceType = type; rec.status = status; rec.no = svcAxNextNo(rec.date);
+  rec.createdAt = now; rec.createdBy = { id: act.id, name: act.name }; rec.closedAt = null; rec.jobId = null; rec.log = [];
+  if (input.idemKey) rec.idem = String(input.idemKey);
+  var clashes = svcApptClashes(rec), reason = svcAxStr(opts.overrideReason).trim();
+  if (clashes.length && !reason) return { ok: false, code: 'clash', needsReason: true, clashes: clashes.map(svcAxClashPlain), warnings: b.warnings, why: 'This time overlaps another booking for the same ' + (clashes[0].kind === 'resource' ? 'resource' : 'staff member') + '.' };
+  if (clashes.length) rec.clashOverride = { reason: reason.slice(0, 200), by: act.name, at: now, with: clashes.map(function (c) { return c.withId; }) };
+  svcAxLogRow(rec, 'created', '', status, clashes.length ? 'double-booking override: ' + reason : '');
+  var res = svcAxCommit(function () { return rec; }, rec.id, true, 'appt:changed', 'created');
+  if (!res.ok) return res;
+  return { ok: true, appt: res.rec, clashes: clashes.map(svcAxClashPlain), warnings: b.warnings };
+}
+
+/* ===== svcApptUpdate(id, patch, opts): edit / reschedule an OPEN booking (not one already turned into a job). Moving it re-checks clashes (same override rule as create). ===== */
+function svcApptUpdate(id, patch, opts) {
+  patch = patch || {}; opts = opts || {};
+  var cur = svcAxFind(id);
+  if (!cur) return { ok: false, code: 'notfound' };
+  if (cur._legacy) return { ok: false, code: 'legacy', action: 'promote' };
+  if (!svcAxCan('svc:edit')) return { ok: false, code: 'perm', why: 'You are not allowed to change bookings.' };
+  if (cur.jobId) return { ok: false, code: 'hasjob', why: 'This booking is already a job: change the job instead.' };
+  if (!SVC_AX_OPEN[cur.status]) return { ok: false, code: 'closed', why: 'A ' + (SVC_AX_LABELS[cur.status] || cur.status).toLowerCase() + ' booking can not be changed.' };
+  var tpl = svcAxTpl(cur.serviceType), b = svcAxBuild(patch, cur, tpl, {});
+  if (b.errors.length) return { ok: false, code: 'invalid', errors: b.errors, warnings: b.warnings };
+  var next = b.rec;
+  var timeMoved = cur.date !== next.date || cur.start !== next.start || cur.durationMin !== next.durationMin;
+  var staffMoved = JSON.stringify(svcAxArr(cur.staffIds)) !== JSON.stringify(svcAxArr(next.staffIds)) || svcAxStr(cur.resourceId) !== svcAxStr(next.resourceId);
+  var clashes = [], reason = svcAxStr(opts.overrideReason).trim();
+  if (timeMoved || staffMoved) {
+    clashes = svcApptClashes(next);
+    if (clashes.length && !reason) return { ok: false, code: 'clash', needsReason: true, clashes: clashes.map(svcAxClashPlain), warnings: b.warnings, why: 'This time overlaps another booking for the same ' + (clashes[0].kind === 'resource' ? 'resource' : 'staff member') + '.' };
+  }
+  var fromSlot = svcAxSlot(cur), res = svcAxCommit(function (d) {
+    var keep = { id: d.id, no: d.no, serviceType: d.serviceType, createdAt: d.createdAt, createdBy: d.createdBy, log: d.log, closedAt: d.closedAt, jobId: d.jobId, idem: d.idem, legacyBookingId: d.legacyBookingId, status: d.status, confirmedAt: d.confirmedAt, checkedInAt: d.checkedInAt, remindedAt: d.remindedAt, clashOverride: d.clashOverride };
+    Object.keys(next).forEach(function (k) { d[k] = next[k]; });
+    Object.keys(keep).forEach(function (k) { if (keep[k] !== undefined) d[k] = keep[k]; });
+    if (!next.resourceId) delete d.resourceId;
+    var note = clashes.length ? 'double-booking override: ' + reason : '';
+    if (timeMoved) {
+      if (d.status === 'confirmed') { d.status = 'booked'; delete d.confirmedAt; }
+      delete d.remindedAt;
+      svcAxLogRow(d, 'rescheduled', fromSlot, svcAxSlot(d), note || opts.reason);
+    } else svcAxLogRow(d, 'edited', '', '', note || opts.reason);
+    if (clashes.length) d.clashOverride = { reason: reason.slice(0, 200), by: svcAxActor().name, at: svcAxNow(), with: clashes.map(function (c) { return c.withId; }) };
+    return d;
+  }, id, false, 'appt:changed', timeMoved ? 'rescheduled' : 'edited');
+  if (!res.ok) return res;
+  return { ok: true, appt: res.rec, clashes: clashes.map(svcAxClashPlain), warnings: b.warnings, rescheduled: timeMoved };
+}
+
+/* ===== status changes: confirm / check in / no-show / cancel / complete ===== */
+function svcApptSetStatus(id, key, opts) {
+  opts = opts || {};
+  var cur = svcAxFind(id);
+  if (!cur) return { ok: false, code: 'notfound' };
+  if (cur._legacy) return { ok: false, code: 'legacy', action: 'promote' };
+  if (SVC_AX_STATUSES.indexOf(key) === -1) return { ok: false, code: 'status', why: 'Unknown status' };
+  if (key === cur.status) return { ok: true, appt: cur, noop: true };
+  if (key === 'cancelled') { if (!svcAxCan('svc:cancel')) return { ok: false, code: 'perm', why: 'You are not allowed to cancel bookings.' }; }
+  else if (!svcAxCan('svc:status')) return { ok: false, code: 'perm', why: 'You are not allowed to change booking status.' };
+  if (cur.jobId && key !== 'completed') return { ok: false, code: 'hasjob', why: 'This booking is already a job: change the job instead.' };
+  if ((SVC_AX_NEXT[cur.status] || []).indexOf(key) === -1) return { ok: false, code: 'transition', why: 'A ' + (SVC_AX_LABELS[cur.status] || cur.status).toLowerCase() + ' booking can not become ' + (SVC_AX_LABELS[key] || key).toLowerCase() + '.' };
+  var reason = svcAxStr(opts.reason || opts.note).trim();
+  if (key === 'cancelled' && !reason) return { ok: false, code: 'reason', why: 'A reason is required to cancel a booking.' };
+  var now = svcAxNow(), sp = svcAxSpan(cur);
+  if (key === 'no_show' && sp.s > now && !opts.force) return { ok: false, code: 'early', why: 'A booking can only be marked no-show once its start time has passed.' };
+  var from = cur.status, res = svcAxCommit(function (d) {
+    d.status = key;
+    if (key === 'confirmed') d.confirmedAt = now;
+    if (key === 'booked') { delete d.confirmedAt; }
+    if (key === 'checked_in') d.checkedInAt = now;
+    if (key === 'cancelled') { d.cancelReason = reason.slice(0, 200); d.cancelledAt = now; }
+    if (key === 'no_show') { d.noShowAt = now; if (reason) d.noShowReason = reason.slice(0, 200); }
+    if (!SVC_AX_OPEN[key]) d.closedAt = d.closedAt || now;
+    svcAxLogRow(d, key === 'confirmed' ? 'confirmed' : (key === 'checked_in' ? 'checked-in' : (key === 'cancelled' ? 'cancelled' : (key === 'no_show' ? 'no-show' : 'status'))), from, key, reason);
+    return d;
+  }, id, false, 'appt:changed', key);
+  if (!res.ok) return res;
+  return { ok: true, appt: res.rec, from: from, to: key };
+}
+function svcApptConfirm(id, opts) { return svcApptSetStatus(id, 'confirmed', opts); }
+function svcApptCheckIn(id, opts) { return svcApptSetStatus(id, 'checked_in', opts); }
+function svcApptNoShow(id, opts) { return svcApptSetStatus(id, 'no_show', opts); }
+function svcApptCancel(id, opts) { opts = opts || {}; return svcApptSetStatus(id, 'cancelled', { reason: opts.reason || opts.note, force: opts.force }); }
+
+/* ===== legacy bookings: shown and checked for clashes, never written. Converting one writes an engine record 'sp-lg-<id>' that hides the legacy row from the views. ===== */
+function svcApptPromoteLegacy(id) {
+  var cur = svcAxFind(id);
+  if (!cur) return { ok: false, code: 'notfound' };
+  if (!cur._legacy) return { ok: true, appt: cur, duplicate: true };
+  var pid = 'sp-lg-' + cur.id, ex = svcAxFind(pid);
+  if (ex && !ex._legacy) return { ok: true, appt: ex, duplicate: true };
+  var act = svcAxActor(), now = svcAxNow();
+  var rec = JSON.parse(JSON.stringify(cur)); delete rec._legacy;
+  rec.id = pid; rec.legacyBookingId = cur.id; rec.no = cur.no; rec.createdBy = { id: act.id, name: act.name }; rec.createdAt = Number(cur.createdAt) || now; rec.log = [];
+  rec.status = cur.status === 'confirmed' ? 'confirmed' : cur.status; rec.closedAt = SVC_AX_OPEN[rec.status] ? null : (rec.closedAt || now); rec.jobId = null;
+  svcAxLogRow(rec, 'created', '', rec.status, 'from classic booking ' + cur.id);
+  var res = svcAxCommit(function () { return rec; }, pid, true, 'appt:changed', 'promoted');
+  return res.ok ? { ok: true, appt: res.rec } : res;
+}
+/* route a classic booking's action to the EXISTING function (nothing in the legacy path is modified) */
+function svcApptLegacyAction(id, action) {
+  var map = { complete: 'completeBooking', edit: 'openBookingModal', noshow: 'markBookingNoShow', cancel: 'cancelBooking', remove: 'deleteBooking' }, fn = map[action], f = null;
+  try { f = fn && typeof window !== 'undefined' && typeof window[fn] === 'function' ? window[fn] : null; } catch (e) { f = null; }
+  if (!f) return { ok: false, code: 'noaction' };
+  f(id);
+  return { ok: true };
+}
+
+/* ===== svcApptToJob(apptId, opts) -> {ok, job, appt, duplicate?, deposit?}: a job pre-filled from the booking. Idempotent: the job id is derived from the booking id,
+   so a second tap (or a second till) finds the same job. Deposits recorded on the booking become the job's deposit payment when the payments block is present. ===== */
+function svcApptToJob(apptId, opts) {
+  opts = opts || {};
+  var a = svcAxFind(apptId);
+  if (!a) return { ok: false, code: 'notfound' };
+  if (a.jobId) { var ej = null; try { ej = typeof svcGetJob === 'function' ? svcGetJob(a.jobId) : null; } catch (e) { ej = null; } if (ej) return { ok: true, job: ej, appt: a, duplicate: true }; }
+  if (!a._legacy && !SVC_AX_OPEN[a.status]) return { ok: false, code: 'closed', why: 'A ' + (SVC_AX_LABELS[a.status] || a.status).toLowerCase() + ' booking can not become a job.' };
+  if (a._legacy && !SVC_AX_OPEN[a.status] && a.status !== 'confirmed') return { ok: false, code: 'closed', why: 'This classic booking is closed.' };
+  if (!svcAxCan('svc:create')) return { ok: false, code: 'perm', why: 'You are not allowed to create jobs.' };
+  if (typeof svcCreateJob !== 'function') return { ok: false, code: 'nostore' };
+  var appt = a;
+  if (a._legacy) { var pr = svcApptPromoteLegacy(a.id); if (!pr.ok) return pr; appt = pr.appt; if (appt.jobId) { var ej2 = svcGetJob(appt.jobId); if (ej2) return { ok: true, job: ej2, appt: appt, duplicate: true }; } }
+  var type = appt.serviceType || svcAxType(), tpl = svcAxTpl(type), jid = 'sj-ap-' + appt.id;
+  var as = appt.assetSnap, input = {
+    typeKey: type, id: jid, apptId: appt.id, source: 'appointment', dueAt: appt.endAt || null,
+    customer: { name: appt.customer && appt.customer.name, phone: appt.customer && appt.customer.phone, email: appt.customer && appt.customer.email },
+    services: svcAxArr(appt.services).map(function (s) { return { catalogId: s.catalogId || null, name: s.name, price: s.price, qty: s.qty || 1, durationMin: s.durationMin }; }),
+    staffIds: svcAxArr(appt.staffIds), data: {}
+  };
+  var noteLines = [appt.notes, appt.special].filter(function (x) { return x; });
+  if (noteLines.length) input.notes = noteLines.join('\n');
+  try { if (typeof svcFindField === 'function' && svcFindField(tpl, 'appt_date')) { input.data.appt_mode = 'booking'; input.data.appt_date = appt.date; input.data.appt_time = appt.start; } } catch (e2) { /* fields are optional */ }
+  if (appt.assetId) input.assetId = appt.assetId;
+  else if (as && as.kind && as.kind !== 'none') {
+    var attrs = {}; ['plate', 'make', 'model', 'type', 'brand', 'imei', 'serial', 'color'].forEach(function (k) { if (as[k] != null && as[k] !== '') attrs[k] = as[k]; });
+    if (Object.keys(attrs).length) input.asset = { kind: as.kind, attrs: attrs };
+  }
+  var r = svcCreateJob(input, { appointment: true });
+  if (!r || !r.ok || !r.job) return r || { ok: false, code: 'error' };
+  var job = r.job, link = svcAxCommit(function (d) {
+    if (d.status === 'booked' || d.status === 'confirmed') { d.status = 'checked_in'; d.checkedInAt = d.checkedInAt || svcAxNow(); }
+    d.jobId = job.id; d.closedAt = d.closedAt || svcAxNow();
+    svcAxLogRow(d, 'converted', '', 'checked_in', job.no);
+    return d;
+  }, appt.id, false, 'appt:changed', 'converted');
+  var out = { ok: true, job: job, appt: link.ok ? link.rec : appt, duplicate: !!r.duplicate };
+  var dep = appt.deposit;
+  if (dep && Number(dep.amount) > 0 && !dep.appliedAt && typeof svcRecordPayment === 'function') {
+    try {
+      var pay = svcRecordPayment(job.id, { amount: dep.amount, method: dep.method || 'cash', ref: dep.ref || '', kind: 'deposit', idemKey: 'appdep-' + appt.id });
+      out.deposit = pay;
+      if (pay && pay.ok) svcAxCommit(function (d) { d.deposit = Object.assign({}, d.deposit, { appliedAt: svcAxNow(), jobId: job.id }); return d; }, appt.id, false, 'appt:changed', 'deposit');
+    } catch (e3) { out.deposit = { ok: false, code: 'error' }; }
+  }
+  return out;
+}
+
+/* ===== svcQuickIntake(typeKey, o) -> {ok, job, token, ahead, knownAsset?} | {ok:false, errors}
+   The walk-in path: three facts are enough (the vehicle / device identifier, a phone, a service). o: {assetKey, phone, name, serviceIds[] | services[], problem, values{}, status, start:true, idemKey}.
+   A known plate / IMEI pre-fills owner and details from the saved asset. Only the template's quick.required fields are enforced. ===== */
+function svcAxFieldBy(tpl, pred) {
+  var out = null;
+  svcAxArr(tpl && tpl.sections).forEach(function (s) { svcAxArr(s.fields).forEach(function (f) { if (!out && pred(f)) out = f; }); });
+  return out;
+}
+function svcQuickIntake(typeKey, o) {
+  o = o || {};
+  var type = typeKey || svcAxType(), tpl = svcAxTpl(type);
+  if (typeof svcCreateJob !== 'function') return { ok: false, code: 'nostore' };
+  var values = Object.assign({}, o.values || {}), kind = tpl.assetKind || 'none', known = null;
+  var fPlate = svcAxFieldBy(tpl, function (f) { return f.type === 'plate'; }), fImei = svcAxFieldBy(tpl, function (f) { return f.type === 'imei'; });
+  var fSerial = svcAxFieldBy(tpl, function (f) { return f.storesIn === 'asset' && f.assetAttr === 'serial'; });
+  var fName = svcAxFieldBy(tpl, function (f) { return f.id === 'cust_name'; }), fPhone = svcAxFieldBy(tpl, function (f) { return f.id === 'cust_phone'; });
+  var fServices = svcAxFieldBy(tpl, function (f) { return f.widget === 'services' || f.id === 'services'; });
+  var key = svcAxStr(o.assetKey).trim();
+  if (key && kind !== 'none') {
+    var digits = key.replace(/\D/g, '');
+    if (fPlate) values[fPlate.id] = key.toUpperCase();
+    else if (fImei && digits.length === 15) values[fImei.id] = digits;
+    else if (fSerial) values[fSerial.id] = key.toUpperCase();
+    try { if (typeof svcFindAssetByKey === 'function') known = svcFindAssetByKey(kind, key); } catch (e) { known = null; }
+    if (known) {
+      var at = known.attrs || {};
+      svcAxArr(tpl.sections).forEach(function (s) { svcAxArr(s.fields).forEach(function (f) { if (f.storesIn === 'asset' && f.assetAttr && at[f.assetAttr] != null && at[f.assetAttr] !== '' && (values[f.id] === undefined || values[f.id] === '')) values[f.id] = at[f.assetAttr]; }); });
+      if (!svcAxStr(o.name).trim() && known.ownerName && fName) values[fName.id] = known.ownerName;
+      if (!svcAxStr(o.phone).trim() && known.ownerPhone && fPhone) values[fPhone.id] = known.ownerPhone;
+    }
+  }
+  if (svcAxStr(o.name).trim() && fName) values[fName.id] = svcAxStr(o.name).trim();
+  if (svcAxStr(o.phone).trim() && fPhone) values[fPhone.id] = svcAxStr(o.phone).trim();
+  if (o.problem) { var fProb = svcAxFieldBy(tpl, function (f) { return /^(rep_problem|cmp_problem|oth_item|tl_item)$/.test(f.id); }); if (fProb) values[fProb.id] = svcAxStr(o.problem).trim(); }
+  var lines = svcAxCleanServices(svcAxArr(o.services).concat(svcAxCatalogLines(o.serviceIds, type)));
+  lines = lines.map(function (s) { return { catalogId: s.catalogId, name: s.name, price: s.price, qty: s.qty || 1, durationMin: s.durationMin }; });
+  if (lines.length) values[fServices ? fServices.id : 'services'] = lines;
+  var input = { typeKey: type, values: values, services: lines, source: 'quick', idemKey: o.idemKey || undefined };
+  if (o.status) input.status = o.status; else if (o.start) input.status = 'in_progress';
+  var r = svcCreateJob(input, { mode: 'quick' });
+  if (!r || !r.ok || !r.job) return r || { ok: false, code: 'error' };
+  var no = svcAxStr(r.job.no), tok = (no.match(/(\d+)$/) || [])[1] || no, ahead = 0;
+  try { if (typeof svcAllJobs === 'function') ahead = svcAllJobs({ types: [type], includeLegacy: false }).filter(function (j) { return j.id !== r.job.id && Number(j.phase) < 2 && Number(j.createdAt) <= Number(r.job.createdAt) && !j._deleted; }).length; } catch (e2) { ahead = 0; }
+  return { ok: true, job: r.job, token: tok, ahead: ahead, knownAsset: known || null, duplicate: !!r.duplicate, warn: r.warn };
+}
+
+/* ===== WhatsApp reminder / confirmation: a wa.me LINK the person taps. Nothing is ever sent automatically. ===== */
+function svcApptMessage(appt, kind) {
+  var a = appt || {}, type = a.serviceType || svcAxType(), ev = kind === 'confirmed' ? 'appointment_confirmed' : 'appointment_reminder', text = '';
+  try { if (typeof svcNotifyTemplate === 'function') text = svcNotifyTemplate(type, ev, 'whatsapp') || ''; } catch (e) { text = ''; }
+  if (!text) { try { if (typeof svcDefaultNotifyText === 'function') text = svcDefaultNotifyText(type, ev) || ''; } catch (e2) { text = ''; } }
+  if (!text) text = 'Hello {first_name}, your appointment at {business} is on {date} at {time}.';
+  var biz = ''; try { biz = typeof businessName !== 'undefined' ? String(businessName || '') : ''; } catch (e3) { biz = ''; }
+  var first = svcAxStr(a.customer && a.customer.name).trim().split(/\s+/)[0] || 'there';
+  var vars = { first_name: first, customer: svcAxStr(a.customer && a.customer.name) || first, business: biz || 'our shop', date: svcAxPretty(a.date), time: svcAxStr(a.start), staff: svcAxArr(a.staffIds).map(svcAxStaffName).filter(Boolean).join(', '), service: svcAxArr(a.services).map(function (s) { return s.name; }).join(', '), asset: a.assetSnap && a.assetSnap.label || '', plate: a.assetSnap && a.assetSnap.plate || '' };
+  return text.replace(/\{([a-z_]+)\}/g, function (m, k) { return vars[k] != null && vars[k] !== '' ? String(vars[k]) : (k === 'job_no' ? svcAxStr(a.no) : m); });
+}
+function svcApptReminderLink(appt, kind) {
+  var a = appt || {}, p = null;
+  try { p = typeof svcNormPhone === 'function' ? svcNormPhone(a.customer && a.customer.phone) : null; } catch (e) { p = null; }
+  if (!p || !p.ok) return { ok: false, reason: 'No valid phone number on this booking' };
+  var text = svcApptMessage(a, kind), digits = String(p.e164).replace(/\D/g, '');
+  return { ok: true, url: 'https://wa.me/' + digits + '?text=' + encodeURIComponent(text), text: text, phone: p.e164, kind: kind === 'confirmed' ? 'confirmed' : 'reminder' };
+}
+function svcApptMarkReminded(id) {
+  var cur = svcAxFind(id); if (!cur || cur._legacy || !svcAxCan('svc:view')) return false;
+  var r = svcAxCommit(function (d) { d.remindedAt = svcAxNow(); svcAxLogRow(d, 'reminder', '', '', 'WhatsApp link opened'); return d; }, id, false, 'appt:changed', 'reminder');
+  return !!(r && r.ok);
+}
+
+/* ===================================================================================================================
+   SCREENS
+   =================================================================================================================== */
+function svcAxOverlay(cls, html) {
+  if (typeof svcUiOverlay === 'function') return svcUiOverlay('svu-sheet ' + cls, html);
+  var ov = document.createElement('div'); ov.className = 'svu-ov svu-sheet ' + cls; ov.setAttribute('role', 'dialog'); ov.innerHTML = html;
+  ov.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:3000;background:rgba(0,0,0,.5);overflow:auto';
+  document.body.appendChild(ov);
+  var rec = { el: ov, cls: cls, close: function () { if (ov.parentNode) ov.parentNode.removeChild(ov); } };
+  return rec;
+}
+function svcAxSheetHtml(title, sub, body, foot) {
+  return '<div class="svu-panel sax"><div class="svu-ph"><button type="button" class="svu-x" data-sax="close" aria-label="Close">✕</button><div class="svu-pt"><b>' + svcAxEsc(title) + '</b><small>' + svcAxEsc(sub || '') + '</small></div></div>' +
+    '<div class="svu-pbody">' + body + '</div>' + (foot ? '<div class="svu-pfoot">' + foot + '</div>' : '') + '</div>';
+}
+function svcAxStatusPill(a) { var k = a.status; return '<span class="sax-pill" style="background:' + (SVC_AX_COLORS[k] || '#7f8c8d') + '">' + svcAxEsc(SVC_AX_LABELS[k] || k) + '</span>'; }
+function svcAxServiceText(a) { return svcAxArr(a.services).map(function (s) { return s.name; }).join(', '); }
+function svcAxStaffText(a) { return svcAxArr(a.staffIds).map(function (id) { return svcAxStaffName(id) || '(removed staff)'; }).join(', '); }
+function svcAxCustText(a) { var c = a.customer || {}; return svcAxStr(c.name) || svcAxStr(c.phone) || 'Customer'; }
+function svcAxStatusOk(a, f) { return !f.status || (f.status === 'open' ? !!SVC_AX_OPEN[a.status] : a.status === f.status); }
+function svcAxFilter(list, st) {
+  var type = st.type || svcAxType();
+  return list.filter(function (a) {
+    if (!a) return false;
+    if (!st.all && !a._legacy && a.serviceType && a.serviceType !== type) return false;
+    if (st.staff) { var ids = svcAxArr(a.staffIds).map(String); if (st.staff === '_none') { if (ids.length) return false; } else if (ids.indexOf(String(st.staff)) === -1) return false; }
+    if (st.service && svcAxArr(a.services).map(function (s) { return s.name; }).indexOf(st.service) === -1) return false;
+    return svcAxStatusOk(a, st);
+  });
+}
+function svcAxApptTags(a) {
+  var h = '';
+  if (a._legacy) h += '<span class="sax-tag">Classic booking</span>';
+  if (a.clashOverride) h += '<span class="sax-tag warn">Double-booked (override)</span>';
+  if (a.deposit && Number(a.deposit.amount) > 0) h += '<span class="sax-tag">Deposit ' + svcAxEsc(svcAxMoney(a.deposit.amount)) + (a.deposit.appliedAt ? ' (applied)' : '') + '</span>';
+  if (a.jobId) h += '<span class="sax-tag">Job started</span>';
+  if (SVC_AX_OPEN[a.status] && !a.jobId && !a.remindedAt) { var sp = svcAxSpan(a), d = sp.s - svcAxNow(); if (d > 0 && d < 36 * 3600000) h += '<span class="sax-tag warn">Reminder due</span>'; }
+  if (a.remindedAt) h += '<span class="sax-tag">Reminder sent ' + svcAxEsc(svcAxTimeOf(a.remindedAt)) + '</span>';
+  return h;
+}
+/* the action buttons of one booking, by status and permission */
+function svcAxActionsHtml(a, withOpen) {
+  var id = svcAxEsc(a.id), h = '', st = a.status, jobTerm = svcAxStripPlus(svcAxTerm('job', a.serviceType));
+  function b(act, label, cls) { return '<button type="button" class="sax-btn is-sm ' + (cls || '') + '" data-sax="' + act + '" data-id="' + id + '">' + svcAxEsc(label) + '</button>'; }
+  if (withOpen) h += '<button type="button" class="sax-btn is-sm" data-sax="open" data-id="' + id + '">Details</button>';
+  if (a.jobId) return h + b('job', 'Open ' + jobTerm.toLowerCase(), 'is-primary');
+  var open = !!SVC_AX_OPEN[st] || (a._legacy && st === 'confirmed');
+  if (a._legacy) {
+    if (open) {
+      if (svcAxCan('svc:create')) h += b('tojob', 'Start ' + jobTerm.toLowerCase(), 'is-primary');
+      h += b('lcomplete', 'Complete (classic)') + b('ledit', 'Edit') + b('lnoshow', 'No-show') + b('lcancel', 'Cancel', 'is-bad');
+    }
+    return h;
+  }
+  if (!open) return h;
+  if (st === 'booked' && svcAxCan('svc:status')) h += b('confirm', 'Confirm', 'is-good');
+  if ((st === 'booked' || st === 'confirmed') && svcAxCan('svc:status')) h += b('checkin', 'Check in');
+  if (svcAxCan('svc:create')) h += b('tojob', 'Start ' + jobTerm.toLowerCase(), 'is-primary');
+  if (svcAxCan('svc:edit') && st !== 'checked_in') h += b('edit', 'Reschedule / edit');
+  if (svcAxCan('svc:status') && st !== 'checked_in' && svcAxSpan(a).s <= svcAxNow()) h += b('noshow', 'No-show');
+  if (svcAxCan('svc:cancel')) h += b('cancel', 'Cancel', 'is-bad');
+  var wl = svcApptReminderLink(a, st === 'booked' ? 'confirmed' : 'reminder');
+  if (wl.ok) h += '<a class="sax-btn is-sm" data-sax="wa" data-id="' + id + '" href="' + svcAxEsc(wl.url) + '" target="_blank" rel="noopener noreferrer">📲 WhatsApp ' + (st === 'booked' ? 'confirmation' : 'reminder') + '</a>';
+  return h;
+}
+function svcAxCardHtml(a, showDate) {
+  var sp = svcAxSpan(a), when = (showDate ? svcAxPretty(a.date) + ' · ' : '') + svcAxStr(a.start) + (a.end ? '–' + svcAxStr(a.end) : '');
+  var sub = [svcAxServiceText(a), svcAxStaffText(a) ? 'with ' + svcAxStaffText(a) : '', a.assetSnap && a.assetSnap.label].filter(Boolean).join(' · ');
+  var ph = a.customer && a.customer.phone ? ' · ' + svcAxStr(a.customer.phone) : '';
+  return '<div class="sax-card" style="--sax-c:' + (SVC_AX_COLORS[a.status] || '#7f8c8d') + '" data-id="' + svcAxEsc(a.id) + '"><div class="t"><b>' + svcAxEsc(when) + '</b>' + svcAxStatusPill(a) + '</div>' +
+    '<div class="n">' + svcAxEsc(svcAxCustText(a)) + svcAxEsc(ph) + '</div>' + (sub ? '<div class="s">' + svcAxEsc(sub) + '</div>' : '') +
+    (a.notes ? '<div class="s">📝 ' + svcAxEsc(a.notes) + '</div>' : '') + '<div class="s">' + svcAxApptTags(a) + '</div><div class="a">' + svcAxActionsHtml(a, true) + '</div></div>' + (sp.s ? '' : '');
+}
+
+/* ----- view state + toolbar ----- */
+function svcAxState(host, ctx) {
+  var st = host.__sax;
+  if (!st) { st = host.__sax = { view: svcAxLs('pos_svc_ap_view') || 'day', date: svcAxToday(), staff: '', service: '', status: '', all: false, range: 'upcoming', shown: 40, type: '' }; if (['day', 'week', 'list'].indexOf(st.view) === -1) st.view = 'day'; }
+  st.type = (ctx && ctx.type) || st.type || svcAxType();
+  if (ctx && ctx.allTypes) st.all = true;
+  return st;
+}
+function svcAxToolbarHtml(st, pool) {
+  var tpl = svcAxTpl(st.type), terms = tpl.terms || {}, staffOpts = '<option value="">All staff</option><option value="_none"' + (st.staff === '_none' ? ' selected' : '') + '>Unassigned</option>';
+  svcAxStaffList().forEach(function (s) { staffOpts += '<option value="' + svcAxEsc(s.id) + '"' + (String(s.id) === String(st.staff) ? ' selected' : '') + '>' + svcAxEsc(s.name) + '</option>'; });
+  var names = {}, svcOpts = '<option value="">All services</option>';
+  pool.forEach(function (a) { svcAxArr(a.services).forEach(function (s) { names[s.name] = 1; }); });
+  Object.keys(names).sort().forEach(function (n) { svcOpts += '<option value="' + svcAxEsc(n) + '"' + (n === st.service ? ' selected' : '') + '>' + svcAxEsc(n) + '</option>'; });
+  var statOpts = '<option value="">Any status</option><option value="open"' + (st.status === 'open' ? ' selected' : '') + '>Open</option>';
+  SVC_AX_STATUSES.forEach(function (k) { statOpts += '<option value="' + k + '"' + (st.status === k ? ' selected' : '') + '>' + svcAxEsc(SVC_AX_LABELS[k]) + '</option>'; });
+  var bookLabel = svcAxStripPlus(terms.bookingButton || '+ Booking');
+  var h = '<div class="sax-bar"><div class="sax-seg" role="tablist" aria-label="Calendar view">';
+  [['day', 'Day'], ['week', 'Week'], ['list', 'List']].forEach(function (v) { h += '<button type="button" role="tab" data-sax="view" data-key="' + v[0] + '" class="' + (st.view === v[0] ? 'is-on' : '') + '" aria-selected="' + (st.view === v[0]) + '">' + v[1] + '</button>'; });
+  h += '</div>';
+  if (svcAxCan('svc:create')) h += '<button type="button" class="sax-btn is-primary" data-sax="new">+ ' + svcAxEsc(bookLabel) + '</button><button type="button" class="sax-btn" data-sax="walkin">⚡ ' + svcAxEsc(svcAxStripPlus(terms.walkInButton || 'Walk-in')) + '</button>';
+  h += '</div><div class="sax-bar">' +
+    '<select class="sax-in is-inline" data-sax-f="staff" aria-label="Staff filter">' + staffOpts + '</select>' +
+    '<select class="sax-in is-inline" data-sax-f="service" aria-label="Service filter">' + svcOpts + '</select>' +
+    '<select class="sax-in is-inline" data-sax-f="status" aria-label="Status filter">' + statOpts + '</select>' +
+    '<label style="display:inline-flex;align-items:center;min-height:44px"><input type="checkbox" data-sax-f="all" style="width:22px;height:22px;margin:0 8px 0 0"' + (st.all ? ' checked' : '') + '> All types</label></div>';
+  return h;
+}
+function svcAxNavHtml(st) {
+  var label = st.view === 'week' ? svcAxPretty(svcAxMonday(st.date)) + ' – ' + svcAxPretty(svcAxAddDays(svcAxMonday(st.date), 6)) : svcAxPretty(st.date) + (st.date === svcAxToday() ? ' (today)' : '');
+  return '<div class="sax-nav"><button type="button" class="sax-btn" data-sax="prev" aria-label="Previous">‹</button><button type="button" class="sax-btn" data-sax="today">Today</button><button type="button" class="sax-btn" data-sax="next" aria-label="Next">›</button>' +
+    '<input type="date" class="sax-in is-inline" data-sax-f="date" value="' + svcAxEsc(st.date) + '" aria-label="Go to date"><span class="sax-title">' + svcAxEsc(label) + '</span></div>';
+}
+
+/* ----- day grid ----- */
+function svcAxDayHtml(st, items) {
+  var date = st.date, hrs = svcAxHours(date), day = items.filter(function (a) { return a.date === date; });
+  var lo = hrs.open, hi = hrs.close;
+  day.forEach(function (a) { var sp = svcAxSpan(a); var s = Math.round((sp.s - svcApptMs(date, '00:00')) / 60000), e = Math.round((sp.e - svcApptMs(date, '00:00')) / 60000); if (s < lo) lo = Math.floor(s / 60) * 60; if (e > hi) hi = Math.min(1440, Math.ceil(e / 60) * 60); });
+  lo = Math.max(0, Math.floor(lo / 60) * 60); hi = Math.min(1440, Math.ceil(hi / 60) * 60); if (hi <= lo) hi = Math.min(1440, lo + 60);
+  var cols = [], seen = {}, staffAll = svcAxStaffList();
+  function addCol(id, name) { if (!seen[id]) { seen[id] = 1; cols.push({ id: id, name: name, items: [] }); } }
+  if (st.staff && st.staff !== '_none') addCol(st.staff, svcAxStaffName(st.staff) || 'Staff');
+  else if (st.staff !== '_none') { if (staffAll.length && staffAll.length <= 8) staffAll.forEach(function (s) { addCol(String(s.id), svcAxStr(s.name)); }); }
+  day.forEach(function (a) { var ids = svcAxArr(a.staffIds).map(String); if (!ids.length) { addCol('_none', 'Unassigned'); return; } ids.forEach(function (sid) { addCol(sid, svcAxStaffName(sid) || 'Staff'); }); });
+  if (!cols.length) addCol('_none', 'Bookings');
+  day.forEach(function (a) { var ids = svcAxArr(a.staffIds).map(String); cols.forEach(function (c) { if ((c.id === '_none' && !ids.length) || ids.indexOf(c.id) !== -1) c.items.push(a); }); });
+  if (!day.length) { /* keep the grid so staff can tap an empty slot, plus a hint */ }
+  var base = svcApptMs(date, '00:00'), h = '<div class="sax-grid" role="group" aria-label="Day schedule"><div class="sax-gut"><div class="sax-colh" style="height:34px;padding:0"></div>';
+  var m; for (m = lo; m < hi; m += 60) h += '<div>' + svcAxHM(m) + '</div>';
+  h += '</div>';
+  var nowMin = date === svcAxToday() ? Math.round((svcAxNow() - base) / 60000) : -1;
+  cols.forEach(function (c) {
+    var lanes = [], placed = c.items.slice().sort(function (x, y) { return svcAxSpan(x).s - svcAxSpan(y).s; }).map(function (a) {
+      var sp = svcAxSpan(a), lane = 0; while (lanes[lane] && lanes[lane] > sp.s) lane++; lanes[lane] = sp.e; return { a: a, lane: lane, sp: sp };
+    });
+    var nl = Math.max(1, lanes.length);
+    h += '<div class="sax-col"><div class="sax-colh">' + svcAxEsc(c.name) + '</div><div class="sax-body" data-sax="slot" data-col="' + svcAxEsc(c.id) + '" data-lo="' + lo + '" style="height:' + (hi - lo) + 'px">';
+    if (nowMin >= lo && nowMin <= hi) h += '<div class="sax-now" style="top:' + (nowMin - lo) + 'px"></div>';
+    placed.forEach(function (p) {
+      var a = p.a, top = Math.round((p.sp.s - base) / 60000) - lo, ht = Math.max(30, Math.round((p.sp.e - p.sp.s) / 60000)), w = 100 / nl;
+      var clash = svcApptClashes(a).length > 0;
+      h += '<button type="button" class="sax-blk' + (clash ? ' is-clash' : '') + '" data-sax="open" data-id="' + svcAxEsc(a.id) + '" style="--sax-c:' + (SVC_AX_COLORS[a.status] || '#7f8c8d') + ';top:' + top + 'px;height:' + ht + 'px;left:calc(' + (p.lane * w) + '% + 2px);width:calc(' + w + '% - 4px)" aria-label="' + svcAxEsc(svcAxStr(a.start) + ' ' + svcAxCustText(a) + ', ' + (SVC_AX_LABELS[a.status] || a.status)) + '"><b>' + svcAxEsc(a.start + ' ' + svcAxCustText(a)) + '</b>' + svcAxEsc(svcAxServiceText(a)) + '</button>';
+    });
+    h += '</div></div>';
+  });
+  h += '</div>';
+  if (!day.length) h += '<div class="sax-note">No bookings on this day. Tap a time in the grid, or “+ Booking”, to add one.</div>';
+  return h;
+}
+
+/* ----- week ----- */
+function svcAxWeekHtml(st, items) {
+  var mon = svcAxMonday(st.date), h = '<div class="sax-week">', i, today = svcAxToday();
+  for (i = 0; i < 7; i++) {
+    var d = svcAxAddDays(mon, i), day = items.filter(function (a) { return a.date === d; }).sort(function (x, y) { return svcAxSpan(x).s - svcAxSpan(y).s; });
+    h += '<div class="sax-wd' + (d === today ? ' is-today' : '') + '"><h4><span>' + svcAxEsc(svcAxPretty(d)) + '</span><button type="button" class="sax-open" data-sax="gotoday" data-date="' + d + '">' + day.length + ' ▸</button></h4>';
+    day.slice(0, 6).forEach(function (a) { h += '<button type="button" class="sax-wi" data-sax="open" data-id="' + svcAxEsc(a.id) + '" style="--sax-c:' + (SVC_AX_COLORS[a.status] || '#7f8c8d') + '"><b>' + svcAxEsc(a.start) + '</b> ' + svcAxEsc(svcAxCustText(a)) + '</button>'; });
+    if (day.length > 6) h += '<button type="button" class="sax-open" data-sax="gotoday" data-date="' + d + '">+' + (day.length - 6) + ' more</button>';
+    if (!day.length) h += '<div class="s" style="opacity:.6;font-size:13px">Free</div>';
+    h += '</div>';
+  }
+  return h + '</div>';
+}
+
+/* ----- list ----- */
+function svcAxListHtml(st, items) {
+  var today = svcAxToday(), list;
+  var chips = [['upcoming', 'Upcoming'], ['today', 'Today'], ['past', 'Past'], ['all', 'All']].map(function (r) { return '<button type="button" class="sax-chip' + (st.range === r[0] ? ' is-on' : '') + '" data-sax="range" data-key="' + r[0] + '">' + r[1] + '</button>'; }).join('');
+  if (st.range === 'today') list = items.filter(function (a) { return a.date === today; });
+  else if (st.range === 'past') list = items.filter(function (a) { return a.date < today; }).reverse();
+  else if (st.range === 'all') list = items.slice();
+  else list = items.filter(function (a) { return a.date >= today; });
+  var h = '<div class="sax-chips">' + chips + '</div>';
+  if (!list.length) return h + '<div class="sax-empty"><div style="font-size:34px">📅</div><p>No bookings here yet.</p>' + (svcAxCan('svc:create') ? '<button type="button" class="sax-btn is-primary" data-sax="new">+ New booking</button>' : '') + '</div>';
+  var cur = '', n = 0;
+  h += '<div class="sax-list">';
+  list.some(function (a) {
+    if (n >= st.shown) return true;
+    if (a.date !== cur) { cur = a.date; h += '<div class="sax-dayh">' + svcAxEsc(svcAxPretty(a.date) + (a.date === today ? ' · today' : '')) + '</div>'; }
+    h += svcAxCardHtml(a, false); n++; return false;
+  });
+  if (list.length > n) h += '<button type="button" class="sax-btn" data-sax="more">Show ' + Math.min(40, list.length - n) + ' more (' + (list.length - n) + ' left)</button>';
+  return h + '</div>';
+}
+
+/* ----- the screen ----- */
+function svcAxTrack(host, ctx) {
+  var i; for (i = 0; i < SVC_AX.mounted.length; i++) { if (SVC_AX.mounted[i].el === host) { SVC_AX.mounted[i].ctx = ctx; return; } }
+  SVC_AX.mounted.push({ el: host, ctx: ctx });
+}
+function svcRenderAppts(host, ctx) {
+  if (!host) return false;
+  ctx = ctx || {};
+  var st = svcAxState(host, ctx), pool = svcAxPool(), type = st.type;
+  if (!host.__saxBound) { host.__saxBound = true; svcAxBind(host); }
+  svcAxTrack(host, ctx); svcAxSubscribe();
+  var items = svcAxFilter(pool, st), tpl = svcAxTpl(type), mode = tpl.appointments && tpl.appointments.mode;
+  var h = '<div class="sax" data-sax-root="' + svcAxEsc(st.view) + '">' + svcAxToolbarHtml(st, pool);
+  if (mode === 'off' && !pool.some(function (a) { return a && (a._legacy || a.serviceType === type); })) h += '<div class="sax-note">Bookings are optional for ' + svcAxEsc(tpl.label || 'this business type') + ': most customers just walk in. You can still take a booking when someone asks.</div>';
+  if (st.view !== 'list') h += svcAxNavHtml(st);
+  h += st.view === 'day' ? svcAxDayHtml(st, items) : (st.view === 'week' ? svcAxWeekHtml(st, items) : svcAxListHtml(st, items));
+  h += '</div>';
+  var keep = host.scrollTop, grid = host.querySelector('.sax-grid'), gl = grid ? grid.scrollLeft : 0, gt = grid ? grid.scrollTop : 0;
+  host.innerHTML = h;
+  var g2 = host.querySelector('.sax-grid'); if (g2) { g2.scrollLeft = gl; if (gt) g2.scrollTop = gt; else { var now = svcAxNow(), hrs = svcAxHours(st.date); if (st.date === svcAxToday()) g2.scrollTop = Math.max(0, Math.round((now - svcApptMs(st.date, '00:00')) / 60000) - hrs.open - 90); } }
+  host.scrollTop = keep;
+  return true;
+}
+function svcAxRefreshAll() {
+  SVC_AX.mounted = SVC_AX.mounted.filter(function (m) { try { return m.el && document.body.contains(m.el); } catch (e) { return false; } });
+  SVC_AX.mounted.forEach(function (m) { try { svcRenderAppts(m.el, m.ctx); } catch (e) { /* the screen rebuilds on the next open */ } });
+}
+function svcAxBind(host) {
+  host.addEventListener('click', function (ev) {
+    var t = ev.target && ev.target.closest ? ev.target.closest('[data-sax]') : null; if (!t || !host.contains(t)) return;
+    var act = t.getAttribute('data-sax'), st = host.__sax;
+    if (act === 'wa') { svcApptMarkReminded(t.getAttribute('data-id')); return; }     /* the link itself opens WhatsApp; we only log that it was opened */
+    if (act === 'slot') { if (ev.target !== t || !svcAxCan('svc:create')) return; svcAxSlotTap(st, t, ev); return; }
+    svcAxAct(act, t, st, host);
+  });
+  host.addEventListener('change', function (ev) {
+    var t = ev.target; if (!t || !t.getAttribute) return;
+    var f = t.getAttribute('data-sax-f'); if (!f) return;
+    var st = host.__sax;
+    if (f === 'all') st.all = !!t.checked; else if (f === 'date') { if (svcAxIsDate(t.value)) st.date = t.value; } else st[f] = t.value;
+    st.shown = 40; svcRenderAppts(host, host.__saxCtx || {});
+  });
+}
+function svcAxSlotTap(st, col, ev) {
+  var r = col.getBoundingClientRect(), y = (ev && ev.clientY ? ev.clientY : 0) - r.top, lo = Number(col.getAttribute('data-lo')) || 0;
+  var min = lo + Math.max(0, Math.floor(y / 15) * 15), cid = col.getAttribute('data-col');
+  if (!isFinite(min)) return;
+  svcOpenApptForm({ date: st.date, start: svcAxHM(min), staffId: cid && cid !== '_none' ? cid : '', type: st.type });
+}
+function svcAxAct(act, t, st, host) {
+  var id = t.getAttribute('data-id') || '';
+  var back = function () { svcAxRefreshAll(); };
+  if (act === 'view') { st.view = t.getAttribute('data-key'); svcAxLs('pos_svc_ap_view', st.view); svcRenderAppts(host, host.__saxCtx || {}); return; }
+  if (act === 'prev' || act === 'next') { var n = st.view === 'week' ? 7 : 1; st.date = svcAxAddDays(st.date, act === 'next' ? n : -n); svcRenderAppts(host, host.__saxCtx || {}); return; }
+  if (act === 'today') { st.date = svcAxToday(); svcRenderAppts(host, host.__saxCtx || {}); return; }
+  if (act === 'gotoday') { st.date = t.getAttribute('data-date'); st.view = 'day'; svcAxLs('pos_svc_ap_view', 'day'); svcRenderAppts(host, host.__saxCtx || {}); return; }
+  if (act === 'range') { st.range = t.getAttribute('data-key'); st.shown = 40; svcRenderAppts(host, host.__saxCtx || {}); return; }
+  if (act === 'more') { st.shown += 40; svcRenderAppts(host, host.__saxCtx || {}); return; }
+  if (act === 'new') { svcOpenApptForm({ date: st.date, type: st.type }); return; }
+  if (act === 'walkin') { svcOpenQuickIntake(st.type); return; }
+  svcAxApptAct(act, id, back);
+}
+/* actions shared by the screen, the detail sheet and the drawer tab */
+function svcAxApptAct(act, id, done) {
+  var a = svcAxFind(id); if (!a) { svcAxToast('That booking could not be found.', true); return; }
+  function after(r, okMsg) { if (r && r.ok) { if (okMsg) svcAxToast(okMsg); } else svcAxToast((r && (r.why || r.error)) || 'Could not do that.', true); if (done) done(r); }
+  if (act === 'open') { svcOpenAppt(id); return; }
+  if (act === 'job') { if (a.jobId && typeof svcOpenJob === 'function') svcOpenJob(a.jobId); return; }
+  if (act === 'edit') { svcOpenApptForm({ id: id }); return; }
+  if (act === 'confirm') { after(svcApptConfirm(id), 'Confirmed'); return; }
+  if (act === 'checkin') { after(svcApptCheckIn(id), 'Checked in'); return; }
+  if (act === 'tojob') {
+    if (SVC_AX.busy[id]) return; SVC_AX.busy[id] = 1;
+    var r = svcApptToJob(id); SVC_AX.busy[id] = 0;
+    if (r && r.ok && r.job) { svcAxToast((r.job.no || 'Job') + (r.duplicate ? ' opened' : ' started')); if (done) done(r); try { var top = typeof svcUiTop === 'function' ? svcUiTop('sax-detail') : null; if (top) top.close(); } catch (e) { /* sheet already gone */ } if (typeof svcOpenJob === 'function') svcOpenJob(r.job.id); }
+    else after(r);
+    return;
+  }
+  if (act === 'cancel') { svcAxAsk('Cancel this booking', 'Reason (required)', true, function (reason) { after(svcApptCancel(id, { reason: reason }), 'Booking cancelled'); }); return; }
+  if (act === 'noshow') { svcAxAsk('Mark as no-show', 'Note (optional)', false, function (reason) { after(svcApptNoShow(id, { reason: reason }), 'Marked as no-show'); }); return; }
+  if (act === 'lcomplete' || act === 'ledit' || act === 'lnoshow' || act === 'lcancel') {
+    var map = { lcomplete: 'complete', ledit: 'edit', lnoshow: 'noshow', lcancel: 'cancel' }, r2 = svcApptLegacyAction(id, map[act]);
+    if (!r2.ok) svcAxToast('That classic booking action is not available.', true); else if (done) setTimeout(function () { done(r2); }, 50);
+  }
+}
+function svcAxAsk(title, label, required, cb) {
+  var rec = svcAxOverlay('sax-ask', svcAxSheetHtml(title, '', '<div class="sax-field"><label for="sax-ask-in">' + svcAxEsc(label) + '</label><textarea class="sax-in" id="sax-ask-in" rows="3" maxlength="200"></textarea></div><div class="sax-note bad" data-sax-err style="display:none"></div>',
+    '<button type="button" class="sax-btn" data-sax="close">Back</button><button type="button" class="sax-btn is-primary" data-sax="ok" style="flex:1 1 auto">Confirm</button>'));
+  rec.el.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-sax]') : null; if (!b) return;
+    if (b.getAttribute('data-sax') === 'close') { rec.close(); return; }
+    if (b.getAttribute('data-sax') === 'ok') {
+      var v = rec.el.querySelector('#sax-ask-in').value.trim(), er = rec.el.querySelector('[data-sax-err]');
+      if (required && !v) { er.textContent = 'Please enter a reason.'; er.style.display = ''; return; }
+      rec.close(); cb(v);
+    }
+  });
+  try { rec.el.querySelector('#sax-ask-in').focus(); } catch (e) { /* focus is a nicety */ }
+  return rec;
+}
+
+/* ----- booking detail sheet ----- */
+function svcAxDetailBody(a) {
+  var c = a.customer || {}, rows = [
+    ['When', svcAxPretty(a.date) + ', ' + svcAxStr(a.start) + '–' + svcAxStr(a.end) + ' (' + svcAxDur(a) + ' min)'],
+    [svcAxStripPlus(svcAxTerm('customer', a.serviceType)), svcAxStr(c.name) + (c.phone ? ' · ' + c.phone : '') + (c.email ? ' · ' + c.email : '')],
+    ['Services', svcAxArr(a.services).map(function (s) { return s.name + (s.price ? ' (' + svcAxMoney(s.price) + ')' : ''); }).join(', ')],
+    [svcAxStripPlus(svcAxTerm('staff', a.serviceType)), svcAxStaffText(a)],
+    ['Item', a.assetSnap && a.assetSnap.label], ['Notes', a.notes], ['Special requests', a.special],
+    ['Deposit', a.deposit && Number(a.deposit.amount) > 0 ? svcAxMoney(a.deposit.amount) + ' (' + svcAxStr(a.deposit.method) + (a.deposit.ref ? ' ' + a.deposit.ref : '') + ')' : ''],
+    ['Cancel reason', a.cancelReason], ['No-show note', a.noShowReason], ['Booking no.', a.no]
+  ];
+  var h = '<div class="sax-box"><div class="t" style="margin-bottom:6px">' + svcAxStatusPill(a) + ' ' + svcAxApptTags(a) + '</div>';
+  rows.forEach(function (r) { if (r[1]) h += '<div style="padding:5px 0;border-bottom:1px solid var(--border-color)"><span style="font-size:12px;opacity:.7;display:block">' + svcAxEsc(r[0]) + '</span>' + svcAxEsc(r[1]) + '</div>'; });
+  h += '</div>';
+  if (a.clashOverride) h += '<div class="sax-note warn">Booked over another appointment. Reason: ' + svcAxEsc(a.clashOverride.reason) + ' (' + svcAxEsc(a.clashOverride.by) + ')</div>';
+  var log = svcAxArr(a.log);
+  if (log.length) { h += '<h4 style="margin:10px 0 4px;font-size:13px;opacity:.75">History</h4><ul class="sax-log">'; log.slice().reverse().forEach(function (l) { h += '<li>' + svcAxEsc(svcAxDateOf(l.at) + ' ' + svcAxTimeOf(l.at)) + ' · ' + svcAxEsc(l.by || '') + ' · <b>' + svcAxEsc(l.act) + '</b>' + (l.from || l.to ? ' ' + svcAxEsc((l.from || '') + (l.to ? ' → ' + l.to : '')) : '') + (l.note ? ' — ' + svcAxEsc(l.note) : '') + '</li>'; }); h += '</ul>'; }
+  return h;
+}
+function svcOpenAppt(id) {
+  var a = svcAxFind(id); if (!a) { svcAxToast('That booking could not be found.', true); return null; }
+  var rec = svcAxOverlay('sax-detail', svcAxSheetHtml((svcAxStripPlus(svcAxTerm('appointment', a.serviceType)) || 'Booking') + ' ' + svcAxStr(a.no), svcAxCustText(a), '<div data-sax-body></div>', '<button type="button" class="sax-btn" data-sax="close">Close</button>'));
+  function draw() {
+    var cur = svcAxFind(id); if (!cur) { rec.close(); return; }
+    rec.el.querySelector('[data-sax-body]').innerHTML = svcAxDetailBody(cur) + '<div class="a" style="display:flex;flex-wrap:wrap">' + svcAxActionsHtml(cur, false).replace(/class="sax-btn is-sm/g, 'style="margin:0 8px 8px 0" class="sax-btn is-sm') + '</div>';
+  }
+  rec.refresh = draw; draw();
+  rec.el.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-sax]') : null; if (!b || !rec.el.contains(b)) return;
+    var act = b.getAttribute('data-sax');
+    if (act === 'close') { rec.close(); return; }
+    if (act === 'wa') { svcApptMarkReminded(id); return; }
+    svcAxApptAct(act, b.getAttribute('data-id') || id, function () { draw(); svcAxRefreshAll(); });
+  });
+  return rec;
+}
+
+/* ----- booking form (new / edit) ----- */
+function svcAxCatalogFor(type) {
+  var cat = []; try { cat = typeof svcCatalog !== 'undefined' && Array.isArray(svcCatalog) ? svcCatalog : []; } catch (e) { cat = []; }
+  return cat.filter(function (c) { return c && !c._deleted && c.active !== false && (!svcAxArr(c.serviceTypes).length || svcAxArr(c.serviceTypes).indexOf(type) !== -1); }).sort(function (x, y) { return (Number(x.sort) || 0) - (Number(y.sort) || 0) || String(x.name).localeCompare(String(y.name)); });
+}
+function svcOpenApptForm(o) {
+  o = o || {};
+  if (!svcAxCan(o.id ? 'svc:edit' : 'svc:create')) { svcAxToast('You do not have permission to do that.', true); return null; }
+  var cur = o.id ? svcAxFind(o.id) : null;
+  if (o.id && (!cur || cur._legacy)) { if (cur && cur._legacy) svcApptLegacyAction(o.id, 'edit'); else svcAxToast('That booking could not be found.', true); return null; }
+  var type = cur ? cur.serviceType : (o.type || svcAxType()), tpl = svcAxTpl(type), ap = tpl.appointments || {}, terms = tpl.terms || {}, kind = tpl.assetKind || 'none';
+  var cat = svcAxCatalogFor(type), draftId = 'apd-' + svcAxNewId('');
+  var S = { services: cur ? svcAxArr(cur.services).slice() : [], saving: false, durTouched: !!cur, clashes: [], override: '' };
+  var date = cur ? cur.date : (o.date && svcAxIsDate(o.date) ? o.date : svcAxToday()), start = cur ? cur.start : (o.start && svcAxIsTime(o.start) ? o.start : '');
+  var staffId = cur ? (svcAxArr(cur.staffIds)[0] || '') : (o.staffId || '');
+  var dur = cur ? cur.durationMin : (Number(ap.defaultDurationMin) || 30);
+  var c = (cur && cur.customer) || {};
+  var staffOpts = '<option value="">Any / not assigned</option>' + svcAxStaffList().map(function (s) { return '<option value="' + svcAxEsc(s.id) + '"' + (String(s.id) === String(staffId) ? ' selected' : '') + '>' + svcAxEsc(s.name) + '</option>'; }).join('');
+  var assetLbl = kind === 'vehicle' ? 'Number plate' : (kind === 'phone' ? 'IMEI or serial' : (kind === 'equipment' ? 'Serial number' : ''));
+  var body = '<div class="sax-note bad" data-sax-errs style="display:none" role="alert"></div>' +
+    '<div class="sax-row2"><div class="sax-field"><label for="sax-name">' + svcAxEsc(svcAxStripPlus(svcAxTerm('customer', type))) + ' name</label><input class="sax-in" id="sax-name" autocomplete="off" value="' + svcAxEsc(c.name || '') + '"></div>' +
+    '<div class="sax-field"><label for="sax-phone">Phone</label><input class="sax-in" id="sax-phone" type="tel" inputmode="tel" autocomplete="off" placeholder="07XX XXX XXX" value="' + svcAxEsc(c.phone || '') + '"></div></div>' +
+    (assetLbl ? '<div class="sax-field"><label for="sax-asset">' + svcAxEsc(assetLbl) + ' (optional)</label><input class="sax-in" id="sax-asset" autocomplete="off" autocapitalize="characters" value="' + svcAxEsc(cur && cur.assetSnap ? (cur.assetSnap.plate || cur.assetSnap.imei || cur.assetSnap.serial || '') : '') + '"><div data-sax-known class="sax-note" style="display:none"></div></div>' : '') +
+    '<div class="sax-field"><span class="sax-lbl">Services</span><div class="sax-chips" data-sax-svc>' + cat.map(function (s) { var on = S.services.some(function (x) { return x.catalogId === s.id; }); return '<button type="button" class="sax-chip' + (on ? ' is-on' : '') + '" data-sax="svc" data-id="' + svcAxEsc(s.id) + '" aria-pressed="' + on + '">' + svcAxEsc(s.name) + (s.price ? ' · ' + svcAxEsc(svcAxMoney(s.price)) : '') + '</button>'; }).join('') + '</div>' +
+    '<div class="sax-row2" style="margin:0 -6px"><div class="sax-field" style="flex:2 1 160px"><input class="sax-in" id="sax-cname" placeholder="Other service (name)" aria-label="Other service name"></div><div class="sax-field" style="flex:1 1 90px"><input class="sax-in" id="sax-cprice" inputmode="decimal" placeholder="Price" aria-label="Other service price"></div><div class="sax-field" style="flex:0 0 auto"><button type="button" class="sax-btn" data-sax="addsvc">Add</button></div></div><div data-sax-picked class="sax-chips"></div></div>' +
+    '<div class="sax-row2"><div class="sax-field"><label for="sax-staff">' + svcAxEsc(svcAxStripPlus(svcAxTerm('staff', type))) + '</label><select class="sax-in" id="sax-staff">' + staffOpts + '</select></div>' +
+    '<div class="sax-field"><label for="sax-date">Date</label><input class="sax-in" id="sax-date" type="date" value="' + svcAxEsc(date) + '"></div>' +
+    '<div class="sax-field"><label for="sax-start">Start time</label><input class="sax-in" id="sax-start" type="time" step="300" value="' + svcAxEsc(start) + '"></div>' +
+    '<div class="sax-field"><label for="sax-dur">Minutes</label><input class="sax-in" id="sax-dur" type="number" inputmode="numeric" min="5" max="720" step="5" value="' + dur + '"></div></div>' +
+    '<div class="sax-field"><span class="sax-lbl">Free times</span><div class="sax-slots" data-sax-slots></div></div>' +
+    '<div data-sax-clash></div>' +
+    '<div class="sax-field"><label for="sax-notes">Notes</label><textarea class="sax-in" id="sax-notes" rows="2">' + svcAxEsc(cur ? cur.notes || '' : '') + '</textarea></div>' +
+    '<div class="sax-field"><label for="sax-special">Special requests</label><textarea class="sax-in" id="sax-special" rows="2">' + svcAxEsc(cur ? cur.special || '' : '') + '</textarea></div>' +
+    (ap.depositField ? '<div class="sax-row2"><div class="sax-field"><label for="sax-dep">Deposit (optional)</label><input class="sax-in" id="sax-dep" inputmode="decimal" value="' + svcAxEsc(cur && cur.deposit ? cur.deposit.amount : '') + '"></div>' +
+      '<div class="sax-field"><label for="sax-depm">Paid by</label><select class="sax-in" id="sax-depm"><option value="cash">Cash</option><option value="mpesa"' + (cur && cur.deposit && cur.deposit.method === 'mpesa' ? ' selected' : '') + '>M-Pesa</option><option value="bank"' + (cur && cur.deposit && cur.deposit.method === 'bank' ? ' selected' : '') + '>Bank</option></select></div>' +
+      '<div class="sax-field"><label for="sax-depr">Reference</label><input class="sax-in" id="sax-depr" value="' + svcAxEsc(cur && cur.deposit ? cur.deposit.ref || '' : '') + '"></div></div><div class="sax-note">The deposit is recorded as a payment when the booking becomes a job.</div>' : '');
+  var title = cur ? 'Edit booking ' + svcAxStr(cur.no) : svcAxStripPlus(terms.bookingButton || '+ Booking');
+  var rec = svcAxOverlay('sax-form', svcAxSheetHtml(title, tpl.label || '', body, '<button type="button" class="sax-btn" data-sax="close">Cancel</button><button type="button" class="sax-btn is-primary" data-sax="save" style="flex:1 1 auto">' + (cur ? 'Save changes' : 'Save booking') + '</button>'));
+  var el = rec.el;
+  function q(id) { return el.querySelector(id); }
+  function val(id) { var x = q(id); return x ? x.value : ''; }
+  function pickedHtml() {
+    q('[data-sax-picked]').innerHTML = S.services.map(function (s, i) { return '<span class="sax-tag" style="min-height:32px;display:inline-flex;align-items:center">' + svcAxEsc(s.name) + (s.price ? ' · ' + svcAxEsc(svcAxMoney(s.price)) : '') + (s.durationMin ? ' · ' + s.durationMin + ' min' : '') + ' <button type="button" class="sax-open" data-sax="rmsvc" data-i="' + i + '" aria-label="Remove ' + svcAxEsc(s.name) + '" style="min-height:32px;padding:0 6px">✕</button></span>'; }).join('');
+  }
+  function syncDuration() {
+    if (S.durTouched) return;
+    var sum = S.services.reduce(function (n, s) { return n + (Number(s.durationMin) || 0) * (Number(s.qty) || 1); }, 0);
+    if (sum > 0) q('#sax-dur').value = String(sum);
+  }
+  function draftRec() {
+    return { id: cur ? cur.id : '', serviceType: type, date: val('#sax-date'), start: val('#sax-start'), durationMin: Number(val('#sax-dur')) || 0, staffIds: val('#sax-staff') ? [val('#sax-staff')] : [] };
+  }
+  function recheck() {
+    var d = draftRec(), slots = q('[data-sax-slots]'), box = q('[data-sax-clash]');
+    var list = svcAxIsDate(d.date) && d.durationMin > 0 ? svcFreeSlots(d.date, d.durationMin, d.staffIds[0] || '', { type: type, ignoreId: cur ? cur.id : '', includePast: false }) : [];
+    slots.innerHTML = list.length ? list.slice(0, 48).map(function (s) { return '<button type="button" data-sax="slot" data-t="' + s.start + '" class="' + (s.start === d.start ? 'is-on' : '') + '">' + s.start + '</button>'; }).join('') : '<span class="s" style="opacity:.7;font-size:13px">' + (svcAxIsDate(d.date) ? 'No free time left on this day for that length' : 'Choose a date') + '</span>';
+    var cl = svcAxIsDate(d.date) && svcAxIsTime(d.start) && d.durationMin > 0 ? svcApptClashes(Object.assign({}, d, { startAt: svcApptMs(d.date, d.start), endAt: svcApptMs(d.date, d.start) + d.durationMin * 60000 })) : [];
+    S.clashes = cl;
+    if (!cl.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="sax-note warn" role="alert"><b>Double booking warning.</b><br>' + cl.map(function (x) { return svcAxEsc((x.kind === 'resource' ? 'Resource' : (svcAxStaffName(x.staffId) || 'Staff')) + ' is already booked ' + x.start + '–' + x.end + (x.customerName ? ' (' + x.customerName + ')' : '') + (x.legacy ? ' [classic booking]' : '') + ': overlap ' + x.overlapMin + ' min'); }).join('<br>') +
+      '</div><div class="sax-field"><label for="sax-ovr">Reason for booking anyway (required)</label><input class="sax-in" id="sax-ovr" maxlength="200" value="' + svcAxEsc(S.override) + '"></div>';
+  }
+  function showErrs(list) { var b = q('[data-sax-errs]'); b.innerHTML = list.map(function (e) { return '<div>' + svcAxEsc(e.msg) + '</div>'; }).join(''); b.style.display = list.length ? '' : 'none'; try { b.scrollIntoView(); } catch (e) { /* jsdom */ } }
+  function lookupAsset() {
+    var k = q('#sax-asset'); if (!k) return; var key = k.value.trim(), box = q('[data-sax-known]');
+    var found = null; try { if (key.length >= 3 && typeof svcFindAssetByKey === 'function') found = svcFindAssetByKey(kind, key); } catch (e) { found = null; }
+    if (!found) { box.style.display = 'none'; return; }
+    var sum = null; try { if (typeof svcAssetSummary === 'function') sum = svcAssetSummary(found.id); } catch (e2) { sum = null; }
+    box.style.display = ''; box.innerHTML = 'Known: <b>' + svcAxEsc(found.label) + '</b>' + (found.ownerName ? ' · ' + svcAxEsc(found.ownerName) : '') + (sum ? ' · ' + sum.visits.length + ' visit(s)' + (sum.outstanding > 0 ? ' · owes ' + svcAxEsc(svcAxMoney(sum.outstanding)) : '') : '') +
+      ' <button type="button" class="sax-open" data-sax="useowner" data-name="' + svcAxEsc(found.ownerName || '') + '" data-phone="' + svcAxEsc(found.ownerPhone || '') + '">Use owner</button>';
+  }
+  function save() {
+    if (S.saving) return;
+    var d = draftRec(), input = {
+      customerName: val('#sax-name'), customerPhone: val('#sax-phone'), date: d.date, start: d.start, durationMin: d.durationMin, services: S.services, staffIds: d.staffIds,
+      notes: val('#sax-notes'), special: val('#sax-special'), idemKey: cur ? undefined : draftId
+    };
+    if (cur) input.id = undefined;
+    if (q('#sax-asset')) { input.assetKey = val('#sax-asset'); input.assetKind = kind; }
+    if (q('#sax-dep')) { var amt = val('#sax-dep').trim(); input.deposit = amt ? { amount: Number(amt), method: val('#sax-depm'), ref: val('#sax-depr') } : null; }
+    var ov = q('#sax-ovr'); if (ov) S.override = ov.value;
+    S.saving = true;
+    var r = cur ? svcApptUpdate(cur.id, input, { overrideReason: S.override }) : svcApptCreate(Object.assign({ serviceType: type }, input), { overrideReason: S.override });
+    S.saving = false;
+    if (!r || !r.ok) {
+      if (r && r.code === 'clash') { recheck(); showErrs([{ msg: 'Enter a reason to book over the existing appointment, or pick a free time.' }]); var o2 = q('#sax-ovr'); if (o2) { try { o2.focus(); } catch (e) { /* ok */ } } return; }
+      showErrs(r && r.errors && r.errors.length ? r.errors : [{ msg: (r && (r.why || r.error)) || 'Could not save the booking.' }]); return;
+    }
+    rec.close(); svcAxToast(cur ? 'Booking updated' : 'Booking saved' + (r.warnings && r.warnings.length ? ' (' + r.warnings[0].msg + ')' : ''));
+    svcAxRefreshAll();
+    if (typeof o.onSaved === 'function') o.onSaved(r.appt);
+  }
+  el.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-sax]') : null; if (!b || !el.contains(b)) return;
+    var act = b.getAttribute('data-sax');
+    if (act === 'close') rec.close();
+    else if (act === 'save') save();
+    else if (act === 'svc') {
+      var id = b.getAttribute('data-id'), i; for (i = 0; i < S.services.length; i++) { if (S.services[i].catalogId === id) break; }
+      if (i < S.services.length) S.services.splice(i, 1); else S.services = S.services.concat(svcAxCatalogLines([id], type));
+      b.classList.toggle('is-on'); b.setAttribute('aria-pressed', String(b.classList.contains('is-on'))); pickedHtml(); syncDuration(); recheck();
+    } else if (act === 'rmsvc') { S.services.splice(Number(b.getAttribute('data-i')), 1); pickedHtml(); [].forEach.call(el.querySelectorAll('[data-sax="svc"]'), function (x) { var on = S.services.some(function (s) { return s.catalogId === x.getAttribute('data-id'); }); x.classList.toggle('is-on', on); x.setAttribute('aria-pressed', String(on)); }); syncDuration(); recheck(); }
+    else if (act === 'addsvc') { var nm = val('#sax-cname').trim(); if (!nm) return; S.services = S.services.concat([{ catalogId: null, name: nm, price: Number(val('#sax-cprice')) || 0 }]); q('#sax-cname').value = ''; q('#sax-cprice').value = ''; pickedHtml(); }
+    else if (act === 'slot') { q('#sax-start').value = b.getAttribute('data-t'); recheck(); }
+    else if (act === 'useowner') { if (b.getAttribute('data-name') && !val('#sax-name')) q('#sax-name').value = b.getAttribute('data-name'); if (b.getAttribute('data-phone') && !val('#sax-phone')) q('#sax-phone').value = b.getAttribute('data-phone'); }
+  });
+  el.addEventListener('input', function (ev) {
+    var id = ev.target && ev.target.id;
+    if (id === 'sax-dur') S.durTouched = true;
+    if (id === 'sax-ovr') S.override = ev.target.value;
+    if (id === 'sax-asset') lookupAsset();
+  });
+  el.addEventListener('change', function (ev) { var id = ev.target && ev.target.id; if (id === 'sax-date' || id === 'sax-start' || id === 'sax-dur' || id === 'sax-staff') recheck(); });
+  pickedHtml(); recheck(); lookupAsset();
+  try { (q('#sax-name') || el).focus(); } catch (e) { /* focus is a nicety */ }
+  return rec;
+}
+
+/* ----- quick intake sheet (walk-ins): identifier + phone + service, big token at the end ----- */
+function svcOpenQuickIntake(typeKey, o) {
+  o = o || {};
+  var type = typeKey || svcAxType(), tpl = svcAxTpl(type), kind = tpl.assetKind || 'none', q = tpl.quick || { fields: [], required: [] };
+  if (!svcAxCan('svc:create')) { svcAxToast('You do not have permission to create jobs.', true); return null; }
+  var cat = svcAxCatalogFor(type), terms = tpl.terms || {}, S = { sel: [], saving: false, draftId: 'qi-' + svcAxNewId('') };
+  var covered = { cust_name: 1, cust_phone: 1, services: 1 }, plate = svcAxFieldBy(tpl, function (f) { return f.type === 'plate'; }), imei = svcAxFieldBy(tpl, function (f) { return f.type === 'imei'; });
+  if (plate) covered[plate.id] = 1; if (imei) covered[imei.id] = 1;
+  var extras = svcAxArr(q.required).filter(function (id) { return !covered[id]; }).map(function (id) { return svcAxFindField(tpl, id); }).filter(Boolean);
+  var needServices = svcAxArr(q.required).indexOf('services') !== -1;
+  var idLbl = kind === 'vehicle' ? 'Number plate' : (kind === 'phone' ? 'IMEI or serial' : (kind === 'equipment' ? 'Serial number' : ''));
+  var body = '<div class="sax-note bad" data-sax-errs style="display:none" role="alert"></div><div data-sax-form>' +
+    (idLbl ? '<div class="sax-field"><label for="sax-q-key">' + svcAxEsc(idLbl) + (plate && svcAxArr(q.required).indexOf(plate.id) === -1 ? ' (optional)' : '') + '</label><input class="sax-in" id="sax-q-key" autocomplete="off" autocapitalize="characters" value="' + svcAxEsc(o.assetKey || '') + '"><div data-sax-known class="sax-note" style="display:none"></div></div>' : '') +
+    '<div class="sax-row2"><div class="sax-field"><label for="sax-q-name">' + svcAxEsc(svcAxStripPlus(svcAxTerm('customer', type))) + ' name (optional)</label><input class="sax-in" id="sax-q-name" autocomplete="off"></div>' +
+    '<div class="sax-field"><label for="sax-q-phone">Phone (optional)</label><input class="sax-in" id="sax-q-phone" type="tel" inputmode="tel" autocomplete="off"></div></div>' +
+    (cat.length || needServices ? '<div class="sax-field"><span class="sax-lbl">' + svcAxEsc(svcAxStripPlus(svcAxTerm('services', type))) + (needServices ? ' (pick at least one)' : '') + '</span><div class="sax-chips" data-sax-svc>' + cat.map(function (s) { return '<button type="button" class="sax-chip" data-sax="svc" data-id="' + svcAxEsc(s.id) + '" aria-pressed="false">' + svcAxEsc(s.name) + (s.price ? ' · ' + svcAxEsc(svcAxMoney(s.price)) : '') + '</button>'; }).join('') + '</div></div>' : '') +
+    extras.map(function (f) { return svcAxExtraFieldHtml(f); }).join('') + '</div><div data-sax-done style="display:none"></div>';
+  var rec = svcAxOverlay('sax-quick', svcAxSheetHtml(svcAxStripPlus(terms.quickButton || 'Quick add'), tpl.label || '', body, '<button type="button" class="sax-btn" data-sax="close">Close</button><button type="button" class="sax-btn is-primary" data-sax="go" style="flex:1 1 auto">' + svcAxEsc((q.submitLabel) || 'Add to queue') + '</button>'));
+  var el = rec.el;
+  function g(id) { return el.querySelector(id); }
+  function showErrs(list) { var b = g('[data-sax-errs]'); b.innerHTML = list.map(function (e) { return '<div>' + svcAxEsc(e.msg) + '</div>'; }).join(''); b.style.display = list.length ? '' : 'none'; }
+  function lookup() {
+    var k = g('#sax-q-key'); if (!k) return; var key = k.value.trim(), box = g('[data-sax-known]'), found = null;
+    try { if (key.length >= 3 && typeof svcFindAssetByKey === 'function') found = svcFindAssetByKey(kind, key); } catch (e) { found = null; }
+    if (!found) { box.style.display = 'none'; return; }
+    var sum = null; try { if (typeof svcAssetSummary === 'function') sum = svcAssetSummary(found.id); } catch (e2) { sum = null; }
+    box.style.display = ''; box.innerHTML = 'Known: <b>' + svcAxEsc(found.label) + '</b>' + (found.ownerName ? ' · ' + svcAxEsc(found.ownerName) : '') + (sum && sum.last ? ' · last visit ' + svcAxEsc(svcAxDateOf(sum.last.at)) + (sum.last.services ? ' (' + svcAxEsc(sum.last.services) + ')' : '') : '') + (sum && sum.outstanding > 0 ? ' · owes ' + svcAxEsc(svcAxMoney(sum.outstanding)) : '');
+    if (found.ownerName && !g('#sax-q-name').value) g('#sax-q-name').value = found.ownerName;
+    if (found.ownerPhone && !g('#sax-q-phone').value) g('#sax-q-phone').value = found.ownerPhone;
+  }
+  function go() {
+    if (S.saving) return;
+    var values = {}; extras.forEach(function (f) { var x = g('[data-sax-x="' + f.id + '"]'); if (x) values[f.id] = x.value; });
+    S.saving = true;
+    var r = svcQuickIntake(type, { assetKey: g('#sax-q-key') ? g('#sax-q-key').value : '', name: g('#sax-q-name').value, phone: g('#sax-q-phone').value, serviceIds: S.sel, values: values, idemKey: S.draftId });
+    S.saving = false;
+    if (!r || !r.ok) { showErrs(r && r.errors && r.errors.length ? r.errors : [{ msg: (r && (r.why || r.error)) || 'Could not add that.' }]); return; }
+    g('[data-sax-form]').style.display = 'none'; showErrs([]);
+    var done = g('[data-sax-done]'); done.style.display = '';
+    done.innerHTML = '<div class="sax-note good">Added: <b>' + svcAxEsc(r.job.no) + '</b></div><div class="sax-token" aria-live="polite">' + svcAxEsc(r.token) + '</div><p style="text-align:center">' + (r.ahead ? svcAxEsc(String(r.ahead)) + ' ahead in the queue' : 'Next in the queue') + (r.knownAsset ? '<br>Known ' + svcAxEsc(r.knownAsset.label) : '') + '</p>' +
+      '<div class="sax-bar" style="justify-content:center"><button type="button" class="sax-btn is-primary" data-sax="openjob" data-id="' + svcAxEsc(r.job.id) + '">Open ' + svcAxEsc(svcAxStripPlus(svcAxTerm('job', type)).toLowerCase()) + '</button><button type="button" class="sax-btn" data-sax="again">Add another</button></div>';
+    g('.svu-pfoot').style.display = 'none';
+    try { if (typeof svcRenderHome === 'function') svcRenderHome(); } catch (e) { /* refreshed on the next open */ }
+    svcAxRefreshAll();
+  }
+  el.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-sax]') : null; if (!b || !el.contains(b)) return;
+    var act = b.getAttribute('data-sax');
+    if (act === 'close') rec.close();
+    else if (act === 'go') go();
+    else if (act === 'svc') { var id = b.getAttribute('data-id'), i = S.sel.indexOf(id); if (i === -1) S.sel.push(id); else S.sel.splice(i, 1); b.classList.toggle('is-on', i === -1); b.setAttribute('aria-pressed', String(i === -1)); }
+    else if (act === 'openjob') { rec.close(); if (typeof svcOpenJob === 'function') svcOpenJob(b.getAttribute('data-id')); }
+    else if (act === 'again') { rec.close(); svcOpenQuickIntake(type, o); }
+  });
+  el.addEventListener('input', function (ev) { if (ev.target && ev.target.id === 'sax-q-key') lookup(); });
+  lookup();
+  try { (g('#sax-q-key') || g('#sax-q-name')).focus(); } catch (e) { /* focus is a nicety */ }
+  return rec;
+}
+function svcAxFindField(tpl, id) { return svcAxFieldBy(tpl, function (f) { return f.id === id; }); }
+function svcAxExtraFieldHtml(f) {
+  var lbl = svcAxEsc(f.label || f.id), id = 'sax-x-' + svcAxEsc(f.id), t = f.type, inner;
+  if (t === 'dropdown' && Array.isArray(f.options)) inner = '<select class="sax-in" id="' + id + '" data-sax-x="' + svcAxEsc(f.id) + '"><option value="">Select...</option>' + f.options.map(function (o) { return '<option value="' + svcAxEsc(o.v) + '">' + svcAxEsc(o.l) + '</option>'; }).join('') + '</select>';
+  else if (t === 'longtext') inner = '<textarea class="sax-in" id="' + id + '" rows="2" data-sax-x="' + svcAxEsc(f.id) + '" placeholder="' + svcAxEsc(f.placeholder || '') + '"></textarea>';
+  else if (t === 'date') inner = '<input class="sax-in" id="' + id + '" type="date" data-sax-x="' + svcAxEsc(f.id) + '">';
+  else if (t === 'number' || t === 'money') inner = '<input class="sax-in" id="' + id + '" inputmode="decimal" data-sax-x="' + svcAxEsc(f.id) + '">';
+  else inner = '<input class="sax-in" id="' + id + '" data-sax-x="' + svcAxEsc(f.id) + '" placeholder="' + svcAxEsc(f.placeholder || '') + '">';
+  return '<div class="sax-field"><label for="' + id + '">' + lbl + '</label>' + inner + '</div>';
+}
+
+/* ===== drawer tab: the booking a job came from ===== */
+function svcAxDrawerTab(job, host) {
+  var a = job && job.appointmentId ? svcAxFind(job.appointmentId) : null;
+  if (!a) { host.innerHTML = '<div class="sax"><div class="sax-note">The booking this job came from is not on this device (it may be archived).</div></div>'; return; }
+  host.innerHTML = '<div class="sax">' + svcAxDetailBody(a) + '</div>';
+}
+
+/* ===== registration ===== */
+function svcAxRegister() {
+  if (typeof svcHomeViewRegister === 'function') {
+    var type = svcAxType(), label = svcAxStripPlus(svcAxTerm('appointmentsLabel', type)).replace(/^[^A-Za-z0-9]+/, '') || 'Bookings';
+    svcHomeViewRegister('appts', { label: label, order: 40, render: function (host, ctx) { host.__saxCtx = ctx; return svcRenderAppts(host, ctx); }, visibleWhen: function (ctx) { var t = (ctx && ctx.type) || svcAxType(), ap = svcAxTpl(t).appointments; return !!(ap && ap.mode && ap.mode !== 'off') || svcAxPool().some(function (a) { return a && (a._legacy || a.serviceType === t); }); } });
+  }
+  if (typeof svcDrawerRegister === 'function') {
+    svcDrawerRegister('appointment', { label: '📅 Booking', order: 25, render: svcAxDrawerTab, visibleWhen: function (job) { return !!(job && job.appointmentId); } });
+  }
+  return true;
+}
+function svcAxSubscribe() {
+  if (SVC_AX.sub) return; SVC_AX.sub = true;
+  try {
+    if (typeof svcOn === 'function') {
+      svcOn('appt:changed', function () { svcAxRefreshAll(); try { var top = typeof svcUiTop === 'function' ? svcUiTop('sax-detail') : null; if (top && top.refresh) top.refresh(); } catch (e) { /* sheet gone */ } });
+      svcOn('render:home', function () { svcAxRefreshAll(); });
+      svcOn('config:changed', function () { svcAxRegister(); svcAxRefreshAll(); });
+      svcOn('job:status', function (p) {
+        var job = p && (p.job || p.rec); if (!job || !job.appointmentId || Number(job.phase) !== 3) return;
+        var a = svcAxFind(job.appointmentId); if (!a || a._legacy || a.status === 'completed') return;
+        svcAxCommit(function (d) { if (d.status !== 'checked_in') return false; d.status = 'completed'; d.closedAt = d.closedAt || svcAxNow(); svcAxLogRow(d, 'completed', 'checked_in', 'completed', job.no); return d; }, a.id, false, 'appt:changed', 'completed');
+      });
+    }
+  } catch (e) { /* events are optional */ }
+}
+
+/* ----- the classic Bookings tab: while the new screens are on and the type takes bookings, the same calendar is shown there too (classic list stays one tap away) ----- */
+function svcAxTabEngine() {
+  try { if (typeof svcClassicMode === 'function' && svcClassicMode()) return false; } catch (e) { return false; }
+  var ap = svcAxTpl().appointments; return !!(ap && ap.mode && ap.mode !== 'off');
+}
+function svcAxMountTab() {
+  if (typeof document === 'undefined') return false;
+  var tab = document.getElementById('bookings-tab'); if (!tab) return false;
+  var root = document.getElementById('svc-appts-tab-root'), legacy = tab.querySelector(':scope > .panel');
+  if (!svcAxTabEngine()) { if (root) root.style.display = 'none'; if (legacy) legacy.style.display = ''; return false; }
+  if (!root) {
+    root = document.createElement('div'); root.id = 'svc-appts-tab-root'; root.className = 'panel';
+    tab.insertBefore(root, tab.firstChild);
+    var tg = document.createElement('div'); tg.id = 'svc-appts-classic-toggle'; tg.style.cssText = 'margin:8px 0';
+    tg.innerHTML = '<button type="button" class="sax-btn is-sm" id="svc-appts-classic-btn">Classic bookings list</button>';
+    root.parentNode.insertBefore(tg, root.nextSibling);
+    tg.addEventListener('click', function () { if (!legacy) return; var on = legacy.style.display === 'none'; legacy.style.display = on ? '' : 'none'; if (on && typeof renderBookingsList === 'function') { try { renderBookingsList(); } catch (e) { /* classic list only */ } } });
+  }
+  root.style.display = ''; var t2 = document.getElementById('svc-appts-classic-toggle'); if (t2) t2.style.display = '';
+  if (legacy) legacy.style.display = 'none';
+  root.__saxCtx = {};
+  svcRenderAppts(root, {});
+  return true;
+}
+function svcAxWatchTab() {
+  if (typeof document === 'undefined' || SVC_AX.tabObs) return;
+  var tab = document.getElementById('bookings-tab'); if (!tab || typeof MutationObserver === 'undefined') return;
+  SVC_AX.tabObs = new MutationObserver(function () { if (tab.classList.contains('active')) { try { svcAxMountTab(); } catch (e) { /* classic tab stays usable */ } } });
+  SVC_AX.tabObs.observe(tab, { attributes: true, attributeFilter: ['class'] });
+  if (tab.classList.contains('active')) { try { svcAxMountTab(); } catch (e) { /* classic tab stays usable */ } }
+}
+
+svcAxRegister();
+try { if (typeof document !== 'undefined') { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', svcAxWatchTab); else svcAxWatchTab(); } } catch (e) { /* no DOM */ }
+svcAxSubscribe();
+</script>

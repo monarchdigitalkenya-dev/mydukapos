@@ -102,6 +102,7 @@ export async function onRequestPost(context) {
     preferredName: body.preferredName,
     phone: body.phone,
     email: body.email,
+    svcType: body.svcType,          // Services POS business type (optional)
   });
   const origin = new URL(context.request.url).origin;
 

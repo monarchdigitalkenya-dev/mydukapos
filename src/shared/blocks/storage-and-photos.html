@@ -398,7 +398,7 @@
 
         var QUOTA = 5000000, TRIGGER = 0.8, TARGET = 0.6;
         var KEEP_STEPS = [180, 120, 90, 60, 30, 14, 7];
-        var FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'];
+        var FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog', 'svcJobs', 'svcAppointments'];      // svc*: Services engine (their accessors return null in apps that do not have them)
         var DB = 'pos_local_archive', STORE = 'archives';
         var running = false, lastRun = 0;
         window.__resetAutoArchiveThrottle = function () { lastRun = 0; };      // tests
@@ -412,7 +412,9 @@
             tradeCredits: function () { return typeof tradeCredits === 'undefined' ? null : tradeCredits; },
             attendanceLog: function () { return typeof attendanceLog === 'undefined' ? null : attendanceLog; },
             adminActivityLog: function () { return typeof adminActivityLog === 'undefined' ? null : adminActivityLog; },
-            dispatchLog: function () { return typeof dispatchLog === 'undefined' ? null : dispatchLog; }
+            dispatchLog: function () { return typeof dispatchLog === 'undefined' ? null : dispatchLog; },
+            svcJobs: function () { return typeof svcJobs === 'undefined' ? null : svcJobs; },
+            svcAppointments: function () { return typeof svcAppointments === 'undefined' ? null : svcAppointments; }
         };
 
         function usedChars() {
@@ -490,6 +492,8 @@
             if (!r || typeof r !== 'object') return false;
             if (f === 'tradeCredits') return !r._deleted && r.status !== 'settled' && !r.settledAt;
             if (f === 'attendanceLog') return !r._deleted && r.clockIn != null && (r.clockOut == null || r.clockOut === '');
+            // Services engine: a job / appointment not yet closed is live work (same rule as isOpenRecord in functions/api/_state-store.js)
+            if (f === 'svcJobs' || f === 'svcAppointments') return !r._deleted && r.closedAt == null;
             return false;
         }
         function splitOld(cutoff) {

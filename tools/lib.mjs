@@ -85,6 +85,7 @@ export function regionText(names, lib) {
 }
 
 // Whole HTML+script blocks that are identical in every app (e.g. the Hardware icon).
+// Per-block options: owner (also the owner console), skip:[modules] (not these), only:[modules] (ONLY these: the svc-* Services engine blocks), perModule.
 export const SHARED_BLOCKS = {
   'hardware-quick-access': { startMarker: '<!-- HARDWARE QUICK-ACCESS' },
   'hold-sale': { startMarker: '<!-- HOLD SALE' },
@@ -110,6 +111,26 @@ export const SHARED_BLOCKS = {
   // Orders tab (purchase orders) sits next to Restock. Water's Restocking tab is a different design
   // (materials vs items), so it does not get this block.
   'orders-tab': { startMarker: '<!-- ORDERS TAB', skip: ['water/index.html'] },
+  // Services engine (SERVICES_ARCHITECTURE.md 2.1): 18 blocks, written ONLY into services/index.html (`only`), in dependency order (the order below is the
+  // order of the marker pairs on that page). Each file in src/shared/blocks/ starts with a header comment naming its owner and contract.
+  'svc-core': { startMarker: '<!-- SVC CORE', only: ['services/index.html'] },
+  'svc-templates': { startMarker: '<!-- SVC TEMPLATES', only: ['services/index.html'] },
+  'svc-form': { startMarker: '<!-- SVC FORM', only: ['services/index.html'] },
+  'svc-store': { startMarker: '<!-- SVC STORE', only: ['services/index.html'] },
+  'svc-ui-home': { startMarker: '<!-- SVC UI HOME', only: ['services/index.html'] },
+  'svc-metrics': { startMarker: '<!-- SVC METRICS', only: ['services/index.html'] },
+  'svc-ui-board': { startMarker: '<!-- SVC UI BOARD', only: ['services/index.html'] },
+  'svc-appts': { startMarker: '<!-- SVC APPOINTMENTS', only: ['services/index.html'] },
+  'svc-reports': { startMarker: '<!-- SVC REPORTS', only: ['services/index.html'] },
+  'svc-catalog': { startMarker: '<!-- SVC CATALOG', only: ['services/index.html'] },
+  'svc-inventory': { startMarker: '<!-- SVC INVENTORY', only: ['services/index.html'] },
+  'svc-quote': { startMarker: '<!-- SVC QUOTE', only: ['services/index.html'] },
+  'svc-pay': { startMarker: '<!-- SVC PAY', only: ['services/index.html'] },
+  'svc-notify': { startMarker: '<!-- SVC NOTIFY', only: ['services/index.html'] },
+  'svc-perms': { startMarker: '<!-- SVC PERMS', only: ['services/index.html'] },
+  'svc-config-ui': { startMarker: '<!-- SVC CONFIG UI', only: ['services/index.html'] },
+  'svc-photos': { startMarker: '<!-- SVC PHOTOS', only: ['services/index.html'] },
+  'svc-custom': { startMarker: '<!-- SVC CUSTOM', only: ['services/index.html'] },
 };
 export function blockRegex(name) {
   return new RegExp(`<!-- @shared-block:${name}:begin -->[\\s\\S]*?<!-- @shared-block:${name}:end -->`);

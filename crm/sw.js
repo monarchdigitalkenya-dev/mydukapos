@@ -13,9 +13,9 @@
  *  - Kill switch: opening /crm/?nosw=1 unregisters it and clears its caches.
  */
 'use strict';
-const SW_VERSION = 'crm-sw-1';
+const SW_VERSION = 'crm-sw-2';     // zip 162: crm-admin-more.js joins the shell; every answer from the set carries X-Crm-Set
 const META = 'crm-sw-meta', SET_PREFIX = 'crm-set-', POINTER = '/__crm_sw_current';
-const SHELL = ['/crm/index.html', '/crm/crm.css', '/crm/crm-core.js', '/crm/crm-leads.js', '/crm/crm-inbox.js', '/crm/crm-admin.js', '/crm/crm-start.js', '/crm/manifest.webmanifest', '/crm/icon.svg'];
+const SHELL = ['/crm/index.html', '/crm/crm.css', '/crm/crm-core.js', '/crm/crm-leads.js', '/crm/crm-inbox.js', '/crm/crm-admin.js', '/crm/crm-admin-more.js', '/crm/crm-start.js', '/crm/manifest.webmanifest', '/crm/icon.svg'];
 const MIN_GAP_MS = 60000;
 let lastCheck = 0, checking = null;
 
@@ -64,6 +64,10 @@ self.addEventListener('message', (event) => {
   if (d.type === 'crm-clear') event.waitUntil((async () => { for (const k of await caches.keys()) if (k.startsWith('crm-')) await caches.delete(k); })());
 });
 
+// zip 162: the page learns which set answered (X-Crm-Set) so it can tell that a lazily loaded file (crm-admin-more.js) belongs to the same release as the page it runs in
+function stamped(res, name) {
+  try { const h = new Headers(res.headers); h.set('X-Crm-Set', name); return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h }); } catch (e) { return res; }
+}
 const shellKey = (url) => {
   if (url.pathname === '/crm' || url.pathname === '/crm/' || url.pathname === '/crm/index.html') return '/crm/index.html';
   return SHELL.includes(url.pathname) ? url.pathname : null;
@@ -80,6 +84,6 @@ self.addEventListener('fetch', (event) => {
     const name = await currentSet(); let hit = null;
     if (name) { try { hit = await (await caches.open(name)).match(key); } catch (e) { hit = null; } }
     if (Date.now() - lastCheck > MIN_GAP_MS) event.waitUntil(revalidate(true));          // stale-while-revalidate
-    return hit || fetch(req);
+    return hit ? stamped(hit, name) : fetch(req);
   })());
 });

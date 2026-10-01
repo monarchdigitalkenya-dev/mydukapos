@@ -230,7 +230,7 @@
     const filtBtn = h('button', { class: 'btn only-narrow-inline', type: 'button', 'aria-expanded': 'false', onclick: (e) => { const o = adv.classList.toggle('open'); e.currentTarget.setAttribute('aria-expanded', String(o)); } }, ic('filter'), 'Filters');
     const filters = h('div', null, h('div', { class: 'filters' }, q, filtBtn), adv);
     q.addEventListener('input', C.debounce(() => { const v = q.value.trim(); if (v === (f.q || '')) return; f.q = v; S.page = 1; load(); }, 250));
-    function queryOf() { const o = Object.assign({}, f, { sort: S.sort, dir: S.dir, page: S.page, pageSize: S.pageSize }); if (mode === 'pool') o.pool = 1; if (mode === 'mine') o.staff = 'me'; return o; }
+    function queryOf() { const o = Object.assign({}, f, { sort: S.sort, dir: S.dir, page: isKeyset() ? 1 : S.page, pageSize: S.pageSize }); if (mode === 'pool') o.pool = 1; if (mode === 'mine') o.staff = 'me'; return o; }
     function renderBulk() {
       if (!sel_.size || mode === 'pool') return mount(bulk);
       const st = sel(C.statusPick(true, 'Set status...'), ''), cl = sel(cfgOptions('classifications', true, 'Set class...'), '');
@@ -239,31 +239,64 @@
       st.addEventListener('change', () => run('status', st.value)); cl.addEventListener('change', () => run('classification', cl.value));
       mount(bulk, h('div', { class: 'bulkbar' }, h('b', null, sel_.size + ' selected'), can('leads.assign') ? btn('Assign...', () => assignDialog([...sel_], () => { sel_.clear(); load(); }), 'sm') : null, can('leads.edit') ? [st, cl] : null, btn('Clear', () => { sel_.clear(); load(); }, 'sm ghost', { style: { color: '#fff' } })));
     }
+    // zip 162: when the list is sorted by Created or Updated (the two sorts the keyset API supports) it scrolls: the next 25 leads are fetched with `after=<cursor>&count=0` as the
+    // bottom comes into view (IntersectionObserver), with a "Load more" button as the fallback (no IntersectionObserver, or a slow scroll). Every other sort keeps the page numbers.
+    const KEYSET_SORTS = ['created', 'created_at', 'updated', 'updated_at'];
+    const isKeyset = () => KEYSET_SORTS.indexOf(S.sort) >= 0;
+    let acc = [], cursor = null, moreBusy = false, io = null, rows = null, lastCanRev = true;
+    const stopIO = () => { if (io) { try { io.disconnect(); } catch (e) { /* ignore */ } io = null; } };
     function draw(d) {
-      const items = listOf(d, 'leads').map(LD); lastTotal = Number(d.total != null ? d.total : items.length);
-      if (!items.length) { mount(listBox, empty(mode === 'pool' ? 'No unclaimed leads right now. New leads land here first.' : 'No leads match these filters.', 'users', can('leads.create') ? btn('Add a lead', () => addLeadDialog(), 'primary') : null)); return; }
-      const allBox = inp('checkbox', { 'aria-label': 'Select all on this page', onchange: () => { items.forEach((l) => allBox.checked ? sel_.add(l.id) : sel_.delete(l.id)); load(); } });
-      const canRev = d.canSeeRevenue !== false;
-      const cols = COLS.filter((c) => (mode !== 'pool' || !['owner', 'nextFollow', 'lastContact', 'revenue'].includes(c[0])) && (canRev || c[0] !== 'revenue'));
-      const thead = h('tr', null, mode === 'pool' ? null : h('th', null, allBox), cols.map(([k, label, sk]) => h('th', { class: sk ? 'sortable' : '', tabindex: sk ? '0' : null, role: sk ? 'button' : null, 'aria-sort': sk && S.sort === sk ? (S.dir === 'asc' ? 'ascending' : 'descending') : null,
-        onclick: sk ? () => { if (S.sort === sk) S.dir = S.dir === 'asc' ? 'desc' : 'asc'; else { S.sort = sk; S.dir = 'asc'; } load(); } : null, onkeydown: sk ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } } : null }, label + (S.sort === sk ? (S.dir === 'asc' ? ' ▲' : ' ▼') : ''))), h('th', null, ''));
-      const tbody = h('tbody', null, items.map((l) => h('tr', { class: 'click', tabindex: '0', onclick: () => C.go('#/leads/' + l.id), onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) C.go('#/leads/' + l.id); } },
+      acc = listOf(d, 'leads').map(LD); lastTotal = Number(d.total != null ? d.total : acc.length); cursor = isKeyset() && d.hasMore && d.nextCursor ? d.nextCursor : null; lastCanRev = d.canSeeRevenue !== false; moreBusy = false;
+      paint();
+    }
+    function tableRow(l, cols) {
+      return h('tr', { class: 'click', tabindex: '0', onclick: () => C.go('#/leads/' + l.id), onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) C.go('#/leads/' + l.id); } },
         mode === 'pool' ? null : h('td', { onclick: (e) => e.stopPropagation() }, inp('checkbox', { checked: sel_.has(l.id), 'aria-label': 'Select ' + l.name, onchange: (e) => { e.target.checked ? sel_.add(l.id) : sel_.delete(l.id); renderBulk(); } })),
-        cols.map(([k]) => h('td', null, cell(l, k))), h('td', { style: { whiteSpace: 'nowrap' } }, mode === 'pool' || (!l.ownerId && can('leads.claim')) ? (can('leads.claim') ? btn('Claim', (e) => { e.stopPropagation(); claim(l.id, load); }, 'sm primary') : null) : quickBtns(l)))));
-      const wide = window.innerWidth >= 820;   // zip 161: build ONE layout (the table or the cards), not both (halves the DOM)
-      const table = !wide ? null : h('div', { class: 'tablewrap only-wide' }, h('table', { class: 't' }, h('thead', null, thead), tbody));
-      const cards = wide ? null : h('div', { class: 'only-narrow' }, items.map((l) => h('div', { class: 'lcard', tabindex: '0', onclick: () => C.go('#/leads/' + l.id), onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) C.go('#/leads/' + l.id); } }, C.avatar(l.name),
+        cols.map(([k]) => h('td', null, cell(l, k))), h('td', { style: { whiteSpace: 'nowrap' } }, mode === 'pool' || (!l.ownerId && can('leads.claim')) ? (can('leads.claim') ? btn('Claim', (e) => { e.stopPropagation(); claim(l.id, load); }, 'sm primary') : null) : quickBtns(l)));
+    }
+    function leadCard(l) {
+      return h('div', { class: 'lcard', tabindex: '0', onclick: () => C.go('#/leads/' + l.id), onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) C.go('#/leads/' + l.id); } }, C.avatar(l.name),
         h('div', { class: 'grow' }, h('div', { class: 'row between' }, h('b', { class: 'trunc' }, l.name), cfgPill('statuses', l.status)), h('div', { class: 'small muted trunc' }, [l.phone, l.source, l.campaign, ownerLabel(l)].filter(Boolean).join(' - ')),
           l.product || l.dealValue != null ? h('div', { class: 'tiny muted trunc' }, [l.product, l.dealValue != null ? money(l.dealValue) : ''].filter(Boolean).join(' - ')) : null,
           l.lastContact ? h('div', { class: 'tiny faint' }, 'Last contact ' + rel(l.lastContact)) : null,
           l.nextFollow ? h('div', { class: 'tiny', style: C.ts(l.nextFollow) < Date.now() ? { color: 'var(--danger)' } : null }, 'Follow-up ' + fmtDT(l.nextFollow)) : null,
-          h('div', { class: 'actions' }, !l.ownerId && can('leads.claim') ? btn('Claim', (e) => { e.stopPropagation(); claim(l.id, load); }, 'sm primary') : null, quickBtns(l))))));
-      mount(listBox, table, cards, C.pager(S, lastTotal, (p) => { S.page = p; load(); }));
+          h('div', { class: 'actions' }, !l.ownerId && can('leads.claim') ? btn('Claim', (e) => { e.stopPropagation(); claim(l.id, load); }, 'sm primary') : null, quickBtns(l))));
+    }
+    const colsNow = () => COLS.filter((c) => (mode !== 'pool' || !['owner', 'nextFollow', 'lastContact', 'revenue'].includes(c[0])) && (lastCanRev || c[0] !== 'revenue'));
+    const moreBox = h('div', { class: 'loadmore', style: { textAlign: 'center', margin: '12px 0' } });
+    const drawMore = () => { mount(moreBox, h('div', { class: 'small muted' }, 'Showing ' + acc.length + (lastTotal > acc.length ? ' of ' + lastTotal : '') + ' leads.'), cursor ? btn(moreBusy ? 'Loading...' : 'Load more', loadMore, '', { disabled: moreBusy }) : null, cursor ? h('div', { class: 'loadsentinel', style: { height: '1px' } }) : null); };
+    function watchBottom() {
+      stopIO(); const sentinel = moreBox.querySelector('.loadsentinel'); if (!cursor || !sentinel || typeof window.IntersectionObserver !== 'function') return;
+      try { io = new window.IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) loadMore(); }, { rootMargin: '400px' }); io.observe(sentinel); } catch (e) { io = null; }
+    }
+    async function loadMore() {
+      if (moreBusy || !cursor || !ctx.alive()) return;
+      moreBusy = true; drawMore(); const seq = loadSeq;
+      try {
+        const d = await api('/leads', { query: Object.assign(queryOf(), { after: cursor, count: 0 }) }); if (!ctx.alive() || seq !== loadSeq) return;
+        const more = listOf(d, 'leads').map(LD); acc = acc.concat(more); cursor = d.hasMore && d.nextCursor ? d.nextCursor : null;
+        const cols = colsNow(); more.forEach((l) => { if (rows && rows.tbody) rows.tbody.appendChild(tableRow(l, cols)); if (rows && rows.cards) rows.cards.appendChild(leadCard(l)); });
+      } catch (e) { fail(e); } finally { moreBusy = false; if (ctx.alive()) { drawMore(); watchBottom(); } }
+    }
+    function paint() {
+      stopIO(); rows = null; const items = acc;
+      if (!items.length) { mount(listBox, empty(mode === 'pool' ? 'No unclaimed leads right now. New leads land here first.' : 'No leads match these filters.', 'users', can('leads.create') ? btn('Add a lead', () => addLeadDialog(), 'primary') : null)); return; }
+      const allBox = inp('checkbox', { 'aria-label': 'Select all loaded leads', onchange: () => { acc.forEach((l) => allBox.checked ? sel_.add(l.id) : sel_.delete(l.id)); load(); } });
+      const cols = colsNow();
+      const thead = h('tr', null, mode === 'pool' ? null : h('th', null, allBox), cols.map(([k, label, sk]) => h('th', { class: sk ? 'sortable' : '', tabindex: sk ? '0' : null, role: sk ? 'button' : null, 'aria-sort': sk && S.sort === sk ? (S.dir === 'asc' ? 'ascending' : 'descending') : null,
+        onclick: sk ? () => { if (S.sort === sk) S.dir = S.dir === 'asc' ? 'desc' : 'asc'; else { S.sort = sk; S.dir = 'asc'; } load(); } : null, onkeydown: sk ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } } : null }, label + (S.sort === sk ? (S.dir === 'asc' ? ' \u25B2' : ' \u25BC') : ''))), h('th', null, ''));
+      const tbody = h('tbody', null, items.map((l) => tableRow(l, cols)));
+      const wide = window.innerWidth >= 820;   // zip 161: build ONE layout (the table or the cards), not both (halves the DOM)
+      const table = !wide ? null : h('div', { class: 'tablewrap only-wide' }, h('table', { class: 't' }, h('thead', null, thead), tbody));
+      const cards = wide ? null : h('div', { class: 'only-narrow' }, items.map(leadCard));
+      rows = { tbody: wide ? tbody : null, cards };
+      if (isKeyset()) { drawMore(); mount(listBox, table, cards, moreBox); watchBottom(); }
+      else mount(listBox, table, cards, C.pager(S, lastTotal, (p) => { S.page = p; load(); }));
     }
     let loadCtl = null, loadSeq = 0, lastD = null;
-    let wasWide = window.innerWidth >= 820; const onResize = () => { if (!ctx.alive()) return window.removeEventListener('resize', onResize); const w = window.innerWidth >= 820; if (w !== wasWide) { wasWide = w; if (lastD) draw(lastD); } }; window.addEventListener('resize', onResize);
+    let wasWide = window.innerWidth >= 820; const onResize = () => { if (!ctx.alive()) return window.removeEventListener('resize', onResize); const w = window.innerWidth >= 820; if (w !== wasWide) { wasWide = w; if (lastD) paint(); } }; window.addEventListener('resize', onResize);
     async function load() {
-      renderBulk(); mount(listBox, loading());
+      renderBulk(); stopIO(); mount(listBox, loading());
       if (loadCtl) { try { loadCtl.abort(); } catch (e) { /* ignore */ } } loadCtl = window.AbortController ? new AbortController() : null; const my = ++loadSeq;
       try { const d = await api('/leads', { query: queryOf(), signal: loadCtl ? loadCtl.signal : undefined }); if (!ctx.alive() || my !== loadSeq) return; lastD = d; draw(d); } catch (e) { if (ctx.alive()) mount(listBox, errbox(e, load)); }
     }

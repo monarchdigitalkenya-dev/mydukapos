@@ -223,6 +223,7 @@ export async function onRequestPost(context) {
         clientName: account.fullName,
         email,
         source: 'website',
+        svcType: body.svcType,          // Services POS business type (optional passthrough)
       });
       account.demoUsed = true;
       account.demoClientId = record.id;
@@ -367,6 +368,7 @@ export async function onRequestPost(context) {
       phone: account.phone,
       clientName: account.fullName,
       email: account.email,
+      svcType: body.svcType,          // Services POS business type (optional passthrough)
     });
     account.demoUsed = true;
     account.demoClientId = record.id;

@@ -1,0 +1,524 @@
+<!-- SVC UI BOARD ---------------------------------------------------------------------------------------
+     Services engine block "svc-ui-board". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B2-Q. Nobody else edits this file.
+     STATE: IMPLEMENTED (B2-Q): style element + one script element below this comment.
+     KIND: DOM. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcRenderBoard(host, ctx) (live queue board), svcRenderKpis(el, typeKey) (called by the home), svcRenderDashboardView / svcRenderSearchView (home views "Dashboard" / "Search"),
+               svcDashboardHtml() (main dashboard cards, #svc-dash-cards), svcBdGoto(group), svcBdRefreshAll(). Registers the views through svcHomeViewRegister and refreshes through svcOn events + a 20 s timer.
+     SPEC: SERVICES_ARCHITECTURE.md 6.7, 7, 8.2 B2-Q (master prompt 14, 25, 26, 32, 49). Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<style id="svc-board-css">
+/* Queue board / dashboards / search (sqb-*). Colours come only from the app's tokens (dark-mode safe); touch targets >= 44px; inputs 16px. */
+.sqb, .sqk-strip { color: var(--dark); font-size: 15px; line-height: 1.35; }
+.sqb *, .sqk-strip * { box-sizing: border-box; }
+.sqb-top { display: flex; align-items: center; justify-content: space-between; margin: 0 0 8px; }
+.sqb-upd { font-size: 12px; opacity: .7; }
+.sqb-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; min-width: 44px; padding: 0 14px; margin: 0; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); font-size: 14px; font-weight: 600; cursor: pointer; width: auto; }
+.sqb-btn:active { transform: translateY(1px); }
+.sqb-btn[disabled] { opacity: .55; cursor: not-allowed; }
+.sqb-btn.sqb-go { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sqb-btn.sqb-needs { border-style: dashed; }
+.sqb-counts { display: flex; overflow-x: auto; margin: 0 0 10px; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.sqb-chip { flex: 0 0 auto; display: flex; flex-direction: column; justify-content: center; min-width: 78px; margin-right: 8px; padding: 6px 12px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-surface); text-align: center; }
+.sqb-chip span { font-size: 12px; opacity: .75; white-space: nowrap; }
+.sqb-chip b { font-size: 20px; line-height: 1.2; }
+.sqb-chip.is-total { background: var(--tint-info-bg); }
+.sqb-tabs { display: none; overflow-x: auto; margin: 0 0 8px; border-bottom: 1px solid var(--border-color); -webkit-overflow-scrolling: touch; }
+.sqb-tabs button { flex: 0 0 auto; min-height: 46px; padding: 0 14px; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--dark); font-size: 14px; font-weight: 600; cursor: pointer; width: auto; white-space: nowrap; }
+.sqb-tabs button b { margin-left: 6px; padding: 1px 7px; border-radius: 10px; background: var(--bg-surface-alt); font-size: 12px; }
+.sqb-tabs button.is-on { border-bottom-color: var(--accent); color: var(--accent); }
+.sqb-cols { display: flex; align-items: flex-start; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 6px; }
+.sqb-col { flex: 1 1 250px; min-width: 250px; max-width: 340px; margin-right: 10px; border: 1px solid var(--border-color); border-top: 4px solid var(--sqb-c, #7f8c8d); border-radius: 12px; background: var(--bg-surface-alt); padding: 8px; }
+.sqb-col.is-focus { outline: 2px solid var(--accent); }
+.sqb-col > header { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 8px; font-weight: 700; }
+.sqb-col > header b { min-width: 26px; text-align: center; padding: 1px 8px; border-radius: 12px; background: var(--bg-surface); border: 1px solid var(--border-color); font-size: 13px; }
+.sqb-empty { padding: 18px 8px; text-align: center; font-size: 13px; opacity: .65; }
+.sqb-card { display: block; position: relative; width: 100%; margin: 0 0 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-left: 5px solid var(--sqb-s, #7f8c8d); border-radius: 12px; background: var(--bg-surface); color: var(--dark); cursor: pointer; text-align: left; min-height: 64px; }
+.sqb-card:focus { outline: 2px solid var(--accent); }
+.sqb-card.is-overdue { border-color: var(--danger); border-left-color: var(--danger); }
+.sqb-r1 { display: flex; align-items: center; justify-content: space-between; }
+.sqb-plate { font-weight: 800; font-size: 16px; letter-spacing: .02em; word-break: break-word; margin-right: 8px; }
+.sqb-pill { display: inline-block; padding: 2px 9px; border-radius: 12px; font-size: 11px; font-weight: 700; color: #fff; background: #7f8c8d; white-space: nowrap; }
+.sqb-r2, .sqb-r3, .sqb-r4, .sqb-r5 { margin-top: 3px; font-size: 13px; }
+.sqb-r2 { opacity: .85; }
+.sqb-r3 { font-weight: 600; }
+.sqb-r4 { opacity: .85; }
+.sqb-r5 { opacity: .85; }
+.sqb-r6 { display: flex; flex-wrap: wrap; align-items: center; margin-top: 5px; }
+.sqb-tag { display: inline-block; margin: 2px 6px 2px 0; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--bg-surface-alt); border: 1px solid var(--border-color); color: var(--dark); }
+.sqb-tag.late { background: var(--tint-danger-bg); color: var(--danger); border-color: transparent; font-weight: 700; }
+.sqb-tag.eta { background: var(--tint-warning-bg); color: var(--tint-warning-text); border-color: transparent; }
+.sqb-tag.bal { background: var(--tint-danger-bg); color: var(--danger); border-color: transparent; font-weight: 700; }
+.sqb-tag.paid { background: var(--tint-success-bg); color: var(--tint-success-text); border-color: transparent; }
+.sqb-moves { display: flex; flex-wrap: wrap; margin-top: 6px; }
+.sqb-moves .sqb-btn { margin: 0 8px 6px 0; min-height: 44px; }
+.sqb-note { background: var(--tint-info-bg); border-radius: 10px; padding: 10px 12px; margin: 8px 0; font-size: 14px; }
+.sqb-note button { background: none; border: 0; color: var(--accent); min-height: 44px; padding: 0 8px; font-size: 14px; cursor: pointer; width: auto; }
+/* dashboard */
+.sqb-range { display: flex; overflow-x: auto; margin: 0 0 10px; }
+.sqb-range button { flex: 0 0 auto; min-height: 44px; margin-right: 8px; padding: 0 16px; border: 1px solid var(--border-color); border-radius: 22px; background: var(--bg-surface); color: var(--dark); font-size: 14px; cursor: pointer; width: auto; }
+.sqb-range button.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sqb-tiles { display: flex; flex-wrap: wrap; margin: 0 -5px 10px; }
+.sqb-tile { display: block; flex: 1 1 calc(50% - 10px); min-width: 140px; margin: 5px; padding: 12px 14px; border: 1px solid var(--border-color); border-left: 5px solid var(--sqb-t, #7f8c8d); border-radius: 12px; background: var(--bg-surface); color: var(--dark); text-align: left; min-height: 82px; width: auto; }
+button.sqb-tile { cursor: pointer; font-size: 15px; }
+.sqb-tile .l { font-size: 13px; opacity: .8; }
+.sqb-tile .v { font-size: 26px; font-weight: 800; line-height: 1.2; margin: 2px 0; word-break: break-word; }
+.sqb-tile .s { font-size: 12px; opacity: .7; }
+.sqb-tile.tone-good { --sqb-t: var(--success); }
+.sqb-tile.tone-info { --sqb-t: var(--accent); }
+.sqb-tile.tone-warn { --sqb-t: #e67e22; }
+.sqb-tile.tone-bad { --sqb-t: var(--danger); }
+.sqb-box { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 10px 12px; margin: 0 0 10px; }
+.sqb-box h4 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .03em; opacity: .75; }
+.sqb-row { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 48px; padding: 6px 4px; border: 0; border-bottom: 1px solid var(--border-color); background: none; color: var(--dark); text-align: left; cursor: pointer; font-size: 14px; }
+.sqb-row:last-child { border-bottom: 0; }
+.sqb-row .t { flex: 1 1 auto; min-width: 0; }
+.sqb-row .t b { display: block; word-break: break-word; }
+.sqb-row .t small { display: block; opacity: .75; font-size: 12px; }
+.sqb-row .m { flex: 0 0 auto; margin-left: 10px; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--bg-surface-alt); }
+/* search */
+.sqb-sq { width: 100%; min-height: 52px; padding: 10px 14px; font-size: 16px; border: 2px solid var(--accent); border-radius: 12px; background: var(--bg-surface); color: var(--dark); margin: 0 0 6px; }
+.sqb-hint { font-size: 12px; opacity: .7; margin: 0 0 8px; }
+.sqb-gh { margin: 10px 0 2px; font-size: 12px; font-weight: 700; text-transform: uppercase; opacity: .7; }
+/* KPI strip (home header) */
+.sqk-strip { display: flex; overflow-x: auto; margin: 0 0 10px; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.sqk { flex: 0 0 auto; min-width: 104px; min-height: 64px; margin-right: 8px; padding: 8px 12px; border: 1px solid var(--border-color); border-top: 4px solid var(--sqb-t, #7f8c8d); border-radius: 12px; background: var(--bg-surface); color: var(--dark); text-align: left; width: auto; font-size: 13px; }
+button.sqk { cursor: pointer; }
+.sqk .v { display: block; font-size: 20px; font-weight: 800; line-height: 1.2; }
+.sqk .l { display: block; opacity: .8; white-space: nowrap; }
+.sqk.tone-good { --sqb-t: var(--success); } .sqk.tone-info { --sqb-t: var(--accent); } .sqk.tone-warn { --sqb-t: #e67e22; } .sqk.tone-bad { --sqb-t: var(--danger); }
+@media (max-width: 699px) {
+  .sqb-tabs { display: flex; }
+  .sqb-cols { display: block; overflow: visible; }
+  .sqb-col { display: none; max-width: none; min-width: 0; margin-right: 0; }
+  .sqb-col.is-active { display: block; }
+}
+@media (prefers-reduced-motion: reduce) { .sqb-btn:active { transform: none; } }
+</style>
+<script>
+/* ===== svc-ui-board: state + tiny helpers ===== */
+var SVC_BD = { hosts: [], tab: '', focus: '', range: 'today', timer: 0, sched: 0, subscribed: false, draws: 0, touch: null, searchTimer: 0 };
+var SVC_BD_LEGACY = { in_progress: 'in_progress', ready: 'ready', completed: 'completed', collected: 'collected' };
+var SVC_BD_LEGACY_ORDER = ['received', 'in_progress', 'ready', 'completed', 'collected'];
+
+function svcBdEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcBdNow() { try { if (typeof svcNow === 'function') return svcNow(); } catch (e) { /* use the clock */ } return Date.now(); }
+function svcBdToast(msg, isErr) { try { if (typeof showToast === 'function') showToast(String(msg), !!isErr); } catch (e) { /* toast is cosmetic */ } }
+function svcBdMoneyOk() { try { if (typeof svcCan === 'function') return !!svcCan('svc:financials'); } catch (e) { /* allow */ } return true; }
+function svcBdMoney(n) { try { if (typeof svcFormatMoney === 'function') return svcFormatMoney(n); } catch (e) { /* fall through */ } return 'KSh ' + (Math.round((Number(n) || 0) * 100) / 100); }
+function svcBdType() { try { if (typeof svcBusinessType === 'function') { var t = svcBusinessType(); if (t) return String(t); } } catch (e) { /* default */ } return 'other'; }
+function svcBdTpl(type) { try { if (typeof svcGetTemplate === 'function') return svcGetTemplate(type) || { terms: {}, statuses: [], queueGroups: [] }; } catch (e) { /* no templates */ } return { terms: {}, statuses: [], queueGroups: [] }; }
+function svcBdTerm(tpl, key, dflt) { var v = tpl && tpl.terms && tpl.terms[key]; return v ? String(v) : (dflt || key); }
+function svcBdStatus(tpl, key) {
+  var l = (tpl && tpl.statuses) || [], i;
+  for (i = 0; i < l.length; i++) if (l[i] && l[i].key === key) return l[i];
+  return { key: key, label: String(key || '').replace(/_/g, ' '), color: '#7f8c8d', phase: 1 };
+}
+function svcBdClock(ms) {
+  var d = new Date(Number(ms)); if (!isFinite(d.getTime())) return '';
+  return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+}
+function svcBdDayLabel(ms, now) {
+  var d = new Date(Number(ms)), n = new Date(now);
+  if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) return svcBdClock(ms);
+  var mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+  return d.getDate() + ' ' + mon + ' ' + svcBdClock(ms);
+}
+function svcBdAgo(mins) {
+  mins = Math.max(0, Math.round(mins));
+  if (mins < 60) return mins + ' min';
+  var h = Math.floor(mins / 60), m = mins % 60;
+  if (h < 24) return h + 'h' + (m ? ' ' + m + 'm' : '');
+  return Math.floor(h / 24) + 'd';
+}
+function svcBdAllOfType(type) {
+  try { if (typeof svcAllJobs === 'function') return svcAllJobs({ includeLegacy: true, types: [type] }) || []; } catch (e) { /* none */ }
+  return [];
+}
+/* narrowing by the home search box: job ids found by the ranked search (+ jobs of a matched customer / vehicle) */
+function svcBdFilter(type, q) {
+  var jobs = svcBdAllOfType(type), res = [];
+  try { if (typeof svcSearch === 'function') res = svcSearch(q, { types: [type], limit: 200, kinds: ['job', 'customer', 'asset'] }) || []; } catch (e) { res = []; }
+  var ids = {}, custs = {}, assets = {};
+  res.forEach(function (r) { if (r.kind === 'job') ids[r.id] = 1; else if (r.kind === 'customer') custs[r.id] = 1; else if (r.kind === 'asset') assets[r.id] = 1; });
+  return jobs.filter(function (j) { return ids[j.id] || (j.customer && j.customer.id && custs[j.customer.id]) || (j.assetId && assets[j.assetId]); });
+}
+
+/* ===== cards ===== */
+/* legal quick moves for a card: the real store helpers decide (svcAllowedNext + svcCanEnter). A move that only lacks a requirement is still offered (tapping explains what is missing). */
+function svcBdMoves(job, tpl) {
+  var out = [], cur = svcBdStatus(tpl, job.status), i, k, d;
+  if (!job || job._deleted) return out;
+  if (job._legacy) {
+    var at = SVC_BD_LEGACY_ORDER.indexOf(job.status);
+    if (at === -1) return out;
+    for (i = at + 1; i < SVC_BD_LEGACY_ORDER.length && out.length < 2; i++) {
+      k = SVC_BD_LEGACY_ORDER[i]; if (!SVC_BD_LEGACY[k]) continue;
+      d = svcBdStatus(tpl, k); out.push({ key: k, label: d.label, legacy: true });
+    }
+    return out;
+  }
+  if (cur.terminal) return out;
+  var keys = []; try { if (typeof svcAllowedNext === 'function') keys = svcAllowedNext(job) || []; } catch (e) { keys = []; }
+  var curPhase = typeof cur.phase === 'number' ? cur.phase : 1, found = [];
+  for (i = 0; i < keys.length; i++) {
+    k = keys[i]; d = svcBdStatus(tpl, k);
+    if (d.phase === 4 || (typeof d.phase === 'number' && d.phase < curPhase)) continue;      /* cancelling and going back live in the drawer, not on a one-tap button */
+    var chk = { ok: true, code: '', missing: [] };
+    try { if (typeof svcCanEnter === 'function') chk = svcCanEnter(job, k) || chk; } catch (e2) { chk = { ok: false, code: 'error' }; }
+    if (chk.ok) found.push({ key: k, label: d.label, phase: d.phase });
+    else if (chk.code === 'requires') found.push({ key: k, label: d.label, phase: d.phase, needs: chk.missing || [] });
+  }
+  found.sort(function (a, b) { return (a.phase || 0) - (b.phase || 0); });
+  return found.slice(0, 2);
+}
+function svcBdCardHtml(j, tpl, type, now, money) {
+  var snap = j.assetSnap || {}, cust = j.customer || {}, st = svcBdStatus(tpl, j.status), late = false, plate = '', title, sub = '';
+  try { late = typeof svcJobOverdue === 'function' ? svcJobOverdue(j, now) : false; } catch (e) { late = false; }
+  if (snap.plate) { try { plate = typeof svcNormPlate === 'function' ? svcNormPlate(snap.plate) : String(snap.plate); } catch (e2) { plate = String(snap.plate); } }
+  title = plate || snap.label || cust.name || j.no || 'Job';
+  if (plate) sub = [snap.make, snap.model, snap.color].filter(Boolean).join(' ') || (snap.label && snap.label !== plate ? String(snap.label).replace(plate, '').trim() : '');
+  else if (snap.label) { var idn = snap.imei ? 'IMEI …' + String(snap.imei).replace(/\D/g, '').slice(-6) : (snap.serial ? 'S/N ' + snap.serial : ''); sub = idn; }
+  var svcs = (j.jobServices || []).map(function (s) { return s && s.name; }).filter(Boolean), staffN = [];
+  (j.jobStaff || []).forEach(function (s) { if (s && !s.removedAt && s.name && staffN.indexOf(s.name) === -1) staffN.push(s.name); });
+  var open = !(j.closedAt != null || (typeof j.phase === 'number' && j.phase >= 3));
+  var owner = svcBdTerm(tpl, 'customer', 'Customer'), staffLbl = svcBdTerm(tpl, 'staff', 'Staff');
+  var h = '<article class="sqb-card' + (late ? ' is-overdue' : '') + '" role="button" tabindex="0" data-sqb-act="open" data-id="' + svcBdEsc(j.id) + '" data-status="' + svcBdEsc(j.status) + '" style="--sqb-s:' + svcBdEsc(st.color || '#7f8c8d') + '" aria-label="' + svcBdEsc(title + ', ' + st.label) + '">';
+  h += '<div class="sqb-r1"><span class="sqb-plate">' + svcBdEsc(title) + '</span><span class="sqb-pill" style="background:' + svcBdEsc(st.color || '#7f8c8d') + '">' + svcBdEsc((st.icon ? st.icon + ' ' : '') + st.label) + '</span></div>';
+  if (sub) h += '<div class="sqb-r2">' + svcBdEsc(sub) + '</div>';
+  if (cust.name || cust.phone) h += '<div class="sqb-r3" data-sqb-f="owner">' + svcBdEsc(owner) + ': ' + svcBdEsc(cust.name || 'Walk-in') + (cust.phone ? ' · ' + svcBdEsc(cust.phone) : '') + '</div>';
+  if (svcs.length) h += '<div class="sqb-r4" data-sqb-f="services">' + svcBdEsc(svcs.slice(0, 3).join(', ') + (svcs.length > 3 ? ' +' + (svcs.length - 3) : '')) + '</div>';
+  if (staffN.length) h += '<div class="sqb-r5" data-sqb-f="staff">' + svcBdEsc(staffLbl) + ': ' + svcBdEsc(staffN.join(', ')) + '</div>';
+  else if (open && tpl && tpl.staffAssignment) h += '<div class="sqb-r5" data-sqb-f="staff">' + svcBdEsc(staffLbl) + ': unassigned</div>';
+  var tags = '';
+  if (j.createdAt) tags += '<span class="sqb-tag" data-sqb-f="arrival">Arrived ' + svcBdEsc(svcBdDayLabel(j.createdAt, now)) + '</span>';
+  if (j.dueAt && open) {
+    if (late) tags += '<span class="sqb-tag late" data-sqb-f="eta">Overdue ' + svcBdEsc(svcBdAgo((now - Number(j.dueAt)) / 60000)) + '</span>';
+    else tags += '<span class="sqb-tag eta" data-sqb-f="eta">ETA ' + svcBdEsc(svcBdDayLabel(j.dueAt, now)) + '</span>';
+  }
+  if (money) {
+    var tot = null; try { tot = typeof svcTotals === 'function' ? svcTotals(j) : null; } catch (e3) { tot = null; }
+    if (tot && tot.total > 0 && !(j._legacy && j.moneyKnown === false)) tags += tot.balance > 0.005 ? '<span class="sqb-tag bal">Balance ' + svcBdEsc(svcBdMoney(tot.balance)) + '</span>' : '<span class="sqb-tag paid">Paid</span>';
+  }
+  if (j._legacy) tags += '<span class="sqb-tag">Classic job</span>';
+  if (tags) h += '<div class="sqb-r6">' + tags + '</div>';
+  var moves = open ? svcBdMoves(j, tpl) : [];
+  if (moves.length) {
+    h += '<div class="sqb-moves">';
+    moves.forEach(function (m, n) {
+      h += '<button type="button" class="sqb-btn' + (n === 0 && !m.needs ? ' sqb-go' : '') + (m.needs ? ' sqb-needs' : '') + '" data-sqb-act="move" data-id="' + svcBdEsc(j.id) + '" data-key="' + svcBdEsc(m.key) + '"' + (m.needs ? ' data-needs="' + svcBdEsc(m.needs.join(',')) + '"' : '') + '>' + svcBdEsc(m.label) + ' ▸</button>';
+    });
+    h += '</div>';
+  }
+  return h + '</article>';
+}
+
+/* ===== the board ===== */
+function svcBdColumns(qg) { return qg.filter(function (g) { return !g.apptOnly && (!g.hidden || g.count > 0) && (!g.extra || g.count > 0); }); }
+function svcBdPickTab(cols) {
+  var keys = cols.map(function (g) { return g.key; });
+  if (SVC_BD.tab && keys.indexOf(SVC_BD.tab) !== -1) return SVC_BD.tab;
+  var i;
+  for (i = 0; i < cols.length; i++) if (!cols[i].closed && cols[i].count > 0) return cols[i].key;
+  return keys[0] || '';
+}
+function svcBdBoardHtml(st) {
+  var type = st.type, tpl = svcBdTpl(type), now = svcBdNow(), money = svcBdMoneyOk();
+  var jobs; if (st.q) jobs = svcBdFilter(type, st.q);
+  var qg = svcQueueGroups(type, { jobs: jobs, now: now }), cols = svcBdColumns(qg), tab = svcBdPickTab(cols); SVC_BD.tab = tab;
+  var h = '<div class="sqb" data-sqb="board" data-type="' + svcBdEsc(type) + '">';
+  h += '<div class="sqb-top"><span class="sqb-upd">Live · updated ' + svcBdEsc(svcBdClock(now)) + '</span><button type="button" class="sqb-btn" data-sqb-act="refresh" aria-label="Refresh board">⟳ Refresh</button></div>';
+  h += '<div class="sqb-counts" role="list" aria-label="Queue counts">' + qg.counters.map(function (c) {
+    return '<div class="sqb-chip' + (c.key === 'total' ? ' is-total' : '') + '" role="listitem" data-sqb-count="' + svcBdEsc(c.key) + '"><span>' + svcBdEsc(c.label) + '</span><b>' + c.value + '</b></div>';
+  }).join('') + '</div>';
+  h += '<div class="sqb-tabs" role="tablist" aria-label="Queue stages">' + cols.map(function (g) {
+    return '<button type="button" role="tab" data-sqb-act="tab" data-group="' + svcBdEsc(g.key) + '" class="' + (g.key === tab ? 'is-on' : '') + '" aria-selected="' + (g.key === tab) + '">' + svcBdEsc(g.label) + '<b>' + g.count + '</b></button>';
+  }).join('') + '</div>';
+  var noun = svcBdTerm(tpl, 'assets', 'jobs').toLowerCase();
+  h += '<div class="sqb-cols">' + cols.map(function (g) {
+    var cards = g.jobs.map(function (j) { return svcBdCardHtml(j, tpl, type, now, money); }).join('');
+    return '<section class="sqb-col' + (g.key === tab ? ' is-active' : '') + (SVC_BD.focus === g.key ? ' is-focus' : '') + '" data-group="' + svcBdEsc(g.key) + '" style="--sqb-c:' + svcBdEsc(g.color) + '" aria-label="' + svcBdEsc(g.label) + '">' +
+      '<header><span>' + svcBdEsc(g.label) + '</span><b>' + g.count + '</b></header>' + (cards || '<div class="sqb-empty">No ' + svcBdEsc(noun) + ' here</div>') + '</section>';
+  }).join('') + '</div>';
+  var other = 0;
+  try { if (typeof svcGetJob === 'function' || true) other = (typeof svcMxAll === 'function' ? svcMxAll() : []).filter(function (j) { return j && !j._deleted && j.serviceType && j.serviceType !== type && j.closedAt == null && !(typeof j.phase === 'number' && j.phase >= 3); }).length; } catch (e) { other = 0; }
+  if (other) h += '<div class="sqb-note">' + other + ' open job' + (other === 1 ? '' : 's') + ' from another business type.<button type="button" data-sqb-act="other">View</button></div>';
+  return h + '</div>';
+}
+function svcBdState(host) { return host.__sqb || (host.__sqb = { type: '', q: '', sig: '' }); }
+function svcBdDrawBoard(host, force) {
+  var st = svcBdState(host), now = svcBdNow();
+  var sig = 'b|' + st.type + '|' + st.q + '|' + SVC_BD.tab + '|' + SVC_BD.focus + '|' + (typeof svcMxSig === 'function' ? svcMxSig(true) : '') + '|' + Math.floor(now / 20000);
+  if (!force && st.sig === sig && host.querySelector('[data-sqb="board"]')) return false;
+  var keep = host.querySelector('.sqb-cols'), sl = keep ? keep.scrollLeft : 0, sTop = host.scrollTop;
+  host.innerHTML = svcBdBoardHtml(st);
+  var cols = host.querySelector('.sqb-cols'); if (cols && sl) cols.scrollLeft = sl;
+  if (sTop) host.scrollTop = sTop;
+  st.sig = 'b|' + st.type + '|' + st.q + '|' + SVC_BD.tab + '|' + SVC_BD.focus + '|' + (typeof svcMxSig === 'function' ? svcMxSig(true) : '') + '|' + Math.floor(now / 20000);
+  SVC_BD.draws++;
+  return true;
+}
+/* svcRenderBoard(host, ctx): ctx is the home view context {type, q, ...}. Safe to call again and again (the home does, on every event). */
+function svcRenderBoard(host, ctx) {
+  if (!host) return false;
+  ctx = ctx || {};
+  var st = svcBdState(host);
+  st.kind = 'board'; st.type = ctx.type || st.type || svcBdType(); if (ctx.q !== undefined) st.q = ctx.q || '';
+  svcBdBind(host); svcBdTrack(host); svcBdSubscribe();
+  try { svcBdDrawBoard(host, true); } catch (e) { host.innerHTML = '<div class="sqb-note">The board could not be shown. ' + svcBdEsc(e && e.message) + '</div>'; }
+  return true;
+}
+
+/* ===== actions ===== */
+function svcBdThen(v, fn) { if (v && typeof v.then === 'function') v.then(fn, function (e) { fn({ ok: false, error: String((e && e.message) || e) }); }); else fn(v); }
+function svcBdWhy(r) {
+  if (!r) return 'Could not change the status.';
+  if (r.why) return String(r.why);
+  if (r.missing && r.missing.length) return 'Needed first: ' + r.missing.join(', ').replace(/_/g, ' ');
+  if (r.code === 'perm') return 'You are not allowed to change status.';
+  if (r.code === 'legacy') return 'This is a classic job. Open it to upgrade, or use the classic counter.';
+  return r.error ? String(r.error) : 'Could not change the status.';
+}
+function svcBdMove(jobId, key, btn) {
+  var job = null; try { job = typeof svcGetJob === 'function' ? svcGetJob(jobId) : null; } catch (e) { job = null; }
+  if (!job) { svcBdToast('That job could not be found.', true); return false; }
+  if (btn) btn.disabled = true;                                                     /* double tap safe: the history id below is also deterministic */
+  var res;
+  if (job._legacy) {
+    var lk = SVC_BD_LEGACY[key];
+    try { res = lk && typeof svcLegacyAction === 'function' ? svcLegacyAction(jobId, 'status', lk) : { ok: false, code: 'legacy' }; } catch (e2) { res = { ok: false, error: String((e2 && e2.message) || e2) }; }
+  } else {
+    var hid = 'sh-bq-' + jobId + '-' + key + '-' + ((job.statusHistory || []).length);
+    try { res = typeof svcSetStatus === 'function' ? svcSetStatus(jobId, key, { id: hid, note: '' }) : { ok: false, error: 'Status changes are not available.' }; } catch (e3) { res = { ok: false, error: String((e3 && e3.message) || e3) }; }
+  }
+  svcBdThen(res, function (r) {
+    if (!r || r.ok === false) { svcBdToast(svcBdWhy(r), true); if (btn) btn.disabled = false; }
+    else { var d = svcBdStatus(svcBdTpl(job.serviceType), key); svcBdToast('Status: ' + d.label); }
+    svcBdRefreshAll(true);
+  });
+  return true;
+}
+function svcBdGoto(group) {
+  SVC_BD.focus = group || ''; if (group) SVC_BD.tab = group;
+  try { var b = document.getElementById('services-counter-tab-btn'); var tabEl = document.getElementById('services-counter-tab'); if (b && tabEl && !tabEl.classList.contains('active')) b.click(); } catch (e) { /* already there */ }
+  try { if (typeof svcRoute === 'function') svcRoute('home', { view: 'board' }); } catch (e2) { /* the tab switch already rendered */ }
+  return true;
+}
+function svcBdShiftTab(host, dir) {
+  var tabs = host.querySelectorAll('.sqb-tabs [data-group]'), keys = [], i, at = -1;
+  for (i = 0; i < tabs.length; i++) { keys.push(tabs[i].getAttribute('data-group')); if (keys[i] === SVC_BD.tab) at = i; }
+  var n = at + dir; if (n < 0 || n >= keys.length) return false;
+  SVC_BD.tab = keys[n]; SVC_BD.focus = ''; svcBdDrawBoard(host, true); return true;
+}
+function svcBdBind(host) {
+  if (host.__sqbBound) return; host.__sqbBound = true;
+  host.addEventListener('click', function (ev) {
+    var t = ev.target && ev.target.closest ? ev.target.closest('[data-sqb-act]') : null; if (!t || !host.contains(t)) return;
+    var act = t.getAttribute('data-sqb-act');
+    if (act === 'move') { ev.stopPropagation(); ev.preventDefault(); var needs = t.getAttribute('data-needs'); if (needs && false) return; svcBdMove(t.getAttribute('data-id'), t.getAttribute('data-key'), t); return; }
+    if (act === 'open') { try { if (typeof svcOpenJob === 'function') svcOpenJob(t.getAttribute('data-id')); } catch (e) { svcBdToast('Could not open that job.', true); } return; }
+    if (act === 'tab') { SVC_BD.tab = t.getAttribute('data-group'); SVC_BD.focus = ''; svcBdDrawBoard(host, true); return; }
+    if (act === 'refresh') { svcBdRefreshAll(true); return; }
+    if (act === 'other') { try { if (typeof SVC_UI !== 'undefined') { SVC_UI.allTypes = true; SVC_UI.view = 'list'; } if (typeof svcRenderHome === 'function') svcRenderHome(); } catch (e2) { /* stays */ } return; }
+    if (act === 'range') { SVC_BD.range = t.getAttribute('data-key') || 'today'; svcBdRefreshAll(true); return; }
+    if (act === 'goto') { svcBdGoto(t.getAttribute('data-group')); return; }
+    if (act === 'sopen') { svcBdSearchOpen(host, t); return; }
+  });
+  host.addEventListener('keydown', function (ev) {
+    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target && ev.target.classList && ev.target.classList.contains('sqb-card')) { ev.preventDefault(); ev.target.click(); return; }
+    if (ev.key === 'Enter' && ev.target && ev.target.classList && ev.target.classList.contains('sqb-sq')) { ev.preventDefault(); svcBdSearchEnter(host, ev.target); }
+  });
+  host.addEventListener('input', function (ev) {
+    if (!ev.target || !ev.target.classList || !ev.target.classList.contains('sqb-sq')) return;
+    var input = ev.target; clearTimeout(SVC_BD.searchTimer);
+    SVC_BD.searchTimer = setTimeout(function () { svcBdSearchDraw(host, input.value); }, 120);
+  });
+  host.addEventListener('touchstart', function (ev) { var t = ev.touches && ev.touches[0]; SVC_BD.touch = t ? { x: t.clientX, y: t.clientY } : null; }, { passive: true });
+  host.addEventListener('touchend', function (ev) {
+    var s = SVC_BD.touch, t = ev.changedTouches && ev.changedTouches[0]; SVC_BD.touch = null;
+    if (!s || !t || !host.querySelector('[data-sqb="board"]')) return;
+    var dx = t.clientX - s.x, dy = t.clientY - s.y;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && (typeof window === 'undefined' || window.innerWidth < 700)) svcBdShiftTab(host, dx < 0 ? 1 : -1);
+  }, { passive: true });
+}
+
+/* ===== live updates: svcOn events + a 20 s timer while a board is on screen and the tab is visible ===== */
+function svcBdTrack(host) { if (SVC_BD.hosts.indexOf(host) === -1) SVC_BD.hosts.push(host); svcBdLiveStart(); }
+function svcBdLiveStart() {
+  if (SVC_BD.timer || typeof setInterval !== 'function') return;
+  SVC_BD.timer = setInterval(function () { svcBdTick(); }, 20000);
+}
+function svcBdTick() {
+  try { if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false; } catch (e) { /* refresh anyway */ }
+  return svcBdRefreshAll(false);
+}
+/* redraw every mounted board / dashboard / KPI strip that is still on screen; hosts that were replaced are forgotten */
+function svcBdRefreshAll(force) {
+  var keep = [], n = 0;
+  SVC_BD.hosts.forEach(function (host) {
+    if (!host || !host.isConnected) return;
+    var st = host.__sqb; if (!st) return;
+    var root = host.querySelector && host.querySelector('[data-sqb]');
+    if (st.kind === 'kpi') { keep.push(host); try { svcRenderKpis(host, st.type); n++; } catch (e) { /* cosmetic */ } return; }
+    if (!root || root.getAttribute('data-sqb') !== st.kind) return;                 /* the home showed another view in this host */
+    keep.push(host);
+    if (st.kind === 'search') return;                                                /* never redraw under the user's typing */
+    var active = null; try { active = document.activeElement; } catch (e2) { active = null; }
+    if (!force && active && host.contains(active) && (active.tagName === 'BUTTON' || active.classList.contains('sqb-card'))) return;
+    try { if (st.kind === 'board') { if (svcBdDrawBoard(host, !!force)) n++; } else if (st.kind === 'dash') { if (svcBdDrawDash(host, !!force)) n++; } } catch (e3) { /* next tick */ }
+  });
+  SVC_BD.hosts = keep;
+  if (!keep.length && SVC_BD.timer) { clearInterval(SVC_BD.timer); SVC_BD.timer = 0; }
+  return n;
+}
+function svcBdSchedule() {
+  clearTimeout(SVC_BD.sched);
+  SVC_BD.sched = setTimeout(function () { try { svcBdRefreshAll(false); } catch (e) { /* next event */ } }, 80);
+}
+function svcBdSubscribe() {
+  if (SVC_BD.subscribed) return false;
+  try {
+    if (typeof svcOn !== 'function') return false;
+    ['job:created', 'job:status', 'job:updated', 'payment:recorded', 'charge:added', 'quote:changed', 'material:used', 'config:changed', 'render:home'].forEach(function (ev) { svcOn(ev, svcBdSchedule); });
+    SVC_BD.subscribed = true;
+    if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('visibilitychange', function () { if (document.visibilityState !== 'hidden') svcBdSchedule(); });
+  } catch (e) { return false; }
+  return true;
+}
+
+/* ===== KPI strip (home header) + dashboard view + main-dashboard cards ===== */
+function svcBdVisibleCards(m) { var ok = svcBdMoneyOk(); return m.cards.filter(function (c) { return ok || !c.money; }); }
+function svcBdStripHtml(type) {
+  var m = svcDashboardMetrics(type, 'today'), cards = svcBdVisibleCards(m);
+  if (!cards.length) return '';
+  return '<div class="sqk-strip" role="list" aria-label="Today at a glance" data-sqb="kpi" data-type="' + svcBdEsc(type) + '">' + cards.map(function (c) {
+    var inner = '<span class="v">' + svcBdEsc(c.text) + '</span><span class="l">' + svcBdEsc(c.label) + '</span>';
+    return c.target ? '<button type="button" role="listitem" class="sqk tone-' + svcBdEsc(c.tone) + '" data-sqb-act="goto" data-group="' + svcBdEsc(c.target.group || '') + '" data-card="' + svcBdEsc(c.key) + '" title="' + svcBdEsc(c.sub) + '">' + inner + '</button>'
+      : '<div role="listitem" class="sqk tone-' + svcBdEsc(c.tone) + '" data-card="' + svcBdEsc(c.key) + '" title="' + svcBdEsc(c.sub) + '">' + inner + '</div>';
+  }).join('') + '</div>';
+}
+/* svcRenderKpis(el, typeKey): the compact tiles in the home header (the home calls it when defined) */
+function svcRenderKpis(el, typeKey) {
+  if (!el) return '';
+  var type = typeKey || svcBdType();
+  var st = svcBdState(el); st.kind = 'kpi'; st.type = type;
+  svcBdBind(el); svcBdTrack(el); svcBdSubscribe();
+  try { el.innerHTML = svcBdStripHtml(type); } catch (e) { el.innerHTML = ''; }
+  return undefined;
+}
+function svcBdDashHtml(st) {
+  var type = st.type, tpl = svcBdTpl(type), now = svcBdNow(), m = svcDashboardMetrics(type, SVC_BD.range), cards = svcBdVisibleCards(m), money = svcBdMoneyOk();
+  var ranges = [['today', 'Today'], ['week', '7 days'], ['month', '30 days']];
+  var h = '<div class="sqb" data-sqb="dash" data-type="' + svcBdEsc(type) + '">';
+  h += '<div class="sqb-range" role="group" aria-label="Period">' + ranges.map(function (r) { return '<button type="button" data-sqb-act="range" data-key="' + r[0] + '" class="' + (SVC_BD.range === r[0] ? 'is-on' : '') + '" aria-pressed="' + (SVC_BD.range === r[0]) + '">' + r[1] + '</button>'; }).join('') + '</div>';
+  h += '<div class="sqb-tiles">' + cards.map(function (c) {
+    var inner = '<div class="l">' + svcBdEsc(c.label) + '</div><div class="v">' + svcBdEsc(c.text) + '</div><div class="s">' + svcBdEsc(c.sub) + '</div>';
+    return c.target ? '<button type="button" class="sqb-tile tone-' + svcBdEsc(c.tone) + '" data-sqb-act="goto" data-group="' + svcBdEsc(c.target.group || '') + '" data-card="' + svcBdEsc(c.key) + '">' + inner + '</button>'
+      : '<div class="sqb-tile tone-' + svcBdEsc(c.tone) + '" data-card="' + svcBdEsc(c.key) + '">' + inner + '</div>';
+  }).join('') + '</div>';
+  var due = []; try { due = typeof svcDueJobs === 'function' ? svcDueJobs({ types: [type], includeLegacy: true, now: now }).slice(0, 5) : []; } catch (e) { due = []; }
+  if (due.length) h += '<div class="sqb-box"><h4>Overdue</h4>' + due.map(function (d) { return '<button type="button" class="sqb-row" data-sqb-act="open" data-id="' + svcBdEsc(d.id) + '"><span class="t"><b>' + svcBdEsc(d.no || d.id) + ' · ' + svcBdEsc(d.clientName) + '</b><small>' + svcBdEsc(d.itemDetails) + '</small></span><span class="m">' + svcBdEsc(svcBdAgo(d.overdueMin)) + ' late</span></button>'; }).join('') + '</div>';
+  if (money) {
+    var owed = []; try { owed = (typeof svcMxJobsFor === 'function' ? svcMxJobsFor(type, {}) : []).map(function (j) { return { j: j, o: svcMxOwed(j) }; }).filter(function (x) { return x.o > 0; }).sort(function (a, b) { return b.o - a.o; }).slice(0, 5); } catch (e2) { owed = []; }
+    if (owed.length) h += '<div class="sqb-box"><h4>Unpaid balances</h4>' + owed.map(function (x) { return '<button type="button" class="sqb-row" data-sqb-act="open" data-id="' + svcBdEsc(x.j.id) + '"><span class="t"><b>' + svcBdEsc(x.j.no || x.j.id) + ' · ' + svcBdEsc((x.j.customer && x.j.customer.name) || 'Walk-in') + '</b><small>' + svcBdEsc((x.j.assetSnap && x.j.assetSnap.label) || '') + '</small></span><span class="m">' + svcBdEsc(svcBdMoney(x.o)) + '</span></button>'; }).join('') + '</div>';
+  }
+  return h + '</div>';
+}
+function svcBdDrawDash(host, force) {
+  var st = svcBdState(host), now = svcBdNow();
+  var sig = 'd|' + st.type + '|' + SVC_BD.range + '|' + (typeof svcMxSig === 'function' ? svcMxSig(true) : '') + '|' + Math.floor(now / 20000);
+  if (!force && st.sig === sig && host.querySelector('[data-sqb="dash"]')) return false;
+  host.innerHTML = svcBdDashHtml(st); st.sig = sig; SVC_BD.draws++;
+  return true;
+}
+function svcRenderDashboardView(host, ctx) {
+  if (!host) return false;
+  ctx = ctx || {};
+  var st = svcBdState(host); st.kind = 'dash'; st.type = ctx.type || st.type || svcBdType();
+  svcBdBind(host); svcBdTrack(host); svcBdSubscribe();
+  try { svcBdDrawDash(host, true); } catch (e) { host.innerHTML = '<div class="sqb-note">The dashboard could not be shown. ' + svcBdEsc(e && e.message) + '</div>'; }
+  return true;
+}
+/* main dashboard (#svc-dash-cards): only for shops that switched to the new Services screens; money tiles only with svc:financials */
+function svcDashboardHtml() {
+  try { if (typeof svcClassicMode === 'function' && svcClassicMode()) return ''; } catch (e) { return ''; }
+  try { if (typeof svcCan === 'function' && !svcCan('svc:view')) return ''; } catch (e2) { /* show */ }
+  var type = svcBdType(), tpl = svcBdTpl(type), m = svcDashboardMetrics(type, 'today'), cards = svcBdVisibleCards(m);
+  if (!cards.length) return '';
+  return '<div class="sqb" data-sqb="maindash"><h3 style="margin:10px 0 6px">' + svcBdEsc((tpl.icon || '🔧') + ' ' + svcBdTerm(tpl, 'queue', tpl.label || 'Services')) + '</h3><div class="sqb-tiles">' + cards.map(function (c) {
+    var inner = '<div class="l">' + svcBdEsc(c.label) + '</div><div class="v">' + svcBdEsc(c.text) + '</div><div class="s">' + svcBdEsc(c.sub) + '</div>';
+    return '<button type="button" class="sqb-tile tone-' + svcBdEsc(c.tone) + '" onclick="svcBdGoto(' + svcBdEsc(JSON.stringify(c.target ? (c.target.group || '') : '')) + ')" data-card="' + svcBdEsc(c.key) + '">' + inner + '</button>';
+  }).join('') + '</div></div>';
+}
+
+/* ===== universal search view ===== */
+var SVC_BD_KIND_LABEL = { job: 'Jobs', asset: 'Saved items', customer: 'Customers', appt: 'Appointments' };
+var SVC_BD_MATCH_LABEL = { imei: 'IMEI', plate: 'Plate', serial: 'Serial', no: 'Job no.', phone: 'Phone', date: 'Date', key: 'Exact', id: 'Id' };
+function svcBdSearchHtml(q) {
+  q = String(q || '').trim();
+  if (!q) return '<div class="sqb-hint">Type or scan a number plate, IMEI, serial, phone number, job number, customer, service, staff, status or date.</div>';
+  var res = []; try { res = typeof svcSearch === 'function' ? svcSearch(q, { limit: 60 }) : []; } catch (e) { res = []; }
+  if (!res.length) return '<div class="sqb-note">Nothing found for “' + svcBdEsc(q) + '”.</div>';
+  var order = ['asset', 'job', 'customer', 'appt'], h = '';
+  var top = res[0] && res[0].score >= 900 ? res[0] : null;
+  order.forEach(function (k) {
+    var rows = res.filter(function (r) { return r.kind === k; }); if (!rows.length) return;
+    h += '<div class="sqb-gh">' + svcBdEsc(SVC_BD_KIND_LABEL[k]) + '</div>';
+    rows.slice(0, 25).forEach(function (r) {
+      h += '<button type="button" class="sqb-row" data-sqb-act="sopen" data-kind="' + svcBdEsc(r.kind) + '" data-id="' + svcBdEsc(r.id) + '" data-q="' + svcBdEsc(r.title) + '"><span class="t"><b>' + svcBdEsc(r.title) + '</b><small>' + svcBdEsc(r.sub) + '</small></span>' +
+        (r.match && SVC_BD_MATCH_LABEL[r.match] ? '<span class="m">' + svcBdEsc(SVC_BD_MATCH_LABEL[r.match]) + '</span>' : '') + (r.legacy ? '<span class="m">Classic</span>' : '') + '</button>';
+    });
+  });
+  return h;
+}
+function svcBdSearchDraw(host, q) {
+  var box = host.querySelector('.sqb-res'); if (!box) return;
+  box.innerHTML = svcBdSearchHtml(q);
+  SVC_BD.lastQuery = String(q || '');
+}
+/* Enter (a scanner sends Enter after the code): the best exact hit opens at once, otherwise the list stays */
+function svcBdSearchEnter(host, input) {
+  var q = String(input.value || '').trim(); if (!q) return false;
+  var res = []; try { res = typeof svcSearch === 'function' ? svcSearch(q, { limit: 10, kinds: ['job'] }) : []; } catch (e) { res = []; }
+  svcBdSearchDraw(host, q);
+  if (res.length && (res[0].score >= 900 || res.length === 1)) { try { if (typeof svcOpenJob === 'function') svcOpenJob(res[0].id); } catch (e2) { /* stays on the list */ } return true; }
+  return false;
+}
+function svcBdSearchOpen(host, t) {
+  var kind = t.getAttribute('data-kind'), id = t.getAttribute('data-id');
+  if (kind === 'job') { try { if (typeof svcOpenJob === 'function') svcOpenJob(id); } catch (e) { svcBdToast('Could not open that job.', true); } return true; }
+  var input = host.querySelector('.sqb-sq'), next = t.getAttribute('data-q') || '';
+  if (kind === 'appt') { try { if (typeof svcOpenAppt === 'function') { svcOpenAppt(id); return true; } } catch (e2) { /* fall through to the list */ } svcBdToast('Open Appointments to see this booking.'); return true; }
+  if (input) { input.value = next; input.focus(); svcBdSearchDraw(host, next); }
+  return true;
+}
+function svcRenderSearchView(host, ctx) {
+  if (!host) return false;
+  ctx = ctx || {};
+  var st = svcBdState(host); st.kind = 'search'; st.type = ctx.type || st.type || svcBdType();
+  svcBdBind(host); svcBdTrack(host); svcBdSubscribe();
+  var q = ctx.q || '';
+  host.innerHTML = '<div class="sqb" data-sqb="search" data-type="' + svcBdEsc(st.type) + '"><input type="search" class="sqb-sq" inputmode="search" autocomplete="off" autocapitalize="characters" aria-label="Search everything" placeholder="Scan or type plate, IMEI, phone, job no., name…" value="' + svcBdEsc(q) + '">' +
+    '<div class="sqb-res" aria-live="polite">' + svcBdSearchHtml(q) + '</div></div>';
+  return true;
+}
+
+/* ===== registration (home views). Labels follow the type's own words; the registry is refreshed whenever the config changes ===== */
+function svcBdRegister() {
+  if (typeof svcHomeViewRegister !== 'function') return false;
+  var type = svcBdType(), tpl = svcBdTpl(type);
+  var boardLabel = svcBdTerm(tpl, 'boardLabel', 'Board');
+  svcHomeViewRegister('board', { label: boardLabel, order: 10, render: function (host, ctx) { return svcRenderBoard(host, ctx); }, visibleWhen: function (ctx) { svcBdRelabel(ctx); return true; } });
+  svcHomeViewRegister('dashboard', { label: 'Dashboard', order: 20, render: function (host, ctx) { return svcRenderDashboardView(host, ctx); } });
+  svcHomeViewRegister('search', { label: '🔍 Search', order: 30, render: function (host, ctx) { return svcRenderSearchView(host, ctx); } });
+  return true;
+}
+function svcBdRelabel(ctx) {
+  try {
+    var tpl = svcBdTpl((ctx && ctx.type) || svcBdType()), want = svcBdTerm(tpl, 'boardLabel', 'Board');
+    if (typeof SVC_UI !== 'undefined' && SVC_UI.views && SVC_UI.views.board && SVC_UI.views.board.label !== want) SVC_UI.views.board.label = want;
+  } catch (e) { /* cosmetic */ }
+}
+svcBdRegister();
+try { if (typeof svcOn === 'function') svcOn('config:changed', function () { svcBdRegister(); }); } catch (e) { /* events optional */ }
+</script>

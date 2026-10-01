@@ -42,7 +42,7 @@ export async function issueToken(env, user) {
 }
 
 // ---------- permissions ----------
-const rolesFromRows = (rows) => {
+export const rolesFromRows = (rows) => {
   const m = new Map();
   for (const r of rows) m.set(r.key, new Set((jparse(r.perms, []) || []).filter((p) => PERM_KEYS.includes(p))));
   return m;

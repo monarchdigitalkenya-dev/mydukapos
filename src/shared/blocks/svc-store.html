@@ -1,0 +1,1030 @@
+<!-- SVC STORE ---------------------------------------------------------------------------------------
+     Services engine block "svc-store". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B1-D. Nobody else edits this file.
+     STATE: IMPLEMENTED (B1-D). See the contract list below; extra helpers are prefixed svcSt* (private to this block).
+     KIND: touches globals / localStorage (NOT pure). Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: globals svcJobs svcAssets svcCatalog svcAppointments svcConfig (module-scope let, keys pos_svc_jobs pos_svc_assets pos_svc_catalog pos_svc_appts pos_svc_config); svcLoad, svcSave, svcSyncCollect (called by collectSyncPayload), svcSyncApply (called by applyRemotePayload), svcCommit, svcCreateJob, svcUpdateJob, svcSetStatus, svcAllowedNext, svcCanEnter, svcAllJobs, svcGetJob, svcLegacyToJob, svcLegacyBookingToAppt, svcEnsureCustomer, svcUpsertAsset, svcFindAssetByKey, svcAssetHistory, svcBusinessType, svcSetBusinessType, svcConfigGet, svcConfigSet, svcHealJob, svcApplySignupType (called by finishDirectAuth; reads window.__svcSignupType).
+     SPEC: SERVICES_ARCHITECTURE.md 3, 4, 5.2, 8.3 (svc-store). Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<script>
+/* ===================================================================================================================
+   SVC STORE (B1-D): the five synced lists, the ONE mutation path (svcCommit), jobs, assets, customers, business type, the read-only
+   legacy adapter and the sync hooks. Private helpers are named svcSt*. Dependency direction: calls only svc-core / svc-templates /
+   svc-form (earlier blocks) and, guarded by typeof, optional later blocks.
+   =================================================================================================================== */
+
+/* ===== lists (module-scope lets, also read by name from storage-and-photos / later blocks) ===== */
+var SVC_LISTS = ['svcJobs', 'svcAssets', 'svcCatalog', 'svcAppointments', 'svcConfig'];
+var SVC_STORE_KEYS = { svcJobs: 'pos_svc_jobs', svcAssets: 'pos_svc_assets', svcCatalog: 'pos_svc_catalog', svcAppointments: 'pos_svc_appts', svcConfig: 'pos_svc_config' };
+/* money / service records that may only grow (an element changes in place only with a higher rev + voidedAt/reversedAt) */
+var SVC_GUARDED_ARRAYS = ['statusHistory', 'charges', 'materials', 'payments', 'jobStaff', 'valuables', 'photos', 'quoteVersions', 'quoteLog'];
+var SVC_RINGS = { audit: 60, notify: 12 };
+var SVC_JOB_CAP = 8192;
+var SVC_ASSET_HISTORY_RING = 30;
+var SVC_JOB_IMMUTABLE = ['id', 'no', 'serviceType', 'templateVersion', 'createdAt', 'createdBy', 'till', 'device', 'source'];
+var SVC_JOB_PATCH_DENY = SVC_JOB_IMMUTABLE.concat(['status', 'statusAt', 'statusHistory', 'phase', 'closedAt', 'rev', 'updatedAt', '_legacy', '_deleted', 'audit']);
+var SVC_LEGACY_STATUS = { pending: 'received', in_progress: 'in_progress', ready: 'ready', completed: 'completed', collected: 'collected' };
+var SVC_LEGACY_PHASE = { received: 0, in_progress: 1, ready: 2, completed: 3, collected: 3 };
+var SVC_LEGACY_BOOKING_STATUS = { confirmed: 'confirmed', cancelled: 'cancelled', 'no-show': 'no_show', completed: 'completed' };
+var SVC_LEGACY_JOB_KEYS = ['id', 'createdAt', 'clientName', 'clientPhone', 'idNumber', 'itemDetails', 'servicesRequired', 'serviceNotes', 'quoteAmount', 'promisedPickup', 'status', 'components', 'laborFee', 'finalAmount', 'saleId', 'billId', 'paymentMethod', 'completedAt'];
+var SVC_STAMP_BY_KEY = { in_progress: 'startedAt', ready: 'readyAt', completed: 'completedAt', collected: 'collectedAt' };
+var SVC_PHASE_BY_KEY = { received: 0, waiting: 0, checked_in: 0, booked: 0, confirmed: 0, scheduled: 0, sorting: 1, diagnosing: 1, inspection: 1, awaiting_approval: 1, awaiting_parts: 1, in_progress: 1, on_the_way: 1, washing: 1, drying: 1, ironing: 1, measured: 1, cutting: 1, stitching: 1, fitting: 1, alteration: 1, ready: 2, completed: 3, collected: 3, cancelled: 4, no_show: 4 };
+
+let svcJobs = [];
+let svcAssets = [];
+let svcCatalog = [];
+let svcAppointments = [];
+let svcConfig = [];
+var svcStVer = 0;
+var svcStIdx = null;
+var svcStLoaded = false;
+
+/* ===== tiny private helpers ===== */
+function svcStClone(o) { return o === undefined ? undefined : JSON.parse(JSON.stringify(o)); }
+function svcStNow() { try { return typeof svcNow === 'function' ? svcNow() : Date.now(); } catch (e) { return Date.now(); } }
+function svcStAct() {
+  try { if (typeof svcActor === 'function') { var a = svcActor(); if (a && a.name) return a; } } catch (e) { /* fall through */ }
+  var nm = 'Owner';
+  try { if (typeof activeServerName === 'function') nm = String(activeServerName() || 'Owner'); } catch (e2) { /* ignore */ }
+  return { id: 'owner', name: nm };
+}
+function svcStCan(perm) { try { return typeof svcCan === 'function' ? !!svcCan(perm) : true; } catch (e) { return true; } }
+function svcStEmit(evt, payload) { try { if (typeof svcEmit === 'function') svcEmit(evt, payload); } catch (e) { /* listeners never break a commit */ } }
+function svcStNewId(prefix) {
+  var id = '';
+  try { if (typeof svcId === 'function') id = String(svcId(prefix)); } catch (e) { id = ''; }
+  if (!id || id.indexOf(prefix) !== 0) { var g = ''; try { g = typeof genSaleId === 'function' ? String(genSaleId()) : ''; } catch (e2) { g = ''; } id = prefix + (g || (Date.now() + '-' + Math.random().toString(36).slice(2, 12))); }
+  return id;
+}
+/* shorter ids for the small elements inside a job (history row, service line, audit row ...): unique per millisecond + 5 random chars, ~16 chars instead of ~28 (8 KB job budget) */
+function svcStShortId(prefix) {
+  var r = '', i; for (i = 0; i < 5; i++) r += Math.floor(Math.random() * 36).toString(36);
+  try { if (typeof crypto !== 'undefined' && crypto.getRandomValues) { var b = new Uint8Array(5); crypto.getRandomValues(b); r = ''; for (i = 0; i < 5; i++) r += (b[i] % 36).toString(36); } } catch (e) { /* Math.random is enough for a per-job element id */ }
+  return prefix + Date.now().toString(36) + r;
+}
+function svcStList(name) {
+  switch (name) {
+    case 'svcJobs': return svcJobs;
+    case 'svcAssets': return svcAssets;
+    case 'svcCatalog': return svcCatalog;
+    case 'svcAppointments': return svcAppointments;
+    case 'svcConfig': return svcConfig;
+    default: return null;
+  }
+}
+function svcStSetList(name, arr) {
+  switch (name) {
+    case 'svcJobs': svcJobs = arr; break;
+    case 'svcAssets': svcAssets = arr; break;
+    case 'svcCatalog': svcCatalog = arr; break;
+    case 'svcAppointments': svcAppointments = arr; break;
+    case 'svcConfig': svcConfig = arr; break;
+    default: return;
+  }
+  svcStVer++;
+}
+function svcStIsRec(r) { return !!r && typeof r === 'object' && !Array.isArray(r) && r.id != null && r.id !== ''; }
+function svcStArr(v) { return Array.isArray(v) ? v : []; }
+function svcStStr(v) { return v == null ? '' : String(v); }
+function svcStMs(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'number') return isFinite(v) ? v : 0;
+  var t = Date.parse(String(v));
+  return isFinite(t) ? t : 0;
+}
+function svcStDeepFreeze(o) {
+  if (!o || typeof o !== 'object' || Object.isFrozen(o)) return o;
+  Object.freeze(o);
+  var k, keys = Object.keys(o);
+  for (k = 0; k < keys.length; k++) svcStDeepFreeze(o[keys[k]]);
+  return o;
+}
+function svcStFindIn(arr, id) {
+  var i; id = String(id);
+  for (i = 0; i < arr.length; i++) { if (arr[i] && String(arr[i].id) === id) return arr[i]; }
+  return null;
+}
+function svcStIndexOf(arr, id) {
+  var i; id = String(id);
+  for (i = 0; i < arr.length; i++) { if (arr[i] && String(arr[i].id) === id) return i; }
+  return -1;
+}
+
+/* ===== load / save ===== */
+function svcSave(name) {
+  if (name === undefined) { var ok = true; SVC_LISTS.forEach(function (n) { if (!svcSave(n)) ok = false; }); return ok; }
+  var key = SVC_STORE_KEYS[name], arr = svcStList(name), s;
+  if (!key || !Array.isArray(arr)) return false;
+  try { s = JSON.stringify(arr); } catch (e) { return false; }
+  try {
+    if (typeof safeSetItem === 'function') return safeSetItem(key, s) !== false;
+    localStorage.setItem(key, s); return true;
+  } catch (e2) { return false; }
+}
+function svcLoad() {
+  SVC_LISTS.forEach(function (name) {
+    var raw = [];
+    try {
+      if (typeof safeJSONParse === 'function') raw = safeJSONParse(SVC_STORE_KEYS[name], []);
+      else { var t = localStorage.getItem(SVC_STORE_KEYS[name]); raw = t ? JSON.parse(t) : []; }
+    } catch (e) { raw = []; }
+    svcStSetList(name, (Array.isArray(raw) ? raw : []).filter(svcStIsRec));
+  });
+  svcStLoaded = true;
+  svcStHealAll();
+  return true;
+}
+
+/* ===== status derivation (derived fields are recomputed, never trusted) ===== */
+function svcStTemplate(typeKey) {
+  try { if (typeof svcGetTemplate === 'function') { var t = svcGetTemplate(typeKey); if (t) return t; } } catch (e) { /* fall through */ }
+  try { if (typeof SVC_TYPES !== 'undefined' && SVC_TYPES && SVC_TYPES[typeKey]) return SVC_TYPES[typeKey]; } catch (e2) { /* templates not loaded */ }
+  return null;
+}
+function svcStTypeValid(typeKey) {
+  try { if (typeof SVC_TYPES !== 'undefined' && SVC_TYPES) return typeof typeKey === 'string' && Object.prototype.hasOwnProperty.call(SVC_TYPES, typeKey); } catch (e) { /* ignore */ }
+  return typeof typeKey === 'string' && /^[a-z][a-z_]*$/.test(typeKey);
+}
+function svcStStatuses(tpl) {
+  var s = tpl && tpl.statuses;
+  if (Array.isArray(s)) return s;
+  if (s && typeof s === 'object') return Object.keys(s).map(function (k) { return Object.assign({ key: k }, s[k]); });
+  return [];
+}
+function svcStStatusDef(typeKey, key) {
+  var list = svcStStatuses(svcStTemplate(typeKey)), i;
+  for (i = 0; i < list.length; i++) { if (list[i] && list[i].key === key) return list[i]; }
+  return null;
+}
+function svcStPhaseOf(typeKey, key) {
+  var d = svcStStatusDef(typeKey, key);
+  if (d && d.phase != null && isFinite(Number(d.phase))) return Number(d.phase);
+  return SVC_PHASE_BY_KEY[key] != null ? SVC_PHASE_BY_KEY[key] : 1;
+}
+/* recompute status / statusAt / phase / closedAt / stamps from the append-only history. Returns true when something changed.
+   A closed job (phase >= 3) is never reopened by a stale or concurrent entry: among closed entries the newest one decides. */
+function svcStDerive(job) {
+  var h = svcStArr(job && job.statusHistory);
+  if (!h.length) return false;
+  var cur = null, closed = null, i, e, p, changed = false, minClosed = null, stamps = {};
+  for (i = 0; i < h.length; i++) {
+    e = h[i]; if (!e || !e.s) continue;
+    p = e.p != null && isFinite(Number(e.p)) ? Number(e.p) : svcStPhaseOf(job.serviceType, e.s);
+    var at = Number(e.at) || 0;
+    if (!cur || at >= (Number(cur.e.at) || 0)) cur = { e: e, p: p };
+    if (p >= 3) {
+      if (!closed || at >= (Number(closed.e.at) || 0)) closed = { e: e, p: p };
+      if (minClosed === null || at < minClosed) minClosed = at;
+    }
+    var d = svcStStatusDef(job.serviceType, e.s), sf = (d && d.stamp) || SVC_STAMP_BY_KEY[e.s];
+    if (sf && (stamps[sf] === undefined || at < stamps[sf])) stamps[sf] = at;
+  }
+  var win = closed || cur;
+  if (!win) return false;
+  function set(k, v) { if (job[k] !== v) { job[k] = v; changed = true; } }
+  set('status', win.e.s); set('statusAt', Number(win.e.at) || 0); set('phase', win.p);
+  set('closedAt', closed ? minClosed : null);
+  Object.keys(stamps).forEach(function (k) { if (job[k] == null || job[k] > stamps[k]) set(k, stamps[k]); });
+  return changed;
+}
+function svcStHealAll() {
+  var i, ch = false, a = svcJobs;
+  for (i = 0; i < a.length; i++) { if (a[i] && svcStDerive(a[i])) ch = true; }
+  if (ch) svcSave('svcJobs');
+  return ch;
+}
+function svcHealJob(id) {
+  var j = svcStFindIn(svcJobs, id);
+  if (!j) return false;
+  var ch = svcStDerive(j);
+  if (ch) { svcStVer++; svcSave('svcJobs'); }
+  return ch;
+}
+
+/* ===== indexes (lazy, invalidated by array identity + length + version) ===== */
+function svcStIndex() {
+  var ix = svcStIdx;
+  if (ix && ix.arr === svcJobs && ix.len === svcJobs.length && ix.ver === svcStVer) return ix;
+  ix = { arr: svcJobs, len: svcJobs.length, ver: svcStVer, byId: {}, byNo: {}, byAsset: {}, byPhone: {}, byIdem: {} };
+  var i, j, k;
+  for (i = 0; i < svcJobs.length; i++) {
+    j = svcJobs[i]; if (!j) continue;
+    ix.byId[j.id] = j;
+    if (j.no) ix.byNo[j.no] = j;
+    if (j.idem) ix.byIdem[j.idem] = j;
+    if (j._deleted) continue;
+    if (j.assetId) (ix.byAsset[j.assetId] = ix.byAsset[j.assetId] || []).push(j);
+    k = j.customer && j.customer.phoneKey;
+    if (k) (ix.byPhone[k] = ix.byPhone[k] || []).push(j);
+  }
+  svcStIdx = ix;
+  return ix;
+}
+function svcStJobById(id) { var ix = svcStIndex(); return Object.prototype.hasOwnProperty.call(ix.byId, id) ? ix.byId[id] : null; }
+function svcJobsByAsset(assetId) { return svcStIndex().byAsset[assetId] || []; }
+function svcJobsByPhone(key) { return svcStIndex().byPhone[key] || []; }
+
+/* ===== svcCommit: the ONLY mutation path ===== */
+function svcStTrimRings(rec, name) {
+  if (name === 'svcJobs') {
+    Object.keys(SVC_RINGS).forEach(function (f) { if (Array.isArray(rec[f]) && rec[f].length > SVC_RINGS[f]) rec[f] = rec[f].slice(rec[f].length - SVC_RINGS[f]); });
+    if (typeof rec.notes === 'string' && rec.notes.length > 2000) rec.notes = rec.notes.slice(0, 2000);
+  } else if (name === 'svcAssets') {
+    if (Array.isArray(rec.history) && rec.history.length > SVC_ASSET_HISTORY_RING) {
+      rec.history = rec.history.slice().sort(function (a, b) { return (Number(a.jobAt || a.at) || 0) - (Number(b.jobAt || b.at) || 0); }).slice(rec.history.length - SVC_ASSET_HISTORY_RING);
+    }
+  } else if (name === 'svcAppointments') {
+    if (Array.isArray(rec.log) && rec.log.length > 20) rec.log = rec.log.slice(rec.log.length - 20);
+  } else if (name === 'svcConfig') {
+    if (Array.isArray(rec.log) && rec.log.length > 30) rec.log = rec.log.slice(rec.log.length - 30);
+  }
+}
+function svcJobBytes(job) { try { return JSON.stringify(job).length; } catch (e) { return 0; } }
+function svcStEnforceCap(job) {
+  var n = svcJobBytes(job);
+  if (n <= SVC_JOB_CAP) return n;
+  if (Array.isArray(job.audit) && job.audit.length > 30) job.audit = job.audit.slice(job.audit.length - 30);
+  if (typeof job.notes === 'string' && job.notes.length > 500) job.notes = job.notes.slice(0, 500);
+  n = svcJobBytes(job);
+  if (n > SVC_JOB_CAP && Array.isArray(job.audit) && job.audit.length > 10) { job.audit = job.audit.slice(job.audit.length - 10); n = svcJobBytes(job); }
+  return n;
+}
+function svcStGuard(name, prev, draft) {
+  if (name === 'svcJobs') {
+    var i, k, f, ids;
+    for (i = 0; i < SVC_JOB_IMMUTABLE.length; i++) {
+      k = SVC_JOB_IMMUTABLE[i];
+      if (JSON.stringify(prev[k]) !== JSON.stringify(draft[k])) return { code: 'immutable', field: k };
+    }
+    for (i = 0; i < SVC_GUARDED_ARRAYS.length; i++) {
+      f = SVC_GUARDED_ARRAYS[i];
+      var pa = svcStArr(prev[f]), da = svcStArr(draft[f]);
+      if (da.length < pa.length) return { code: 'shrink', field: f };
+      ids = {}; da.forEach(function (x) { if (x && x.id != null) ids[x.id] = 1; });
+      for (k = 0; k < pa.length; k++) { if (pa[k] && pa[k].id != null && !ids[pa[k].id]) return { code: 'shrink', field: f }; }
+    }
+  } else if (name === 'svcAssets') {
+    if (prev.kind !== draft.kind) return { code: 'immutable', field: 'kind' };
+  }
+  return null;
+}
+function svcStCommitRec(name, rec, opts, prevIn) {
+  opts = opts || {};
+  var arr = svcStList(name);
+  if (!Array.isArray(arr) || SVC_LISTS.indexOf(name) === -1) return { ok: false, code: 'list', error: 'unknown list ' + name };
+  if (!svcStIsRec(rec)) return { ok: false, code: 'record', error: 'record needs an id' };
+  if (rec._legacy) return { ok: false, code: 'legacy', action: 'promote' };
+  var idx = svcStIndexOf(arr, rec.id), existing = idx >= 0 ? arr[idx] : null;
+  var prev = prevIn !== undefined ? prevIn : existing;
+  if (prev && prev !== rec) { var bad = svcStGuard(name, prev, rec); if (bad) return { ok: false, code: bad.code, field: bad.field, error: bad.code + ': ' + bad.field }; }
+  var now = svcStNow(), actor = svcStAct();
+  var stampedAfter = Math.max(now, (Number(existing && existing.updatedAt) || 0) + 1, (Number(prev && prev.updatedAt) || 0) + 1);
+  rec.updatedAt = stampedAfter;
+  rec.rev = (Number(prev && prev.rev) || Number(existing && existing.rev) || 0) + 1;
+  var isCreate = !existing && !prev;
+  if (name === 'svcJobs') svcStDerive(rec);
+  var au = opts.audit;
+  if (opts.noAudit || au === false) au = null;
+  else {
+    if (typeof au === 'string') au = { act: au };
+    if (!au) au = { act: opts.reason ? 'edited' : (isCreate ? 'created' : 'edited'), note: opts.reason };
+  }
+  if (au) {
+    if (name === 'svcJobs') {
+      rec.audit = svcStArr(rec.audit).concat([{ id: au.id || svcStShortId('au-'), at: now, by: opts.by || actor.name, byId: actor.id, act: au.act || 'edited', ref: au.ref, from: au.from, to: au.to, note: au.note }]);
+    } else if (name === 'svcAppointments') {
+      rec.log = svcStArr(rec.log).concat([{ at: now, by: opts.by || actor.name, act: au.act || 'edited', from: au.from, to: au.to }]);
+    } else if (name === 'svcConfig') {
+      rec.log = svcStArr(rec.log).concat([{ at: now, by: opts.by || actor.name, what: au.note || au.act || 'edited' }]);
+    }
+  }
+  svcStTrimRings(rec, name);
+  var size = name === 'svcJobs' ? svcStEnforceCap(rec) : 0;
+  if (idx >= 0) arr[idx] = rec; else arr.push(rec);
+  svcStVer++;
+  svcSave(name);
+  try { if (typeof queuePush === 'function') queuePush(); else if (typeof markLocalDirty === 'function') markLocalDirty(); } catch (e) { /* the record is saved locally either way */ }
+  var evt = opts.event || (name === 'svcJobs' ? (isCreate ? 'job:created' : 'job:updated') : (name === 'svcConfig' ? 'config:changed' : null));
+  if (evt) svcStEmit(evt, Object.assign({ list: name, rec: rec, job: name === 'svcJobs' ? rec : undefined, created: isCreate }, opts.payload || {}));
+  var out = { ok: true, rec: rec, created: isCreate };
+  if (size > SVC_JOB_CAP) out.warn = 'size';
+  return out;
+}
+/* svcCommit(mutator, {list:'svcJobs', id, create, audit:{act,ref,from,to,note}|false, reason, noAudit, event, payload, by})
+   svcCommit(listName, rec, opts)   (record form: rec is already the new state)
+   The mutator form works on a CLONE of the stored record, so a throw or a refused write leaves the stored record untouched. */
+function svcCommit(a, b, c) {
+  if (typeof a !== 'function') return svcStCommitRec(String(a), b, c || {});
+  var opts = b || {}, name = opts.list || 'svcJobs', arr = svcStList(name);
+  if (!Array.isArray(arr)) return { ok: false, code: 'list', error: 'unknown list ' + name };
+  var prev = opts.id != null ? (name === 'svcJobs' ? svcStJobById(opts.id) : svcStFindIn(arr, opts.id)) : null;
+  if (opts.id != null && !prev && !opts.create) return { ok: false, code: 'notfound' };
+  if (prev && prev._deleted && !opts.allowDeleted) return { ok: false, code: 'deleted' };
+  var draft = prev ? svcStClone(prev) : null, out;
+  try { out = a(draft, { prev: prev, now: svcStNow(), actor: svcStAct(), list: name }); } catch (e) { return { ok: false, code: 'error', error: String((e && e.message) || e) }; }
+  if (out === false) return { ok: false, code: 'aborted' };
+  var rec = out && typeof out === 'object' ? out : draft;
+  if (!rec) return { ok: false, code: 'record', error: 'mutator returned nothing' };
+  if (rec.id == null && opts.id != null) rec.id = opts.id;
+  return svcStCommitRec(name, rec, opts, prev);
+}
+
+/* ===== customers (the app's existing customers list; dedupe by Kenyan phone key) ===== */
+function svcStPhoneKey(raw) { try { if (typeof svcPhoneKey === 'function') return svcPhoneKey(raw); } catch (e) { /* fall through */ } var d = String(raw == null ? '' : raw).replace(/\D/g, ''); return d.length < 7 ? '' : d.slice(-9); }
+function svcStCustomers() { try { return typeof customers !== 'undefined' && Array.isArray(customers) ? customers : null; } catch (e) { return null; } }
+function svcCustomerFind(phone) {
+  var list = svcStCustomers(), key = svcStPhoneKey(phone), i;
+  if (!list || !key) return null;
+  for (i = 0; i < list.length; i++) { if (list[i] && !list[i]._deleted && svcStPhoneKey(list[i].phone) === key) return list[i]; }
+  return null;
+}
+/* -> snapshot {id, name, phone, phoneKey, altPhone?, email?} (id null = walk-in / no phone). Creates cu-<key> when missing (deterministic, so offline tills converge). */
+function svcEnsureCustomer(o) {
+  o = o || {};
+  var name = svcStStr(o.name).trim(), raw = svcStStr(o.phone).trim(), key = svcStPhoneKey(raw);
+  var snap = { id: null, name: name, phone: raw, phoneKey: key };
+  if (o.altPhone) snap.altPhone = svcStStr(o.altPhone).trim();
+  if (o.email) snap.email = svcStStr(o.email).trim();
+  if (!key) return snap;
+  var list = svcStCustomers(), c = svcCustomerFind(raw), changed = false;
+  if (c) {
+    snap.id = c.id; snap.phone = c.phone || raw;
+    if (!snap.name) snap.name = c.name || '';
+    if (name && !c.name) { c.name = name; c.updatedAt = svcStNow(); changed = true; }
+  } else if (list && o.allowCreate !== false) {
+    var n = raw, ph = null;
+    try { if (typeof svcNormPhone === 'function') { ph = svcNormPhone(raw); if (ph && ph.ok && ph.national) n = ph.national; } } catch (e) { n = raw; }
+    c = { id: 'cu-' + key, name: name, phone: n, tokens: 0, createdAt: svcStNow(), updatedAt: svcStNow() };
+    list.push(c); snap.id = c.id; snap.phone = c.phone; changed = true;
+  }
+  if (changed) {
+    try { if (typeof safeSetItem === 'function') safeSetItem('pos_customers', JSON.stringify(list)); else localStorage.setItem('pos_customers', JSON.stringify(list)); } catch (e2) { /* best effort */ }
+    try { if (typeof queuePush === 'function') queuePush(); } catch (e3) { /* local copy is saved */ }
+  }
+  return snap;
+}
+function svcCustomerUpsert(o) { return svcEnsureCustomer(o); }
+
+/* ===== assets (phones, vehicles, equipment, garments) ===== */
+function svcAssetKeyOf(kind, attrs) {
+  attrs = attrs || {};
+  var k = '', d;
+  if (kind === 'vehicle') k = svcStStr(attrs.plate).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  else if (kind === 'phone') {
+    d = svcStStr(attrs.imei).replace(/\D/g, '');
+    if (d.length === 15) k = d;
+    else { d = svcStStr(attrs.imei2).replace(/\D/g, ''); k = d.length === 15 ? d : svcStStr(attrs.serial).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+  } else if (kind === 'equipment') k = svcStStr(attrs.serial).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return k.length >= (kind === 'vehicle' ? 3 : 4) ? k : '';
+}
+function svcStAssetLabel(kind, attrs) {
+  attrs = attrs || {};
+  var parts = [];
+  if (kind === 'vehicle') {
+    if (attrs.make) parts.push(attrs.make);
+    if (attrs.model) parts.push(attrs.model);
+    if (attrs.plate) { var pl = attrs.plate; try { if (typeof svcNormPlate === 'function') pl = svcNormPlate(attrs.plate); } catch (e) { pl = attrs.plate; } parts.push(pl); }
+  } else if (kind === 'phone' || kind === 'equipment') {
+    if (attrs.brand || attrs.make) parts.push(attrs.brand || attrs.make);
+    if (attrs.model) parts.push(attrs.model);
+    if (!parts.length && attrs.type) parts.push(attrs.type);
+  } else { if (attrs.item) parts.push(attrs.item); else if (attrs.type) parts.push(attrs.type); }
+  return parts.map(svcStStr).join(' ').trim();
+}
+function svcAssetFind(kindOrQuery, key) {
+  var kind = null, q;
+  if (key === undefined) q = svcStStr(kindOrQuery); else { kind = kindOrQuery; q = svcStStr(key); }
+  var up = q.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!up) return null;
+  var i, a;
+  if (kind) { a = svcStFindIn(svcAssets, 'sa-' + kind + '-' + up); if (a && !a._deleted) return a; }
+  for (i = 0; i < svcAssets.length; i++) {
+    a = svcAssets[i]; if (!a || a._deleted) continue;
+    if (kind && a.kind !== kind) continue;
+    if (a.key === up) return a;
+    var at = a.attrs || {};
+    if (svcStStr(at.plate).toUpperCase().replace(/[^A-Z0-9]/g, '') === up || svcStStr(at.imei).replace(/\D/g, '') === up || svcStStr(at.imei2).replace(/\D/g, '') === up || svcStStr(at.serial).toUpperCase().replace(/[^A-Z0-9]/g, '') === up) return a;
+  }
+  return null;
+}
+function svcFindAssetByKey(kind, key) { return svcAssetFind(kind, key); }
+/* -> {ok, asset, created, changed}. o = {kind, attrs, owner:{key,name,phone}|customer snapshot, id?, notes?}; keyless assets are not stored (the job keeps its assetSnap) */
+function svcUpsertAsset(o) {
+  o = o || {};
+  var kind = o.kind || 'none', attrs = {}, k;
+  Object.keys(o.attrs || {}).forEach(function (a) { var v = o.attrs[a]; if (v !== '' && v != null) attrs[a] = v; });
+  if (kind === 'none' || kind === 'garment') return { ok: false, code: 'nokey' };
+  var key = svcAssetKeyOf(kind, attrs), found = o.id ? svcStFindIn(svcAssets, o.id) : null;
+  if (!found && key) found = svcAssetFind(kind, key);
+  if (!found && !key) return { ok: false, code: 'nokey' };
+  var owner = o.owner || null, ownerKey = owner ? (owner.phoneKey || owner.key || svcStPhoneKey(owner.phone)) : '';
+  var id = found ? found.id : 'sa-' + kind + '-' + key, changed = false;
+  var res = svcCommit(function (a) {
+    var created = !a;
+    if (created) a = { id: id, kind: kind, key: key || null, label: '', attrs: {}, ownerKey: '', ownerName: '', ownerPhone: '', ownerHistory: [], notes: '', createdAt: svcStNow(), lastJobAt: 0, jobCount: 0, history: [] };
+    var before = JSON.stringify([a.attrs, a.ownerKey, a.notes]);
+    for (k in attrs) a.attrs[k] = attrs[k];
+    if (!a.key && key) a.key = key;
+    a.label = svcStAssetLabel(kind, a.attrs) || a.label;
+    if (owner && ownerKey && a.ownerKey !== ownerKey) {
+      if (a.ownerKey) a.ownerHistory = svcStArr(a.ownerHistory).concat([{ id: svcStShortId('oh-'), at: svcStNow(), key: a.ownerKey, name: a.ownerName, phone: a.ownerPhone, from: a.createdAt }]);
+      a.ownerKey = ownerKey; a.ownerName = svcStStr(owner.name); a.ownerPhone = svcStStr(owner.phone);
+    } else if (owner && ownerKey && owner.name && !a.ownerName) a.ownerName = svcStStr(owner.name);
+    if (o.notes) a.notes = svcStStr(o.notes);
+    changed = created || before !== JSON.stringify([a.attrs, a.ownerKey, a.notes]);
+    if (!created && !changed) return false;
+    return a;
+  }, { list: 'svcAssets', id: id, create: true, audit: false });
+  if (res.code === 'aborted') return { ok: true, asset: found || svcStFindIn(svcAssets, id), created: false, changed: false };
+  if (!res.ok) return res;
+  return { ok: true, asset: res.rec, created: !!res.created, changed: changed };
+}
+function svcStJobSummary(job) { return svcStArr(job.jobServices).map(function (s) { return s && s.name; }).filter(Boolean).join(', '); }
+function svcStTotalsOf(job) { try { if (typeof svcTotals === 'function') return svcTotals(job); } catch (e) { /* fall through */ } return { total: 0, paid: 0, balance: 0 }; }
+/* append/refresh this job's entry in its asset's history ring (keeps "previous visits" after jobs are archived) */
+function svcAssetTouchHistory(jobOrId) {
+  var job = typeof jobOrId === 'object' ? jobOrId : svcStJobById(jobOrId);
+  if (!job || !job.assetId) return { ok: false, code: 'noasset' };
+  var a = svcStFindIn(svcAssets, job.assetId);
+  if (!a) return { ok: false, code: 'noasset' };
+  var t = svcStTotalsOf(job), odo = job.data && (job.data.veh_odometer != null ? job.data.veh_odometer : job.data.odometer);
+  return svcCommit(function (x) {
+    var e = { id: job.id, no: job.no, at: svcStNow(), jobAt: job.createdAt, serviceType: job.serviceType, services: svcStJobSummary(job), total: t.total, paid: t.paid, status: job.status };
+    if (odo != null && odo !== '') e.odometer = odo;
+    var h = svcStArr(x.history), i = -1, k;
+    for (k = 0; k < h.length; k++) { if (h[k] && h[k].id === job.id) { i = k; break; } }
+    if (i >= 0) { h = h.slice(); h[i] = e; } else { h = h.concat([e]); x.jobCount = (Number(x.jobCount) || 0) + 1; }
+    x.history = h;
+    x.lastJobAt = Math.max(Number(x.lastJobAt) || 0, Number(job.createdAt) || 0);
+    return x;
+  }, { list: 'svcAssets', id: a.id, audit: false });
+}
+/* visits newest first: live jobs of the asset + ring entries of archived ones */
+function svcAssetHistory(assetId) {
+  var a = svcStFindIn(svcAssets, assetId), out = [], seen = {}, jobs = svcJobsByAsset(assetId), i, j, t, odo;
+  for (i = 0; i < jobs.length; i++) {
+    j = jobs[i]; t = svcStTotalsOf(j); seen[j.id] = 1; odo = j.data && j.data.veh_odometer;
+    out.push({ id: j.id, no: j.no, at: Number(j.createdAt) || 0, serviceType: j.serviceType, services: svcStJobSummary(j), total: t.total, paid: t.paid, balance: t.balance, status: j.status, odometer: odo != null && odo !== '' ? odo : undefined, archived: false });
+  }
+  svcStArr(a && a.history).forEach(function (h) {
+    if (!h || seen[h.id]) return;
+    out.push({ id: h.id, no: h.no, at: Number(h.jobAt || h.at) || 0, serviceType: h.serviceType, services: h.services || '', total: h.total || 0, paid: h.paid || 0, balance: Math.max(0, (h.total || 0) - (h.paid || 0)), status: h.status, odometer: h.odometer, archived: true });
+  });
+  out.sort(function (x, y) { return y.at - x.at; });
+  return out;
+}
+function svcAssetSummary(assetId) {
+  var a = svcStFindIn(svcAssets, assetId);
+  if (!a) return null;
+  var v = svcAssetHistory(assetId), out = 0, i;
+  for (i = 0; i < v.length; i++) out += v[i].balance || 0;
+  return { asset: a, owner: { key: a.ownerKey, name: a.ownerName, phone: a.ownerPhone }, visits: v, last: v[0] || null, outstanding: Math.round(out * 100) / 100, notes: a.notes || '' };
+}
+/* a customer's service history across every type, legacy rows included (MP 31) */
+function svcCustomerHistory(phoneOrKey) {
+  var key = svcStPhoneKey(phoneOrKey) || String(phoneOrKey || ''), i, j, t;
+  var jobs = svcAllJobs({ includeLegacy: true }).filter(function (x) { return x.customer && x.customer.phoneKey === key; });
+  var billed = 0, paid = 0;
+  var rows = jobs.map(function (x) { t = svcStTotalsOf(x); billed += t.total; paid += t.paid; return { id: x.id, no: x.no, at: x.createdAt, serviceType: x.serviceType, asset: x.assetSnap && x.assetSnap.label, services: svcStJobSummary(x), total: t.total, paid: t.paid, balance: t.balance, status: x.status, legacy: !!x._legacy }; });
+  var assets = svcAssets.filter(function (a) { return a && !a._deleted && a.ownerKey === key; });
+  return { customer: svcCustomerFind(key), jobs: rows, assets: assets, totalBilled: Math.round(billed * 100) / 100, totalPaid: Math.round(paid * 100) / 100, outstanding: Math.round(Math.max(0, billed - paid) * 100) / 100 };
+}
+
+/* ===== config records (svcConfig = list of per-kind records, merged per record) ===== */
+function svcConfigRecord(id) { return svcStFindIn(svcConfig, id); }
+function svcConfigGet(id, dflt) {
+  var r = svcStFindIn(svcConfig, id);
+  return r && !r._deleted && r.value && typeof r.value === 'object' ? r.value : (dflt === undefined ? null : dflt);
+}
+/* replace the value of cfg record `id` (kind defaults to the id without the cfg- prefix) */
+function svcConfigSet(id, value, o) {
+  o = o || {};
+  var m = /^cfg-([a-zA-Z]+)(?:-(.+))?$/.exec(String(id));
+  if (!m) return { ok: false, code: 'id' };
+  var what = o.what || ('updated ' + m[1]);
+  return svcCommit(function (r) {
+    if (!r) r = { id: id, kind: m[1], value: {}, updatedBy: '', log: [] };
+    if (m[2] && !r.type) r.type = m[2];
+    r.value = svcStClone(value) || {};
+    r.updatedBy = svcStAct().name;
+    return r;
+  }, { list: 'svcConfig', id: id, create: true, audit: { act: 'config', note: what }, payload: { id: id } });
+}
+function svcConfigPatch(id, patch, o) {
+  var cur = svcConfigGet(id, {}), next = Object.assign({}, svcStClone(cur) || {}, svcStClone(patch) || {});
+  return svcConfigSet(id, next, o);
+}
+
+/* ===== business type (5.2 / 5.3) ===== */
+function svcLegacyType() {
+  var c = svcConfigGet('cfg-business');
+  if (c && c.legacyType && svcStTypeValid(c.legacyType)) return c.legacyType;
+  var n = 0; try { n = typeof serviceJobs !== 'undefined' && Array.isArray(serviceJobs) ? serviceJobs.length : 0; } catch (e) { n = 0; }
+  return n > 0 ? 'phone_repair' : 'other';
+}
+/* the type new jobs use: the owner's choice, else the default for an existing shop (phone_repair when legacy jobs exist, else other) */
+function svcBusinessType() {
+  var c = svcConfigGet('cfg-business');
+  if (c && c.businessType && svcStTypeValid(c.businessType)) return c.businessType;
+  return svcLegacyType();
+}
+function svcGetBusinessType() { return svcBusinessType(); }
+function svcBusinessConfig() {
+  var c = svcConfigGet('cfg-business') || {}, d = {};
+  try { if (typeof SVC_KE_DEFAULTS !== 'undefined') Object.assign(d, SVC_KE_DEFAULTS); } catch (e) { /* defaults optional */ }
+  Object.assign(d, c);
+  d.businessType = svcBusinessType(); d.legacyType = svcLegacyType();
+  if (!Array.isArray(d.enabledTypes) || !d.enabledTypes.length) d.enabledTypes = [d.businessType];
+  d.chosen = c.chosen === true;
+  return d;
+}
+/* classic mode: the old counter exactly as today. True until the owner chooses a type (D7), or when uiMode / the per-device override says so */
+function svcClassicMode() {
+  try { if (localStorage.getItem('pos_svc_ui') === 'classic') return true; } catch (e) { /* storage blocked */ }
+  var c = svcConfigGet('cfg-business');
+  if (!c || c.chosen !== true) return true;
+  return c.uiMode === 'classic';
+}
+function svcSetBusinessType(typeKey, o) {
+  o = o || {};
+  if (!svcStTypeValid(typeKey)) return { ok: false, code: 'type', error: 'Unknown business type' };
+  if (!o.force && !svcStCan('svc:manageConfig')) return { ok: false, code: 'perm' };
+  var prev = svcConfigGet('cfg-business') || {}, prevType = prev.chosen === true ? prev.businessType : null;
+  var enabled = [typeKey];
+  svcStArr(o.alsoOffer).forEach(function (t) { if (t !== typeKey && svcStTypeValid(t) && enabled.indexOf(t) === -1) enabled.push(t); });
+  if (prev.chosen === true && prev.businessType === typeKey && JSON.stringify(prev.enabledTypes || [typeKey]) === JSON.stringify(enabled) && prev.uiMode === 'engine') return { ok: true, unchanged: true, config: prev, previous: prevType };
+  var legacy = svcLegacyType(), act = svcStAct();
+  var res = svcConfigPatch('cfg-business', { businessType: typeKey, enabledTypes: enabled, chosen: true, chosenAt: svcStNow(), chosenBy: act.name, source: o.source || 'settings', uiMode: 'engine', legacyType: prev.legacyType && svcStTypeValid(prev.legacyType) ? prev.legacyType : legacy },
+    { what: 'business type: ' + (prevType || svcBusinessType()) + ' -> ' + typeKey + (o.source ? ' (' + o.source + ')' : '') });
+  if (!res.ok) return res;
+  try { if (typeof svcSeedCatalog === 'function') svcSeedCatalog(typeKey); } catch (e) { /* optional (catalog block) */ }
+  try { if (typeof logAdminActivity === 'function') logAdminActivity('settings-section-services'); } catch (e2) { /* optional */ }
+  try { if (typeof svcApplyTerms === 'function') svcApplyTerms(); } catch (e3) { /* optional (UI block) */ }
+  try { if (typeof svcApplyTabLabels === 'function') svcApplyTabLabels(); } catch (e4) { /* optional (UI block) */ }
+  return { ok: true, config: res.rec.value, previous: prevType, changed: prevType !== typeKey };
+}
+/* finishDirectAuth seam: the type picked on the sign-up screen rides the first push */
+function svcApplySignupType() {
+  var t = '';
+  try { t = typeof window !== 'undefined' && window.__svcSignupType ? String(window.__svcSignupType) : ''; } catch (e) { t = ''; }
+  if (!t || !svcStTypeValid(t)) return { ok: false, code: 'none' };
+  var c = svcConfigGet('cfg-business');
+  if (c && c.chosen === true) return { ok: false, code: 'already' };
+  return svcSetBusinessType(t, { source: 'signup', force: true });
+}
+
+/* ===== job status machine ===== */
+function svcStQuoteApproved(job) {
+  try { if (typeof svcQuoteApprovedAmount === 'function') return svcQuoteApprovedAmount(job) != null; } catch (e) { /* fall through */ }
+  var log = svcStArr(job.quoteLog), last = null, i;
+  for (i = 0; i < log.length; i++) { if (log[i] && log[i].act) last = log[i].act; }
+  return last === 'approve';
+}
+function svcStResolve(id) {
+  var j = svcStJobById(id);
+  if (j) return { job: j };
+  var l = null;
+  try { l = typeof serviceJobs !== 'undefined' && Array.isArray(serviceJobs) ? svcStFindIn(serviceJobs, id) : null; } catch (e) { l = null; }
+  return l ? { legacy: l } : {};
+}
+function svcAllowedNext(job) {
+  if (!job || job._legacy) return [];
+  var tpl = svcStTemplate(job.serviceType), list = svcStStatuses(tpl), cur = svcStStatusDef(job.serviceType, job.status), i, out = [];
+  var inScope = function (d) { return d && d.scope !== 'appt'; };
+  if (!cur) return [];
+  if (Array.isArray(cur.next)) {
+    cur.next.forEach(function (k) { var d = svcStStatusDef(job.serviceType, k); if (inScope(d) && k !== job.status) out.push(k); });
+    return out;
+  }
+  if (cur.terminal) return [];
+  for (i = 0; i < list.length; i++) { if (inScope(list[i]) && list[i].key !== job.status) out.push(list[i].key); }
+  return out;
+}
+/* -> {ok, missing[], code, why}. opts {force, note} */
+function svcCanEnter(job, key, opts) {
+  opts = opts || {};
+  var res = { ok: true, missing: [], code: '', why: '' };
+  var fail = function (code, why) { res.ok = false; res.code = code; res.why = why; return res; };
+  if (!job) return fail('notfound', 'Job not found');
+  if (job._legacy) return fail('legacy', 'Legacy jobs are changed with the classic screens');
+  var def = svcStStatusDef(job.serviceType, key), curDef = svcStStatusDef(job.serviceType, job.status);
+  if (!def) return fail('status', 'Unknown status for this job type');
+  if (def.scope === 'appt') return fail('status', 'That status is for appointments');
+  if (key === job.status) return res;
+  var cancelOk = !!opts.cancel && svcStCan('svc:cancel');
+  if (!cancelOk && !svcStCan('svc:status')) return fail('perm', 'You are not allowed to change status');
+  var curPhase = job.phase != null ? Number(job.phase) : svcStPhaseOf(job.serviceType, job.status), newPhase = svcStPhaseOf(job.serviceType, key);
+  if (curPhase >= 3 && newPhase < curPhase) return fail('closed', 'A closed job is never reopened');
+  var listed = !curDef || !Array.isArray(curDef.next) ? !(curDef && curDef.terminal) : curDef.next.indexOf(key) !== -1;
+  if (!listed) {
+    if (!(opts.force && (cancelOk || svcStCan('svc:edit')) && svcStStr(opts.note).trim())) return fail('transition', 'That move is not allowed from ' + job.status + ' (needs edit permission and a reason)');
+  }
+  svcStArr(def.requires).forEach(function (r) {
+    if (r === 'assigned_staff' && !svcStArr(job.jobStaff).some(function (s) { return s && !s.removedAt; })) res.missing.push(r);
+    else if (r === 'quote_approved' && !svcStQuoteApproved(job)) res.missing.push(r);
+    else if (r === 'deposit' && !svcStArr(job.payments).some(function (p) { return p && !p.voidedAt && Number(p.amount) > 0; })) res.missing.push(r);
+    else if (r === 'services' && !svcStArr(job.jobServices).length) res.missing.push(r);
+    else if (r === 'balance_zero' && svcStTotalsOf(job).balance > 0.005) res.missing.push(r);
+  });
+  if (res.missing.length && !(opts.force && (cancelOk || svcStCan('svc:edit')) && svcStStr(opts.note).trim())) return fail('requires', 'Missing: ' + res.missing.join(', '));
+  return res;
+}
+function svcStMove(id, key, opts, act) {
+  opts = opts || {};
+  var r = svcStResolve(id);
+  if (r.legacy) return { ok: false, code: 'legacy', action: 'promote' };
+  if (!r.job) return { ok: false, code: 'notfound' };
+  var job = r.job;
+  if (opts.id && svcStArr(job.statusHistory).some(function (h) { return h && h.id === opts.id; })) return { ok: true, job: job, noop: true, duplicate: true };
+  if (job._deleted) return { ok: false, code: 'deleted' };
+  if (key === job.status) return { ok: true, job: job, noop: true };
+  var chk = svcCanEnter(job, key, opts);
+  if (!chk.ok) return { ok: false, code: chk.code, why: chk.why, missing: chk.missing };
+  var from = job.status, def = svcStStatusDef(job.serviceType, key), actor = svcStAct(), at = opts.at != null ? Number(opts.at) : svcStNow();
+  var res = svcCommit(function (j) {
+    var p = svcStPhaseOf(j.serviceType, key), e = { id: opts.id || svcStShortId('sh-'), s: key, from: j.status, at: at, p: p, by: opts.by || actor.name, byId: actor.id };
+    if (opts.note) e.note = svcStStr(opts.note);
+    j.statusHistory = svcStArr(j.statusHistory).concat([e]);
+    if (act === 'cancel') { j.cancelledAt = at; j.cancelReason = svcStStr(opts.note); }
+    return j;
+  }, { list: 'svcJobs', id: job.id, audit: { act: act || 'status', from: from, to: key, note: opts.note }, event: 'job:status', payload: { from: from, to: key } });
+  if (!res.ok) return res;
+  var out = { ok: true, job: res.rec, from: from, to: key, notifyOn: def && def.notifyOn ? def.notifyOn : null };
+  if (res.rec.assetId && (res.rec.phase >= 2)) svcAssetTouchHistory(res.rec);
+  return out;
+}
+function svcSetStatus(id, key, opts) { return svcStMove(id, key, opts, 'status'); }
+function svcJobSetStatus(id, key, opts) { return svcStMove(id, key, opts, 'status'); }
+/* cancelling needs a reason and svc:cancel; a closed job can not be cancelled. Moves to the template's cancelled status. */
+function svcJobCancel(id, opts) {
+  opts = opts || {};
+  var r = svcStResolve(id);
+  if (r.legacy) return { ok: false, code: 'legacy', action: 'promote' };
+  if (!r.job) return { ok: false, code: 'notfound' };
+  if (!svcStCan('svc:cancel')) return { ok: false, code: 'perm' };
+  if (!svcStStr(opts.reason || opts.note).trim()) return { ok: false, code: 'reason', why: 'A reason is required to cancel' };
+  if (Number(r.job.phase) >= 3) return { ok: false, code: 'closed', why: 'A closed job can not be cancelled' };
+  var list = svcStStatuses(svcStTemplate(r.job.serviceType)), key = null, i;
+  for (i = 0; i < list.length; i++) { if (list[i] && (list[i].key === 'cancelled')) key = 'cancelled'; }
+  if (!key) { for (i = 0; i < list.length; i++) { if (list[i] && Number(list[i].phase) === 4 && list[i].scope !== 'appt') { key = list[i].key; break; } } }
+  if (!key) return { ok: false, code: 'nostatus', why: 'This job type has no cancelled status' };
+  return svcStMove(id, key, { note: opts.reason || opts.note, force: true, cancel: true, by: opts.by, at: opts.at, id: opts.id }, 'cancel');
+}
+/* tombstone; only a job with no payments and no material use (otherwise cancel it) */
+function svcJobDelete(id, opts) {
+  opts = opts || {};
+  var r = svcStResolve(id);
+  if (r.legacy) return { ok: false, code: 'legacy', action: 'promote' };
+  if (!r.job) return { ok: false, code: 'notfound' };
+  if (!svcStCan('svc:cancel')) return { ok: false, code: 'perm' };
+  if (!svcStStr(opts.reason).trim()) return { ok: false, code: 'reason' };
+  var j = r.job;
+  if (svcStArr(j.payments).length || svcStArr(j.materials).length || j.billId || svcStArr(j.saleIds).length) return { ok: false, code: 'hasmoney', why: 'Cancel the job instead: it has payments or material use' };
+  return svcCommit(function (x) { x._deleted = true; return x; }, { list: 'svcJobs', id: id, audit: { act: 'delete', note: opts.reason }, event: 'job:updated', payload: { deleted: true } });
+}
+
+/* ===== job create / update ===== */
+function svcStServiceLines(list) {
+  return svcStArr(list).map(function (s) {
+    if (!s || typeof s !== 'object') return null;
+    var name = svcStStr(s.name).trim(); if (!name) return null;
+    var qty = s.qty == null || s.qty === '' ? 1 : Number(s.qty), price = Number(s.price);
+    return { id: s.id || svcStShortId('jl-'), catalogId: s.catalogId || null, name: name, category: s.category || '', qty: isFinite(qty) && qty > 0 ? qty : 1, price: isFinite(price) ? price : 0, durationMin: s.durationMin != null ? s.durationMin : undefined, source: s.source || 'base', staffIds: svcStArr(s.staffIds), done: !!s.done };
+  }).filter(Boolean);
+}
+function svcStStaffName(id) { try { var s = typeof staff !== 'undefined' && Array.isArray(staff) ? svcStFindIn(staff, id) : null; return s ? svcStStr(s.name) : ''; } catch (e) { return ''; } }
+function svcStStaffLines(o, actor, now) {
+  var out = [];
+  svcStArr(o.jobStaff).forEach(function (s) { if (s && s.staffId) out.push(Object.assign({ id: svcStShortId('js-'), name: svcStStaffName(s.staffId), roleKey: '', task: '', assignedAt: now, assignedBy: actor.name, rev: 0 }, s)); });
+  svcStArr(o.staffIds).forEach(function (sid) { if (sid && !out.some(function (x) { return x.staffId === sid; })) out.push({ id: svcStShortId('js-'), staffId: sid, name: svcStStaffName(sid), roleKey: '', task: '', assignedAt: now, assignedBy: actor.name, rev: 0 }); });
+  return out;
+}
+function svcStAssetSnap(kind, attrs, label) {
+  var s = { kind: kind, label: label || svcStAssetLabel(kind, attrs) };
+  ['plate', 'make', 'model', 'type', 'brand', 'color', 'year', 'imei', 'serial'].forEach(function (k) { if (attrs && attrs[k] != null && attrs[k] !== '') s[k] = attrs[k]; });
+  return s;
+}
+/* svcJobCreate(typeKey, data, opts) -> {ok, job, asset?, customer?, duplicate?, errors?, code?}
+   data: {id?, idemKey?, values? (flat form values: split with svcSplitValues, validated with svcValidate), customer?:{name,phone,altPhone,email}, asset?:{kind,attrs}, assetId?,
+          data?:{...}, services?:[], staffIds?:[], jobStaff?:[], status?, dueAt?, notes?, tags?, source?, apptId?, valuables?}
+   A second call with the same id (double tap / retry) returns the job that already exists. serviceType + templateVersion are frozen on the job. */
+function svcJobCreate(typeKey, data, opts) {
+  if (typeKey && typeof typeKey === 'object') { opts = data; data = typeKey; typeKey = data.typeKey || data.serviceType; }
+  data = data || {}; opts = opts || {};
+  if (!typeKey) typeKey = svcBusinessType();
+  if (!svcStTypeValid(typeKey)) return { ok: false, code: 'type', error: 'Unknown service type' };
+  var wantId = data.id || opts.id || null;
+  if (wantId) { var dup = svcStJobById(wantId); if (dup) return { ok: true, job: dup, duplicate: true }; }
+  var idem = data.idemKey || opts.idemKey || null;
+  if (idem) { var d2 = svcStIndex().byIdem[idem]; if (d2) return { ok: true, job: d2, duplicate: true }; }
+  if (!svcStCan('svc:create')) return { ok: false, code: 'perm' };
+  var tpl = svcStTemplate(typeKey), parts = {}, values = data.values;
+  if (values && typeof values === 'object') {
+    try { if (typeof svcSplitValues === 'function' && tpl) parts = svcSplitValues(tpl, values) || {}; } catch (e) { parts = {}; }
+    if (opts.validate !== false) {
+      try { if (typeof svcValidate === 'function' && tpl) { var v = svcValidate(tpl, values, { mode: opts.mode || 'create' }); if (v && v.ok === false) return { ok: false, code: 'invalid', errors: v.errors }; } } catch (e2) { /* validator problems never block a save */ }
+    }
+  }
+  var now = svcStNow(), actor = svcStAct();
+  var cu = Object.assign({}, parts.customer || {}, data.customer || {});
+  var customerSnap = svcEnsureCustomer({ name: cu.name, phone: cu.phone, altPhone: cu.altPhone, email: cu.email, allowCreate: opts.createCustomer !== false });
+  var as = data.asset || parts.asset || null, assetKind = (as && as.kind) || (tpl && tpl.assetKind) || 'none', assetRes = null, assetId = data.assetId || null, snap = null;
+  if (assetId) { var ea = svcStFindIn(svcAssets, assetId); if (ea) snap = svcStAssetSnap(ea.kind, ea.attrs, ea.label); else assetId = null; }
+  if (!assetId && as && as.attrs && assetKind !== 'none') {
+    snap = svcStAssetSnap(assetKind, as.attrs);
+    assetRes = svcUpsertAsset({ kind: assetKind, attrs: as.attrs, owner: customerSnap });
+    if (assetRes && assetRes.ok && assetRes.asset) { assetId = assetRes.asset.id; snap = svcStAssetSnap(assetRes.asset.kind, assetRes.asset.attrs, assetRes.asset.label); }
+    if (!snap.label && !Object.keys(as.attrs).length) snap = null;
+  }
+  var statuses = svcStStatuses(tpl), initial = (data.source === 'appointment' || data.apptId || opts.appointment) && tpl && tpl.appointmentInitialStatus ? tpl.appointmentInitialStatus : (tpl && tpl.initialStatus) || (statuses[0] && statuses[0].key) || 'received';
+  var wantStatus = data.status || opts.status;
+  if (wantStatus && svcStStatusDef(typeKey, wantStatus) && svcStPhaseOf(typeKey, wantStatus) < 3 && svcStStatusDef(typeKey, wantStatus).scope !== 'appt') initial = wantStatus;
+  var pj = parts.job || {}, tillNo = null, devId = '';
+  try { if (typeof tillNumber === 'function') tillNo = tillNumber() || null; } catch (e3) { tillNo = null; }
+  try { if (typeof getOrCreateDeviceId === 'function') devId = String(getOrCreateDeviceId() || ''); } catch (e4) { devId = ''; }
+  var no = data.no || '';
+  if (!no) {
+    try { no = typeof svcNextJobNo === 'function' ? svcNextJobNo(typeKey) : ''; } catch (e5) { no = ''; }
+    if (!no) no = 'SV-' + Date.now().toString(36).toUpperCase();
+  }
+  var ix = svcStIndex(), baseNo = no, bump = 0;
+  while (ix.byNo[no]) { bump++; no = baseNo + '-' + bump; }
+  var id = wantId || svcStNewId('sj-');
+  var pv = tpl && tpl.version != null ? tpl.version : 1, dueAt = data.dueAt != null ? data.dueAt : (pj.dueAt != null ? pj.dueAt : null);
+  var job = {
+    id: id, no: no, serviceType: typeKey, templateVersion: pv, createdAt: now, createdBy: { id: actor.id, name: actor.name }, till: tillNo, device: devId, source: data.source || opts.source || (data.apptId ? 'appointment' : 'walkin'),
+    status: initial, statusAt: now, statusHistory: [{ id: svcStShortId('sh-'), s: initial, at: now, p: svcStPhaseOf(typeKey, initial), by: actor.name, byId: actor.id }],
+    phase: svcStPhaseOf(typeKey, initial), closedAt: null, dueAt: dueAt != null ? (svcStMs(dueAt) || null) : null,
+    customer: customerSnap, assetId: assetId, assetSnap: snap,
+    data: Object.assign({}, parts.data || {}, data.data || {}),
+    jobServices: svcStServiceLines(data.services || parts.services), jobStaff: svcStStaffLines(data, actor, now), materials: [], valuables: svcStArr(data.valuables), photos: [],
+    quoteVersions: [], quoteLog: [], charges: [], payments: [], billId: null, saleIds: [], discount: null, notify: [], audit: []
+  };
+  if (idem) job.idem = idem;
+  if (data.apptId || data.appointmentId) job.appointmentId = data.apptId || data.appointmentId;
+  var notes = data.notes != null ? data.notes : pj.notes; if (notes) job.notes = svcStStr(notes);
+  if (data.tags || pj.tags) job.tags = svcStArr(data.tags || pj.tags);
+  if (data.legacyId) job.legacyId = data.legacyId;
+  var res = svcCommit(function () { return job; }, { list: 'svcJobs', id: id, create: true, audit: { act: 'created', note: no }, event: 'job:created' });
+  if (!res.ok) return res;
+  if (res.rec.assetId) svcAssetTouchHistory(res.rec);
+  return { ok: true, job: res.rec, asset: assetRes && assetRes.asset ? assetRes.asset : null, customer: customerSnap, warn: res.warn };
+}
+function svcCreateJob(input, opts) { return svcJobCreate(input && (input.typeKey || input.serviceType), input || {}, opts || {}); }
+/* patch: {customer?, data?, dueAt?, notes?, tags?, assetSnap?, jobServices?, values?, ...}. Immutable / derived keys are refused; guarded arrays may only grow. */
+function svcJobUpdate(id, patch, opts) {
+  patch = patch || {}; opts = opts || {};
+  var r = svcStResolve(id);
+  if (r.legacy) return { ok: false, code: 'legacy', action: 'promote' };
+  if (!r.job) return { ok: false, code: 'notfound' };
+  if (!svcStCan('svc:edit')) return { ok: false, code: 'perm' };
+  var keys = Object.keys(patch), i, denied = [];
+  for (i = 0; i < keys.length; i++) { if (SVC_JOB_PATCH_DENY.indexOf(keys[i]) !== -1) denied.push(keys[i]); }
+  if (denied.length) return { ok: false, code: 'immutable', keys: denied };
+  var job = r.job, tpl = svcStTemplate(job.serviceType), parts = {};
+  if (patch.values && typeof svcSplitValues === 'function' && tpl) { try { parts = svcSplitValues(tpl, patch.values) || {}; } catch (e) { parts = {}; } }
+  var cuPatch = Object.assign({}, parts.customer || {}, patch.customer || {}), cust = null;
+  if (Object.keys(cuPatch).length) {
+    cust = svcEnsureCustomer({ name: cuPatch.name != null ? cuPatch.name : job.customer && job.customer.name, phone: cuPatch.phone != null ? cuPatch.phone : job.customer && job.customer.phone, altPhone: cuPatch.altPhone != null ? cuPatch.altPhone : job.customer && job.customer.altPhone, email: cuPatch.email != null ? cuPatch.email : job.customer && job.customer.email });
+  }
+  var as = patch.asset || parts.asset, assetRes = null;
+  if (as && as.attrs) {
+    var kind = (as.kind) || (tpl && tpl.assetKind) || 'none';
+    if (kind !== 'none') assetRes = svcUpsertAsset({ kind: kind, attrs: Object.assign({}, (svcStFindIn(svcAssets, job.assetId) || {}).attrs || {}, as.attrs), owner: cust || job.customer });
+  }
+  var res = svcCommit(function (j) {
+    Object.keys(patch).forEach(function (k) {
+      if (k === 'values' || k === 'customer' || k === 'asset') return;
+      if (k === 'data') { j.data = Object.assign({}, j.data || {}, patch.data); return; }
+      if (k === 'jobServices') { j.jobServices = svcStServiceLines(patch.jobServices); return; }
+      if (k === 'dueAt') { j.dueAt = patch.dueAt == null || patch.dueAt === '' ? null : (svcStMs(patch.dueAt) || null); return; }
+      j[k] = patch[k];
+    });
+    if (parts.data) j.data = Object.assign({}, j.data || {}, parts.data);
+    if (parts.job && parts.job.dueAt !== undefined && patch.dueAt === undefined) j.dueAt = parts.job.dueAt ? (svcStMs(parts.job.dueAt) || null) : null;
+    if (cust) j.customer = Object.assign({}, j.customer || {}, cust);
+    if (assetRes && assetRes.ok && assetRes.asset) { j.assetId = assetRes.asset.id; j.assetSnap = svcStAssetSnap(assetRes.asset.kind, assetRes.asset.attrs, assetRes.asset.label); }
+    return j;
+  }, { list: 'svcJobs', id: id, audit: { act: 'edited', note: opts.reason, ref: keys.join(',') }, event: 'job:updated' });
+  return res.ok ? { ok: true, job: res.rec } : res;
+}
+function svcUpdateJob(id, patch, opts) { return svcJobUpdate(id, patch, opts); }
+
+/* ===== legacy adapter (read-only views of serviceJobs / bookings; legacy data is never written) ===== */
+function svcStCustomerIds() {
+  var m = {}, l = svcStCustomers() || [];
+  l.forEach(function (c) { var k = c && svcStPhoneKey(c.phone); if (k && !m[k] && !c._deleted) m[k] = c.id; });
+  return m;
+}
+function svcLegacyToJob(l, ctx) {
+  ctx = ctx || {};
+  l = l || {};
+  var id = svcStStr(l.id), created = svcStMs(l.createdAt), type = ctx.type || svcLegacyType();
+  var ms = SVC_LEGACY_STATUS[l.status] || svcStStr(l.status) || 'received';
+  var phase = SVC_LEGACY_PHASE[ms] != null ? SVC_LEGACY_PHASE[ms] : 0;
+  var completed = svcStMs(l.completedAt), key = svcStPhoneKey(l.clientPhone), q = Number(l.quoteAmount) || 0, labour = Number(l.laborFee) || 0;
+  var cids = ctx.custIds || svcStCustomerIds();
+  var firstLine = svcStStr(l.itemDetails).split(/\r?\n/)[0].trim().slice(0, 60);
+  var data = {};
+  if (l.idNumber) data.leg_id_number = svcStStr(l.idNumber);
+  if (l.itemDetails) data.leg_item_details = svcStStr(l.itemDetails);
+  if (l.serviceNotes) data.leg_notes = svcStStr(l.serviceNotes);
+  if (l.promisedPickup) data.leg_promised_pickup = l.promisedPickup;
+  if (l.paymentMethod) data.leg_payment_method = l.paymentMethod;
+  if (l.createdAt != null) data.leg_created_at = l.createdAt;
+  if (l.completedAt) data.leg_completed_at = l.completedAt;
+  if (l.status != null) data.leg_status = l.status;
+  var extra = {}, hasExtra = false;
+  Object.keys(l).forEach(function (k) { if (SVC_LEGACY_JOB_KEYS.indexOf(k) === -1) { extra[k] = l[k]; hasExtra = true; } });
+  if (hasExtra) data.leg_extra = svcStClone(extra);
+  var jobServices = [], seen = {};
+  svcStArr(l.servicesRequired).forEach(function (s, i) {
+    if (!s) return;
+    var code = svcStStr(s.code), sid = 'lg-' + code; if (seen[sid]) sid = 'lg-' + i + '-' + code; seen[sid] = 1;
+    jobServices.push({ id: sid, catalogId: null, name: svcStStr(s.name), category: '', qty: 1, price: 0, source: 'base', staffIds: [], done: false, legacyCode: code });
+  });
+  var materials = svcStArr(l.components).map(function (c, i) {
+    c = c || {};
+    return { id: 'lg-' + i + '-' + svcStStr(c.code), code: c.code == null ? null : c.code, name: svcStStr(c.name), qty: Number(c.qty) || 0, unit: c.unit || 'pcs', price: Number(c.price) || 0, cost: 0, chargeable: true, at: created, by: '', movementIds: [], rev: 0 };
+  });
+  var charges = labour > 0 ? [{ id: 'lg-labour', kind: 'labour', label: 'Labour', amount: labour, reason: '', at: created, by: '', approved: true, rev: 0 }] : [];
+  var quoteVersions = q > 0 ? [{ id: 'lg-q1', v: 1, at: created, by: '', lines: [], subtotal: q, discount: 0, tax: 0, total: q, note: '' }] : [];
+  var quoteLog = q > 0 ? [{ id: 'lg-ql1', at: created, by: '', act: l.finalAmount != null ? 'approve' : 'draft', v: 1, amount: q }] : [];
+  var payments = [];
+  if (!l.billId && !l.saleId && l.finalAmount != null && ms === 'collected' && Number(l.finalAmount) > 0) {
+    /* a bill settled from the Bills tab vanishes from `bills` (resolveJobBillStatuses then flips the job to collected): show it as paid */
+    payments.push({ id: 'lg-pay-settled', at: completed || created, amount: Number(l.finalAmount), method: l.paymentMethod || 'other', ref: '', by: '', kind: 'balance', legacy: true });
+  }
+  var view = {
+    id: id, no: 'J-' + id.slice(-6), serviceType: type, templateVersion: 1, legacyId: id, _legacy: true, source: 'legacy', createdAt: created, createdBy: { id: null, name: '' }, till: null, device: '',
+    updatedAt: 0, rev: 0, status: ms, statusAt: completed || created, phase: phase, closedAt: phase >= 3 ? (completed || created) : null,
+    statusHistory: [{ id: 'lg-h-' + id, s: ms, at: completed || created, p: phase, by: '', byId: null }],
+    dueAt: svcStMs(l.promisedPickup) || null, completedAt: completed || undefined,
+    customer: { id: key && cids[key] ? cids[key] : null, name: svcStStr(l.clientName), phone: svcStStr(l.clientPhone), phoneKey: key },
+    assetId: null, assetSnap: { kind: 'phone', label: firstLine },
+    data: data, jobServices: jobServices, jobStaff: [], materials: materials, valuables: [], photos: [], quoteVersions: quoteVersions, quoteLog: quoteLog, charges: charges, payments: payments,
+    billId: l.billId || null, saleIds: l.saleId ? [l.saleId] : [], saleId: l.saleId || null, discount: null, notify: [], audit: [], notes: svcStStr(l.serviceNotes),
+    quoteAmount: l.quoteAmount == null ? 0 : l.quoteAmount, finalAmount: l.finalAmount == null ? null : l.finalAmount, paymentMethod: l.paymentMethod || '',
+    moneyKnown: !!(l.billId || l.saleId || l.finalAmount != null)       /* false = the old screens never priced / billed it: reports should not treat its quote as a receivable */
+  };
+  return svcStDeepFreeze(view);
+}
+function svcStBookingMs(date, time) {
+  if (!date || !time) return 0;
+  var t = Date.parse(String(date) + 'T' + String(time).slice(0, 5) + ':00+03:00');
+  return isFinite(t) ? t : 0;
+}
+function svcLegacyBookingToAppt(b, ctx) {
+  ctx = ctx || {};
+  b = b || {};
+  var id = svcStStr(b.id), start = svcStBookingMs(b.date, b.startTime), end = svcStBookingMs(b.date, b.endTime);
+  var inv = null;
+  try { inv = typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory.filter(function (p) { return p && p.code === b.serviceCode; })[0] : null; } catch (e) { inv = null; }
+  var st = SVC_LEGACY_BOOKING_STATUS[b.status] || svcStStr(b.status) || 'confirmed', key = svcStPhoneKey(b.customerPhone);
+  var cids = ctx.custIds || svcStCustomerIds();
+  var dur = start && end && end > start ? Math.round((end - start) / 60000) : (inv && inv.durationMinutes) || 30;
+  var closed = st === 'completed' || st === 'cancelled' || st === 'no_show';
+  var view = {
+    id: id, no: 'BK-' + id.slice(-6), serviceType: ctx.type || svcLegacyType(), legacyBookingId: id, _legacy: true, rev: 0, updatedAt: 0,
+    customer: { id: key && cids[key] ? cids[key] : null, name: svcStStr(b.customerName), phone: svcStStr(b.customerPhone), phoneKey: key, email: '' },
+    assetId: null, assetSnap: null, date: svcStStr(b.date), start: svcStStr(b.startTime), end: svcStStr(b.endTime), startAt: start, endAt: end, durationMin: dur,
+    services: [{ catalogId: null, code: b.serviceCode == null ? '' : b.serviceCode, name: inv && inv.name ? inv.name : svcStStr(b.serviceCode), price: inv && inv.price != null ? Number(inv.price) : 0, durationMin: dur }],
+    staffIds: b.staffId ? [b.staffId] : [], status: st, deposit: null, notes: svcStStr(b.notes), special: '', createdAt: Number(b.createdAt) || 0, createdBy: null, closedAt: closed ? (start || Number(b.createdAt) || 0) : null, jobId: null, log: []
+  };
+  return svcStDeepFreeze(view);
+}
+/* merged read view: engine jobs (not deleted) + legacy rows not promoted (hidden when an engine job carries their id as legacyId). Newest first. */
+function svcAllJobs(o) {
+  o = o || {};
+  var out = [], i, j, hidden = {}, inc = o.includeLegacy !== false;
+  for (i = 0; i < svcJobs.length; i++) {
+    j = svcJobs[i];
+    if (!j) continue;
+    if (j.legacyId) hidden[j.legacyId] = 1;
+    if (!j._deleted || o.includeDeleted) out.push(j);
+  }
+  if (inc) {
+    var src = []; try { src = typeof serviceJobs !== 'undefined' && Array.isArray(serviceJobs) ? serviceJobs : []; } catch (e) { src = []; }
+    if (src.length) {
+      var ctx = { type: svcLegacyType(), custIds: svcStCustomerIds() };
+      for (i = 0; i < src.length; i++) { if (src[i] && src[i].id != null && !hidden[src[i].id]) out.push(svcLegacyToJob(src[i], ctx)); }
+    }
+  }
+  var types = o.types ? (Array.isArray(o.types) ? o.types : [o.types]) : null, st = o.status ? (Array.isArray(o.status) ? o.status : [o.status]) : null;
+  var q = svcStStr(o.q).trim().toLowerCase(), qd = q.replace(/\D/g, '');
+  out = out.filter(function (x) {
+    if (types && types.indexOf(x.serviceType) === -1) return false;
+    if (st && st.indexOf(x.status) === -1) return false;
+    if (o.since && !(Number(x.createdAt) >= Number(o.since))) return false;
+    if (q) {
+      var hay = [x.no, x.customer && x.customer.name, x.assetSnap && x.assetSnap.label, x.assetSnap && x.assetSnap.plate, x.data && x.data.leg_item_details].join(' ').toLowerCase();
+      if (hay.indexOf(q) === -1 && !(qd.length >= 5 && x.customer && x.customer.phoneKey && x.customer.phoneKey.indexOf(qd.slice(-9)) !== -1)) return false;
+    }
+    return true;
+  });
+  out.sort(function (a, b) { return (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || (String(a.id) < String(b.id) ? -1 : 1); });
+  if (o.limit) out = out.slice(0, o.limit);
+  return out;
+}
+function svcAllJobsView(o) { return svcAllJobs(o); }
+function svcGetJob(id) {
+  var r = svcStResolve(id);
+  if (r.job) return r.job;
+  if (r.legacy) {
+    var promoted = svcStJobById('sj-lg-' + r.legacy.id);
+    if (promoted) return promoted;
+    var i; for (i = 0; i < svcJobs.length; i++) { if (svcJobs[i] && svcJobs[i].legacyId === r.legacy.id) return svcJobs[i]; }
+    return svcLegacyToJob(r.legacy);
+  }
+  return null;
+}
+function svcAllApptsView(o) {
+  o = o || {};
+  var out = svcAppointments.filter(function (a) { return a && !a._deleted; }), i, hidden = {};
+  out.forEach(function (a) { if (a.legacyBookingId) hidden[a.legacyBookingId] = 1; });
+  var src = []; try { src = typeof bookings !== 'undefined' && Array.isArray(bookings) ? bookings : []; } catch (e) { src = []; }
+  if (o.includeLegacy !== false && src.length) {
+    var ctx = { type: svcLegacyType(), custIds: svcStCustomerIds() };
+    for (i = 0; i < src.length; i++) { if (src[i] && src[i].id != null && !hidden[src[i].id]) out.push(svcLegacyBookingToAppt(src[i], ctx)); }
+  }
+  out.sort(function (a, b) { return (Number(a.startAt) || 0) - (Number(b.startAt) || 0); });
+  return out;
+}
+/* route a legacy row's action to the EXISTING function (nothing in the legacy path is modified) */
+function svcLegacyAction(jobId, action, arg) {
+  var map = { status: 'setJobStatusQuick', edit: 'openClientRegistryModal', bill: 'sendJobToServicesCounter', notify: 'openClientNotifyModal', tag: 'printIntakeTag', remove: 'deleteClientRegistryJob', profile: 'openClientJobProfile' };
+  var fn = map[action], f = null;
+  try { f = fn && typeof window !== 'undefined' && typeof window[fn] === 'function' ? window[fn] : null; } catch (e) { f = null; }
+  if (!f) return { ok: false, code: 'noaction' };
+  if (action === 'status') f(jobId, arg); else f(jobId);
+  return { ok: true };
+}
+
+/* ===== sync hooks (collectSyncPayload / applyRemotePayload seams) ===== */
+/* only non-empty lists travel: a till that has no engine data sends exactly what it always sent */
+function svcSyncCollect() {
+  var out = {};
+  SVC_LISTS.forEach(function (n) { var a = svcStList(n); if (Array.isArray(a) && a.length) out[n] = a; });
+  return out;
+}
+/* replace each list only when the pull carries it (pull-after-flush guarantees local unsynced work is already on the server) */
+function svcSyncApply(data) {
+  if (!data || typeof data !== 'object') return false;
+  var any = false, cfgChanged = false;
+  SVC_LISTS.forEach(function (n) {
+    if (!Array.isArray(data[n])) return;
+    var next = data[n].filter(svcStIsRec);
+    if (n === 'svcConfig') cfgChanged = JSON.stringify(next) !== JSON.stringify(svcConfig);
+    svcStSetList(n, next); any = true;
+  });
+  if (!any) return false;
+  svcStHealAll();
+  SVC_LISTS.forEach(function (n) { if (Array.isArray(data[n])) svcSave(n); });
+  if (cfgChanged) svcStEmit('config:changed', { reason: 'sync' });
+  svcStEmit('render:home', { reason: 'sync' });
+  return true;
+}
+
+/* ===== size budget + archive helpers ===== */
+function svcStoreStats() {
+  var out = { lists: {}, totalBytes: 0 };
+  SVC_LISTS.forEach(function (n) {
+    var a = svcStList(n) || [], s = 0;
+    try { s = JSON.stringify(a).length; } catch (e) { s = 0; }
+    out.lists[n] = { count: a.length, bytes: s }; out.totalBytes += s;
+  });
+  var big = 0; svcJobs.forEach(function (j) { if (svcJobBytes(j) > SVC_JOB_CAP) big++; });
+  out.jobsOverCap = big; out.jobCap = SVC_JOB_CAP;
+  return out;
+}
+/* closed, settled, old enough, never deleted-open: what the local archive may take. Open work (closedAt == null) never qualifies. */
+function svcArchiveEligible(job, o) {
+  o = o || {};
+  if (!job || job._legacy || job._deleted || job.closedAt == null) return false;
+  var cutoff = (o.now != null ? o.now : svcStNow()) - (o.keepDays != null ? o.keepDays : 90) * 86400000;
+  if (!(Number(job.closedAt) < cutoff)) return false;
+  if (o.requireSettled !== false && svcStTotalsOf(job).balance > 0.005) return false;
+  return true;
+}
+function svcArchivePlan(o) {
+  var ids = [], bytes = 0;
+  svcJobs.forEach(function (j) { if (svcArchiveEligible(j, o)) { ids.push(j.id); bytes += svcJobBytes(j); } });
+  return { ids: ids, bytes: bytes };
+}
+/* drop the listed CLOSED jobs from this device only (their asset-history entries are refreshed first, so previous visits survive). No push, no tombstone. */
+function svcArchiveLocal(ids, o) {
+  var set = {}; svcStArr(ids).forEach(function (x) { set[x] = 1; });
+  var keep = [], moved = 0;
+  svcJobs.forEach(function (j) {
+    if (j && set[j.id] && svcArchiveEligible(j, Object.assign({}, o || {}, { keepDays: 0, now: (o && o.now != null ? o.now : svcStNow()) + 1 }))) {
+      if (j.assetId) svcAssetTouchHistory(j);
+      moved++; return;
+    }
+    keep.push(j);
+  });
+  if (moved) { svcStSetList('svcJobs', keep); svcSave('svcJobs'); }
+  return { moved: moved };
+}
+
+try { svcLoad(); } catch (e) { /* storage blocked: the lists stay empty and the engine still works in memory */ }
+</script>

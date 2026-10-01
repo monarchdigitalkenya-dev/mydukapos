@@ -1,0 +1,844 @@
+<!-- SVC UI HOME ---------------------------------------------------------------------------------------
+     Services engine block "svc-ui-home". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B1-U. Nobody else edits this file.
+     STATE: IMPLEMENTED by B1-U (style element + one script element below this comment).
+     KIND: DOM. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcBoot (called from the DOMContentLoaded handler), svcRenderHome, svcOpenNewJob, svcRoute, svcDrawerRegister, svcSettingsRegister, job list + drawer shell, business-type chooser, svcApplyTerms, svcApplyTabLabels, sign-up select wiring, classic-mode banner.
+     SPEC: SERVICES_ARCHITECTURE.md 4.3, 5, 7, 8.3 (svc-store UI registries). Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+
+<style id="svc-ui-css">
+/* Services engine UI (svu-ui-home). Colours come only from the app's tokens (dark-mode safe); touch targets >= 44px; inputs 16px. */
+#svc-root { margin: 0 auto; max-width: 980px; }
+.svu-home, .svu-ov, .svu-banner { color: var(--dark); font-size: 15px; line-height: 1.4; }
+.svu-home *, .svu-ov *, .svu-banner * { box-sizing: border-box; }
+.svu-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px; margin: 0; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); font-size: 15px; font-weight: 600; cursor: pointer; width: auto; text-align: center; }
+.svu-btn:active { transform: translateY(1px); }
+.svu-btn[disabled] { opacity: .55; cursor: not-allowed; }
+.svu-btn.svu-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.svu-btn.svu-good { background: var(--success); border-color: var(--success); color: #fff; }
+.svu-btn.svu-sm { min-height: 40px; padding: 0 12px; font-size: 14px; }
+.svu-btn.svu-grow { flex: 1 1 auto; }
+.svu-link { background: none; border: 0; color: var(--accent); font-size: 14px; min-height: 44px; padding: 0 4px; cursor: pointer; text-align: left; width: auto; }
+.svu-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; margin: 4px 0 10px; }
+.svu-head-t { display: flex; align-items: center; margin: 4px 12px 4px 0; min-width: 0; }
+.svu-ico { font-size: 28px; margin-right: 10px; line-height: 1; }
+.svu-h2 { font-size: 20px; margin: 0; color: var(--dark); line-height: 1.2; }
+.svu-sub { font-size: 12px; opacity: .7; }
+.svu-head-b { display: flex; flex-wrap: wrap; }
+.svu-head-b .svu-btn { margin: 4px 8px 4px 0; }
+.svu-q { width: 100%; min-height: 48px; padding: 10px 14px; font-size: 16px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-surface); color: var(--dark); margin: 0 0 10px; }
+.svu-kpis:empty { display: none; }
+.svu-seg { display: flex; overflow-x: auto; margin: 0 0 8px; border-bottom: 1px solid var(--border-color); -webkit-overflow-scrolling: touch; }
+.svu-seg button { flex: 0 0 auto; min-height: 44px; padding: 0 16px; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--dark); font-size: 15px; font-weight: 600; cursor: pointer; width: auto; }
+.svu-seg button.is-on { border-bottom-color: var(--accent); color: var(--accent); }
+.svu-chips { display: flex; overflow-x: auto; margin: 0 0 6px; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.svu-chip { flex: 0 0 auto; min-height: 44px; margin-right: 8px; padding: 0 14px; border: 1px solid var(--border-color); border-radius: 22px; background: var(--bg-surface); color: var(--dark); font-size: 14px; cursor: pointer; white-space: nowrap; width: auto; }
+.svu-chip b { margin-left: 6px; }
+.svu-chip.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.svu-chip.is-zero { opacity: .6; }
+.svu-allrow { display: flex; align-items: center; min-height: 44px; font-size: 14px; }
+.svu-allrow input { width: 22px; height: 22px; margin: 0 10px 0 0; }
+.svu-allrow label { display: flex; align-items: center; min-height: 44px; cursor: pointer; }
+.svu-note { background: var(--tint-info-bg); border-radius: 10px; padding: 10px 12px; margin: 6px 0; font-size: 14px; }
+.svu-note.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); }
+.svu-note.bad { background: var(--tint-danger-bg); color: var(--danger); }
+.svu-note .svu-link { padding: 0 6px; }
+.svu-list { margin: 6px 0; }
+.svu-card { position: relative; display: block; width: 100%; text-align: left; margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--border-color); border-left: 5px solid var(--border-color); border-radius: 12px; background: var(--bg-surface); color: var(--dark); cursor: pointer; min-height: 64px; font-size: 15px; }
+.svu-card:focus { outline: 2px solid var(--accent); }
+.svu-card .r1 { display: flex; justify-content: space-between; align-items: center; }
+.svu-card .no { font-weight: 700; margin-right: 8px; word-break: break-all; }
+.svu-card .r2 { margin-top: 4px; font-weight: 600; }
+.svu-card .r3, .svu-card .r4 { margin-top: 3px; font-size: 13px; opacity: .85; }
+.svu-card .r4 { display: flex; flex-wrap: wrap; align-items: center; }
+.svu-pill { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 700; color: #fff; background: #7f8c8d; white-space: nowrap; }
+.svu-chipx { display: inline-block; margin: 2px 6px 2px 0; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--bg-surface-alt); color: var(--dark); border: 1px solid var(--border-color); }
+.svu-chipx.bal { background: var(--tint-danger-bg); color: var(--danger); border-color: transparent; font-weight: 700; }
+.svu-chipx.paid { background: var(--tint-success-bg); color: var(--tint-success-text); border-color: transparent; }
+.svu-chipx.due { background: var(--tint-warning-bg); color: var(--tint-warning-text); border-color: transparent; }
+.svu-empty { text-align: center; padding: 28px 14px; border: 2px dashed var(--border-color); border-radius: 14px; margin: 10px 0; }
+.svu-empty .big { font-size: 38px; }
+.svu-empty p { margin: 8px 0 14px; opacity: .85; }
+.svu-foot { margin-top: 14px; }
+.svu-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; background: var(--tint-info-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px 14px; margin: 0 0 14px; }
+.svu-banner .t { flex: 1 1 240px; margin: 4px 12px 4px 0; font-weight: 600; }
+.svu-banner .t small { display: block; font-weight: 400; opacity: .8; margin-top: 2px; }
+.svu-banner .b { display: flex; flex-wrap: wrap; }
+.svu-banner .b .svu-btn { margin: 4px 8px 4px 0; }
+/* overlays: new-job sheet, drawer, chooser */
+body.svu-lock { overflow: hidden; }
+.svu-ov { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 3000; background: var(--overlay-bg); display: flex; justify-content: flex-end; }
+body:has(.svu-ov) #floating-kb-toggle, body:has(.svu-ov) #scroll-to-top-btn, body:has(.svu-ov) #mobile-cart-fab { display: none !important; }
+.svu-ov .svu-panel { display: flex; flex-direction: column; width: 100%; height: 100%; background: var(--bg-page); color: var(--dark); }
+.svu-sheet .svu-panel { max-width: 780px; margin: 0 auto; }
+.svu-ph { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-color); flex: 0 0 auto; }
+.svu-ph .svu-pt { flex: 1 1 auto; min-width: 0; margin: 0 10px; }
+.svu-ph .svu-pt b { display: block; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svu-ph .svu-pt small { display: block; font-size: 12px; opacity: .7; }
+.svu-x { min-width: 44px; min-height: 44px; border: 0; border-radius: 10px; background: var(--bg-surface-alt); color: var(--dark); font-size: 18px; cursor: pointer; width: auto; padding: 0 12px; }
+.svu-pbody { flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px; }
+.svu-pfoot { flex: 0 0 auto; display: flex; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bg-surface); border-top: 1px solid var(--border-color); }
+.svu-pfoot .svu-btn { margin-right: 8px; min-height: 48px; }
+.svu-pfoot .svu-btn:last-child { margin-right: 0; }
+.svu-modebar { display: flex; padding: 8px 12px 0; background: var(--bg-surface); }
+.svu-modebar button { flex: 1 1 0; min-height: 44px; border: 1px solid var(--border-color); background: var(--bg-surface-alt); color: var(--dark); font-size: 14px; font-weight: 600; cursor: pointer; width: auto; }
+.svu-modebar button:first-child { border-radius: 10px 0 0 10px; }
+.svu-modebar button:last-child { border-radius: 0 10px 10px 0; border-left: 0; }
+.svu-modebar button.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.svu-formmount .svc-actions { display: none; }      /* svc-form's own submit bar: the sheet has its own sticky footer */
+.svu-errs:empty { display: none; }
+.svu-errs { background: var(--tint-danger-bg); color: var(--danger); border-radius: 10px; padding: 10px 12px; margin: 0 0 12px; font-size: 14px; }
+.svu-errs div { margin: 2px 0; }
+.svu-tabs { display: flex; overflow-x: auto; background: var(--bg-surface); border-bottom: 1px solid var(--border-color); flex: 0 0 auto; -webkit-overflow-scrolling: touch; }
+.svu-tabs button { flex: 0 0 auto; min-height: 46px; padding: 0 14px; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--dark); font-size: 14px; font-weight: 600; cursor: pointer; width: auto; white-space: nowrap; }
+.svu-tabs button.is-on { border-bottom-color: var(--accent); color: var(--accent); }
+.svu-box { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px; margin: 0 0 12px; }
+.svu-box h4 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .03em; opacity: .75; }
+.svu-rows { margin: 0; }
+.svu-row { display: flex; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--border-color); }
+.svu-row:last-child { border-bottom: 0; }
+.svu-row .k { flex: 0 0 38%; min-width: 120px; font-size: 13px; opacity: .7; padding-right: 8px; }
+.svu-row .v { flex: 1 1 55%; word-break: break-word; white-space: pre-wrap; }
+.svu-moves { display: flex; flex-wrap: wrap; margin: 6px 0 0; }
+.svu-moves .svu-btn { margin: 0 8px 8px 0; }
+.svu-tl { list-style: none; margin: 0; padding: 0; }
+.svu-tl li { position: relative; padding: 0 0 12px 20px; }
+.svu-tl li:before { content: ''; position: absolute; left: 3px; top: 5px; width: 10px; height: 10px; border-radius: 50%; background: var(--dot, #7f8c8d); }
+.svu-tl li:after { content: ''; position: absolute; left: 7px; top: 16px; bottom: -2px; width: 2px; background: var(--border-color); }
+.svu-tl li:last-child:after { display: none; }
+.svu-tl .w { font-size: 12px; opacity: .7; }
+.svu-types { display: flex; flex-wrap: wrap; margin: 0 -5px; }
+.svu-type { display: block; flex: 1 1 100%; margin: 5px; text-align: left; padding: 12px 14px; min-height: 64px; border: 2px solid var(--border-color); border-radius: 12px; background: var(--bg-surface); color: var(--dark); cursor: pointer; position: relative; font-size: 14px; width: auto; }
+.svu-type .ic { font-size: 26px; float: left; margin: 0 12px 0 0; line-height: 1.2; }
+.svu-type b { display: block; font-size: 16px; }
+.svu-type small { display: block; opacity: .75; margin-top: 2px; }
+.svu-type.is-sel { border-color: var(--accent); background: var(--tint-info-bg); }
+.svu-type .cur { position: absolute; top: 8px; right: 10px; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: var(--success); color: #fff; }
+.svu-setnav { display: flex; overflow-x: auto; margin: 0 0 12px; }
+.svu-setnav button { flex: 0 0 auto; min-height: 44px; margin-right: 8px; padding: 0 14px; border: 1px solid var(--border-color); border-radius: 22px; background: var(--bg-surface); color: var(--dark); font-size: 14px; font-weight: 600; cursor: pointer; width: auto; }
+.svu-setnav button.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (min-width: 560px) { .svu-type { flex: 1 1 calc(50% - 10px); } }
+@media (min-width: 900px) {
+  .svu-drawer .svu-panel { width: 560px; max-width: 100%; box-shadow: -6px 0 24px rgba(0,0,0,.25); }
+  .svu-sheet { align-items: center; }
+  .svu-sheet .svu-panel { height: 94%; border-radius: 14px; overflow: hidden; }
+}
+@media (prefers-reduced-motion: reduce) { .svu-btn:active { transform: none; } }
+</style>
+<script>
+/* ===== svu-ui-home: state + small helpers ===== */
+var SVC_UI = { booted: false, stack: [], skipPop: 0, hasEntry: false, backTimer: 0, status: '', q: '', allTypes: false, shown: 60, view: 'list', classicOpen: false,
+  views: {}, drawerTabs: {}, settingsPages: {}, refreshTimer: 0, searchTimer: 0, typeOrder: ['phone_repair', 'car_wash', 'garage', 'salon', 'barber', 'laundry', 'cleaning', 'electronics_repair', 'tailoring', 'other'] };
+var SVC_UI_TERMS = { job: 'Job', jobs: 'Jobs', customer: 'Customer', customers: 'Customers', asset: 'Item', assets: 'Items', staff: 'Staff', staffs: 'Staff', service: 'Service', services: 'Services',
+  newButton: '+ New Service', walkInButton: '+ New Service', quickButton: 'Quick add', queue: 'Services', tabLabel: '🔧 Services', registerLabel: '🗂️ History', appointmentsLabel: '📅 Bookings', ready: 'Ready', done: 'Completed' };
+var SVC_UI_LEGACY_STATUS = { received: 'pending', in_progress: 'in_progress', ready: 'ready', completed: 'completed', collected: 'collected' };
+
+function svcUiEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcUiEl(id) { return typeof document === 'undefined' ? null : document.getElementById(id); }
+function svcUiLs(key, val) {
+  try { if (arguments.length > 1) { if (val === null) localStorage.removeItem(key); else localStorage.setItem(key, String(val)); return val; } return localStorage.getItem(key); } catch (e) { return null; }
+}
+function svcUiToast(msg, isErr) { try { if (typeof showToast === 'function') showToast(String(msg), !!isErr); } catch (e) { /* toast is cosmetic */ } }
+function svcUiNow() { try { if (typeof svcNow === 'function') return svcNow(); } catch (e) { /* use the clock */ } return Date.now(); }
+function svcUiCan(perm) { try { if (typeof svcCan === 'function') return !!svcCan(perm); } catch (e) { /* no permission layer: allow */ } return true; }
+function svcUiPretty(id) { var s = String(id == null ? '' : id).replace(/^(cf_|leg_)/, '').replace(/[_-]+/g, ' ').trim(); return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+function svcUiMoney(n) {
+  try { if (typeof svcFormatMoney === 'function') return svcFormatMoney(n); } catch (e) { /* fall through */ }
+  var v = Math.round((Number(n) || 0) * 100) / 100, s = String(v).split('.'); s[0] = s[0].replace(/\B(?=(\d{3})+(?!\d))/g, ','); return 'KSh ' + s.join('.');
+}
+function svcUiWhen(ms) {
+  var n = Number(ms); if (!n) return '';
+  try { return new Date(n).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch (e) { return new Date(n).toISOString().slice(0, 16).replace('T', ' '); }
+}
+function svcUiThen(v, fn) { if (v && typeof v.then === 'function') { v.then(fn, function (e) { fn({ ok: false, error: String((e && e.message) || e || 'failed') }); }); } else { fn(v); } }
+
+/* ===== store / template access (every call guarded: the blocks load in parallel and any may be absent) ===== */
+function svcUiBizCfg() {
+  try { if (typeof svcConfigGet === 'function') { var r = svcConfigGet('cfg-business'); if (r && typeof r === 'object') return (r.value && typeof r.value === 'object') ? r.value : r; } } catch (e) { /* no config yet */ }
+  return {};
+}
+function svcUiType() { try { if (typeof svcBusinessType === 'function') { var t = svcBusinessType(); if (t) return String(t); } } catch (e) { /* default */ } return 'other'; }
+function svcUiTpl(type) { try { if (typeof svcGetTemplate === 'function') return svcGetTemplate(type || svcUiType()) || null; } catch (e) { /* no template */ } return null; }
+function svcUiTerm(key, type) { var t = svcUiTpl(type), v = t && t.terms && t.terms[key]; if (v != null && v !== '') return String(v); return SVC_UI_TERMS[key] != null ? SVC_UI_TERMS[key] : String(key); }
+function svcUiTypeList() { try { if (typeof SVC_TYPE_ORDER !== 'undefined' && SVC_TYPE_ORDER && SVC_TYPE_ORDER.length) return SVC_TYPE_ORDER.slice(); } catch (e) { /* fallback */ } return SVC_UI.typeOrder.slice(); }
+function svcUiMode() {
+  var cfg = svcUiBizCfg(), chosen = cfg.chosen === true;
+  var classic = svcUiLs('pos_svc_ui') === 'classic' || cfg.uiMode === 'classic';
+  return { engine: chosen && !classic, chosen: chosen, type: svcUiType(), cfg: cfg };
+}
+function svcUiJobGet(id) {
+  try { if (typeof svcGetJob === 'function') { var j = svcGetJob(id); if (j) return j; } } catch (e) { /* try the list */ }
+  try { if (typeof svcAllJobs === 'function') { var a = svcAllJobs({ includeLegacy: true }) || []; for (var i = 0; i < a.length; i++) if (a[i] && a[i].id === id) return a[i]; } } catch (e2) { /* none */ }
+  return null;
+}
+function svcUiStatusDef(tpl, key) {
+  var list = (tpl && tpl.statuses) || [], i;
+  for (i = 0; i < list.length; i++) if (list[i] && list[i].key === key) return list[i];
+  return { key: key, label: svcUiPretty(key), color: '#7f8c8d', phase: 1 };
+}
+function svcUiIsOpen(j) {
+  if (!j || j._deleted) return false;
+  if (j.closedAt != null) return false;
+  var st = svcUiStatusDef(svcUiTpl(j.serviceType), j.status);
+  if (st.terminal || (typeof st.phase === 'number' && st.phase >= 3)) return false;
+  return !(typeof j.phase === 'number' && j.phase >= 3);
+}
+function svcUiJobs(allTypes) {
+  var jobs = [];
+  try { if (typeof svcAllJobs === 'function') jobs = svcAllJobs({ includeLegacy: true }) || []; } catch (e) { jobs = []; }
+  var cur = svcUiType();
+  jobs = jobs.filter(function (j) { return j && !j._deleted && (allTypes || !j.serviceType || j.serviceType === cur); });
+  var idx = {}; jobs.forEach(function (j, i) { idx[j.id] = i; });
+  jobs.sort(function (a, b) {
+    var oa = svcUiIsOpen(a) ? 0 : 1, ob = svcUiIsOpen(b) ? 0 : 1;
+    if (oa !== ob) return oa - ob;
+    return (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || idx[a.id] - idx[b.id];
+  });
+  return jobs;
+}
+function svcUiTotalsOf(j) { try { if (typeof svcTotals === 'function') return svcTotals(j) || null; } catch (e) { /* no totals */ } return null; }
+
+/* ===== registries (B2 / B3 add drawer tabs, settings pages and home views without touching this block) ===== */
+function svcDrawerRegister(key, spec) {
+  spec = spec || {}; if (!key || typeof spec.render !== 'function') return false;
+  SVC_UI.drawerTabs[key] = { key: key, label: spec.label || svcUiPretty(key), order: spec.order == null ? 50 : spec.order, render: spec.render, visibleWhen: typeof spec.visibleWhen === 'function' ? spec.visibleWhen : null };
+  return true;
+}
+function svcSettingsRegister(key, spec) {
+  spec = spec || {}; if (!key || typeof spec.render !== 'function') return false;
+  SVC_UI.settingsPages[key] = { key: key, label: spec.label || svcUiPretty(key), order: spec.order == null ? 50 : spec.order, render: spec.render };
+  return true;
+}
+function svcHomeViewRegister(key, spec) {
+  spec = spec || {}; if (!key || typeof spec.render !== 'function') return false;
+  SVC_UI.views[key] = { key: key, label: spec.label || svcUiPretty(key), order: spec.order == null ? 50 : spec.order, render: spec.render, visibleWhen: typeof spec.visibleWhen === 'function' ? spec.visibleWhen : null };
+  return true;
+}
+function svcUiSorted(map) { var a = []; Object.keys(map).forEach(function (k) { a.push(map[k]); }); a.sort(function (x, y) { return (x.order - y.order) || (x.key < y.key ? -1 : 1); }); return a; }
+
+/* ===== terminology (MP 29): labels follow the type; historical data is never touched ===== */
+function svcApplyTerms(root) {
+  var scope = root || (typeof document !== 'undefined' ? document : null); if (!scope || !scope.querySelectorAll) return 0;
+  var els = scope.querySelectorAll('[data-svc-term]'), n = 0;
+  for (var i = 0; i < els.length; i++) { var t = svcUiTerm(els[i].getAttribute('data-svc-term'), els[i].getAttribute('data-svc-term-type') || null); if (els[i].textContent !== t) els[i].textContent = t; n++; }
+  return n;
+}
+function svcApplyTabLabels() {
+  var map = [['services-counter-tab-btn', 'tabLabel'], ['client-registry-tab-btn', 'registerLabel'], ['bookings-tab-btn', 'appointmentsLabel']];
+  var engine = svcUiMode().engine, changed = false;
+  map.forEach(function (m) {
+    var btn = svcUiEl(m[0]); if (!btn) return;
+    if (btn.getAttribute('data-svc-orig') == null) btn.setAttribute('data-svc-orig', btn.textContent);
+    var want = engine ? svcUiTerm(m[1]) : btn.getAttribute('data-svc-orig');
+    if (want && btn.textContent !== want) { btn.textContent = want; changed = true; }
+  });
+  if (changed) { try { if (typeof collapseTabsIfNeeded === 'function') collapseTabsIfNeeded(); } catch (e) { /* layout only */ } }
+  return changed;
+}
+
+/* ===== overlays (sheet / drawer / chooser): one history entry so the Android back button closes them ===== */
+function svcUiOverlay(cls, html) {
+  var ov = document.createElement('div');
+  ov.className = 'svu-ov ' + cls; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true');
+  ov.innerHTML = html;
+  document.body.appendChild(ov); document.body.classList.add('svu-lock');
+  var rec = { el: ov, cls: cls, close: null, onClose: null };
+  SVC_UI.stack.push(rec);
+  clearTimeout(SVC_UI.backTimer);
+  if (!SVC_UI.hasEntry) { try { history.pushState({ svc: 1 }, ''); SVC_UI.hasEntry = true; } catch (e) { /* no history API */ } }
+  rec.close = function (fromPop) {
+    var i = SVC_UI.stack.indexOf(rec); if (i === -1) return;
+    SVC_UI.stack.splice(i, 1);
+    try { if (rec.onClose) rec.onClose(); } catch (e) { /* destroy is best effort */ }
+    if (ov.parentNode) ov.parentNode.removeChild(ov);
+    if (!SVC_UI.stack.length) {
+      document.body.classList.remove('svu-lock');
+      if (fromPop === true) SVC_UI.hasEntry = false;
+      else if (SVC_UI.hasEntry) {
+        clearTimeout(SVC_UI.backTimer);
+        SVC_UI.backTimer = setTimeout(function () { if (!SVC_UI.stack.length && SVC_UI.hasEntry) { SVC_UI.hasEntry = false; SVC_UI.skipPop++; try { history.back(); } catch (e) { SVC_UI.skipPop--; } } }, 30);
+      }
+    }
+  };
+  return rec;
+}
+function svcUiTop(cls) { for (var i = SVC_UI.stack.length - 1; i >= 0; i--) if (!cls || SVC_UI.stack[i].cls.indexOf(cls) !== -1) return SVC_UI.stack[i]; return null; }
+function svcUiOnPop() {
+  if (SVC_UI.skipPop > 0) { SVC_UI.skipPop--; return; }
+  var top = SVC_UI.stack[SVC_UI.stack.length - 1]; if (!top) { SVC_UI.hasEntry = false; return; }
+  top.close(true);
+  if (SVC_UI.stack.length) { try { history.pushState({ svc: 1 }, ''); SVC_UI.hasEntry = true; } catch (e) { SVC_UI.hasEntry = false; } }
+}
+function svcUiOnKey(ev) { if (ev && ev.key === 'Escape' && SVC_UI.stack.length) SVC_UI.stack[SVC_UI.stack.length - 1].close(); }
+
+/* ===== home (the engine screen inside #services-counter-tab > #svc-root) ===== */
+function svcUiBannerOff() { var t = Number(svcUiLs('pos_svc_banner_off')) || 0; return t && (svcUiNow() - t) < 7 * 86400000; }
+function svcUiClassicWrap(engine) {
+  var wrap = svcUiEl('svc-classic-wrap'); if (!wrap) return;
+  wrap.style.display = engine && !SVC_UI.classicOpen ? 'none' : '';
+}
+function svcRenderHome() {
+  var root = svcUiEl('svc-root'); if (!root) return false;
+  svcUiBind(root);
+  var mode = svcUiMode();
+  svcUiClassicWrap(mode.engine);
+  svcApplyTabLabels();
+  if (!mode.engine) { svcUiRenderClassic(root, mode); return true; }
+  svcUiRenderEngine(root, mode);
+  return true;
+}
+function svcUiRenderClassic(root, mode) {
+  root.removeAttribute('data-svc-built');
+  if (svcUiBannerOff() || !svcUiCan('svc:manageConfig')) { root.innerHTML = ''; return; }
+  root.innerHTML = '<div class="svu-banner" id="svc-classic-banner"><div class="t">Choose your business type to switch on the new Services screens<small>Your current counter keeps working exactly as it is until you switch. Old jobs are never deleted or changed.</small></div>' +
+    '<div class="b"><button type="button" class="svu-btn svu-primary" data-svc-act="switch">Switch</button><button type="button" class="svu-btn" data-svc-act="keep">Keep classic</button></div></div>';
+}
+function svcUiSkeleton(type, tpl) {
+  var t = (tpl && tpl.terms) || {};
+  var title = t.queue || t.jobs || svcUiTerm('jobs', type);
+  var newLabel = t.newButton || SVC_UI_TERMS.newButton;
+  var quick = tpl && tpl.quick;
+  return '<div class="svu-home" data-svc-type="' + svcUiEsc(type) + '">' +
+    '<div class="svu-head"><div class="svu-head-t"><span class="svu-ico">' + svcUiEsc((tpl && tpl.icon) || '🔧') + '</span><div><h2 class="svu-h2" data-svc-term="queue">' + svcUiEsc(title) + '</h2><div class="svu-sub">' + svcUiEsc((tpl && tpl.label) || '') + '</div></div></div>' +
+    '<div class="svu-head-b"><button type="button" class="svu-btn svu-primary" id="svc-new-btn" data-svc-act="new">' + svcUiEsc(newLabel) + '</button>' +
+    (quick ? '<button type="button" class="svu-btn" data-svc-act="quick">⚡ ' + svcUiEsc(t.quickButton || SVC_UI_TERMS.quickButton) + '</button>' : '') + '</div></div>' +
+    '<input type="search" id="svc-q" class="svu-q" autocomplete="off" aria-label="Search" placeholder="Search job no., customer, phone, plate, IMEI…">' +
+    '<div id="svc-kpis" class="svu-kpis"></div><div id="svc-views" class="svu-seg" role="tablist"></div><div id="svc-view"></div>' +
+    '<div class="svu-foot"><button type="button" class="svu-link" data-svc-act="classic" id="svc-classic-toggle">🧾 Classic counter / quick checkout</button></div></div>';
+}
+function svcUiRenderEngine(root, mode) {
+  var type = mode.type, tpl = svcUiTpl(type), key = type + '|engine';
+  if (root.getAttribute('data-svc-built') !== key) {
+    root.innerHTML = svcUiSkeleton(type, tpl); root.setAttribute('data-svc-built', key);
+    var q = svcUiEl('svc-q'); if (q) q.value = SVC_UI.q;
+  }
+  var tg = svcUiEl('svc-classic-toggle'); if (tg) tg.textContent = (SVC_UI.classicOpen ? '▴' : '▾') + ' 🧾 Classic counter / quick checkout';
+  svcUiRenderKpis(mode);
+  svcUiRenderViews(mode, tpl);
+  svcApplyTerms(root);
+}
+function svcUiRenderKpis(mode) {
+  var el = svcUiEl('svc-kpis'); if (!el) return;
+  el.innerHTML = '';
+  try { if (typeof svcRenderKpis === 'function') { var r = svcRenderKpis(el, mode.type); if (typeof r === 'string') el.innerHTML = r; } } catch (e) { el.innerHTML = ''; }
+}
+function svcUiViewList(ctx) {
+  var list = [{ key: 'list', label: 'List', order: 0 }];
+  svcUiSorted(SVC_UI.views).forEach(function (v) { var ok = true; try { ok = !v.visibleWhen || v.visibleWhen(ctx); } catch (e) { ok = false; } if (ok) list.push(v); });
+  return list;
+}
+function svcUiRenderViews(mode, tpl) {
+  var ctx = { type: mode.type, tpl: tpl, allTypes: SVC_UI.allTypes, q: SVC_UI.q, status: SVC_UI.status };
+  var views = svcUiViewList(ctx), bar = svcUiEl('svc-views'), host = svcUiEl('svc-view'); if (!host) return;
+  if (!views.some(function (v) { return v.key === SVC_UI.view; })) SVC_UI.view = 'list';
+  if (bar) {
+    bar.style.display = views.length > 1 ? '' : 'none';
+    bar.innerHTML = views.map(function (v) { return '<button type="button" role="tab" data-svc-act="view" data-key="' + svcUiEsc(v.key) + '" class="' + (v.key === SVC_UI.view ? 'is-on' : '') + '" aria-selected="' + (v.key === SVC_UI.view) + '">' + svcUiEsc(v.label) + '</button>'; }).join('');
+  }
+  if (SVC_UI.view === 'list') { svcUiRenderList(host, mode, tpl); return; }
+  var reg = SVC_UI.views[SVC_UI.view];
+  ctx.jobs = svcUiFilterQuery(svcUiJobs(SVC_UI.allTypes), SVC_UI.q);
+  try { reg.render(host, ctx); } catch (e) { host.innerHTML = '<div class="svu-note bad">This view could not be shown. ' + svcUiEsc(e && e.message) + '</div>'; }
+}
+function svcUiHay(j) {
+  var parts = [j.no, j.id, j.status, j.notes, j.customer && j.customer.name, j.customer && j.customer.phone, j.customer && j.customer.phoneKey, j.customer && j.customer.altPhone, j.assetSnap && j.assetSnap.label];
+  if (j.assetSnap) Object.keys(j.assetSnap).forEach(function (k) { if (typeof j.assetSnap[k] === 'string') parts.push(j.assetSnap[k]); });
+  if (j.data) Object.keys(j.data).forEach(function (k) { var v = j.data[k]; if (typeof v === 'string' || typeof v === 'number') parts.push(v); });
+  return parts.filter(function (p) { return p != null && p !== ''; }).join(' \n ').toLowerCase();
+}
+function svcUiMatch(j, q) {
+  var s = String(q || '').toLowerCase().trim(); if (!s) return true;
+  var hay = svcUiHay(j), squash = function (x) { return String(x).replace(/[\s\-.()+]/g, ''); };
+  var hs = squash(hay), words = s.split(/\s+/);
+  return words.every(function (w) { return hay.indexOf(w) !== -1 || (squash(w).length >= 3 && hs.indexOf(squash(w)) !== -1); });
+}
+function svcUiFilterQuery(jobs, q) {
+  q = String(q || '').trim(); if (!q) return jobs;
+  var ids = null, custs = {}, assets = {};
+  try {
+    if (typeof svcSearch === 'function') {
+      var res = svcSearch(q, { types: SVC_UI.allTypes ? null : [svcUiType()], limit: 200 });
+      if (Array.isArray(res)) { ids = {}; res.forEach(function (r) { if (!r) return; if (r.kind === 'job') ids[r.id] = 1; else if (r.kind === 'customer') custs[r.id] = 1; else if (r.kind === 'asset') assets[r.id] = 1; }); }
+    }
+  } catch (e) { ids = null; }
+  return jobs.filter(function (j) { return svcUiMatch(j, q) || (ids && (ids[j.id] || (j.customer && custs[j.customer.id]) || (j.assetId && assets[j.assetId]))); });
+}
+function svcUiCardHtml(j, curType, allTypes) {
+  var tpl = svcUiTpl(j.serviceType || curType), st = svcUiStatusDef(tpl, j.status);
+  var cust = j.customer || {}, snap = j.assetSnap || {}, tot = svcUiTotalsOf(j), bits = [];
+  var svcNames = (j.jobServices || []).map(function (s) { return s && s.name; }).filter(Boolean).slice(0, 3).join(', ');
+  if (svcNames) bits.push('<span class="svu-chipx">' + svcUiEsc(svcNames) + '</span>');
+  if (tot && tot.total > 0) {
+    if (tot.balance > 0.005) bits.push('<span class="svu-chipx bal">Balance ' + svcUiEsc(svcUiMoney(tot.balance)) + '</span>');
+    else bits.push('<span class="svu-chipx paid">Paid ' + svcUiEsc(svcUiMoney(tot.total)) + '</span>');
+  }
+  if (j.dueAt && svcUiIsOpen(j)) bits.push('<span class="svu-chipx ' + (Number(j.dueAt) < svcUiNow() ? 'bal' : 'due') + '">' + (Number(j.dueAt) < svcUiNow() ? 'Overdue ' : 'Due ') + svcUiEsc(svcUiWhen(j.dueAt)) + '</span>');
+  if (allTypes && j.serviceType && j.serviceType !== curType) bits.push('<span class="svu-chipx">' + svcUiEsc(((tpl && tpl.icon) || '') + ' ' + ((tpl && tpl.label) || j.serviceType)) + '</span>');
+  if (j._legacy) bits.push('<span class="svu-chipx">Classic job</span>');
+  var asset = snap.label || ''; var phone = cust.phone || '';
+  return '<div class="svu-card" role="button" tabindex="0" data-svc-act="open" data-id="' + svcUiEsc(j.id) + '" style="border-left-color:' + svcUiEsc(st.color || '#7f8c8d') + '">' +
+    '<div class="r1"><span class="no">' + svcUiEsc(j.no || j.id) + '</span><span class="svu-pill" style="background:' + svcUiEsc(st.color || '#7f8c8d') + '">' + svcUiEsc((st.icon ? st.icon + ' ' : '') + (st.label || j.status)) + '</span></div>' +
+    (asset ? '<div class="r2">' + svcUiEsc(asset) + '</div>' : '') +
+    '<div class="r3">' + svcUiEsc(cust.name || 'Walk-in') + (phone ? ' · ' + svcUiEsc(phone) : '') + (j.createdAt ? ' · ' + svcUiEsc(svcUiWhen(j.createdAt)) : '') + '</div>' +
+    (bits.length ? '<div class="r4">' + bits.join('') + '</div>' : '') + '</div>';
+}
+function svcUiRenderList(host, mode, tpl) {
+  var type = mode.type, curJobs = svcUiJobs(SVC_UI.allTypes), all = svcUiJobs(true);
+  var matched = svcUiFilterQuery(curJobs, SVC_UI.q);
+  var statuses = ((tpl && tpl.statuses) || []).filter(function (s) { return s && s.scope !== 'appt' && !s.hidden; });
+  var counts = {}; matched.forEach(function (j) { counts[j.status] = (counts[j.status] || 0) + 1; });
+  var known = {}; statuses.forEach(function (s) { known[s.key] = 1; });
+  Object.keys(counts).forEach(function (k) { if (!known[k]) statuses.push(svcUiStatusDef(null, k)); });   /* a status of an older template / another type still gets a chip */
+  var shown = SVC_UI.status ? matched.filter(function (j) { return j.status === SVC_UI.status; }) : matched;
+  var otherOpen = SVC_UI.allTypes ? 0 : all.filter(function (j) { return j.serviceType && j.serviceType !== type && svcUiIsOpen(j); }).length;
+  var html = '<div class="svu-chips" role="group" aria-label="Status filter"><button type="button" class="svu-chip' + (SVC_UI.status ? '' : ' is-on') + '" data-svc-act="chip" data-key="">All<b>' + matched.length + '</b></button>' +
+    statuses.map(function (s) { var n = counts[s.key] || 0; return '<button type="button" class="svu-chip' + (SVC_UI.status === s.key ? ' is-on' : '') + (n ? '' : ' is-zero') + '" data-svc-act="chip" data-key="' + svcUiEsc(s.key) + '">' + svcUiEsc((s.icon ? s.icon + ' ' : '') + (s.label || s.key)) + '<b>' + n + '</b></button>'; }).join('') + '</div>';
+  html += '<div class="svu-allrow"><label><input type="checkbox" id="svc-alltypes" data-svc-act="alltypes"' + (SVC_UI.allTypes ? ' checked' : '') + '>All types (show history of other business types)</label></div>';
+  if (otherOpen) html += '<div class="svu-note warn">' + otherOpen + ' open job' + (otherOpen === 1 ? '' : 's') + ' from another business type.<button type="button" class="svu-link" data-svc-act="showall">View</button></div>';
+  if (!shown.length) {
+    if (!all.length) html += '<div class="svu-empty"><div class="big">' + svcUiEsc((tpl && tpl.icon) || '🔧') + '</div><p>No ' + svcUiEsc(svcUiTerm('jobs', type).toLowerCase()) + ' yet. Tap <b>' + svcUiEsc(svcUiTerm('newButton', type)) + '</b> to add your first one.</p><button type="button" class="svu-btn svu-primary" data-svc-act="new">' + svcUiEsc(svcUiTerm('newButton', type)) + '</button></div>';
+    else if (SVC_UI.q || SVC_UI.status) html += '<div class="svu-empty"><div class="big">🔍</div><p>Nothing matches' + (SVC_UI.q ? ' “' + svcUiEsc(SVC_UI.q) + '”' : '') + '.</p><button type="button" class="svu-btn" data-svc-act="clear">Clear filters</button></div>';
+    else html += '<div class="svu-empty"><div class="big">' + svcUiEsc((tpl && tpl.icon) || '🔧') + '</div><p>No ' + svcUiEsc(svcUiTerm('jobs', type).toLowerCase()) + ' for the current business type yet. Older jobs of other types are under <b>All types</b>.</p><button type="button" class="svu-btn svu-primary" data-svc-act="new">' + svcUiEsc(svcUiTerm('newButton', type)) + '</button></div>';
+  } else {
+    html += '<div class="svu-list">' + shown.slice(0, SVC_UI.shown).map(function (j) { return svcUiCardHtml(j, type, SVC_UI.allTypes); }).join('') + '</div>';
+    if (shown.length > SVC_UI.shown) html += '<button type="button" class="svu-btn" data-svc-act="more" style="width:100%">Show more (' + (shown.length - SVC_UI.shown) + ')</button>';
+  }
+  host.innerHTML = html;
+}
+function svcUiBind(root) {
+  if (root.__svcBound) return; root.__svcBound = true;
+  root.addEventListener('click', function (ev) {
+    var t = ev.target && ev.target.closest ? ev.target.closest('[data-svc-act]') : null; if (!t || !root.contains(t)) return;
+    var act = t.getAttribute('data-svc-act');
+    if (act === 'alltypes') return;      /* handled by the change event */
+    svcUiHomeAct(act, t);
+  });
+  root.addEventListener('keydown', function (ev) {
+    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target && ev.target.classList && ev.target.classList.contains('svu-card')) { ev.preventDefault(); svcUiHomeAct('open', ev.target); }
+  });
+  root.addEventListener('change', function (ev) {
+    if (ev.target && ev.target.id === 'svc-alltypes') { SVC_UI.allTypes = !!ev.target.checked; SVC_UI.shown = 60; svcUiLs('pos_svc_alltypes', SVC_UI.allTypes ? '1' : '0'); svcRenderHome(); }
+  });
+  root.addEventListener('input', function (ev) {
+    if (!ev.target || ev.target.id !== 'svc-q') return;
+    var v = ev.target.value; clearTimeout(SVC_UI.searchTimer);
+    SVC_UI.searchTimer = setTimeout(function () { SVC_UI.q = v; SVC_UI.shown = 60; var m = svcUiMode(); if (m.engine) svcUiRenderViews(m, svcUiTpl(m.type)); }, 120);
+  });
+}
+function svcUiHomeAct(act, t) {
+  if (act === 'new') svcOpenNewJob();
+  else if (act === 'quick') svcOpenNewJob(null, { quick: true });
+  else if (act === 'open') svcOpenJob(t.getAttribute('data-id'));
+  else if (act === 'chip') { SVC_UI.status = t.getAttribute('data-key') || ''; SVC_UI.shown = 60; svcRenderHome(); }
+  else if (act === 'more') { SVC_UI.shown += 60; svcRenderHome(); }
+  else if (act === 'showall') { SVC_UI.allTypes = true; svcUiLs('pos_svc_alltypes', '1'); svcRenderHome(); }
+  else if (act === 'clear') { SVC_UI.q = ''; SVC_UI.status = ''; var q = svcUiEl('svc-q'); if (q) q.value = ''; svcRenderHome(); }
+  else if (act === 'view') { SVC_UI.view = t.getAttribute('data-key') || 'list'; svcUiLs('pos_svc_view', SVC_UI.view); svcRenderHome(); }
+  else if (act === 'classic') { SVC_UI.classicOpen = !SVC_UI.classicOpen; svcRenderHome(); }
+  else if (act === 'switch') svcOpenTypeChooser();
+  else if (act === 'keep') { svcUiLs('pos_svc_banner_off', String(svcUiNow())); svcRenderHome(); }
+}
+function svcUiRefresh() {
+  clearTimeout(SVC_UI.refreshTimer);
+  SVC_UI.refreshTimer = setTimeout(function () {
+    try { svcRenderHome(); } catch (e) { /* the screen rebuilds on the next open */ }
+    try { SVC_UI.stack.forEach(function (r) { if (r.refresh) r.refresh(); }); } catch (e2) { /* ignore */ }
+  }, 0);
+}
+function svcRoute(view, params) {
+  params = params || {};
+  if (view === 'new') return svcOpenNewJob(params.type || null, params);
+  if (view === 'job') return svcOpenJob(params.id, params.tab);
+  if (view === 'settings') { try { if (typeof showSettingsSection === 'function') showSettingsSection('settings-section-services', svcUiEl('svc-settings-tab-btn')); } catch (e) { /* settings tab not open */ } return true; }
+  if (view === 'chooser') return svcOpenTypeChooser(params);
+  if (params.view) { SVC_UI.view = params.view; svcUiLs('pos_svc_view', SVC_UI.view); }
+  return svcRenderHome();
+}
+
+/* ===== New Service / walk-in: ONE dynamic form (svcRenderForm) for the CURRENT business type ===== */
+function svcUiErrs(res) {
+  var out = [];
+  if (!res) return out;
+  var e = res.errors !== undefined ? res.errors : res;
+  if (Array.isArray(e)) e.forEach(function (x) { if (x) out.push({ id: x.id || '', msg: x.msg || x.message || String(x), level: x.level || 'error' }); });
+  else if (e && typeof e === 'object') Object.keys(e).forEach(function (k) { out.push({ id: k, msg: String(e[k]), level: 'error' }); });
+  if (res.warnings && typeof res.warnings === 'object' && !Array.isArray(res.warnings)) Object.keys(res.warnings).forEach(function (k) { out.push({ id: k, msg: String(res.warnings[k]), level: 'warn' }); });
+  return out;
+}
+function svcUiStripPlus(s) { return String(s || '').replace(/^\s*\+\s*/, ''); }
+function svcOpenNewJob(typeKey, opts) {
+  opts = opts || {};
+  var type = typeKey || svcUiType(), tpl = svcUiTpl(type);
+  if (!tpl || typeof svcRenderForm !== 'function') { svcUiToast('The Services form is not available yet.', true); return null; }
+  if (!svcUiCan('svc:create')) { svcUiToast('You do not have permission to create jobs.', true); return null; }
+  var t = tpl.terms || {}, mode = opts.quick && tpl.quick ? 'quick' : 'create';
+  var draftId = 'draft-' + (typeof svcId === 'function' ? svcId('') : String(Date.now()) + Math.random().toString(36).slice(2, 8));
+  var html = '<div class="svu-panel"><div class="svu-ph"><button type="button" class="svu-x" data-svc-act="close" aria-label="Close">✕</button>' +
+    '<div class="svu-pt"><b class="svu-title"></b><small>' + svcUiEsc(tpl.icon || '') + ' ' + svcUiEsc(tpl.label || type) + '</small></div>' +
+    '<button type="button" class="svu-btn svu-primary svu-sm" data-svc-act="save">Save</button></div>' +
+    (tpl.quick ? '<div class="svu-modebar"><button type="button" data-svc-act="mode" data-mode="create">Full details</button><button type="button" data-svc-act="mode" data-mode="quick">⚡ Quick</button></div>' : '') +
+    '<div class="svu-pbody"><div class="svu-errs" role="alert"></div><div class="svu-formmount"></div></div>' +
+    '<div class="svu-pfoot"><button type="button" class="svu-btn" data-svc-act="close">Cancel</button><button type="button" class="svu-btn svu-primary svu-grow" data-svc-act="save" data-role="submit"></button></div></div>';
+  var rec = svcUiOverlay('svu-sheet', html), el = rec.el;
+  rec.type = type; rec.tpl = tpl; rec.draftId = draftId; rec.mode = mode; rec.saving = false; rec.handle = null; rec.terms = t;
+  rec.onClose = function () { try { if (rec.handle && rec.handle.destroy) rec.handle.destroy(); } catch (e) { /* gone */ } };
+  var mount = el.querySelector('.svu-formmount'), errs = el.querySelector('.svu-errs');
+  function label() {
+    var title = rec.mode === 'quick' ? (t.quickButton || 'Quick add') : svcUiStripPlus(t.newButton || t.walkInButton || 'New Service');
+    el.querySelector('.svu-title').textContent = title;
+    var sub = el.querySelector('[data-role="submit"]');
+    sub.textContent = rec.mode === 'quick' ? ((tpl.quick && tpl.quick.submitLabel) || 'Add to queue') : 'Create ' + (t.job || 'job');
+    Array.prototype.forEach.call(el.querySelectorAll('.svu-modebar button'), function (b) { b.classList.toggle('is-on', b.getAttribute('data-mode') === rec.mode); });
+  }
+  function build(values) {
+    try { if (rec.handle && rec.handle.destroy) rec.handle.destroy(); } catch (e) { /* ignore */ }
+    mount.innerHTML = ''; errs.innerHTML = '';
+    rec.handle = svcRenderForm(mount, tpl, { mode: rec.mode, values: values || {}, ctx: { cfg: svcUiBizCfg() }, onChange: function () { errs.innerHTML = ''; }, onSubmit: function () { svcUiSaveNew(rec); } });
+    label();
+  }
+  rec.rebuild = build;
+  el.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-svc-act]') : null; if (!b || !el.contains(b)) return;
+    var act = b.getAttribute('data-svc-act');
+    if (act === 'close') rec.close();
+    else if (act === 'save') svcUiSaveNew(rec);
+    else if (act === 'mode') { var m = b.getAttribute('data-mode'); if (m !== rec.mode) { var keep = rec.handle && rec.handle.getValues ? rec.handle.getValues() : {}; rec.mode = m; build(keep); } }
+  });
+  build(opts.values || {});
+  return rec;
+}
+function svcUiShowErrors(rec, list) {
+  var box = rec.el.querySelector('.svu-errs'); if (!box) return;
+  box.innerHTML = list.map(function (e) { return '<div>' + svcUiEsc(e.msg) + '</div>'; }).join('');
+  try { box.scrollIntoView(); } catch (e) { /* jsdom / old browsers */ }
+}
+function svcUiSaveNew(rec) {
+  if (rec.saving) return;                                   /* double-tap guard (svcCreateJob is also idempotent on idemKey) */
+  var h = rec.handle; if (!h) return;
+  var values = h.getValues ? h.getValues() : {}, errs = [];
+  try { if (h.validate) errs = errs.concat(svcUiErrs(h.validate())); } catch (e) { errs.push({ id: '', msg: 'Could not check the form.', level: 'error' }); }
+  try {
+    if (typeof svcValidate === 'function') {
+      svcUiErrs(svcValidate(rec.tpl, values, { mode: rec.mode, cfg: svcUiBizCfg() })).forEach(function (x) { if (!errs.some(function (y) { return y.id === x.id && y.msg === x.msg; })) errs.push(x); });
+    }
+  } catch (e2) { /* the form's own validation already ran */ }
+  var blocking = errs.filter(function (x) { return x.level !== 'warn'; });
+  if (blocking.length) { svcUiShowErrors(rec, blocking); try { if (h.focusFirstError) h.focusFirstError(); } catch (e3) { /* ignore */ } return; }
+  if (typeof svcCreateJob !== 'function') { svcUiShowErrors(rec, [{ msg: 'Saving is not available yet.' }]); return; }
+  rec.saving = true;
+  var btns = rec.el.querySelectorAll('[data-svc-act="save"]'); Array.prototype.forEach.call(btns, function (b) { b.disabled = true; });
+  var input = { typeKey: rec.type, values: values, idemKey: rec.draftId, source: rec.mode === 'quick' ? 'quick' : 'walkin' };
+  if (Array.isArray(values.services) && values.services.length) input.services = values.services;
+  var res;
+  try { res = svcCreateJob(input, { mode: rec.mode }); } catch (e4) { res = { ok: false, errors: [{ msg: String((e4 && e4.message) || e4) }] }; }
+  svcUiThen(res, function (r) {
+    if (!r || !r.ok || !r.job) {
+      rec.saving = false; Array.prototype.forEach.call(btns, function (b) { b.disabled = false; });
+      var list = svcUiErrs(r); if (!list.length) list = [{ msg: (r && (r.error || r.code)) || 'Could not save the job.' }];
+      svcUiShowErrors(rec, list); return;
+    }
+    rec.close();
+    svcUiToast((r.job.no || 'Job') + ' created');
+    try { svcRenderHome(); } catch (e5) { /* refreshed on the next open */ }
+    svcOpenJob(r.job.id);
+  });
+}
+
+/* ===== drawer shell + Overview tab ===== */
+function svcOpenDrawer(jobId, tabKey) { return svcOpenJob(jobId, tabKey); }
+function svcOpenJob(jobId, tabKey) {
+  var job = svcUiJobGet(jobId); if (!job) { svcUiToast('That job could not be found.', true); return null; }
+  var rec = svcUiTop('svu-drawer');
+  if (!rec) {
+    rec = svcUiOverlay('svu-drawer', '<div class="svu-panel"><div class="svu-ph"><div class="svu-pt"><b class="svu-no"></b><small class="svu-meta"></small></div><span class="svu-hpill"></span><button type="button" class="svu-x" data-svc-act="close" aria-label="Close" style="margin-left:8px">✕</button></div>' +
+      '<div class="svu-tabs" role="tablist"></div><div class="svu-pbody"></div><div class="svu-pfoot"></div></div>');
+    rec.refresh = function () { svcUiDrawerRender(rec); };
+    rec.el.addEventListener('click', function (ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest('[data-svc-act]') : null; if (!b || !rec.el.contains(b)) return;
+      svcUiDrawerAct(rec, b.getAttribute('data-svc-act'), b, ev);
+    });
+  }
+  rec.jobId = jobId; rec.tab = tabKey || 'overview';
+  svcUiDrawerRender(rec);
+  return rec;
+}
+function svcUiDrawerTabs(job) {
+  var tabs = svcUiSorted(SVC_UI.drawerTabs).filter(function (t) { var ok = true; try { ok = !t.visibleWhen || t.visibleWhen(job); } catch (e) { ok = false; } return ok; });
+  return tabs;
+}
+function svcUiDrawerRender(rec) {
+  var job = svcUiJobGet(rec.jobId); if (!job) { rec.close(); return; }
+  var tpl = svcUiTpl(job.serviceType || svcUiType()), st = svcUiStatusDef(tpl, job.status), el = rec.el;
+  el.querySelector('.svu-no').textContent = job.no || job.id;
+  var snap = job.assetSnap || {}, cust = job.customer || {};
+  el.querySelector('.svu-meta').textContent = [snap.label, cust.name].filter(Boolean).join(' · ');
+  var pill = el.querySelector('.svu-hpill'); pill.className = 'svu-pill svu-hpill'; pill.style.background = st.color || '#7f8c8d'; pill.textContent = (st.icon ? st.icon + ' ' : '') + (st.label || job.status);
+  var tabs = svcUiDrawerTabs(job);
+  if (!tabs.some(function (t) { return t.key === rec.tab; })) rec.tab = tabs.length ? tabs[0].key : 'overview';
+  el.querySelector('.svu-tabs').innerHTML = tabs.map(function (t) { return '<button type="button" role="tab" data-svc-act="tab" data-key="' + svcUiEsc(t.key) + '" class="' + (t.key === rec.tab ? 'is-on' : '') + '" aria-selected="' + (t.key === rec.tab) + '">' + svcUiEsc(t.label) + '</button>'; }).join('');
+  var body = el.querySelector('.svu-pbody'), top = body.scrollTop; body.innerHTML = '';
+  var cur = SVC_UI.drawerTabs[rec.tab];
+  try { if (cur) cur.render(job, body); } catch (e) { body.innerHTML = '<div class="svu-note bad">This tab could not be shown. ' + svcUiEsc(e && e.message) + '</div>'; }
+  body.scrollTop = top;
+  var foot = el.querySelector('.svu-pfoot'), nxt = svcUiNextPrimary(job, tpl);
+  foot.innerHTML = '<button type="button" class="svu-btn" data-svc-act="close">Close</button>' + (nxt ? '<button type="button" class="svu-btn svu-primary svu-grow" data-svc-act="status" data-key="' + svcUiEsc(nxt.key) + '">Next: ' + svcUiEsc(nxt.label || nxt.key) + ' ▸</button>' : '');
+}
+function svcUiAllowed(job) {
+  var keys = [];
+  if (job && job._legacy) return ['in_progress', 'ready', 'completed', 'collected'].filter(function (k) { return k !== job.status; });      /* the old vocabulary: each maps onto setJobStatusQuick */
+  try { if (typeof svcAllowedNext === 'function') keys = svcAllowedNext(job) || []; } catch (e) { keys = []; }
+  return Array.isArray(keys) ? keys : [];
+}
+function svcUiNextPrimary(job, tpl) {
+  if (!job || job._deleted) return null;
+  var cur = svcUiStatusDef(tpl, job.status); if (cur.terminal) return null;
+  var keys = svcUiAllowed(job);
+  for (var i = 0; i < keys.length; i++) { var d = svcUiStatusDef(tpl, keys[i]); if (d.phase !== 4 && !(typeof d.phase === 'number' && typeof cur.phase === 'number' && d.phase < cur.phase)) return d; }
+  return null;
+}
+function svcUiWhy(r) {
+  if (!r) return 'Could not change the status.';
+  if (r.message) return String(r.message);
+  if (r.why) return String(r.why);
+  if (r.missing && r.missing.length) return 'Needed first: ' + r.missing.join(', ');
+  var e = svcUiErrs(r); if (e.length) return e[0].msg;
+  if (r.code === 'legacy') return 'This is a classic job. Use the classic counter, or upgrade it to a full job.';
+  return r.error ? String(r.error) : (r.code ? 'Not allowed (' + r.code + ').' : 'Could not change the status.');
+}
+function svcUiDrawerAct(rec, act, btn) {
+  var job = svcUiJobGet(rec.jobId);
+  if (act === 'close') { rec.close(); return; }
+  if (act === 'tab') { rec.tab = btn.getAttribute('data-key'); svcUiDrawerRender(rec); return; }
+  if (!job) return;
+  if (act === 'status') { svcUiChangeStatus(rec, job, btn.getAttribute('data-key')); return; }
+  if (act === 'assign') {
+    var sel = rec.el.querySelector('#svc-assign-sel'), id = sel && sel.value; if (!id) { svcUiToast('Pick a person first.', true); return; }
+    try { if (typeof svcAssign === 'function') svcUiThen(svcAssign(job.id, id), function (r) { if (r && r.ok === false) svcUiToast(svcUiWhy(r), true); else { svcUiToast('Assigned.'); svcUiDrawerRender(rec); } }); } catch (e) { svcUiToast('Could not assign.', true); }
+    return;
+  }
+  if (act === 'promote') {
+    try { if (typeof svcPromoteLegacy === 'function') svcUiThen(svcPromoteLegacy(job.id), function (r) { if (r && r.ok && r.job) { svcUiToast('Upgraded to a full job.'); rec.jobId = r.job.id; svcUiDrawerRender(rec); svcUiRefresh(); } else svcUiToast(svcUiWhy(r), true); }); } catch (e2) { svcUiToast('Could not upgrade.', true); }
+    return;
+  }
+  if (act === 'legacy') { svcUiLegacyAction(job, btn.getAttribute('data-key')); }
+}
+function svcUiChangeStatus(rec, job, key) {
+  if (!key) return;
+  if (job._legacy) { svcUiLegacyStatus(rec, job, key); return; }
+  if (typeof svcSetStatus !== 'function') { svcUiToast('Status changes are not available yet.', true); return; }
+  var res; try { res = svcSetStatus(job.id, key, { note: '' }); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+  svcUiThen(res, function (r) {
+    if (!r || !r.ok) { svcUiToast(svcUiWhy(r), true); return; }
+    var d = svcUiStatusDef(svcUiTpl(job.serviceType), key); svcUiToast('Status: ' + (d.label || key));
+    svcUiDrawerRender(rec); try { svcRenderHome(); } catch (e2) { /* next open */ }
+  });
+}
+function svcUiLegacyStatus(rec, job, key) {
+  var lk = SVC_UI_LEGACY_STATUS[key];
+  if (!lk) { svcUiToast('This status needs a full job. Use Upgrade to full job first.', true); return; }
+  try {
+    if (typeof svcLegacyAction === 'function') { var lr = svcLegacyAction(job.id, 'status', lk); if (lr && lr.ok === false) throw new Error('no classic status action'); }
+    else if (typeof setJobStatusQuick === 'function') { setJobStatusQuick(job.id, lk); }
+    else { svcUiToast('Not available.', true); return; }
+  } catch (e) { svcUiToast('Could not change the status.', true); return; }
+  svcUiDrawerRender(rec); try { svcRenderHome(); } catch (e2) { /* next open */ }
+}
+function svcUiLegacyAction(job, what) {
+  try {
+    if (what === 'bill') SVC_UI.classicOpen = true;
+    if (typeof svcLegacyAction === 'function') { var r = svcLegacyAction(job.id, what); if (!r || r.ok !== false) { if (what === 'bill') { var d = svcUiTop('svu-drawer'); if (d) d.close(); } return; } }
+    if (what === 'edit' && typeof openClientRegistryModal === 'function') openClientRegistryModal(job.id);
+    else if (what === 'bill' && typeof sendJobToServicesCounter === 'function') { SVC_UI.classicOpen = true; sendJobToServicesCounter(job.id); }
+    else if (what === 'notify' && typeof openClientNotifyModal === 'function') openClientNotifyModal(job.id);
+    else if (what === 'tag' && typeof printIntakeTag === 'function') printIntakeTag(job.id);
+  } catch (e) { svcUiToast('Could not open that.', true); }
+}
+
+/* --- read-only rendering of a job from its own type's template --- */
+var SVC_UI_CUST_KEYS = { cust_name: 'name', cust_phone: 'phone', cust_alt_phone: 'altPhone', cust_email: 'email', cust_notes: 'notes' };
+function svcUiFieldValue(job, f) {
+  var d = job.data || {}, c = job.customer || {}, s = job.assetSnap || {};
+  if (d[f.id] !== undefined && d[f.id] !== null && d[f.id] !== '') return d[f.id];
+  if (f.storesIn === 'customer' || SVC_UI_CUST_KEYS[f.id]) { var ck = SVC_UI_CUST_KEYS[f.id] || f.id; if (c[ck] !== undefined && c[ck] !== '') return c[ck]; }
+  if (f.storesIn === 'asset' || f.assetAttr) {
+    var ak = f.assetAttr || f.id;
+    if (s[ak] !== undefined && s[ak] !== '') return s[ak];
+    try { if (job.assetId && typeof svcAssets !== 'undefined') { for (var i = 0; i < svcAssets.length; i++) if (svcAssets[i].id === job.assetId) { var v = svcAssets[i].attrs && svcAssets[i].attrs[ak]; if (v !== undefined && v !== '') return v; } } } catch (e) { /* no asset list */ }
+  }
+  if (job[f.id] !== undefined && job[f.id] !== null && job[f.id] !== '' && typeof job[f.id] !== 'object') return job[f.id];
+  return undefined;
+}
+function svcUiFmtValue(f, v) {
+  if (v === undefined || v === null || v === '') return '';
+  if (Array.isArray(v)) return v.map(function (x) { return svcUiFmtValue(f, x); }).filter(Boolean).join(', ');
+  if (typeof v === 'object') { var parts = []; Object.keys(v).forEach(function (k) { if (v[k] !== '' && v[k] != null && typeof v[k] !== 'object') parts.push(svcUiPretty(k) + ': ' + v[k]); }); return parts.join(', '); }
+  if (typeof v === 'boolean') return v ? 'Yes' : 'No';
+  if (f.type === 'yesno') return v === 'yes' ? 'Yes' : v === 'no' ? 'No' : String(v);
+  if (f.options) { for (var i = 0; i < f.options.length; i++) if (f.options[i] && String(f.options[i].v) === String(v)) return String(f.options[i].l != null ? f.options[i].l : v); }
+  if (f.type === 'money') return svcUiMoney(v);
+  if ((f.type === 'datetime') && Number(v) > 100000000000) return svcUiWhen(v);
+  if (f.sensitive) return '•••• (saved, hidden)';
+  return String(v);
+}
+function svcUiWidgetSummary(job, f) {
+  var w = f.widget || '', out = '';
+  if (w === 'services' || f.id === 'services') out = (job.jobServices || []).filter(function (x) { return x && !x.removedAt; }).map(function (x) { return x.name + (x.qty > 1 ? ' ×' + x.qty : '') + (x.price ? ' (' + svcUiMoney(x.price) + ')' : ''); }).join('\n');
+  else if (w === 'staff') out = (job.jobStaff || []).filter(function (x) { return x && !x.removedAt; }).map(function (x) { return x.name + (x.task ? ' – ' + x.task : ''); }).join(', ');
+  else if (w === 'materials') out = (job.materials || []).filter(function (x) { return x && !x.reversedAt && !x.void; }).map(function (x) { return x.name + ' ×' + x.qty + (x.unit ? ' ' + x.unit : ''); }).join(', ');
+  else if (w === 'valuables') out = (job.valuables || []).map(function (x) { return (x.desc || x.kind || x.item || '') + (x.qty > 1 ? ' ×' + x.qty : ''); }).filter(Boolean).join(', ');
+  else if (w === 'photos' || w === 'condition') out = (job.photos || []).length ? (job.photos || []).length + ' photo(s)' : '';
+  return out;
+}
+function svcUiTemplateFieldIds(tpl) { var ids = {}; ((tpl && tpl.sections) || []).forEach(function (s) { (s.fields || []).forEach(function (f) { ids[f.id] = 1; }); }); return ids; }
+function svcUiOverviewSections(job, tpl) {
+  var html = '';
+  ((tpl && tpl.sections) || []).forEach(function (sec) {
+    var rows = '';
+    (sec.fields || []).forEach(function (f) {
+      var txt = '';
+      if (f.type === 'widget' || f.widget) { if (f.widget === 'quote' || f.widget === 'payment') return; txt = svcUiWidgetSummary(job, f); }
+      else txt = svcUiFmtValue(f, svcUiFieldValue(job, f));
+      if (txt) rows += '<div class="svu-row"><div class="k">' + svcUiEsc(f.label || svcUiPretty(f.id)) + '</div><div class="v">' + svcUiEsc(txt) + '</div></div>';
+    });
+    if (rows) html += '<div class="svu-box"><h4>' + svcUiEsc((sec.icon ? sec.icon + ' ' : '') + (sec.title || sec.id)) + '</h4><div class="svu-rows">' + rows + '</div></div>';
+  });
+  var known = svcUiTemplateFieldIds(tpl), other = '';
+  Object.keys(job.data || {}).forEach(function (k) {
+    if (known[k]) return; var v = job.data[k]; if (v === '' || v == null) return;
+    var txt = svcUiFmtValue({ id: k }, v); if (txt) other += '<div class="svu-row"><div class="k">' + svcUiEsc(svcUiPretty(k)) + '</div><div class="v">' + svcUiEsc(txt) + '</div></div>';
+  });
+  if (other) html += '<div class="svu-box"><h4>Other details</h4><div class="svu-rows">' + other + '</div></div>';
+  return html;
+}
+function svcUiStaffOptions() {
+  var list = []; try { if (typeof staff !== 'undefined' && Array.isArray(staff)) list = staff; } catch (e) { list = []; }
+  return list.filter(function (m) { return m && m.id != null && m.name; }).map(function (m) { return '<option value="' + svcUiEsc(m.id) + '">' + svcUiEsc(m.name) + '</option>'; }).join('');
+}
+function svcUiOverview(job, el) {
+  var tpl = svcUiTpl(job.serviceType || svcUiType()), st = svcUiStatusDef(tpl, job.status), html = '', legacy = !!job._legacy;
+  var keys = svcUiAllowed(job);
+  var moves = keys.map(function (k) { var d = svcUiStatusDef(tpl, k); return '<button type="button" class="svu-btn svu-sm" data-svc-act="status" data-key="' + svcUiEsc(k) + '" style="border-color:' + svcUiEsc(d.color || '#7f8c8d') + '">' + svcUiEsc((d.icon ? d.icon + ' ' : '') + (d.label || k)) + '</button>'; }).join('');
+  html += '<div class="svu-box"><h4>Status</h4><div><span class="svu-pill" style="background:' + svcUiEsc(st.color || '#7f8c8d') + '">' + svcUiEsc((st.icon ? st.icon + ' ' : '') + (st.label || job.status)) + '</span>' +
+    (job.createdAt ? ' <span class="svu-sub">Opened ' + svcUiEsc(svcUiWhen(job.createdAt)) + (job.createdBy && job.createdBy.name ? ' by ' + svcUiEsc(job.createdBy.name) : '') + '</span>' : '') + '</div>' +
+    (moves ? '<div class="svu-sub" style="margin-top:8px">Move to</div><div class="svu-moves">' + moves + '</div>' : (st.terminal ? '<div class="svu-sub" style="margin-top:8px">This job is closed.</div>' : '')) + '</div>';
+  var phone = job.customer && job.customer.phone;
+  var quick = '';
+  if (phone) quick += '<a class="svu-btn svu-sm" style="margin:0 8px 8px 0;text-decoration:none" href="tel:' + svcUiEsc(String(phone).replace(/[^\d+]/g, '')) + '">📞 Call</a>';
+  if (legacy) {
+    quick += '<button type="button" class="svu-btn svu-sm" style="margin:0 8px 8px 0" data-svc-act="legacy" data-key="edit">✏️ Edit</button><button type="button" class="svu-btn svu-sm" style="margin:0 8px 8px 0" data-svc-act="legacy" data-key="bill">🧾 Bill in classic counter</button>';
+    try { if (typeof svcPromoteLegacy === 'function') quick += '<button type="button" class="svu-btn svu-sm" style="margin:0 8px 8px 0" data-svc-act="promote">⬆️ Upgrade to full job</button>'; } catch (e) { /* none */ }
+  }
+  var canAssign = false; try { canAssign = typeof svcAssign === 'function' && !legacy && svcUiCan('svc:assign') && !!svcUiStaffOptions(); } catch (e2) { canAssign = false; }
+  if (canAssign) quick += '<div style="display:flex;width:100%;margin:0 0 8px"><select id="svc-assign-sel" aria-label="Assign staff" style="flex:1;min-height:44px;font-size:16px;margin-right:8px"><option value="">' + svcUiEsc('Assign ' + svcUiTerm('staff', job.serviceType).toLowerCase() + '…') + '</option>' + svcUiStaffOptions() + '</select><button type="button" class="svu-btn svu-sm" data-svc-act="assign">Assign</button></div>';
+  if (quick) html += '<div class="svu-box" style="display:flex;flex-wrap:wrap">' + quick + '</div>';
+  var tot = svcUiTotalsOf(job);
+  if (tot && (tot.total > 0 || tot.paid > 0)) html += '<div class="svu-box"><h4>Money</h4><div class="svu-rows"><div class="svu-row"><div class="k">Total</div><div class="v">' + svcUiEsc(svcUiMoney(tot.total)) + '</div></div><div class="svu-row"><div class="k">Paid</div><div class="v">' + svcUiEsc(svcUiMoney(tot.paid)) + '</div></div><div class="svu-row"><div class="k">Balance</div><div class="v"><b>' + svcUiEsc(svcUiMoney(tot.balance)) + '</b></div></div></div></div>';
+  html += svcUiOverviewSections(job, tpl);
+  var hist = (job.statusHistory || []).slice().sort(function (a, b) { return (Number(b.at) || 0) - (Number(a.at) || 0); });
+  var tl = hist.map(function (h) { var d = svcUiStatusDef(tpl, h.s || h.status); return '<li style="--dot:' + svcUiEsc(d.color || '#7f8c8d') + '"><b>' + svcUiEsc(d.label || h.s) + '</b>' + (h.note ? ' – ' + svcUiEsc(h.note) : '') + '<div class="w">' + svcUiEsc(svcUiWhen(h.at)) + (h.by ? ' · ' + svcUiEsc(typeof h.by === 'object' ? h.by.name : h.by) : '') + '</div></li>'; }).join('');
+  if (!tl && job.createdAt) tl = '<li><b>Created</b><div class="w">' + svcUiEsc(svcUiWhen(job.createdAt)) + (job.createdBy && job.createdBy.name ? ' · ' + svcUiEsc(job.createdBy.name) : '') + '</div></li>';
+  if (tl) html += '<div class="svu-box"><h4>Status history</h4><ul class="svu-tl">' + tl + '</ul></div>';
+  el.innerHTML = html;
+}
+
+/* ===== business type picker (used by the classic banner chooser and by Settings > Services > Business Type) ===== */
+var SVC_UI_TYPE_FALLBACK = { phone_repair: ['📱', 'Phone Repair', 'Phones, tablets and laptops: IMEI, fault, parts, quote and pick-up.'], car_wash: ['🚗', 'Car Wash', 'Vehicles in and out: plate, packages, condition, valuables and a live queue.'],
+  garage: ['🔧', 'Garage / Auto Repair', 'Complaint, diagnosis, parts, mechanic, quote approval and payment.'], salon: ['💇', 'Salon / Beauty', 'Walk-ins and bookings, stylists, services and products used.'],
+  barber: ['💈', 'Barber', 'Fast walk-in queue with barbers and simple services.'], laundry: ['🧺', 'Laundry', 'Tickets, items or weight, wash stages and pick-up.'], cleaning: ['🧽', 'Cleaning Services', 'Site visits, schedules, crews and supplies.'],
+  electronics_repair: ['📺', 'Electronics Repair', 'TVs, fridges and other equipment: serial, fault, parts and quote.'], tailoring: ['🧵', 'Tailoring', 'Measurements, fittings, due dates and deposits.'], other: ['🛠️', 'Other', 'A simple generic service job: customer, what was left, services and payment.'] };
+function svcUiTypeInfo(key) {
+  var tpl = svcUiTpl(key), fb = SVC_UI_TYPE_FALLBACK[key] || ['🔧', svcUiPretty(key), ''];
+  return { key: key, icon: (tpl && tpl.icon) || fb[0], label: (tpl && tpl.label) || fb[1], description: (tpl && tpl.description) || fb[2] };
+}
+function svcRenderTypePicker(el, o) {
+  o = o || {}; var sel = o.selected || '', cur = o.current || '';
+  el.innerHTML = '<div class="svu-types" role="radiogroup" aria-label="Business type">' + svcUiTypeList().map(function (k) {
+    var i = svcUiTypeInfo(k), on = k === sel;
+    return '<button type="button" class="svu-type' + (on ? ' is-sel' : '') + '" role="radio" aria-checked="' + on + '" data-svc-type="' + svcUiEsc(k) + '"><span class="ic">' + svcUiEsc(i.icon) + '</span><b>' + svcUiEsc(i.label) + '</b><small>' + svcUiEsc(i.description) + '</small>' + (k === cur ? '<span class="cur">Current</span>' : '') + '</button>';
+  }).join('') + '</div>';
+  if (!el.__svcPickBound) {
+    el.__svcPickBound = true;
+    el.addEventListener('click', function (ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest('[data-svc-type]') : null; if (!b || !el.contains(b)) return;
+      if (el.__svcPick) el.__svcPick(b.getAttribute('data-svc-type'));
+    });
+  }
+  el.__svcPick = o.onPick || null;
+  return el;
+}
+function svcUiApplyType(key, source, done) {
+  if (!svcUiCan('svc:manageConfig')) { svcUiToast('Only the owner can change the business type.', true); return false; }
+  if (typeof svcSetBusinessType !== 'function') { svcUiToast('Not available yet.', true); return false; }
+  var res; try { res = svcSetBusinessType(key, { source: source || 'settings' }); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+  svcUiThen(res, function (r) {
+    if (r && r.ok === false) { svcUiToast(svcUiWhy(r), true); if (done) done(false); return; }
+    svcUiToast('Business type set to ' + svcUiTypeInfo(key).label + '. Old jobs are unchanged.');
+    try { svcApplyTabLabels(); svcApplyTerms(); svcRenderHome(); } catch (e2) { /* next open */ }
+    if (done) done(true);
+  });
+  return true;
+}
+function svcOpenTypeChooser(opts) {
+  opts = opts || {};
+  var mode = svcUiMode(), pick = opts.preselect || mode.type, current = mode.chosen ? mode.type : '';
+  try { if (!mode.chosen && !opts.preselect && typeof licenseInfo !== 'undefined' && licenseInfo && licenseInfo.svcType && SVC_UI.typeOrder.indexOf(licenseInfo.svcType) !== -1) pick = licenseInfo.svcType; } catch (e) { /* no licence hint */ }
+  var rec = svcUiOverlay('svu-sheet', '<div class="svu-panel"><div class="svu-ph"><button type="button" class="svu-x" data-svc-act="close" aria-label="Close">✕</button><div class="svu-pt"><b>What type of business do you operate?</b><small>Changing the type never deletes or rewrites old jobs.</small></div></div>' +
+    '<div class="svu-pbody"><div class="svu-types-mount"></div></div><div class="svu-pfoot"><button type="button" class="svu-btn" data-svc-act="close">Cancel</button><button type="button" class="svu-btn svu-primary svu-grow" data-svc-act="use"></button></div></div>');
+  var mount = rec.el.querySelector('.svu-types-mount'), useBtn = rec.el.querySelector('[data-svc-act="use"]');
+  function paint() { svcRenderTypePicker(mount, { selected: pick, current: current, onPick: function (k) { pick = k; paint(); } }); useBtn.textContent = 'Use ' + svcUiTypeInfo(pick).label; }
+  paint();
+  rec.el.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-svc-act]') : null; if (!b) return;
+    var act = b.getAttribute('data-svc-act');
+    if (act === 'close') rec.close();
+    else if (act === 'use') { useBtn.disabled = true; svcUiApplyType(pick, opts.source || 'settings', function (ok) { useBtn.disabled = false; if (ok) rec.close(); }); }
+  });
+  return rec;
+}
+
+/* ===== sign-up question (MP 5): #signup-biz-type-wrap is hidden in the page until this fills and shows it ===== */
+function svcUiFillSignup() {
+  var sel = svcUiEl('signup-biz-type'), wrap = svcUiEl('signup-biz-type-wrap'); if (!sel) return false;
+  try { if (typeof svcFillTypeSelect === 'function') svcFillTypeSelect('signup-biz-type'); } catch (e) { /* fill it ourselves */ }
+  if (sel.options.length < 2) {
+    sel.innerHTML = svcUiTypeList().map(function (k) { var i = svcUiTypeInfo(k); return '<option value="' + svcUiEsc(k) + '">' + svcUiEsc(i.label) + '</option>'; }).join('');
+  }
+  if (!sel.getAttribute('data-svc-bound')) {
+    sel.setAttribute('data-svc-bound', '1');
+    sel.addEventListener('change', function () { try { window.__svcSignupType = String(sel.value || ''); } catch (e) { /* ignore */ } });
+  }
+  var has = false; for (var i = 0; i < sel.options.length; i++) if (sel.options[i].value === 'other') has = true;
+  if (!sel.value || (has && sel.getAttribute('data-svc-init') == null)) { if (has) sel.value = 'other'; }
+  sel.setAttribute('data-svc-init', '1');
+  if (wrap && sel.options.length > 1) wrap.style.display = '';
+  return true;
+}
+
+/* ===== boot: cheap init only (called from DOMContentLoaded) ===== */
+function svcBoot() {
+  if (SVC_UI.booted) return false; SVC_UI.booted = true;
+  try { SVC_UI.allTypes = svcUiLs('pos_svc_alltypes') === '1'; var sv = svcUiLs('pos_svc_view'); if (sv) SVC_UI.view = sv; } catch (e) { /* defaults */ }
+  svcDrawerRegister('overview', { label: 'Overview', order: 0, render: svcUiOverview });
+  try { svcUiFillSignup(); } catch (e1) { /* sign-up keeps the static Other option */ }
+  try { if (typeof svcConfigUiBoot === 'function') svcConfigUiBoot(); } catch (e2) { /* settings page is optional */ }
+  try { window.addEventListener('popstate', svcUiOnPop); document.addEventListener('keydown', svcUiOnKey); } catch (e3) { /* no window */ }
+  if (typeof renderServicesCounter === 'function' && !renderServicesCounter.__svcHook) {
+    var orig = renderServicesCounter;
+    var hooked = function () {
+      var r = orig.apply(this, arguments);
+      try { if (typeof serviceCounterDraft !== 'undefined' && serviceCounterDraft && serviceCounterDraft.jobId) SVC_UI.classicOpen = true; } catch (e4) { /* draft not created yet */ }
+      try { svcRenderHome(); } catch (e5) { console.warn('svcRenderHome failed', e5); }
+      return r;
+    };
+    hooked.__svcHook = true;
+    try { window.renderServicesCounter = hooked; } catch (e6) { /* stays classic */ }
+  }
+  try {
+    if (typeof svcOn === 'function') ['job:created', 'job:status', 'job:updated', 'payment:recorded', 'charge:added', 'quote:changed', 'material:used', 'render:home'].forEach(function (ev) { svcOn(ev, svcUiRefresh); });
+    if (typeof svcOn === 'function') svcOn('config:changed', function () { try { svcApplyTabLabels(); svcApplyTerms(); } catch (e) { /* cosmetic */ } svcUiRefresh(); });
+  } catch (e7) { /* events are optional */ }
+  try { svcApplyTabLabels(); setTimeout(function () { try { svcApplyTabLabels(); } catch (e) { /* cosmetic */ } }, 400); window.addEventListener('load', function () { try { svcApplyTabLabels(); } catch (e) { /* cosmetic */ } }); } catch (e8) { /* cosmetic */ }
+  return true;
+}
+</script>

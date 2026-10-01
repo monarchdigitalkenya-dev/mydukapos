@@ -1,0 +1,767 @@
+<!-- SVC CATALOG ---------------------------------------------------------------------------------------
+     Services engine block "svc-catalog". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B3-C. Nobody else edits this file.
+     STATE: IMPLEMENTED (B3-C): catalog CRUD, per-asset-type price resolution, seeds, import from inventory, Settings > Service Catalog page, the Service picker data source + a catalog-backed "services" form widget.
+     KIND: pure + UI. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_ (private helpers: svcCat*).
+     CONTRACT: svcCatalogList, svcCatalogGet, svcCatalogUpsert, svcCatalogArchive, svcCatalogNormalize, svcPriceFor, svcPriceInfo, svcCatalogAssetType, svcSeedCatalog, svcCatalogEnsureSeeded, svcImportFromInventory, svcCatalogForPicker, svcCatalogFormContext, svcCatalogRenderPage (registered with svcSettingsRegister as "catalog"), 'services' form widget (svcRegisterWidget, priority 10).
+     SPEC: SERVICES_ARCHITECTURE.md 6.8, 8.2 B3-C (catalog record: 3.3). Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<style id="svc-catalog-css">
+/* Service Catalog (svc-catalog). Only the app's design tokens (dark-mode safe); touch targets >= 44px; inputs 16px (no iOS zoom). The page has a global * {margin:0;padding:0} reset: spacing is explicit. */
+.svcc, .svcc-ov, .svcc-w { color: var(--dark); font-size: 15px; line-height: 1.4; }
+.svcc *, .svcc-ov *, .svcc-w * { box-sizing: border-box; }
+.svcc-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; margin: 0 0 10px; }
+.svcc-head h3 { font-size: 18px; margin: 0 12px 0 0; }
+.svcc-sub { font-size: 12px; opacity: .7; }
+.svcc-bar { display: flex; flex-wrap: wrap; margin: 0 0 8px; }
+.svcc-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px; margin: 0 8px 8px 0; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); font-size: 15px; font-weight: 600; cursor: pointer; width: auto; }
+.svcc-btn:active { transform: translateY(1px); }
+.svcc-btn[disabled] { opacity: .55; cursor: not-allowed; }
+.svcc-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.svcc-btn.danger { color: var(--danger); }
+.svcc-btn.grow { flex: 1 1 auto; }
+.svcc-in, .svcc-w .svcc-in { width: 100%; min-height: 44px; padding: 8px 12px; font-size: 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); }
+.svcc-in:focus, .svcc-btn:focus, .svcc-card:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.svcc-filters { display: flex; flex-wrap: wrap; margin: 0 0 8px; }
+.svcc-filters .svcc-in { flex: 1 1 160px; margin: 0 8px 8px 0; width: auto; }
+.svcc-chk { display: flex; align-items: center; min-height: 44px; margin: 0 12px 0 0; cursor: pointer; font-size: 14px; }
+.svcc-chk input { width: 22px; height: 22px; margin: 0 8px 0 0; flex: 0 0 auto; }
+.svcc-list { margin: 6px 0; }
+.svcc-card { display: block; width: 100%; text-align: left; margin: 0 0 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-left: 5px solid var(--accent); border-radius: 12px; background: var(--bg-surface); color: var(--dark); font-size: 15px; cursor: pointer; min-height: 44px; }
+.svcc-card.off { border-left-color: var(--border-color); opacity: .7; }
+.svcc-card .r1 { display: flex; justify-content: space-between; align-items: baseline; }
+.svcc-card .nm { font-weight: 700; margin-right: 8px; word-break: break-word; }
+.svcc-card .pr { font-weight: 700; white-space: nowrap; }
+.svcc-card .r2 { margin-top: 4px; }
+.svcc-tag { display: inline-block; margin: 2px 6px 2px 0; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: var(--bg-surface-alt); color: var(--dark); border: 1px solid var(--border-color); }
+.svcc-tag.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); border-color: transparent; }
+.svcc-tag.good { background: var(--tint-success-bg); color: var(--tint-success-text); border-color: transparent; }
+.svcc-empty { text-align: center; padding: 24px 12px; border: 2px dashed var(--border-color); border-radius: 14px; margin: 10px 0; }
+.svcc-box { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 12px; margin: 0 0 12px; }
+.svcc-box h4 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .03em; opacity: .75; }
+.svcc-note { background: var(--tint-info-bg); border-radius: 10px; padding: 10px 12px; margin: 6px 0; font-size: 14px; }
+.svcc-note.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); }
+.svcc-note.bad { background: var(--tint-danger-bg); color: var(--danger); }
+.svcc-ov { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 3100; background: var(--overlay-bg); display: flex; align-items: flex-end; justify-content: center; }
+.svcc-panel { display: flex; flex-direction: column; width: 100%; max-width: 640px; height: 100%; background: var(--bg-page); color: var(--dark); }
+.svcc-ph { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--bg-surface); border-bottom: 1px solid var(--border-color); flex: 0 0 auto; }
+.svcc-ph b { font-size: 17px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svcc-x { min-width: 44px; min-height: 44px; border: 0; background: none; font-size: 20px; color: var(--dark); cursor: pointer; }
+.svcc-pb { flex: 1 1 auto; overflow-y: auto; padding: 12px; -webkit-overflow-scrolling: touch; }
+.svcc-pf { display: flex; flex: 0 0 auto; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bg-surface); border-top: 1px solid var(--border-color); flex-wrap: wrap; }
+.svcc-pf .svcc-btn { margin-bottom: 0; }
+.svcc-fld { margin: 0 0 12px; }
+.svcc-fld > label, .svcc-fld > .lbl { display: block; font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+.svcc-fld .hint { font-size: 12px; opacity: .7; margin-top: 3px; }
+.svcc-fld .err { font-size: 13px; color: var(--danger); margin-top: 3px; }
+.svcc-2 { display: flex; flex-wrap: wrap; margin: 0 -4px; }
+.svcc-2 > .svcc-fld { flex: 1 1 140px; margin: 0 4px 12px; }
+.svcc-crow { display: flex; flex-wrap: wrap; align-items: flex-end; padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.svcc-crow .c-item { flex: 2 1 180px; margin: 0 6px 0 0; }
+.svcc-crow .c-qty { flex: 1 1 70px; margin: 0 6px 0 0; }
+.svcc-crow .c-unit { flex: 1 1 70px; margin: 0 6px 0 0; }
+.svcc-crow .lbl { display: block; font-size: 12px; opacity: .7; margin: 0 0 2px; }
+.svcc-crow .stk { flex: 1 1 100%; font-size: 12px; margin-top: 2px; }
+.svcc-crow .stk.bad { color: var(--danger); }
+.svcc-assetgrid { display: flex; flex-wrap: wrap; margin: 0 -4px; }
+.svcc-assetgrid > div { flex: 1 1 130px; margin: 0 4px 8px; }
+.svcc-assetgrid label { display: block; font-size: 12px; opacity: .8; margin: 0 0 2px; }
+/* the catalog-backed service picker inside the New Service form */
+.svcc-w { margin: 4px 0; }
+.svcc-w ul { list-style: none; margin: 0; padding: 0; }
+.svcc-wrow { display: flex; flex-wrap: wrap; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.svcc-wrow .nm { flex: 1 1 100%; font-weight: 600; word-break: break-word; }
+.svcc-wrow .nm small { font-weight: 400; opacity: .7; margin-left: 6px; }
+.svcc-wrow label { flex: 1 1 90px; margin: 4px 8px 0 0; font-size: 12px; opacity: .85; }
+.svcc-wrow label input { display: block; margin-top: 2px; }
+.svcc-wrow .rm { flex: 0 0 44px; min-width: 44px; min-height: 44px; margin-top: 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--danger); font-size: 20px; cursor: pointer; }
+.svcc-wadd { display: flex; flex-wrap: wrap; margin-top: 8px; }
+.svcc-wadd > * { margin: 0 8px 8px 0; }
+.svcc-wadd select { flex: 1 1 100%; }
+.svcc-wadd .c-nm { flex: 2 1 140px; width: auto; }
+.svcc-wadd .c-pr { flex: 1 1 90px; width: auto; }
+.svcc-wtot { font-weight: 700; text-align: right; margin-top: 4px; }
+@media (min-width: 900px) { .svcc-ov { align-items: center; } .svcc-panel { height: 92%; border-radius: 14px; overflow: hidden; } }
+@media (prefers-reduced-motion: reduce) { .svcc-btn:active { transform: none; } }
+</style>
+<script>
+/* ===================================================================================================================
+   SVC CATALOG (B3-C): the central Service Catalog (name, category, description, standard price, duration, inventory items consumed with default
+   quantities, required staff type, active / inactive), price resolution per asset type (the catalog price is only the starting point: the job line
+   keeps its own editable price), seeds, import of the inventory 'service' items, the Settings page and the Service picker for the job form.
+   Records live in the synced list svcCatalog (merged per record by id) and are only ever written through svcCommit.
+   =================================================================================================================== */
+var SVC_CAT_MODES = ['fixed', 'from', 'variable'];
+var SVC_CAT_ASSET_FIELDS = ['veh_type', 'dev_type', 'eq_type', 'tl_item'];
+var SVC_CAT_UI = { q: '', cat: '', scope: 'type', archived: false, mount: null, editor: null };
+
+/* ===== tiny private helpers ===== */
+function svcCatNow() { try { return typeof svcNow === 'function' ? svcNow() : Date.now(); } catch (e) { return Date.now(); } }
+function svcCatEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcCatNum(v) { var n = typeof v === 'number' ? v : parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isFinite(n) ? n : 0; }
+function svcCatR2(n) { n = svcCatNum(n); return Math.round((n + (n < 0 ? -1 : 1) * 1e-9) * 100) / 100; }
+function svcCatQty(n) {                                 /* stock-style quantity: 3 decimals (0.001 is the smallest unit the inventory handles), finer figures cleaned to 6 */
+  try { if (typeof stockRound3 === 'function') return stockRound3(n); } catch (e) { /* fall through */ }
+  var x = svcCatNum(n), r3 = Math.round(x * 1000) / 1000;
+  return Math.abs(x - r3) < 1e-6 ? r3 : Math.round(x * 1e6) / 1e6;
+}
+function svcCatClone(o) { return o === undefined ? undefined : JSON.parse(JSON.stringify(o)); }
+function svcCatCan(perm) { try { return typeof svcCan === 'function' ? !!svcCan(perm) : true; } catch (e) { return true; } }
+function svcCatActor() { try { if (typeof svcActor === 'function') { var a = svcActor(); if (a && a.name) return a; } } catch (e) { /* owner */ } return { id: 'owner', name: 'Owner' }; }
+function svcCatToast(msg, isErr) { try { if (typeof showToast === 'function') showToast(String(msg), !!isErr); } catch (e) { /* toast is cosmetic */ } }
+function svcCatMoney(n) { try { if (typeof svcFormatMoney === 'function') return svcFormatMoney(n); } catch (e) { /* fall through */ } return 'KSh ' + svcCatR2(n); }
+function svcCatRows() { try { return Array.isArray(svcCatalog) ? svcCatalog : []; } catch (e) { return []; } }          /* TDZ-safe read of the store's list */
+function svcCatInv() { try { return typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : []; } catch (e) { return []; } }
+function svcCatTypeValid(k) { try { return typeof SVC_TYPES === 'object' && !!SVC_TYPES && Object.prototype.hasOwnProperty.call(SVC_TYPES, k); } catch (e) { return false; } }
+function svcCatBizType() { try { return typeof svcBusinessType === 'function' ? svcBusinessType() : 'other'; } catch (e) { return 'other'; } }
+function svcCatTpl(type) { try { return typeof svcGetTemplate === 'function' ? svcGetTemplate(type) : null; } catch (e) { return null; } }
+function svcCatStr(v, max) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max || 200); }
+function svcCatSlug(v) { try { if (typeof svcSlug === 'function') return svcSlug(v); } catch (e) { /* fall through */ } return String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40); }
+
+/* inventory helpers shared with the consumption rows (name <-> code) */
+function svcCatInvItem(code, name) {
+  var inv = svcCatInv(), i, p, nm = String(name == null ? '' : name).trim().toLowerCase();
+  if (code != null && String(code) !== '') {
+    for (i = 0; i < inv.length; i++) { p = inv[i]; if (p && !p._deleted && String(p.code) === String(code)) return p; }
+  }
+  if (nm) {
+    var hit = null, n = 0;
+    for (i = 0; i < inv.length; i++) { p = inv[i]; if (p && !p._deleted && p.type !== 'service' && String(p.name || '').trim().toLowerCase() === nm) { hit = p; n++; } }
+    if (n === 1) return hit;                                   /* only an UNIQUE name match is trusted */
+  }
+  return null;
+}
+
+/* ===== normalisation (pure) ===== */
+function svcCatNormConsumption(list, errors) {
+  var out = [], i, r, code, name, qty;
+  (Array.isArray(list) ? list : []).forEach(function (raw, idx) {
+    r = raw || {}; code = svcCatStr(r.code, 60); name = svcCatStr(r.name, 80);
+    if (!code && !name) return;
+    qty = svcCatQty(r.qty == null || r.qty === '' ? 0 : r.qty);
+    if (!(qty > 0)) { if (errors) errors.push({ id: 'consumption', msg: 'Enter a quantity above 0 for ' + (name || code) + '.' }); return; }
+    out.push({ code: code, name: name, unit: svcCatStr(r.unit, 12), qty: qty });
+  });
+  for (i = 0; i < out.length; i++) { if (!out[i].name && out[i].code) { var it = svcCatInvItem(out[i].code, ''); if (it) out[i].name = svcCatStr(it.name, 80); } }
+  return out;
+}
+/* svcCatalogNormalize(raw) -> {ok, rec, errors[]}: a sanitised catalog record body (no id / audit fields) */
+function svcCatalogNormalize(raw) {
+  raw = raw || {};
+  var errors = [], out = {}, k;
+  out.name = svcCatStr(raw.name, 80);
+  if (!out.name) errors.push({ id: 'name', msg: 'Enter a service name.' });
+  out.category = svcCatStr(raw.category, 40);
+  out.description = svcCatStr(raw.description, 300);
+  var price = raw.price === '' || raw.price == null ? 0 : svcCatNum(raw.price);
+  if (price < 0) errors.push({ id: 'price', msg: 'The price cannot be negative.' });
+  out.price = svcCatR2(Math.max(0, price));
+  out.priceMode = SVC_CAT_MODES.indexOf(raw.priceMode) !== -1 ? raw.priceMode : 'fixed';
+  var pba = null;
+  if (raw.priceByAssetType && typeof raw.priceByAssetType === 'object') {
+    for (k in raw.priceByAssetType) {
+      if (!Object.prototype.hasOwnProperty.call(raw.priceByAssetType, k)) continue;
+      var v = raw.priceByAssetType[k], key = svcCatSlug(k);
+      if (!key || v === '' || v == null) continue;
+      var pv = svcCatNum(v);
+      if (pv < 0) { errors.push({ id: 'price', msg: 'Prices cannot be negative.' }); continue; }
+      (pba = pba || {})[key] = svcCatR2(pv);
+    }
+  }
+  out.priceByAssetType = pba;
+  var dur = raw.durationMin === '' || raw.durationMin == null ? 0 : Math.round(svcCatNum(raw.durationMin));
+  if (dur < 0 || dur > 10080) errors.push({ id: 'durationMin', msg: 'Enter the duration in minutes (0 to 10080).' });
+  out.durationMin = Math.max(0, Math.min(10080, dur));
+  out.staffRole = svcCatSlug(raw.staffRole);
+  var types = [];
+  (Array.isArray(raw.serviceTypes) ? raw.serviceTypes : []).forEach(function (t) { if (svcCatTypeValid(t) && types.indexOf(t) === -1) types.push(t); });
+  out.serviceTypes = types;                                   /* [] = offered in every business type */
+  out.consumption = svcCatNormConsumption(raw.consumption, errors);
+  out.autoConsume = raw.autoConsume === true;
+  out.invCode = svcCatStr(raw.invCode, 60);
+  out.active = raw.active !== false;
+  if (raw.sort != null && raw.sort !== '' && isFinite(Number(raw.sort))) out.sort = Number(raw.sort);
+  return { ok: errors.length === 0, rec: out, errors: errors };
+}
+
+/* ===== read side ===== */
+function svcCatOffered(r, type) { var t = r && r.serviceTypes; return !type || !Array.isArray(t) || !t.length || t.indexOf(type) !== -1; }
+function svcCatIsArchived(r) { return !!r && r.active === false; }
+function svcCatSortFn(a, b) { return ((Number(a.sort) || 0) - (Number(b.sort) || 0)) || String(a.name || '').localeCompare(String(b.name || '')); }
+/* svcCatalogList({type, category, q, includeInactive, archived, sort}) -> records (copies: never mutate). Default: active entries only. */
+function svcCatalogList(opts) {
+  opts = opts || {};
+  var q = String(opts.q == null ? '' : opts.q).trim().toLowerCase();
+  var arr = svcCatRows().filter(function (r) {
+    if (!r || r._deleted) return false;
+    if (opts.archived === true) { if (!svcCatIsArchived(r)) return false; }
+    else if (!opts.includeInactive && svcCatIsArchived(r)) return false;
+    if (opts.type && !svcCatOffered(r, opts.type)) return false;
+    if (opts.category && String(r.category || '') !== String(opts.category)) return false;
+    if (q && (String(r.name || '') + ' ' + String(r.category || '') + ' ' + String(r.description || '')).toLowerCase().indexOf(q) === -1) return false;
+    return true;
+  });
+  arr.sort(svcCatSortFn);
+  return arr.map(svcCatClone);
+}
+function svcCatalogGet(id, opts) {
+  var rows = svcCatRows(), i; id = String(id == null ? '' : id);
+  for (i = 0; i < rows.length; i++) { if (rows[i] && String(rows[i].id) === id && (!rows[i]._deleted || (opts && opts.includeDeleted))) return svcCatClone(rows[i]); }
+  return null;
+}
+function svcCatalogCategories(type) {
+  var seen = {}, out = [], tpl = type ? svcCatTpl(type) : null;
+  ((tpl && tpl.catalog && tpl.catalog.categories) || []).forEach(function (c) { if (c && !seen[c]) { seen[c] = 1; out.push(c); } });
+  svcCatRows().forEach(function (r) { if (r && !r._deleted && r.category && !seen[r.category]) { seen[r.category] = 1; out.push(r.category); } });
+  return out;
+}
+
+/* ===== price resolution (pure): the catalog price is the STARTING point; a job line keeps its own (overridable) price ===== */
+function svcCatalogAssetType(valuesOrAsset) {
+  var v = valuesOrAsset, i, x;
+  if (v == null) return '';
+  if (typeof v === 'string') return svcCatSlug(v);
+  if (typeof v !== 'object') return '';
+  for (i = 0; i < SVC_CAT_ASSET_FIELDS.length; i++) { x = v[SVC_CAT_ASSET_FIELDS[i]]; if (x != null && x !== '') return svcCatSlug(x); }
+  x = v.type || (v.attrs && v.attrs.type) || (v.assetSnap && v.assetSnap.type) || (v.asset && v.asset.attrs && v.asset.attrs.type) || '';
+  return svcCatSlug(x);
+}
+function svcPriceInfo(service, asset) {
+  if (!service) return { price: 0, basePrice: 0, byAsset: false, mode: 'fixed', key: '' };
+  var base = svcCatR2(service.price != null ? service.price : (service.basePrice != null ? service.basePrice : 0));
+  var key = svcCatalogAssetType(asset), m = service.priceByAssetType, price = base, by = false;
+  if (key && m && typeof m === 'object' && Object.prototype.hasOwnProperty.call(m, key) && m[key] !== '' && m[key] !== null && isFinite(Number(m[key]))) { price = svcCatR2(m[key]); by = true; }
+  return { price: price, basePrice: base, byAsset: by, mode: service.priceMode || 'fixed', key: key };
+}
+function svcPriceFor(service, asset) { return svcPriceInfo(service, asset).price; }
+function svcCatPriceText(r) {
+  var p = svcCatMoney(r.price || 0);
+  if (r.priceMode === 'variable') return 'Price on the day';
+  return (r.priceMode === 'from' ? 'from ' : '') + p;
+}
+
+/* ===== write side ===== */
+function svcCatOverlap(a, b) { return !a.length || !b.length || a.some(function (t) { return b.indexOf(t) !== -1; }); }
+function svcCatDuplicate(n, selfId) {
+  var nm = n.name.toLowerCase(), rows = svcCatRows(), i, r;
+  for (i = 0; i < rows.length; i++) {
+    r = rows[i];
+    if (!r || r._deleted || String(r.id) === String(selfId) || String(r.name || '').trim().toLowerCase() !== nm) continue;
+    if (svcCatOverlap(r.serviceTypes || [], n.serviceTypes || [])) return r;
+  }
+  return null;
+}
+function svcCatNextSort() { var m = 0; svcCatRows().forEach(function (r) { if (r && Number(r.sort) > m) m = Number(r.sort); }); return m + 10; }
+/* internal writer: normalised body -> committed record. extra = {seed, importedFrom, createdBy} */
+function svcCatWrite(id, body, extra, existing) {
+  var actor = svcCatActor(), now = svcCatNow();
+  if (typeof svcCommit !== 'function') return { ok: false, code: 'store', error: 'The store is not available.' };
+  return svcCommit(function (rec) {
+    var r = rec || { id: id, createdAt: now, createdBy: (extra && extra.createdBy) || actor.name };
+    var k; for (k in body) { if (Object.prototype.hasOwnProperty.call(body, k)) r[k] = body[k]; }
+    if (!isFinite(Number(r.sort))) r.sort = svcCatNextSort();
+    if (extra) { for (k in extra) { if (k !== 'createdBy' && Object.prototype.hasOwnProperty.call(extra, k)) r[k] = extra[k]; } }
+    if (r.active === false) { if (!r.archivedAt) { r.archivedAt = now; r.archivedBy = actor.name; } } else { delete r.archivedAt; delete r.archivedBy; }
+    r.updatedBy = actor.name;
+    return r;
+  }, { list: 'svcCatalog', id: id, create: true, noAudit: true, event: 'config:changed', payload: { kind: 'catalog', id: id } });
+}
+/* svcCatalogUpsert(input, opts) -> {ok, rec, created, errors[]}. input.id updates (only the keys given change); no id creates. Needs svc:manageServices. */
+function svcCatalogUpsert(input, opts) {
+  opts = opts || {}; input = input || {};
+  if (!opts.force && !svcCatCan('svc:manageServices')) return { ok: false, code: 'perm', errors: [{ id: '', msg: 'You are not allowed to manage services.' }] };
+  var id = input.id ? String(input.id) : '', existing = id ? svcCatalogGet(id, { includeDeleted: true }) : null;
+  if (existing && existing._deleted) return { ok: false, code: 'deleted', errors: [{ id: '', msg: 'That service was removed.' }] };
+  var src = Object.assign({}, existing || {}, input);
+  var n = svcCatalogNormalize(src);
+  if (!n.ok) return { ok: false, code: 'invalid', errors: n.errors };
+  if (!opts.allowDuplicate) {
+    var dup = svcCatDuplicate(n.rec, existing ? existing.id : id);
+    if (dup) return { ok: false, code: 'duplicate', errors: [{ id: 'name', msg: 'A service named "' + dup.name + '" already exists.' }], duplicateOf: dup.id };
+  }
+  var rid = existing ? existing.id : (id || (typeof svcId === 'function' ? svcId('sc-') : 'sc-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)));
+  if (existing) { if (input.sort == null && existing.sort != null) n.rec.sort = existing.sort; }
+  else if (n.rec.sort == null) n.rec.sort = svcCatNextSort();
+  var res = svcCatWrite(rid, n.rec, null, existing);
+  if (!res.ok) return { ok: false, code: res.code || 'store', errors: [{ id: '', msg: res.error || 'Could not save the service.' }] };
+  return { ok: true, rec: svcCatClone(res.rec), created: !existing };
+}
+/* svcCatalogArchive(id, {restore, remove}) -> {ok, rec}. Archive = active:false (recoverable, hidden from pickers, history keeps working). remove = tombstone. */
+function svcCatalogArchive(id, opts) {
+  opts = opts || {};
+  if (!opts.force && !svcCatCan('svc:manageServices')) return { ok: false, code: 'perm' };
+  var cur = svcCatalogGet(id, { includeDeleted: true });
+  if (!cur) return { ok: false, code: 'notfound' };
+  if (opts.remove) {
+    if (cur._deleted) return { ok: true, rec: cur, unchanged: true };
+    var rm = svcCommit(function (r) { r.active = false; r._deleted = true; r.archivedAt = r.archivedAt || svcCatNow(); r.updatedBy = svcCatActor().name; return r; }, { list: 'svcCatalog', id: cur.id, noAudit: true, event: 'config:changed', payload: { kind: 'catalog', id: cur.id } });
+    return rm.ok ? { ok: true, rec: svcCatClone(rm.rec) } : { ok: false, code: rm.code };
+  }
+  var wantActive = opts.restore === true;
+  if (cur._deleted) return { ok: false, code: 'deleted' };
+  if ((cur.active !== false) === wantActive) return { ok: true, rec: cur, unchanged: true };
+  var res = svcCatWrite(cur.id, { active: wantActive }, null, cur);
+  return res.ok ? { ok: true, rec: svcCatClone(res.rec) } : { ok: false, code: res.code, error: res.error };
+}
+
+/* ===== seeds (never overwrite, never re-add something the owner archived / removed) ===== */
+function svcCatSeedFlags() { var c = null; try { c = typeof svcConfigGet === 'function' ? svcConfigGet('cfg-seed') : null; } catch (e) { c = null; } return c && c.seeded && typeof c.seeded === 'object' ? c.seeded : {}; }
+function svcCatMarkSeeded(typeKey) {
+  try {
+    if (typeof svcConfigPatch !== 'function') return false;
+    var s = Object.assign({}, svcCatSeedFlags()); s[typeKey] = svcCatNow();
+    var r = svcConfigPatch('cfg-seed', { seeded: s }, { what: 'catalog seeded: ' + typeKey });
+    return !!(r && r.ok);
+  } catch (e) { return false; }
+}
+/* svcSeedCatalog(typeKey, {force}) -> {ok, added, skipped, already}. Called by svcSetBusinessType (explicit owner action), by the "Add starter services" button
+   (force) and by svcCatalogEnsureSeeded (first engine use). Only ids / names that do not exist yet are added, so it is idempotent. */
+function svcSeedCatalog(typeKey, opts) {
+  opts = opts || {};
+  if (!svcCatTypeValid(typeKey)) return { ok: false, code: 'type', added: 0, skipped: 0 };
+  var tpl = svcCatTpl(typeKey), seeds = (tpl && tpl.catalog && tpl.catalog.seeds) || [];
+  if (!opts.force && svcCatSeedFlags()[typeKey]) return { ok: true, added: 0, skipped: seeds.length, already: true };
+  var added = 0, skipped = 0, rows = svcCatRows();
+  seeds.forEach(function (s) {
+    var exists = rows.some(function (r) { return r && String(r.id) === String(s.id); });          /* incl. archived and removed: an owner's choice is final */
+    var n = svcCatalogNormalize(s);
+    if (!exists && n.ok) {
+      var nm = n.rec.name.toLowerCase();
+      exists = svcCatRows().some(function (r) { return r && !r._deleted && String(r.name || '').trim().toLowerCase() === nm && svcCatOverlap(r.serviceTypes || [], n.rec.serviceTypes || []); });
+    }
+    if (exists || !n.ok) { skipped++; return; }
+    n.rec.consumption = n.rec.consumption.map(function (c) { if (!c.code) { var it = svcCatInvItem('', c.name); if (it) return { code: String(it.code), name: c.name, unit: c.unit, qty: c.qty }; } return c; });   /* link to an inventory item of the same (unique) name */
+    var res = svcCatWrite(String(s.id), n.rec, { seed: true, createdBy: 'Starter services' }, null);
+    if (res.ok) added++; else skipped++;
+  });
+  svcCatMarkSeeded(typeKey);
+  return { ok: true, added: added, skipped: skipped };
+}
+/* first engine use: seed once per type when the owner has chosen a type and nothing is offered for it yet */
+function svcCatalogEnsureSeeded(typeKey) {
+  typeKey = typeKey || svcCatBizType();
+  var c = null; try { c = typeof svcConfigGet === 'function' ? svcConfigGet('cfg-business') : null; } catch (e) { c = null; }
+  if (!c || c.chosen !== true) return { ok: false, code: 'notchosen', added: 0 };
+  if (svcCatSeedFlags()[typeKey]) return { ok: true, already: true, added: 0 };
+  if (svcCatalogList({ type: typeKey, includeInactive: true }).length) { svcCatMarkSeeded(typeKey); return { ok: true, added: 0, skipped: 'has-entries' }; }
+  return svcSeedCatalog(typeKey);
+}
+
+/* ===== import the existing inventory "service" items (inventory is never changed or deleted) ===== */
+function svcCatalogInventoryServices() {
+  return svcCatInv().filter(function (p) { return p && p.type === 'service' && !p._deleted && p.code != null && String(p.code) !== ''; });
+}
+function svcCatalogImportable() {
+  var linked = {}, names = {};
+  svcCatRows().forEach(function (r) { if (r && !r._deleted) { if (r.invCode) linked[String(r.invCode)] = 1; names[String(r.name || '').trim().toLowerCase()] = 1; } });
+  return svcCatalogInventoryServices().filter(function (p) { return !linked[String(p.code)] && !names[String(p.name || '').trim().toLowerCase()]; });
+}
+function svcImportFromInventory(opts) {
+  opts = opts || {};
+  if (!opts.force && !svcCatCan('svc:manageServices')) return { ok: false, code: 'perm', imported: [], skipped: [] };
+  var codes = Array.isArray(opts.codes) ? opts.codes.map(String) : null, linked = {}, names = {}, imported = [], skipped = [];
+  svcCatRows().forEach(function (r) { if (r && !r._deleted) { if (r.invCode) linked[String(r.invCode)] = r.id; names[String(r.name || '').trim().toLowerCase()] = r.id; } });
+  svcCatalogInventoryServices().forEach(function (p) {
+    var code = String(p.code);
+    if (codes && codes.indexOf(code) === -1) return;
+    if (linked[code]) { skipped.push({ code: code, reason: 'already-linked', id: linked[code] }); return; }
+    if (names[String(p.name || '').trim().toLowerCase()]) { skipped.push({ code: code, reason: 'same-name' }); return; }
+    var cons = (Array.isArray(p.recipe) ? p.recipe : []).map(function (ing) {
+      var it = svcCatInvItem(ing && ing.code, '');
+      return { code: String(ing && ing.code || ''), name: it ? it.name : '', unit: it && it.unit ? it.unit : '', qty: ing && ing.qtyPerUnit };
+    });
+    var n = svcCatalogNormalize({ name: p.name, category: p.category || 'Imported', price: p.price, priceMode: 'fixed', durationMin: p.durationMinutes || 0, invCode: code,
+      serviceTypes: Array.isArray(opts.types) ? opts.types : [], consumption: cons, active: true, description: '' });
+    if (!n.ok) { skipped.push({ code: code, reason: 'invalid' }); return; }
+    var res = svcCatWrite(typeof svcId === 'function' ? svcId('sc-') : 'sc-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8), n.rec, { importedFrom: 'inventory' }, null);
+    if (res.ok) { imported.push(res.rec.id); linked[code] = res.rec.id; names[n.rec.name.toLowerCase()] = res.rec.id; } else skipped.push({ code: code, reason: res.code || 'store' });
+  });
+  return { ok: true, imported: imported, skipped: skipped };
+}
+
+/* ===== the Service picker data source (what svc-form's context.catalog / context.priceFor expect) ===== */
+function svcCatalogForPicker(typeKey, values) {
+  typeKey = typeKey || svcCatBizType();
+  try { svcCatalogEnsureSeeded(typeKey); } catch (e) { /* the picker never fails because of seeding */ }
+  var key = svcCatalogAssetType(values);
+  return svcCatalogList({ type: typeKey }).map(function (r) {
+    var info = svcPriceInfo(r, key);
+    return { id: r.id, name: r.name, category: r.category, price: info.price, basePrice: info.basePrice, priceMode: r.priceMode, priceByAssetType: r.priceByAssetType, durationMin: r.durationMin || 0, staffRole: r.staffRole || '', active: true, consumption: r.consumption || [] };
+  });
+}
+/* merge into svcRenderForm's opts.context: { catalog(values), priceFor(item, values) } */
+function svcCatalogFormContext(typeKey) {
+  return {
+    catalog: function (values) { return svcCatalogForPicker(typeKey, values); },
+    priceFor: function (item, values) { return svcPriceFor(item, svcCatalogAssetType(values)); }
+  };
+}
+/* a job service line from a catalog entry (the line keeps its own price; catalogId links it back) */
+function svcCatalogLineFrom(rec, asset, qty) {
+  var info = svcPriceInfo(rec, asset);
+  var id = typeof svcId === 'function' ? svcId('jl-') : 'jl-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  var line = { id: id, catalogId: rec.id, name: rec.name, category: rec.category || '', qty: qty > 0 ? qty : 1, price: info.price, source: 'base' };
+  if (rec.durationMin) line.durationMin = rec.durationMin;
+  return line;
+}
+
+/* ===== the "services" widget of the New Service form: catalog-backed picker with per-asset-type pricing ===== */
+function svcCatWidgetAssetKey(mount, api) {
+  var form = mount && mount.closest ? mount.closest('form') : null, i, el;
+  if (form) {
+    for (i = 0; i < SVC_CAT_ASSET_FIELDS.length; i++) {
+      el = form.querySelector('[data-fid="' + SVC_CAT_ASSET_FIELDS[i] + '"] [data-input]');
+      if (el && el.value) return svcCatSlug(el.value);
+    }
+  }
+  var job = api && api.job;
+  return job ? svcCatalogAssetType(job.assetSnap || job) : '';
+}
+function svcCatWidgetTypeKey(api) { return (api && api.template && api.template.key) || (api && api.job && api.job.serviceType) || svcCatBizType(); }
+function svcCatWidgetPaint(mount) {
+  var rows = mount.__svcRows || [], api = mount.__svcApi, type = svcCatWidgetTypeKey(api), ro = api && api.readOnly;
+  var cat = svcCatalogForPicker(type), groups = {}, order = [], html = '', total = 0;
+  cat.forEach(function (c) { var g = c.category || 'Services'; if (!groups[g]) { groups[g] = []; order.push(g); } groups[g].push(c); });
+  html += '<ul>' + rows.map(function (r, i) {
+    var amount = svcCatR2(svcCatNum(r.qty) * svcCatNum(r.price)); total += amount;
+    return '<li class="svcc-wrow" data-i="' + i + '"><div class="nm">' + svcCatEsc(r.name) + (r.durationMin ? '<small>' + svcCatEsc(r.durationMin) + ' min</small>' : '') + '</div>' +
+      '<label>Qty<input class="svcc-in" type="text" inputmode="decimal" data-col="qty" value="' + svcCatEsc(r.qty) + '" aria-label="Quantity of ' + svcCatEsc(r.name) + '"></label>' +
+      '<label>Price<input class="svcc-in" type="text" inputmode="decimal" data-col="price" value="' + svcCatEsc(r.price) + '" aria-label="Price of ' + svcCatEsc(r.name) + '"></label>' +
+      '<button type="button" class="rm" data-act="rm" aria-label="Remove ' + svcCatEsc(r.name) + '">&times;</button></li>';
+  }).join('') + '</ul>';
+  if (!ro) {
+    html += '<div class="svcc-wadd"><select class="svcc-in" data-add aria-label="Add a service"><option value="">+ Add service...</option>' + order.map(function (g) {
+      return '<optgroup label="' + svcCatEsc(g) + '">' + groups[g].map(function (c) { return '<option value="' + svcCatEsc(c.id) + '">' + svcCatEsc(c.name) + ' - ' + svcCatEsc(c.priceMode === 'variable' ? 'price on the day' : (c.priceMode === 'from' ? 'from ' : '') + svcCatMoney(c.price)) + '</option>'; }).join('') + '</optgroup>';
+    }).join('') + '</select>' +
+      '<input class="svcc-in c-nm" type="text" data-custom placeholder="Other service name" aria-label="Other service name"><input class="svcc-in c-pr" type="text" inputmode="decimal" data-customprice placeholder="Price" aria-label="Price of the other service"><button type="button" class="svcc-btn" data-act="custom">Add</button></div>';
+  }
+  html += '<div class="svcc-wtot">Services: ' + svcCatEsc(svcCatMoney(total)) + '</div>';
+  mount.innerHTML = '<div class="svcc-w">' + html + '</div>';
+}
+function svcCatWidgetEmit(mount) { var api = mount.__svcApi; try { if (api && typeof api.emit === 'function') api.emit(); } catch (e) { /* the form owns validation */ } }
+function svcCatWidgetReprice(mount) {
+  var api = mount.__svcApi, key = svcCatWidgetAssetKey(mount, api), changed = false, by = {};
+  svcCatalogForPicker(svcCatWidgetTypeKey(api)).forEach(function (c) { by[c.id] = c; });
+  (mount.__svcRows || []).forEach(function (r) {
+    var c = r.catalogId ? svcCatalogGet(r.catalogId) : null;
+    if (!c || r.manual) return;
+    var p = svcPriceFor(c, key);
+    if (svcCatR2(r.price) !== p) { r.price = p; changed = true; }
+  });
+  if (changed) { svcCatWidgetPaint(mount); svcCatWidgetEmit(mount); }
+}
+function svcCatWidgetRender(field, mount, api) {
+  mount.__svcApi = api; mount.__svcRows = mount.__svcRows || [];
+  svcCatWidgetPaint(mount);
+  if (mount.__svcBound) return;
+  mount.__svcBound = true;
+  mount.addEventListener('change', function (ev) {
+    var t = ev.target; if (!t || !t.matches) return;
+    if (t.matches('[data-add]')) {
+      var id = t.value; t.value = ''; if (!id) return;
+      var rec = svcCatalogGet(id); if (!rec) return;
+      mount.__svcRows.push(svcCatalogLineFrom(rec, svcCatWidgetAssetKey(mount, mount.__svcApi), 1));
+      svcCatWidgetPaint(mount); svcCatWidgetEmit(mount); return;
+    }
+    if (t.matches('[data-col]')) { svcCatWidgetReadRow(mount, t); svcCatWidgetPaint(mount); svcCatWidgetEmit(mount); }
+  });
+  mount.addEventListener('input', function (ev) { var t = ev.target; if (t && t.matches && t.matches('[data-col]')) svcCatWidgetReadRow(mount, t); });
+  mount.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-act]') : null; if (!b || !mount.contains(b)) return;
+    var act = b.getAttribute('data-act');
+    if (act === 'rm') { var li = b.closest('[data-i]'), i = li ? Number(li.getAttribute('data-i')) : -1; if (i >= 0) { mount.__svcRows.splice(i, 1); svcCatWidgetPaint(mount); svcCatWidgetEmit(mount); } }
+    else if (act === 'custom') {
+      var nm = mount.querySelector('[data-custom]'), pr = mount.querySelector('[data-customprice]'), name = svcCatStr(nm && nm.value, 80);
+      if (!name) { if (nm) nm.focus(); return; }
+      mount.__svcRows.push({ id: typeof svcId === 'function' ? svcId('jl-') : 'jl-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7), catalogId: null, name: name, category: '', qty: 1, price: Math.max(0, svcCatR2(pr && pr.value)), source: 'base', manual: true });
+      svcCatWidgetPaint(mount); svcCatWidgetEmit(mount);
+    }
+  });
+  var form = mount.closest ? mount.closest('form') : null;
+  if (form && !form.__svcCatAsset) {                                  /* the vehicle type (or device type) changed: re-price the lines nobody edited by hand */
+    form.__svcCatAsset = true;
+    form.addEventListener('change', function (ev) {
+      var w = ev.target && ev.target.closest ? ev.target.closest('[data-fid]') : null, fid = w ? w.getAttribute('data-fid') : '';
+      if (SVC_CAT_ASSET_FIELDS.indexOf(fid) === -1) return;
+      var m = form.querySelector('[data-fid] [data-widget-mount][data-wname="services"]') || mount;
+      if (m) svcCatWidgetReprice(m);
+    });
+  }
+}
+function svcCatWidgetReadRow(mount, input) {
+  var li = input.closest('[data-i]'), i = li ? Number(li.getAttribute('data-i')) : -1, row = mount.__svcRows[i]; if (!row) return;
+  var col = input.getAttribute('data-col');
+  if (col === 'qty') { var q = svcCatNum(input.value); row.qty = q > 0 ? q : 1; }
+  else if (col === 'price') {
+    var p = Math.max(0, svcCatR2(input.value)), c = row.catalogId ? svcCatalogGet(row.catalogId) : null;
+    row.price = p;
+    row.manual = !c || p !== svcPriceFor(c, svcCatWidgetAssetKey(mount, mount.__svcApi));
+  }
+}
+var SVC_CAT_WIDGET = {
+  render: function (field, mount, api) { svcCatWidgetRender(field, mount, api); },
+  read: function (mount) {
+    return (mount.__svcRows || []).map(function (r) {
+      var o = { id: r.id, catalogId: r.catalogId || null, name: r.name, category: r.category || '', qty: svcCatNum(r.qty) > 0 ? svcCatNum(r.qty) : 1, price: svcCatR2(r.price), source: r.source || 'base' };
+      if (r.durationMin) o.durationMin = r.durationMin;
+      return o;
+    });
+  },
+  setValue: function (mount, v) {
+    mount.__svcRows = (Array.isArray(v) ? v : []).filter(function (r) { return r && r.name; }).map(function (r) {
+      var o = Object.assign({}, r); if (!o.id) o.id = typeof svcId === 'function' ? svcId('jl-') : 'jl-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+      if (o.qty == null || o.qty === '') o.qty = 1; if (o.price == null || o.price === '') o.price = 0;
+      return o;
+    });
+    svcCatWidgetPaint(mount);
+  }
+};
+
+/* ===== Settings > Services > Service Catalog page ===== */
+function svcCatAssetOptions(type) {
+  var tpl = svcCatTpl(type), i, f, out = [];
+  if (!tpl) return out;
+  for (i = 0; i < SVC_CAT_ASSET_FIELDS.length; i++) {
+    f = null; try { f = typeof svcFindField === 'function' ? svcFindField(tpl, SVC_CAT_ASSET_FIELDS[i]) : null; } catch (e) { f = null; }
+    if (f) {
+      if (f.id === 'veh_type') { try { if (typeof svcVehicleTypes === 'function') return svcVehicleTypes().map(function (x) { return { v: x.v, l: x.l }; }); } catch (e2) { /* fall through */ } }
+      if (Array.isArray(f.options) && f.options.length) return f.options.map(function (o) { return { v: svcCatSlug(o.v), l: o.l || o.v }; });
+    }
+  }
+  return out;
+}
+function svcCatAssetNoun(type) { var tpl = svcCatTpl(type); return (tpl && tpl.terms && tpl.terms.asset) || 'type'; }
+function svcCatUnitChoices(type) { var tpl = svcCatTpl(type), u = (tpl && tpl.inventory && tpl.inventory.unitChoices) || []; return u.length ? u : ['pcs', 'ml', 'l', 'g', 'kg']; }
+function svcCatStockNote(row) {
+  var it = svcCatInvItem(row.code, row.name);
+  if (!it) return { t: row.code || row.name ? 'Not linked to inventory: recorded without a stock effect.' : '', bad: !!(row.code || row.name) };
+  var q = it.qty == null ? 'n/a' : it.qty;
+  return { t: 'In stock: ' + q + ' ' + (it.unit || 'pcs'), bad: typeof it.qty === 'number' && it.qty <= 0 };
+}
+function svcCatConsRowHtml(row, units) {
+  row = row || {};
+  var st = svcCatStockNote(row), id = 'svcc-c' + Math.random().toString(36).slice(2, 8);
+  return '<div class="svcc-crow" data-crow><div class="c-item"><label class="lbl" for="' + id + 'i">Inventory item</label><input class="svcc-in" id="' + id + 'i" list="svcc-invlist" data-c="item" autocomplete="off" value="' + svcCatEsc(row.name || row.code || '') + '" data-code="' + svcCatEsc(row.code || '') + '" placeholder="Search your stock"></div>' +
+    '<div class="c-qty"><label class="lbl" for="' + id + 'q">Quantity</label><input class="svcc-in" id="' + id + 'q" type="text" inputmode="decimal" data-c="qty" value="' + svcCatEsc(row.qty == null ? '' : row.qty) + '" placeholder="0"></div>' +
+    '<div class="c-unit"><label class="lbl" for="' + id + 'u">Unit</label><input class="svcc-in" id="' + id + 'u" list="svcc-unitlist" data-c="unit" value="' + svcCatEsc(row.unit || '') + '" placeholder="ml"></div>' +
+    '<button type="button" class="svcc-btn danger" data-act="rm-crow" aria-label="Remove this item" style="margin:0">&times;</button>' +
+    '<div class="stk' + (st.bad ? ' bad' : '') + '" data-stk>' + svcCatEsc(st.t) + '</div></div>';
+}
+function svcCatEditorHtml(rec, type) {
+  var cats = svcCatalogCategories(type), units = svcCatUnitChoices(type), tpl = svcCatTpl(type), roles = (tpl && tpl.staffRoles) || [];
+  var assetOpts = svcCatAssetOptions(type), pba = rec.priceByAssetType || null, hasPba = !!pba, noun = svcCatAssetNoun(type);
+  var inv = svcCatInv().filter(function (p) { return p && !p._deleted && p.type !== 'service'; }).slice(0, 600);
+  var typeRows = (typeof SVC_TYPE_ORDER === 'object' && SVC_TYPE_ORDER ? SVC_TYPE_ORDER : []).filter(svcCatTypeValid);
+  var roleKeys = roles.map(function (r) { return r.key; });
+  if (rec.staffRole && roleKeys.indexOf(rec.staffRole) === -1) roles = roles.concat([{ key: rec.staffRole, label: rec.staffRole.replace(/_/g, ' ') }]);
+  var h = '';
+  h += '<div class="svcc-fld"><label for="svcc-f-name">Service name</label><input class="svcc-in" id="svcc-f-name" maxlength="80" value="' + svcCatEsc(rec.name) + '" autocomplete="off"><div class="err" data-err="name"></div></div>';
+  h += '<div class="svcc-2"><div class="svcc-fld"><label for="svcc-f-cat">Category</label><input class="svcc-in" id="svcc-f-cat" list="svcc-catlist" maxlength="40" value="' + svcCatEsc(rec.category) + '"><datalist id="svcc-catlist">' + cats.map(function (c) { return '<option value="' + svcCatEsc(c) + '">'; }).join('') + '</datalist></div>' +
+    '<div class="svcc-fld"><label for="svcc-f-dur">Estimated duration (minutes)</label><input class="svcc-in" id="svcc-f-dur" type="text" inputmode="numeric" value="' + svcCatEsc(rec.durationMin || '') + '" placeholder="30"><div class="err" data-err="durationMin"></div></div></div>';
+  h += '<div class="svcc-fld"><label for="svcc-f-desc">Description</label><textarea class="svcc-in" id="svcc-f-desc" rows="2" maxlength="300">' + svcCatEsc(rec.description) + '</textarea></div>';
+  h += '<div class="svcc-2"><div class="svcc-fld"><label for="svcc-f-price">Standard price (KSh)</label><input class="svcc-in" id="svcc-f-price" type="text" inputmode="decimal" value="' + svcCatEsc(rec.price || '') + '" placeholder="0"><div class="err" data-err="price"></div>' +
+    '<div class="hint">The starting price. Each job can change it.</div></div>' +
+    '<div class="svcc-fld"><label for="svcc-f-mode">Price type</label><select class="svcc-in" id="svcc-f-mode"><option value="fixed"' + (rec.priceMode === 'fixed' ? ' selected' : '') + '>Fixed price</option><option value="from"' + (rec.priceMode === 'from' ? ' selected' : '') + '>Starting from</option><option value="variable"' + (rec.priceMode === 'variable' ? ' selected' : '') + '>Decided on the day</option></select></div></div>';
+  if (assetOpts.length || hasPba) {
+    var keys = assetOpts.map(function (o) { return o.v; }), extra = hasPba ? Object.keys(pba).filter(function (k) { return keys.indexOf(k) === -1; }) : [];
+    var all = assetOpts.concat(extra.map(function (k) { return { v: k, l: k.replace(/_/g, ' ') }; }));
+    h += '<div class="svcc-fld"><label class="svcc-chk" for="svcc-f-pba"><input type="checkbox" id="svcc-f-pba"' + (hasPba ? ' checked' : '') + '>Different price by ' + svcCatEsc(String(noun).toLowerCase()) + ' type</label>' +
+      '<div class="svcc-assetgrid" id="svcc-pbagrid"' + (hasPba ? '' : ' hidden') + '>' + all.map(function (o) { return '<div><label for="svcc-p-' + svcCatEsc(o.v) + '">' + svcCatEsc(o.l) + '</label><input class="svcc-in" id="svcc-p-' + svcCatEsc(o.v) + '" data-pba="' + svcCatEsc(o.v) + '" type="text" inputmode="decimal" value="' + svcCatEsc(pba && pba[o.v] != null ? pba[o.v] : '') + '" placeholder="standard"></div>'; }).join('') + '</div>' +
+      '<div class="hint">Leave a box empty to use the standard price.</div></div>';
+  }
+  h += '<div class="svcc-fld"><label for="svcc-f-role">Required staff type</label><select class="svcc-in" id="svcc-f-role"><option value="">Any staff member</option>' + roles.map(function (r) { return '<option value="' + svcCatEsc(r.key) + '"' + (rec.staffRole === r.key ? ' selected' : '') + '>' + svcCatEsc(r.label || r.key) + '</option>'; }).join('') + '</select></div>';
+  var allTypes = !rec.serviceTypes || !rec.serviceTypes.length;
+  h += '<div class="svcc-fld"><span class="lbl">Offered in</span><label class="svcc-chk"><input type="radio" name="svcc-scope" value="all"' + (allTypes ? ' checked' : '') + '>All business types</label><label class="svcc-chk"><input type="radio" name="svcc-scope" value="some"' + (allTypes ? '' : ' checked') + '>Only these types</label>' +
+    '<div id="svcc-typegrid"' + (allTypes ? ' hidden' : '') + '>' + typeRows.map(function (k) { var t = SVC_TYPES[k]; return '<label class="svcc-chk"><input type="checkbox" data-st="' + svcCatEsc(k) + '"' + ((rec.serviceTypes || []).indexOf(k) !== -1 ? ' checked' : '') + '>' + svcCatEsc((t.icon || '') + ' ' + (t.label || k)) + '</label>'; }).join('') + '</div></div>';
+  h += '<div class="svcc-box"><h4>Inventory used (optional)</h4><div class="hint" style="font-size:12px;opacity:.75;margin:0 0 6px">Items this service normally uses, with the usual quantity. Staff confirm the real quantity on the job. Leave empty when the service uses no stock.</div>' +
+    '<div id="svcc-cons">' + (rec.consumption || []).map(function (c) { return svcCatConsRowHtml(c, units); }).join('') + '</div>' +
+    '<div class="err" data-err="consumption"></div><button type="button" class="svcc-btn" data-act="add-crow" style="margin-top:8px">+ Add inventory item</button>' +
+    '<label class="svcc-chk"><input type="checkbox" id="svcc-f-auto"' + (rec.autoConsume ? ' checked' : '') + '>Deduct automatically when work starts (only if automatic deduction is switched on below)</label>' +
+    '<datalist id="svcc-invlist">' + inv.map(function (p) { return '<option value="' + svcCatEsc(p.name) + '" label="' + svcCatEsc(p.code) + '">'; }).join('') + '</datalist><datalist id="svcc-unitlist">' + units.map(function (u) { return '<option value="' + svcCatEsc(u) + '">'; }).join('') + '</datalist></div>';
+  h += '<div class="svcc-fld"><label class="svcc-chk" for="svcc-f-active"><input type="checkbox" id="svcc-f-active"' + (rec.active !== false ? ' checked' : '') + '>Active (shown when adding services to a job)</label></div>';
+  return h;
+}
+function svcCatReadEditor(ed) {
+  var el = ed.el, q = function (s) { return el.querySelector(s); }, pba = null;
+  var pbaOn = q('#svcc-f-pba') && q('#svcc-f-pba').checked;
+  if (pbaOn) { Array.prototype.forEach.call(el.querySelectorAll('[data-pba]'), function (i) { if (String(i.value).trim() !== '') (pba = pba || {})[i.getAttribute('data-pba')] = i.value; }); }
+  var cons = [];
+  Array.prototype.forEach.call(el.querySelectorAll('[data-crow]'), function (row) {
+    var it = row.querySelector('[data-c="item"]'), nm = String(it.value || '').trim(), code = it.getAttribute('data-code') || '';
+    cons.push({ code: code, name: nm && nm !== code ? nm : (code ? '' : nm), qty: row.querySelector('[data-c="qty"]').value, unit: row.querySelector('[data-c="unit"]').value });
+  });
+  var scopeAll = !q('input[name="svcc-scope"][value="some"]') || !q('input[name="svcc-scope"][value="some"]').checked, types = [];
+  if (!scopeAll) Array.prototype.forEach.call(el.querySelectorAll('[data-st]'), function (c) { if (c.checked) types.push(c.getAttribute('data-st')); });
+  return { id: ed.id, name: q('#svcc-f-name').value, category: q('#svcc-f-cat').value, description: q('#svcc-f-desc').value, price: q('#svcc-f-price').value, priceMode: q('#svcc-f-mode').value,
+    priceByAssetType: pba, durationMin: q('#svcc-f-dur').value, staffRole: q('#svcc-f-role').value, serviceTypes: types, consumption: cons, autoConsume: !!(q('#svcc-f-auto') && q('#svcc-f-auto').checked), active: !!q('#svcc-f-active').checked };
+}
+function svcCatCloseEditor() {
+  var ed = SVC_CAT_UI.editor; if (!ed) return;
+  SVC_CAT_UI.editor = null;
+  try { document.removeEventListener('keydown', ed.onKey, true); } catch (e) { /* gone */ }
+  if (ed.el && ed.el.parentNode) ed.el.parentNode.removeChild(ed.el);
+  try { if (ed.returnFocus && ed.returnFocus.focus) ed.returnFocus.focus(); } catch (e2) { /* element gone */ }
+}
+function svcCatShowErrors(ed, errors) {
+  Array.prototype.forEach.call(ed.el.querySelectorAll('[data-err]'), function (e) { e.textContent = ''; });
+  var general = [];
+  (errors || []).forEach(function (er) {
+    var t = er.id ? ed.el.querySelector('[data-err="' + er.id + '"]') : null;
+    if (t) t.textContent = (t.textContent ? t.textContent + ' ' : '') + er.msg; else general.push(er.msg);
+  });
+  var g = ed.el.querySelector('[data-general-err]');
+  g.textContent = general.join(' '); g.hidden = !general.length;
+  var first = ed.el.querySelector('.err:not(:empty)'); if (first && first.scrollIntoView) { try { first.scrollIntoView({ block: 'center' }); } catch (e) { /* jsdom */ } }
+}
+function svcCatOpenEditor(idOrNull) {
+  if (typeof document === 'undefined') return null;
+  svcCatCloseEditor();
+  var canEdit = svcCatCan('svc:manageServices'), type = svcCatBizType();
+  var existing = idOrNull ? svcCatalogGet(idOrNull) : null;
+  var rec = existing || { name: '', category: '', description: '', price: 0, priceMode: 'fixed', priceByAssetType: null, durationMin: 0, staffRole: '', serviceTypes: [], consumption: [], autoConsume: false, active: true };
+  var ed = { id: existing ? existing.id : (typeof svcId === 'function' ? svcId('sc-') : 'sc-' + Date.now().toString(36)), existing: existing, saving: false, returnFocus: document.activeElement };
+  var ov = document.createElement('div');
+  ov.className = 'svcc-ov'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-label', existing ? 'Edit service' : 'Add service');
+  ov.innerHTML = '<div class="svcc-panel"><div class="svcc-ph"><b>' + (existing ? 'Edit service' : 'Add service') + '</b><button type="button" class="svcc-x" data-act="close" aria-label="Close">&#10005;</button></div>' +
+    '<div class="svcc-pb"><div class="svcc-note bad" data-general-err hidden role="alert"></div>' + (canEdit ? '' : '<div class="svcc-note warn">You can look at the catalog, but only people allowed to manage services can change it.</div>') + svcCatEditorHtml(rec, type) + '</div>' +
+    '<div class="svcc-pf"><button type="button" class="svcc-btn" data-act="close">Cancel</button>' +
+    (existing && canEdit ? '<button type="button" class="svcc-btn ' + (existing.active === false ? '' : 'danger') + '" data-act="archive">' + (existing.active === false ? 'Restore' : 'Archive') + '</button>' : '') +
+    (canEdit ? '<button type="button" class="svcc-btn primary grow" data-act="save">Save service</button>' : '') + '</div></div>';
+  document.body.appendChild(ov);
+  ed.el = ov; SVC_CAT_UI.editor = ed;
+  if (!canEdit) Array.prototype.forEach.call(ov.querySelectorAll('input,select,textarea'), function (i) { i.disabled = true; });
+  ed.onKey = function (ev) { if (ev.key === 'Escape') { ev.stopPropagation(); svcCatCloseEditor(); } };
+  document.addEventListener('keydown', ed.onKey, true);
+  ov.addEventListener('click', function (ev) {
+    if (ev.target === ov) { svcCatCloseEditor(); return; }
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-act]') : null; if (!b || !ov.contains(b)) return;
+    var act = b.getAttribute('data-act');
+    if (act === 'close') svcCatCloseEditor();
+    else if (act === 'add-crow') { var box = ov.querySelector('#svcc-cons'); box.insertAdjacentHTML('beforeend', svcCatConsRowHtml({}, svcCatUnitChoices(type))); var f = box.lastChild.querySelector('input'); if (f) f.focus(); }
+    else if (act === 'rm-crow') { var row = b.closest('[data-crow]'); if (row && row.parentNode) row.parentNode.removeChild(row); }
+    else if (act === 'save') svcCatSaveEditor(ed);
+    else if (act === 'archive') svcCatArchiveEditor(ed);
+  });
+  ov.addEventListener('change', function (ev) {
+    var t = ev.target; if (!t || !t.matches) return;
+    if (t.matches('#svcc-f-pba')) { var g = ov.querySelector('#svcc-pbagrid'); if (g) g.hidden = !t.checked; }
+    else if (t.matches('input[name="svcc-scope"]')) { var tg = ov.querySelector('#svcc-typegrid'); if (tg) tg.hidden = t.value !== 'some'; }
+    else if (t.matches('[data-c="item"]')) svcCatConsItemChanged(t);
+  });
+  ov.addEventListener('input', function (ev) { var t = ev.target; if (t && t.matches && t.matches('[data-c="item"]')) svcCatConsItemChanged(t); });
+  var first = ov.querySelector('#svcc-f-name'); if (first) { try { first.focus(); } catch (e) { /* not focusable */ } }
+  return ed;
+}
+function svcCatConsItemChanged(input) {
+  var row = input.closest('[data-crow]'), val = String(input.value || '').trim(), it = val ? svcCatInvItem(val, val) : null;
+  input.setAttribute('data-code', it ? String(it.code) : '');
+  var unit = row.querySelector('[data-c="unit"]');
+  if (it && unit && !unit.value) unit.value = it.unit || '';
+  var st = svcCatStockNote({ code: it ? it.code : '', name: val }), stk = row.querySelector('[data-stk]');
+  if (stk) { stk.textContent = val ? st.t : ''; stk.className = 'stk' + (st.bad ? ' bad' : ''); }
+}
+function svcCatSaveEditor(ed) {
+  if (ed.saving) return;                                      /* double tap: the id is minted once per editor, so a repeat only updates the same record */
+  ed.saving = true;
+  var btns = ed.el.querySelectorAll('[data-act="save"]'); Array.prototype.forEach.call(btns, function (b) { b.disabled = true; });
+  var res;
+  try { res = svcCatalogUpsert(svcCatReadEditor(ed)); } catch (e) { res = { ok: false, errors: [{ id: '', msg: String((e && e.message) || e) }] }; }
+  ed.saving = false; Array.prototype.forEach.call(btns, function (b) { b.disabled = false; });
+  if (!res.ok) { svcCatShowErrors(ed, res.errors); return; }
+  svcCatCloseEditor();
+  svcCatToast(res.created ? 'Service added.' : 'Service saved.');
+  svcCatRefreshPage();
+}
+function svcCatArchiveEditor(ed) {
+  if (!ed.existing) return;
+  var restore = ed.existing.active === false;
+  var ok = true; try { if (!restore && typeof confirm === 'function') ok = confirm('Archive "' + ed.existing.name + '"?\n\nIt stays on old jobs and can be restored any time.'); } catch (e) { ok = true; }
+  if (!ok) return;
+  var r = svcCatalogArchive(ed.existing.id, { restore: restore });
+  if (!r.ok) { svcCatShowErrors(ed, [{ id: '', msg: 'Could not change the service.' }]); return; }
+  svcCatCloseEditor(); svcCatToast(restore ? 'Service restored.' : 'Service archived.'); svcCatRefreshPage();
+}
+
+function svcCatCardHtml(r) {
+  var tags = '';
+  if (r.category) tags += '<span class="svcc-tag">' + svcCatEsc(r.category) + '</span>';
+  if (r.durationMin) tags += '<span class="svcc-tag">' + svcCatEsc(r.durationMin) + ' min</span>';
+  if (r.priceByAssetType) tags += '<span class="svcc-tag">price varies</span>';
+  if (r.consumption && r.consumption.length) tags += '<span class="svcc-tag good">uses ' + r.consumption.length + ' item' + (r.consumption.length === 1 ? '' : 's') + '</span>';
+  if (r.staffRole) tags += '<span class="svcc-tag">' + svcCatEsc(String(r.staffRole).replace(/_/g, ' ')) + '</span>';
+  if (r.serviceTypes && r.serviceTypes.length) tags += '<span class="svcc-tag">' + svcCatEsc(r.serviceTypes.map(function (k) { return SVC_TYPES[k] ? SVC_TYPES[k].label : k; }).join(', ')) + '</span>';
+  if (r.active === false) tags += '<span class="svcc-tag warn">archived</span>';
+  if (r.autoConsume) tags += '<span class="svcc-tag">auto-deduct</span>';
+  return '<button type="button" class="svcc-card' + (r.active === false ? ' off' : '') + '" data-id="' + svcCatEsc(r.id) + '"><div class="r1"><span class="nm">' + svcCatEsc(r.name) + '</span><span class="pr">' + svcCatEsc(svcCatPriceText(r)) + '</span></div>' + (tags ? '<div class="r2">' + tags + '</div>' : '') + '</button>';
+}
+function svcCatRefreshPage() { if (SVC_CAT_UI.mount && SVC_CAT_UI.mount.isConnected !== false) svcCatalogRenderPage(SVC_CAT_UI.mount); }
+function svcCatalogRenderPage(el) {
+  if (!el) return false;
+  SVC_CAT_UI.mount = el;
+  var type = svcCatBizType(), tpl = svcCatTpl(type), canEdit = svcCatCan('svc:manageServices'), ui = SVC_CAT_UI;
+  var scopeType = ui.scope === 'all' ? '' : type;
+  var all = svcCatalogList({ includeInactive: true }), activeN = all.filter(function (r) { return r.active !== false; }).length;
+  var list = svcCatalogList({ type: scopeType, q: ui.q, category: ui.cat, includeInactive: ui.archived });
+  var cats = svcCatalogCategories(scopeType);
+  var importable = canEdit ? svcCatalogImportable().length : 0, seeds = (tpl && tpl.catalog && tpl.catalog.seeds) || [];
+  var canSeed = canEdit && seeds.length && svcCatalogList({ type: type, includeInactive: true }).length === 0;
+  var cfg = null; try { cfg = typeof svcConfigGet === 'function' ? svcConfigGet('cfg-business') : null; } catch (e) { cfg = null; }
+  var auto = !!(cfg && cfg.autoConsume === true), label = tpl && tpl.label ? tpl.label : type;
+  var h = '<div class="svcc"><div class="svcc-head"><h3>Service Catalog</h3><span class="svcc-sub">' + activeN + ' active, ' + (all.length - activeN) + ' archived</span></div>' +
+    '<div class="svcc-bar">' + (canEdit ? '<button type="button" class="svcc-btn primary" data-act="add">+ Add service</button>' : '') +
+    (importable ? '<button type="button" class="svcc-btn" data-act="import">Import ' + importable + ' from inventory</button>' : '') +
+    (canSeed ? '<button type="button" class="svcc-btn" data-act="seed">Add starter ' + svcCatEsc(label) + ' services</button>' : '') + '</div>' +
+    (!canEdit ? '<div class="svcc-note warn">Only people allowed to manage services can change the catalog.</div>' : '') +
+    '<div class="svcc-filters"><input class="svcc-in" type="search" data-f="q" placeholder="Search services" aria-label="Search services" value="' + svcCatEsc(ui.q) + '">' +
+    '<select class="svcc-in" data-f="cat" aria-label="Category"><option value="">All categories</option>' + cats.map(function (c) { return '<option value="' + svcCatEsc(c) + '"' + (ui.cat === c ? ' selected' : '') + '>' + svcCatEsc(c) + '</option>'; }).join('') + '</select>' +
+    '<select class="svcc-in" data-f="scope" aria-label="Which business types"><option value="type"' + (ui.scope === 'type' ? ' selected' : '') + '>For ' + svcCatEsc(label) + '</option><option value="all"' + (ui.scope === 'all' ? ' selected' : '') + '>All business types</option></select>' +
+    '<label class="svcc-chk"><input type="checkbox" data-f="archived"' + (ui.archived ? ' checked' : '') + '>Show archived</label></div>' +
+    '<div class="svcc-list" data-list>' + (list.length ? list.map(svcCatCardHtml).join('') : '<div class="svcc-empty">' + (all.length ? 'No services match.' : 'No services yet. Add your first one' + (importable ? ', or import the services already in your inventory' : '') + '.') + '</div>') + '</div>' +
+    (canEdit ? '<div class="svcc-box"><h4>Automatic stock deduction</h4><label class="svcc-chk"><input type="checkbox" data-f="auto"' + (auto ? ' checked' : '') + '>Deduct stock automatically when work starts, for services marked "auto-deduct"</label><div class="svcc-sub">Off by default. Staff can still record and reverse usage on each job in the Materials tab.</div></div>' : '') + '</div>';
+  var scrollTop = el.scrollTop; el.innerHTML = h; el.scrollTop = scrollTop;
+  if (!el.__svccBound) {
+    el.__svccBound = true;
+    el.addEventListener('click', function (ev) {
+      var t = ev.target; if (!t || !t.closest) return;
+      var card = t.closest('.svcc-card');
+      if (card && el.contains(card)) { svcCatOpenEditor(card.getAttribute('data-id')); return; }
+      var b = t.closest('[data-act]'); if (!b || !el.contains(b)) return;
+      var act = b.getAttribute('data-act');
+      if (act === 'add') svcCatOpenEditor(null);
+      else if (act === 'import') {
+        b.disabled = true;
+        var r = svcImportFromInventory();
+        svcCatToast(r.ok ? (r.imported.length ? 'Imported ' + r.imported.length + ' service' + (r.imported.length === 1 ? '' : 's') + ' from inventory.' : 'Nothing new to import.') : 'Could not import.', !r.ok);
+        svcCatRefreshPage();
+      } else if (act === 'seed') {
+        b.disabled = true;
+        var s = svcSeedCatalog(svcCatBizType(), { force: true });
+        svcCatToast(s.ok ? 'Added ' + s.added + ' starter service' + (s.added === 1 ? '' : 's') + '.' : 'Could not add starter services.', !s.ok);
+        svcCatRefreshPage();
+      }
+    });
+    el.addEventListener('input', function (ev) { var t = ev.target; if (t && t.matches && t.matches('[data-f="q"]')) { ui.q = t.value; svcCatFilterList(el); } });
+    el.addEventListener('change', function (ev) {
+      var t = ev.target; if (!t || !t.matches) return;
+      if (t.matches('[data-f="cat"]')) { ui.cat = t.value; svcCatRefreshPage(); }
+      else if (t.matches('[data-f="scope"]')) { ui.scope = t.value; svcCatRefreshPage(); }
+      else if (t.matches('[data-f="archived"]')) { ui.archived = !!t.checked; svcCatRefreshPage(); }
+      else if (t.matches('[data-f="auto"]')) {
+        var r = typeof svcConfigPatch === 'function' ? svcConfigPatch('cfg-business', { autoConsume: !!t.checked }, { what: 'auto-deduct stock ' + (t.checked ? 'on' : 'off') }) : { ok: false };
+        svcCatToast(r && r.ok ? (t.checked ? 'Automatic deduction is on.' : 'Automatic deduction is off.') : 'Could not save that setting.', !(r && r.ok));
+        if (!(r && r.ok)) t.checked = !t.checked;
+      }
+    });
+  }
+  return true;
+}
+function svcCatFilterList(el) {                               /* typing in the search box only repaints the list, so the keyboard stays open */
+  var ui = SVC_CAT_UI, type = svcCatBizType(), list = svcCatalogList({ type: ui.scope === 'all' ? '' : type, q: ui.q, category: ui.cat, includeInactive: ui.archived });
+  var box = el.querySelector('[data-list]'); if (!box) return;
+  box.innerHTML = list.length ? list.map(svcCatCardHtml).join('') : '<div class="svcc-empty">No services match.</div>';
+}
+
+/* registration (registries only; every call guarded because blocks load in parallel) */
+try { if (typeof svcSettingsRegister === 'function') svcSettingsRegister('catalog', { label: 'Service Catalog', order: 20, render: svcCatalogRenderPage }); } catch (e) { /* registry not ready */ }
+try { if (typeof svcRegisterWidget === 'function') svcRegisterWidget('services', SVC_CAT_WIDGET, { priority: 10 }); } catch (e2) { /* form not ready */ }
+</script>

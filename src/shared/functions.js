@@ -2866,17 +2866,17 @@ function restockReturnedItem(product, qty, sel, reason) {
                 const variant = product.variants.find(v => v && v.id === sel.variantId);
                 if (variant) {
                     const piece = sel.variantSaleMode === 'piece';
-                    if (piece) variant.pieceQty = (variant.pieceQty || 0) + qty; else variant.qty = (variant.qty || 0) + qty;
+                    if (piece) variant.pieceQty = stockRound3((variant.pieceQty || 0) + qty); else variant.qty = stockRound3((variant.qty || 0) + qty);
                     product.qty = product.variants.reduce((sum, v) => sum + (Number(v && v.qty) || 0), 0);
                     logStockMovement(product.code, `${product.name} (${variant.name})`, qty, reason, piece ? 'pieceQty' : 'qty');
                     return saved();
                 }
             }
             if (product.dualUnit && sel.saleMode === 'piece') {
-                product.pieceQty = (product.pieceQty || 0) + qty;
+                product.pieceQty = stockRound3((product.pieceQty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, reason, 'pieceQty');
             } else {
-                product.qty = (product.qty || 0) + qty;
+                product.qty = stockRound3((product.qty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, reason, 'qty');
             }
             return saved();
@@ -7184,10 +7184,10 @@ function restockRowLineTotal(row) {
 //@fn restoreStockForSaleUnit
 function restoreStockForSaleUnit(product, qty, saleMode) {
             if (product.dualUnit && saleMode === 'piece') {
-                product.pieceQty = (product.pieceQty || 0) + qty;
+                product.pieceQty = stockRound3((product.pieceQty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, 'Sale void', 'pieceQty');
             } else {
-                product.qty = (product.qty || 0) + qty;
+                product.qty = stockRound3((product.qty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, 'Sale void', 'qty');
             }
         }
@@ -7497,7 +7497,7 @@ function saveContract() {
             // Deduct stock now — it's physically leaving the shop with the contract holder.
             lineItems.forEach(li => {
                 const product = inventory.find(p => p.code === li.code);
-                if (product) product.qty = Math.max(0, (product.qty || 0) - li.qty);
+                if (product) product.qty = stockRound3(Math.max(0, (product.qty || 0) - li.qty));
             });
             safeSetItem('pos_inventory', JSON.stringify(inventory));
 
@@ -8792,7 +8792,7 @@ async function hydrateOlderHistory(hotFrom) {
             //  * only the last `pos_hydrate_days` (default 180);
             //  * stops as soon as this device is more than half full — it must never be the thing that fills a device;
             //  * only ever ADDS records this device doesn't have; anything it can't fetch is simply tried again next session.
-            const FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'];
+            const FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog', 'svcJobs', 'svcAppointments'];
             try {
                 if (window.__hydrating || !hotFrom) return false;
                 if (localStorage.getItem('pos_hydrated_v1') === '1' || localStorage.getItem('aqua_hydrated_v1') === '1') return false;
@@ -8806,6 +8806,8 @@ async function hydrateOlderHistory(hotFrom) {
                     attendanceLog: typeof attendanceLog === 'undefined' ? null : attendanceLog,
                     adminActivityLog: typeof adminActivityLog === 'undefined' ? null : adminActivityLog,
                     dispatchLog: typeof dispatchLog === 'undefined' ? null : dispatchLog,
+                    svcJobs: typeof svcJobs === 'undefined' ? null : svcJobs,                          // Services engine (null in the other apps)
+                    svcAppointments: typeof svcAppointments === 'undefined' ? null : svcAppointments,
                 };
                 window.__hydrating = true;
                 const days = Number(localStorage.getItem('pos_hydrate_days')) || 180;
@@ -8862,7 +8864,7 @@ function slimPayloadForPush(payload) {
             //    point, and identical to the old behaviour.
             //  * If any record in a log has no id, that whole log is sent as before (the server can't match it).
             //  * Nothing is marked as acknowledged until the server says OK (call commit() then); a failed push resends.
-            const LOG_FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'];
+            const LOG_FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog', 'svcJobs', 'svcAppointments'];   // svc*: Services engine (absent from other apps' payloads)
             stampLocalContext(payload);
             window.__pushAck = window.__pushAck || {};
             const body = { ...payload };
@@ -8875,7 +8877,7 @@ function slimPayloadForPush(payload) {
             // first), the next batch straight after the last one is accepted.
             let more = false;
             const scale = window.__pushBatchScale || 1;
-            const CAP = { salesLog: 150, stockMovementLog: 400, returns: 150, expenses: 150, tradeCredits: 150, attendanceLog: 300, adminActivityLog: 300, dispatchLog: 150 };
+            const CAP = { salesLog: 150, stockMovementLog: 400, returns: 150, expenses: 150, tradeCredits: 150, attendanceLog: 300, adminActivityLog: 300, dispatchLog: 150, svcJobs: 120, svcAppointments: 150 };
             const known = typeof window.salesJournalKnownOnServer === 'function' ? window.salesJournalKnownOnServer : null;
             LOG_FIELDS.forEach((field) => {
                 const arr = payload[field];
@@ -8914,7 +8916,8 @@ function slimPayloadForPush(payload) {
                 'bills', 'debts', 'recurringExpenses', 'contracts', 'staffShifts', 'attendanceRoster', 'sites', 'tanks', 'stockRequests',
                 'salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'crossBranchSalesFacilitated', 'savedBarcodes', 'attendanceLog',
                 'adminActivityLog', 'billNotifications', 'pendingExchanges', 'dispatchLog', 'purchaseOrders', 'patientCharges', 'tabs', 'cashShifts', 'approvalRequests', 'radiologyOrders', 'theatreCases', 'institutions', 'institutionCharges', 'resources', 'resourceSessions', 'facilityBookings', 'serviceRequests', 'customOrders', 'kegs', 'inventoryCategories',
-                'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes', 'rawMaterials']);
+                'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes', 'rawMaterials',
+                'svcJobs', 'svcAssets', 'svcCatalog', 'svcAppointments', 'svcConfig']);
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
@@ -11135,6 +11138,7 @@ function updateLoyaltyTier(id, field, value) {
 
 //@fn updateMobileCartFab
 function updateMobileCartFab() {
+    try { if (typeof hospSyncCartBarOffset === 'function') hospSyncCartBarOffset(); } catch (e) { /* cosmetic */ }
             const btn = document.getElementById('mobile-cart-fab');
             if (!btn) return;
             const salesTab = document.getElementById('sales-tab');
@@ -13065,7 +13069,7 @@ function poApplyArrivedLine(order, item, qty) {
                 // An app whose stock model needs more than `qty +=` (e.g. Pharmacy's batches) defines
                 // poCustomStockIn locally and returns true once it has added the stock itself.
                 const handled = (typeof poCustomStockIn === 'function') && poCustomStockIn(product, qty);
-                if (!handled) product.qty = (Number(product.qty) || 0) + qty;
+                if (!handled) product.qty = stockRound3((Number(product.qty) || 0) + qty);
                 product.wholesalePrice = cost;
                 if (retail > 0) product.price = retail;
                 if (wholesale > 0) product.wholesaleSellingPrice = wholesale;
@@ -14964,6 +14968,64 @@ function parsePastSaleQty(raw) {
             return { qty: q };
         }
 
+//@fn stockRound3
+// zip 162: stock quantities are kept to 3 decimals (0.001 is the smallest sellable quantity, see parsePastSaleQty) so a fractional sale never leaves float
+// dust (9.499999999, 7.6000000000000005). Whole numbers are returned unchanged. A genuinely finer figure (a recipe's material, kept to 6 decimals on purpose
+// by the production BOM code) is not truncated: it is only cleaned to 6 decimals. Not a number -> 0.
+function stockRound3(n) {
+            const x = Number(n);
+            if (!isFinite(x)) return 0;
+            const r3 = Math.round(x * 1000) / 1000;
+            if (Math.abs(x - r3) < 1e-6) return r3;
+            return Math.round(x * 1e6) / 1e6;
+        }
+
+//@fn gridStockInfo
+// zip 162: what a photo card / menu card says about stock. Returns null (show nothing) or { n, text, level }:
+// level 'ok' | 'low' (n <= LOW_STOCK_THRESHOLD, amber) | 'out' (n <= 0). n is never negative. Uses the app's own availability logic
+// (getAvailableStock: a plain item's qty, a dual-unit item's boxes, a produced item / Set / recipe service = what the materials on hand can make)
+// and the app's quantity formatter; an item whose stock is not tracked (a plain service, an always-sellable dish without a recipe) shows nothing.
+// A Hotel dish (always sellable) with a recipe gets an informational figure: soft = true, so it is never reported as Out.
+function gridStockInfo(p) {
+            if (!p) return null;
+            let n;
+            let soft = false;
+            if (p.variantId) n = Number(p.qty) || 0;
+            else {
+                n = (typeof getAvailableStock === 'function') ? getAvailableStock(p) : p.qty;
+                if (!isFinite(n) && n !== -Infinity) {
+                    if (p.type === 'service' && Array.isArray(p.recipe) && p.recipe.length && typeof getServiceAvailableQty === 'function') { n = getServiceAvailableQty(p); soft = true; }
+                    if (!isFinite(n)) return null;
+                }
+            }
+            n = Number(n);
+            if (isNaN(n)) return null;
+            n = Math.max(0, stockRound3(n));
+            const unit = p.unit && p.unit !== 'pcs' && !p.dualUnit ? ' ' + unitLabel(p.unit) : (p.dualUnit && p.unit && p.unit !== 'pcs' ? ' ' + unitLabel(p.unit) : '');
+            const shown = typeof formatQtyDisplay === 'function' ? formatQtyDisplay(n, p.unit) : String(n);
+            const low = typeof LOW_STOCK_THRESHOLD !== 'undefined' ? LOW_STOCK_THRESHOLD : 3;
+            const level = (n <= 0 && !soft) ? 'out' : (n <= low ? 'low' : 'ok');
+            return { n, text: level === 'out' ? 'Out' : shown + unit + ' left', level, soft };
+        }
+
+//@fn gridStockPillHtml
+// zip 162: the small "12 left" / "3.5 kg left" pill for a photo card (empty when the owner switched "Show quantity left on photo cards" off, when stock
+// is not tracked for the item, or when it is out - the card already says "Out of stock").
+function gridStockPillHtml(p, inline) {
+            if (typeof showItemQtyLeft !== 'undefined' && !showItemQtyLeft) return '';
+            const i = gridStockInfo(p);
+            if (!i || i.level === 'out') return '';
+            return `<span class="igc-stock${inline ? ' igc-stock-inline' : ''}${i.level === 'low' ? ' igc-stock-low' : ''}">${escapeHtml(i.text)}</span>`;
+        }
+
+//@fn setShowItemQtyLeft
+function setShowItemQtyLeft(checked) {
+            showItemQtyLeft = !!checked;
+            safeSetItem('pos_show_item_qty', checked ? 'true' : 'false');
+            if (typeof renderItemImageGrid === 'function') renderItemImageGrid(document.getElementById('sales-search') ? document.getElementById('sales-search').value : '');
+            if (typeof renderSvcMenu === 'function' && document.getElementById('svc-menu')) { try { renderSvcMenu(); } catch (e) { /* not on screen */ } }
+        }
+
 //@fn pastSaleTakeStock
 // zip 161: takes `qty` (already rounded to 3 decimals) off an item's own stock for a past sale — floored at 0 like a normal sale, rounded to
 // 3 decimals so 10 - 0.5 is exactly 9.5 (never 9.499999) — and logs the movement so the server ledger rebuilds the same figure.
@@ -14973,6 +15035,36 @@ function pastSaleTakeStock(product, qty) {
             const delta = Math.round((product.qty - before) * 1000) / 1000;
             if (delta && typeof logStockMovement === 'function') logStockMovement(product.code, product.name, delta, 'Sale (recorded late)', 'qty');
             return delta;
+        }
+
+//@fn pastSaleConsume
+// zip 162: takes the stock a Record-a-Past-Sale line uses, exactly as a normal checkout would for that kind of item, and returns the extra fields the sale
+// line must carry. A plain item: its own qty (pastSaleTakeStock, unchanged). A service / dish / recipe item / combo: the app's OWN checkout deduction
+// (the same function the Sales Counter runs: recipe ingredients or combo components come off, a Hotel dish is written to the kitchen ledger on the date
+// of the sale, a bar pour or keg serving is drawn) and componentsUsed = what was really taken (by code), so the sale shows its materials.
+// A service with nothing to consume (no recipe, no combo) just records the sale (unlimited).
+function pastSaleConsume(product, qty, timestamp) {
+            if (!product || product.type !== 'service') { pastSaleTakeStock(product, qty); return {}; }
+            const names = ['deductEntriesForHotelBill', 'deductEntriesForBillRoot', 'deductEntriesForBillHospital', 'deductEntriesForBillPharmacy', 'deductEntriesForBillProduction', 'deductEntriesForBillServices'];
+            const fnName = names.find((n) => typeof window[n] === 'function');
+            const extra = { isService: true, wholesalePrice: typeof getServiceUnitCost === 'function' ? getServiceUnitCost(product) : (product.wholesalePrice || 0) };
+            if (!fnName) return extra;
+            const before = new Map();
+            inventory.forEach((x) => { if (x && x.code != null) before.set(x.code, Number(x.qty) || 0); });
+            const line = { code: product.code, cartKey: product.code, name: product.name, qty, isService: true, saleMode: 'box', unit: product.unit || 'pcs' };
+            if (typeof hospServingOf === 'function') { const sv = hospServingOf(product); if (sv) line.serving = { kind: sv.kind, label: sv.label, ml: sv.ml }; }
+            const at = Date.parse(timestamp);
+            window[fnName]([line], isFinite(at) ? at : undefined);
+            const used = [];
+            inventory.forEach((x) => {
+                if (!x || x.code === product.code || !before.has(x.code)) return;
+                const d = Math.round((before.get(x.code) - (Number(x.qty) || 0)) * 1e6) / 1e6;
+                if (d > 0) used.push({ code: x.code, name: x.name, qty: d, unit: x.unit });
+            });
+            if (used.length) extra.componentsUsed = used;
+            if (line.serving) extra.serving = { ...line.serving, consumedMl: line.serving.ml * qty };
+            if (line.kegDraw) extra.kegDraw = line.kegDraw;
+            return extra;
         }
 
 //@fn pastSaleStore
@@ -16198,6 +16290,11 @@ function reportsGenerate(kind) {
             // because this shared function mentions their kind keys.
             if (typeof reportBuildXReport === 'function') builders.xreport = reportBuildXReport;
             if (typeof reportBuildZReport === 'function') builders.zreport = reportBuildZReport;
+            // Services engine hook (inert elsewhere): extra report kinds registered by an app block; they never replace a built-in kind.
+            try {
+                const extra = window.reportExtraBuilders;
+                if (extra && typeof extra === 'object') Object.keys(extra).forEach((k) => { if (typeof extra[k] === 'function' && !Object.prototype.hasOwnProperty.call(builders, k)) builders[k] = extra[k]; });
+            } catch (e) { /* optional */ }
             const fn = builders[kind];
             if (!fn) return;
             window.__reportKind = kind;
@@ -16207,7 +16304,7 @@ function reportsGenerate(kind) {
             catch (e) { out.innerHTML = '<p style="color:#c0392b;">This report could not be built: ' + escapeHtml(e.message || String(e)) + '</p>'; return; }
             window.__reportCsv = rep.csv || [];
             window.__reportTitle = rep.title;
-            const noRange = kind === 'bills' || kind === 'xreport' || kind === 'zreport';
+            const noRange = kind === 'bills' || kind === 'xreport' || kind === 'zreport' || (Array.isArray(window.reportNoRange) && window.reportNoRange.indexOf(kind) !== -1);
             out.innerHTML = `<div class="report-head" style="margin-bottom:8px;"><h3 style="margin:0;">${escapeHtml(rep.title)}</h3><div style="color:#7f8c8d; font-size:13px;">${escapeHtml(typeof businessName !== 'undefined' ? businessName : '')}${noRange ? ' — as at today' : ' — ' + escapeHtml(range.text)} · generated ${escapeHtml(new Date().toLocaleString('en-GB'))}</div>${fresh}</div>${rep.html}`;
             reportRefreshAfterSync(() => { if (window.__reportKind === kind) reportsGenerate(kind); });
             if (kind === 'xreport' || kind === 'zreport') { const b = todayBounds(); serverDayCheckInto(out, b.from, b.to, ''); }

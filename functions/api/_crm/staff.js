@@ -1,7 +1,7 @@
 // functions/api/_crm/staff.js — staff lifecycle: invite / edit / suspend / restore / deactivate / remove (history kept) / reassign / roles / permissions /
 // activity + performance (NOT a route).
 import { E, json, batcher, all, first, st, now, newId, text, email as normEmail, phoneNorm, auditSt, oneOf, arr, jparse, changes, optRange, dayStart, nairobiDay, DAY, round2, phoneDisplay } from './core.js';
-import { INVITE_TTL, createInvitation, linkFor, publicUser, rolePerms, userPerms } from './auth.js';
+import { INVITE_TTL, createInvitation, linkFor, publicUser, rolePerms, rolesFromRows, userPerms } from './auth.js';
 import { PERM_KEYS } from './schema.js';
 import { assignLead, activeUser, LEAD_SELECT } from './leads.js';
 import { salesScope } from './scope.js';
@@ -19,6 +19,7 @@ const overridesOf = async (db, id) => {
   const rows = await all(db, `SELECT perm, effect FROM crm_user_perms WHERE user_id = ? ORDER BY perm`, id);
   return { grant: rows.filter((r) => r.effect === 'grant').map((r) => r.perm), deny: rows.filter((r) => r.effect === 'deny').map((r) => r.perm) };
 };
+const overridesFrom = (rows) => ({ grant: rows.filter((r) => r.effect === 'grant').map((r) => r.perm), deny: rows.filter((r) => r.effect === 'deny').map((r) => r.perm) });
 const userDetail = async (db, u) => ({ ...publicUser(u), perms: [...await userPerms(db, u)].sort(), overrides: await overridesOf(db, u.id) });
 
 export async function listStaff(ctx) {
@@ -73,13 +74,14 @@ function normalizeOverrides(p, rolePermSet, actor, strict) {
   return { grant: grant.filter((k) => !rolePermSet.has(k)), deny: deny.filter((k) => rolePermSet.has(k)) };
 }
 
-async function stats(ctx, u, q) {
+// zip 162: `statsQueue` only QUEUES the figures on a batcher the caller runs (so a screen that also needs the user row / roles / overrides gets them all in ONE trip);
+// it returns the function that turns the settled answers into the figures. `stats` (used alone elsewhere) is the same thing with its own batch.
+function statsQueue(ctx, u, q, bx) {
   const { db, actor } = ctx;
   const r = optRange(q.get('from'), q.get('to'));
   const tr = (col) => ({ sql: `${r.from != null ? ` AND ${col} >= ?` : ''}${r.to != null ? ` AND ${col} < ?` : ''}`, args: [...(r.from != null ? [r.from] : []), ...(r.to != null ? [r.to] : [])] });
   const done = `l.status_key IN (SELECT key FROM crm_statuses WHERE is_won = 1 OR is_lost = 1)`;
   const t = now();
-  const bx = batcher(db);                                           // zip 161: the six figures in ONE round trip (before: six)
   const ownedLeads_ = bx.first( `SELECT COUNT(*) total, SUM(CASE WHEN ${done} THEN 0 ELSE 1 END) open, SUM(CASE WHEN l.status_key IN (SELECT key FROM crm_statuses WHERE is_lost = 1) THEN 1 ELSE 0 END) lost FROM crm_leads l WHERE l.owner_id = ? AND l.deleted_at IS NULL`, u.id);
   const ca = tr('at'); const contacts_ = bx.first( `SELECT COUNT(*) n, MAX(at) last FROM crm_contact_attempts WHERE user_id = ?${ca.sql}`, u.id, ...ca.args);
   const resp_ = bx.first( `SELECT AVG(first_contact_at - COALESCE(assigned_at, created_at)) avg_ms, COUNT(*) n FROM crm_leads WHERE owner_id = ? AND deleted_at IS NULL AND first_contact_at IS NOT NULL AND first_contact_at >= COALESCE(assigned_at, created_at)`, u.id);
@@ -88,7 +90,7 @@ async function stats(ctx, u, q) {
   const last_ = bx.first( `SELECT MAX(created_at) last FROM crm_activities WHERE user_id = ?`, u.id);
   const sc = salesScope(actor, 's'), s2 = tr('s.sold_at');
   const sales_ = sc ? bx.first(`SELECT COUNT(*) n, COALESCE(SUM(total),0) rev, COALESCE(SUM(amount_paid),0) paid FROM crm_sales s WHERE s.closed_by = ? AND ${sc.sql}${s2.sql}`, u.id, ...sc.args, ...s2.args) : null;
-  await bx.run();
+  return async () => {
   const [ownedLeads, contacts, resp, fu, mt, last] = await Promise.all([ownedLeads_, contacts_, resp_, fu_, mt_, last_]);
   const out = {
     leadsOwned: ownedLeads.total || 0, openLeads: ownedLeads.open || 0, lostLeads: ownedLeads.lost || 0,
@@ -101,14 +103,34 @@ async function stats(ctx, u, q) {
     const s = await sales_;
     out.dealsClosed = s.n; out.revenue = round2(s.rev); out.collected = round2(s.paid);
   }
-  return out;
+    return out;
+  };
 }
+async function stats(ctx, u, q) {
+  const bx = batcher(ctx.db);                                       // zip 161: the six figures in ONE round trip (before: six)
+  const fin = statsQueue(ctx, u, q, bx);
+  await bx.run();
+  return fin();
+}
+
 export async function getStaff(ctx) {
   const { db, actor } = ctx;
-  if (ctx.params.id !== actor.id) actor.require('staff.view');
-  const u = await target(ctx, ctx.params.id, { allowOwner: true });
-  const [user, st_] = await Promise.all([userDetail(db, u), stats(ctx, u, ctx.query)]);      // zip 161: side by side, not one after the other
-  return { user, stats: st_ };
+  const id = ctx.params.id;
+  if (id !== actor.id) actor.require('staff.view');
+  // zip 162: the user row, the roles table, this user's permission overrides and the six figures travel in ONE batch (1 trip; with the auth prelude that is 2 for the
+  // whole request). Before: 6. Nothing is cached - a permission change is visible on the very next request.
+  const bx = batcher(db);
+  const user_ = typeof id === 'string' ? bx.first(`SELECT * FROM crm_users WHERE id = ?`, id) : Promise.resolve(null);
+  const roles_ = bx.all(`SELECT key, perms FROM crm_roles`);
+  const ov_ = bx.all(`SELECT perm, effect FROM crm_user_perms WHERE user_id = ? ORDER BY perm`, typeof id === 'string' ? id : '');
+  const fin = statsQueue(ctx, { id: typeof id === 'string' ? id : '' }, ctx.query, bx);
+  await bx.run();
+  const u = await user_;
+  if (!u) throw E.notFound('Staff member not found', 'user_not_found');
+  const ov = await ov_;
+  const perms = await userPerms(db, u, rolesFromRows(await roles_), ov);
+  const user = { ...publicUser(u), perms: [...perms].sort(), overrides: overridesFrom(ov) };
+  return { user, stats: await fin() };
 }
 
 export async function patchStaff(ctx) {

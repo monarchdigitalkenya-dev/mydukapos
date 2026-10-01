@@ -66,3 +66,12 @@ Details: `CHANGES_ZIP_160_RELIABILITY.md`, `CHANGES_ZIP_160_BROWSER.md` (screens
 5. Rebuild the APK/EXE (GitHub Actions) for the native apps.
 Optional (search speed-up, not required): `migrations-optional/0005_crm_search.sql` adds full-text search — see `CRM_PERF_ZIP_161.md` before applying (it stops `wrangler d1 export` from working).
 Details: `CHANGES_ZIP_161_BUTTONS.md`, `CHANGES_ZIP_161_PASTSALE_HOTEL.md`, `CRM_PERF_ZIP_161.md`.
+
+## Zip 162 — hotel Sales Counter, Services engine, leftovers — Windows cmd, in `C:\dev\mydukapos`
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy` (no `deploy:router`; no new migration).
+4. Rebuild the APK/EXE (GitHub Actions) for the native apps.
+5. Hotel: ⚙️ Settings → Service charge & orders → "Payment methods to show" chooses which of Cash / M-Pesa / Split / Bill / Tab appear (all on by default).
+6. Services: existing shops stay in classic mode until the owner taps "Choose your business type"; nothing is migrated or rewritten.
+Details: `CHANGES_ZIP_162.md`, `SERVICES_ARCHITECTURE.md`.

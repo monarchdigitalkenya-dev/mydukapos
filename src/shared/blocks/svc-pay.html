@@ -1,0 +1,946 @@
+<!-- SVC PAY ---------------------------------------------------------------------------------------
+     Services engine block "svc-pay". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B3-P. Nobody else edits this file.
+     STATE: IMPLEMENTED (B3-P): one style element and one script element below this comment. Never write a literal script open tag inside this comment.
+     KIND: touches globals. Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcEnsureBill, svcRecordPayment, svcCheckout, svcRefund, svcOutstanding, svcPaySummary, svcPayReceipt, svcPayPrintReceipt, svcPayMethods, payments drawer tab ("payments"), events payment:recorded / job:settled.
+     MONEY MODEL (SERVICES_ARCHITECTURE.md 6.3): a job has exactly ONE bill in bills[] (id "svcb-<jobId>", tagged svcJobId / svcJobNo). Bill lines mirror svcTotals(job).lines; later charges are APPENDED as bill lines
+       (and removals as negative "Revision" lines), paid history is never edited. Every payment = job.payments[] row + bill.paymentHistory[] entry (same id) + ONE salesLog line tagged billId / svcJobId / svcPayId
+       (the classic "Bill Payment - This Installment" convention: revenue is counted when it is PAID, voiding the bill voids its payments). A refund is an append-only NEGATIVE row in all three places.
+     SPEC: SERVICES_ARCHITECTURE.md 6.3, 8.2 B3-P. Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<style id="svc-pay-css">
+/* svc-pay (svp-*): colours only from the app tokens (dark-mode safe); touch targets >= 44px; inputs 16px so phones do not zoom. */
+.svp { color: var(--dark); font-size: 15px; line-height: 1.4; }
+.svp * { box-sizing: border-box; }
+.svp-tot { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 10px; }
+.svp-tile { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 10px 12px; min-width: 0; }
+.svp-tile span { display: block; font-size: 12px; opacity: .7; text-transform: uppercase; letter-spacing: .03em; }
+.svp-tile b { display: block; font-size: 18px; word-break: break-word; }
+.svp-tile.is-bal.due b { color: var(--danger); }
+.svp-tile.is-bal.ok b { color: var(--success); }
+.svp-stat { display: flex; flex-wrap: wrap; align-items: center; margin: 0 0 10px; font-size: 13px; }
+.svp-pill { display: inline-block; padding: 3px 10px; margin: 2px 8px 2px 0; border-radius: 12px; font-size: 12px; font-weight: 700; background: var(--bg-surface-alt); color: var(--dark); border: 1px solid var(--border-color); }
+.svp-pill.paid { background: var(--tint-success-bg); color: var(--tint-success-text); border-color: transparent; }
+.svp-pill.part { background: var(--tint-warning-bg); color: var(--tint-warning-text); border-color: transparent; }
+.svp-pill.due { background: var(--tint-danger-bg); color: var(--danger); border-color: transparent; }
+.svp-acts { display: flex; flex-wrap: wrap; margin: 0 0 12px; }
+.svp-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 46px; padding: 0 16px; margin: 0 8px 8px 0; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); font-size: 15px; font-weight: 600; cursor: pointer; width: auto; }
+.svp-btn:active { transform: translateY(1px); }
+.svp-btn:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.svp-btn[disabled] { opacity: .55; cursor: not-allowed; }
+.svp-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.svp-btn.good { background: var(--success); border-color: var(--success); color: #fff; }
+.svp-btn.sm { min-height: 44px; padding: 0 12px; font-size: 14px; }
+.svp-btn.danger { color: var(--danger); }
+.svp-sheet { background: var(--bg-surface); border: 2px solid var(--accent); border-radius: 12px; padding: 12px; margin: 0 0 14px; }
+.svp-sheet h4 { margin: 0 0 8px; font-size: 16px; }
+.svp-sheet label { display: block; margin: 8px 0 0; font-size: 13px; font-weight: 600; }
+.svp-sheet input[type="text"], .svp-sheet input[type="tel"], .svp-sheet input[type="number"], .svp-sheet input:not([type]) { display: block; width: 100%; min-height: 48px; margin: 4px 0 0; padding: 8px 12px; font-size: 16px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-page); color: var(--dark); }
+.svp-sheet input:focus { outline: 2px solid var(--accent); }
+.svp-sheet .svp-chk { display: flex; align-items: center; min-height: 44px; font-weight: 400; }
+.svp-sheet .svp-chk input { width: 22px; height: 22px; margin: 0 10px 0 0; }
+.svp-methods { display: flex; flex-wrap: wrap; margin: 8px 0 0; }
+.svp-meth { flex: 1 1 calc(50% - 8px); min-width: 120px; min-height: 48px; margin: 0 8px 8px 0; padding: 0 10px; border: 2px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); color: var(--dark); font-size: 15px; font-weight: 600; cursor: pointer; width: auto; }
+.svp-meth[aria-pressed="true"] { border-color: var(--accent); background: var(--tint-info-bg); }
+.svp-chips { display: flex; flex-wrap: wrap; margin: 6px 0 0; }
+.svp-chip { min-height: 44px; margin: 0 8px 6px 0; padding: 0 14px; border: 1px solid var(--border-color); border-radius: 22px; background: var(--bg-surface-alt); color: var(--dark); font-size: 14px; cursor: pointer; width: auto; }
+.svp-err { margin: 8px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--tint-danger-bg); color: var(--danger); font-size: 14px; }
+.svp-err:empty { display: none; }
+.svp-info { margin: 8px 0 0; font-size: 14px; }
+.svp-row { display: flex; margin: 12px 0 0; }
+.svp-row .svp-btn { flex: 1 1 0; margin-bottom: 0; }
+.svp-row .svp-btn:last-child { margin-right: 0; }
+.svp-h { margin: 14px 0 6px; font-size: 14px; text-transform: uppercase; letter-spacing: .03em; opacity: .75; }
+.svp-list { list-style: none; margin: 0; padding: 0; }
+.svp-item { background: var(--bg-surface); border: 1px solid var(--border-color); border-left: 5px solid var(--success); border-radius: 12px; padding: 10px 12px; margin: 0 0 8px; }
+.svp-item.neg { border-left-color: var(--danger); }
+.svp-item .r1 { display: flex; justify-content: space-between; align-items: baseline; }
+.svp-item .r1 b { font-size: 17px; }
+.svp-item .r2, .svp-item .r3 { font-size: 13px; opacity: .85; margin-top: 2px; word-break: break-word; }
+.svp-item .r4 { display: flex; flex-wrap: wrap; margin-top: 4px; }
+.svp-empty { text-align: center; padding: 18px 12px; border: 2px dashed var(--border-color); border-radius: 12px; opacity: .85; }
+.svp-note { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: var(--tint-info-bg); font-size: 14px; }
+.svp-note.warn { background: var(--tint-warning-bg); color: var(--tint-warning-text); }
+@media (min-width: 560px) { .svp-tot { grid-template-columns: repeat(4, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .svp-btn:active { transform: none; } }
+</style>
+<script>
+/* ===== svc-pay: constants ===== */
+var SVC_PAY_KINDS = ['deposit', 'partial', 'final', 'refund'];
+var SVC_PAY_BASE_METHODS = [
+  { key: 'cash', label: 'Cash', icon: '💵', ref: false },
+  { key: 'mpesa', label: 'M-Pesa', icon: '📲', ref: true },
+  { key: 'card', label: 'Card', icon: '💳', ref: true },
+  { key: 'bank', label: 'Bank', icon: '🏦', ref: true }
+];
+var SVC_PAY_DUP_WINDOW_MS = 8000;     /* the same payment typed again within this window (no idempotency key given) is a double tap */
+var SVC_PAY_BUSY = 0;                 /* >0 while this block itself writes: its own job commits must not trigger a second bill sync */
+
+/* ===== small helpers ===== */
+function svcPayEsc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function svcPayNowMs() { try { if (typeof svcNow === 'function') return svcNow(); } catch (e) { /* use the clock */ } return Date.now(); }
+function svcPayIso(ms) { return new Date(ms).toISOString(); }
+function svcPayMoney(n) { try { if (typeof svcFormatMoney === 'function') return svcFormatMoney(n); } catch (e) { /* fall through */ } return 'KSh ' + (Math.round((Number(n) || 0) * 100) / 100); }
+function svcPayTol() { return typeof SVC_MONEY_TOL === 'number' ? SVC_MONEY_TOL : 0.005; }
+function svcPayCan(perm) { try { if (typeof svcCan === 'function') return !!svcCan(perm); } catch (e) { /* no permission layer: allow */ } return true; }
+function svcPayActor() { try { if (typeof svcActor === 'function') { var a = svcActor(); if (a && a.name) return a; } } catch (e) { /* fall through */ } return { id: 'owner', name: 'Owner' }; }
+function svcPayNewId(prefix) {
+  try { if (typeof svcStShortId === 'function') return svcStShortId(prefix); } catch (e) { /* fall through */ }
+  try { if (typeof svcId === 'function') return svcId(prefix); } catch (e2) { /* fall through */ }
+  return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function svcPaySaleId() { try { if (typeof genSaleId === 'function') return String(genSaleId()); } catch (e) { /* fall through */ } return svcPayNewId('s-'); }
+function svcPayList(which) {
+  try {
+    if (which === 'bills') return typeof bills !== 'undefined' && Array.isArray(bills) ? bills : null;
+    if (which === 'sales') return typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : null;
+  } catch (e) { /* TDZ or absent */ }
+  return null;
+}
+function svcPayKey(k) { try { if (typeof appStoreKey === 'function') return appStoreKey(k); } catch (e) { /* plain key */ } return k; }
+function svcPaySave(which) {
+  var arr = svcPayList(which); if (!arr) return false;
+  var key = svcPayKey(which === 'bills' ? 'pos_bills' : 'pos_sales_log');
+  try { var s = JSON.stringify(arr); if (typeof safeSetItem === 'function') safeSetItem(key, s); else localStorage.setItem(key, s); return true; } catch (e) { return false; }
+}
+function svcPayPush() { try { if (typeof queuePush === 'function') queuePush(); else if (typeof markLocalDirty === 'function') markLocalDirty(); } catch (e) { /* saved locally either way */ } }
+function svcPayCleanKey(k) { var s = String(k == null ? '' : k).trim(); return /^[A-Za-z0-9_:.\-]{3,60}$/.test(s) ? s : ''; }
+function svcPayServedBy() { try { if (typeof activeServerName === 'function') { var n = activeServerName(); if (n) return String(n); } } catch (e) { /* fall through */ } return svcPayActor().name; }
+
+/* ===== payment methods (the shop's enabled ones; M-Pesa = manual code always, STK prompt when the gateway exists) ===== */
+function svcPayMethods() {
+  var out = SVC_PAY_BASE_METHODS.slice(), cfg = null, allow;
+  try { if (typeof svcConfigGet === 'function') { var r = svcConfigGet('cfg-business'); cfg = r && (r.value && typeof r.value === 'object' ? r.value : r); } } catch (e) { cfg = null; }
+  if (cfg && Array.isArray(cfg.payMethods) && cfg.payMethods.length) { allow = {}; cfg.payMethods.forEach(function (k) { allow[String(k)] = 1; }); out = out.filter(function (m) { return allow[m.key]; }); }
+  if (cfg && Array.isArray(cfg.payMethodsExtra)) {
+    cfg.payMethodsExtra.forEach(function (x) {
+      if (!x || !x.label) return;
+      var k = 'x_' + (typeof svcSlug === 'function' ? svcSlug(x.key || x.label) : String(x.key || x.label).toLowerCase().replace(/[^a-z0-9]+/g, '_'));
+      if (!out.some(function (m) { return m.key === k; })) out.push({ key: k, label: String(x.label).slice(0, 24), icon: '🧾', ref: true, extra: true });
+    });
+  }
+  if (!out.length) out = [SVC_PAY_BASE_METHODS[0]];
+  return out;
+}
+function svcPayMethodDef(key) { var l = svcPayMethods(), i; for (i = 0; i < l.length; i++) { if (l[i].key === key) return l[i]; } return null; }
+function svcPayMethodLabel(key) {
+  var d = svcPayMethodDef(key); if (d) return d.label;
+  var b = SVC_PAY_BASE_METHODS, i; for (i = 0; i < b.length; i++) { if (b[i].key === key) return b[i].label; }
+  return String(key || '').replace(/^x_/, '').replace(/_/g, ' ');
+}
+function svcPayStkAvailable() { try { return typeof createMpesaStkFlow === 'function' && typeof MPESA_STK_URL !== 'undefined'; } catch (e) { return false; } }
+/* the classic sale-record money fields for one payment (same shape confirmBillSettleImpl writes): amount is negative for a refund */
+function svcPayMoneyFields(method, amount, ref, payer, tendered, change) {
+  var f = { paymentMethod: method, cashAmount: 0, mpesaAmount: 0, cardAmount: 0, amountTendered: 0, change: 0 };
+  if (method === 'cash') { f.cashAmount = amount; f.amountTendered = tendered != null ? tendered : amount; f.change = change || 0; }
+  else if (method === 'mpesa') { f.mpesaAmount = amount; if (ref) f.mpesaReceiptNumber = ref; if (payer) f.mpesaPayerName = payer; }
+  else { f.cardAmount = amount; if (ref) f.cardReference = ref; }
+  return f;
+}
+function svcPayCleanRef(raw, method) {
+  var s = String(raw == null ? '' : raw).trim();
+  if (method === 'mpesa') s = s.replace(/\s+/g, '').toUpperCase();
+  return s.slice(0, 40);
+}
+
+/* ===== job access ===== */
+function svcPayJob(id) { var j = null; try { if (typeof svcGetJob === 'function') j = svcGetJob(id); } catch (e) { j = null; } return j; }
+/* -> {job} or {err:{ok:false, code, why}} */
+function svcPayCheck(id) {
+  var j = svcPayJob(id);
+  if (!j) return { err: { ok: false, code: 'notfound', why: 'That job could not be found.' } };
+  if (j._legacy) return { err: { ok: false, code: 'legacy', action: 'promote', why: 'This is a classic job: take the payment in the classic counter, or upgrade it to a full job first.' } };
+  if (j._deleted) return { err: { ok: false, code: 'deleted', why: 'This job was deleted.' } };
+  return { job: j };
+}
+function svcPayCustomerName(job) { var n = job && job.customer && job.customer.name; return n ? String(n) : 'Walk-in customer'; }
+function svcPayLivePayments(job) { return (Array.isArray(job && job.payments) ? job.payments : []).filter(function (p) { return p && !p.voidedAt; }); }
+function svcPayFindPayment(job, id) { var l = Array.isArray(job && job.payments) ? job.payments : [], i; for (i = 0; i < l.length; i++) { if (l[i] && (l[i].id === id || l[i].billPayId === id)) return l[i]; } return null; }
+function svcPayRefunded(job, payId) { var s = 0; svcPayLivePayments(job).forEach(function (p) { if (p.kind === 'refund' && p.refId === payId) s += Math.abs(Number(p.amount) || 0); }); return svcRound2(s); }
+function svcPayRefundable(job, p) { return p && p.kind !== 'refund' && Number(p.amount) > 0 ? svcRound2(Number(p.amount) - svcPayRefunded(job, p.id)) : 0; }
+function svcPayDupResult(job, row) {
+  var t = svcTotals(job);
+  return { ok: true, duplicate: true, payment: row, job: job, totals: t, bill: svcPayFindBill(job) };
+}
+
+/* ===== bill lines: the bill mirrors svcTotals(job).lines ===== */
+function svcPayLineKey(l) { return [l.kind, l.name, svcRound2(l.qty), svcRound2(l.price)].join('|'); }
+/* what the bill must add up to: the job total; a deposit taken before the work is priced is carried as one "on account" line until the quote exists */
+function svcPayTarget(job, t) {
+  var tol = svcPayTol(), lines = [];
+  if (t.total <= tol && t.paid > tol) {
+    lines.push({ kind: 'advance', name: 'Deposit on account (work not yet priced)', qty: 1, price: t.paid });
+    lines[0].key = svcPayLineKey(lines[0]);
+    return { lines: lines, total: t.paid, advance: true };
+  }
+  (t.lines || []).forEach(function (l) { var x = { kind: l.kind, name: l.name || 'Service', qty: l.qty == null ? 1 : l.qty, price: l.price }; x.key = svcPayLineKey(x); lines.push(x); });
+  return { lines: lines, total: t.total, advance: false };
+}
+function svcPayItem(l) {
+  return { code: 'SVCJOB-' + String(l.kind).toUpperCase(), name: String(l.name).slice(0, 120), qty: l.qty, price: l.price, wholesalePrice: 0, unit: l.kind === 'part' ? 'pcs' : 'service', isService: true, vatCategory: 'A', svcLine: l.key };
+}
+function svcPayBillTotal(bill) { var s = 0; (Array.isArray(bill && bill.items) ? bill.items : []).forEach(function (l) { if (l) s += (Number(l.price) || 0) * (Number(l.qty) || 0); }); return svcRound2(s); }
+/* append-only: lines the job has and the bill lacks are appended; lines the bill has and the job no longer has are cancelled by a negative "Revision" line; earlier lines are never edited. -> {added, cancelled, adj} */
+function svcPayDiffLines(bill, target) {
+  var items = Array.isArray(bill.items) ? bill.items : (bill.items = []), have = {}, rep = {}, want = {}, wrep = {}, keys = {}, i, it, res = { added: 0, cancelled: 0, adj: false };
+  for (i = 0; i < items.length; i++) {
+    it = items[i]; if (!it) continue;
+    if (it.svcLine) { have[it.svcLine] = (have[it.svcLine] || 0) + 1; if (!rep[it.svcLine]) rep[it.svcLine] = it; }
+    if (it.svcCancels) have[it.svcCancels] = (have[it.svcCancels] || 0) - 1;
+  }
+  target.lines.forEach(function (l) { want[l.key] = (want[l.key] || 0) + 1; wrep[l.key] = l; });
+  Object.keys(have).forEach(function (k) { keys[k] = 1; });
+  Object.keys(want).forEach(function (k) { keys[k] = 1; });
+  Object.keys(keys).forEach(function (k) {
+    var d = (want[k] || 0) - (have[k] || 0), base;
+    while (d > 0) { items.push(svcPayItem(wrep[k])); res.added++; d--; }
+    while (d < 0) {
+      base = rep[k]; if (!base) break;
+      items.push({ code: base.code, name: 'Revision — removed: ' + String(base.name).slice(0, 100), qty: base.qty, price: -(Number(base.price) || 0), wholesalePrice: 0, unit: base.unit, isService: true, vatCategory: 'A', svcCancels: k });
+      res.cancelled++; d++;
+    }
+  });
+  var diff = svcRound2(target.total - svcPayBillTotal(bill));
+  if (Math.abs(diff) > svcPayTol()) { items.push({ code: 'SVCJOB-ADJ', name: 'Revision — adjustment', qty: 1, price: diff, wholesalePrice: 0, unit: 'service', isService: true, vatCategory: 'A', svcAdj: true }); res.adj = true; }
+  return res;
+}
+/* amountPaid / status / closed exactly as the Bills tab keeps them (recomputeBillStatus); a bill that gets a new charge after it was settled re-opens */
+function svcPayRecompute(bill, now) {
+  var before = bill.status + '|' + bill.closed;
+  if (typeof recomputeBillStatus === 'function') { try { recomputeBillStatus(bill); } catch (e) { svcPayRecomputeLocal(bill); } }
+  else svcPayRecomputeLocal(bill);
+  if (!bill.closed) { if (bill.closedAt) delete bill.closedAt; }
+  else if (!bill.closedAt) bill.closedAt = svcPayIso(now);
+  return before !== bill.status + '|' + bill.closed;
+}
+function svcPayRecomputeLocal(bill) {
+  var total = svcPayBillTotal(bill), out = svcRound2(Math.max(0, total - (Number(bill.amountPaid) || 0)));
+  bill.status = out <= 0.005 ? 'fully_paid' : ((Number(bill.amountPaid) || 0) > 0 ? 'partially_paid' : 'unpaid');
+  bill.closed = bill.status === 'fully_paid';
+}
+
+/* ===== bill lookup ===== */
+function svcPayBillId(job) { return 'svcb-' + job.id; }
+function svcPayFindBill(job) {
+  var b = svcPayList('bills'); if (!b || !job) return null;
+  var i, canon = svcPayBillId(job), byLink = null, byTag = null;
+  for (i = 0; i < b.length; i++) {
+    if (!b[i]) continue;
+    if (String(b[i].id) === canon) return b[i];
+    if (!byLink && job.billId && String(b[i].id) === String(job.billId)) byLink = b[i];
+    if (!byTag && b[i].svcJobId === job.id) byTag = b[i];
+  }
+  return byLink || byTag || null;
+}
+function svcPayNewBill(job, target, now) {
+  var ref = ''; try { if (typeof generateReceiptRef === 'function') ref = generateReceiptRef(); } catch (e) { ref = ''; }
+  var bill = {
+    id: svcPayBillId(job), timestamp: svcPayIso(now), paymentMethod: 'bill', paid: false, cashAmount: 0, mpesaAmount: 0, cardAmount: 0, amountTendered: 0, change: 0,
+    servedBy: svcPayServedBy(), customerName: svcPayCustomerName(job), customerPhone: (job.customer && job.customer.phone) || null, tableOrRoom: null, receivingAccount: null,
+    items: [], amountPaid: 0, paymentHistory: [], fulfillmentType: 'carried_immediately', fulfillmentStatus: 'fulfilled', inventoryDeducted: true, dueDate: null,
+    svcBill: true, svcJobId: job.id, svcJobNo: job.no || '', updatedAt: now
+  };
+  if (ref) bill.refNumber = ref;
+  target.lines.forEach(function (l) { bill.items.push(svcPayItem(l)); });
+  return bill;
+}
+
+/* ===== bill <-> job synchronisation (idempotent; the job is the truth, the bill is the ledger the Bills / Debts screens read) ===== */
+/* dir 1: a payment taken on the Bills tab (classic Settle) is mirrored into job.payments so the job's paid / balance stay right */
+function svcPayMirrorToJob(job, bill) {
+  var hist = Array.isArray(bill.paymentHistory) ? bill.paymentHistory : [], rows = [], i, h, sales = svcPayList('sales') || [];
+  for (i = 0; i < hist.length; i++) {
+    h = hist[i]; if (!h || h.id == null || !Number(h.amount)) continue;
+    if (svcPayFindPayment(job, h.id)) continue;
+    var at = Date.parse(h.timestamp) || svcPayNowMs(), line = null, k;
+    for (k = 0; k < sales.length; k++) { var s = sales[k]; if (s && s.billId === bill.id && !s.svcPayId && Math.abs((Date.parse(s.timestamp) || 0) - at) < 5000 && Math.abs(svcRound2((s.items && s.items[0] && Number(s.items[0].price)) || 0) - svcRound2(h.amount)) < 0.01) { line = s; break; } }
+    var amt = svcRound2(h.amount);
+    rows.push({ id: String(h.id), at: at, amount: amt, method: h.method || 'cash', ref: h.reference || '', by: (line && line.servedBy) || 'Bills tab', byId: '', kind: amt > 0 ? 'partial' : 'refund', billPayId: String(h.id), saleId: line ? line.id : undefined, viaBills: true, rev: 0 });
+  }
+  if (!rows.length) return 0;
+  SVC_PAY_BUSY++;
+  try {
+    var res = svcCommit(function (j) { j.payments = (Array.isArray(j.payments) ? j.payments : []).concat(rows); if (!j.billId) j.billId = bill.id; return j; },
+      { list: 'svcJobs', id: job.id, audit: { act: 'payment.sync', note: rows.length + ' payment(s) taken on the Bills tab were added to this job' } });
+    return res && res.ok ? rows.length : 0;
+  } finally { SVC_PAY_BUSY--; }
+}
+/* dir 2: every job payment has a paymentHistory entry on the bill; amountPaid = sum of the history (refunds are negative entries) */
+function svcPayMirrorToBill(job, bill, now) {
+  if (!Array.isArray(bill.paymentHistory)) bill.paymentHistory = [];
+  var hist = bill.paymentHistory, changed = 0, total = svcPayBillTotal(bill), paidSoFar = 0, list = svcPayLivePayments(job).slice().sort(function (a, b) { return (Number(a.at) || 0) - (Number(b.at) || 0); }), i, p, j, found;
+  hist.forEach(function (h) { if (h) paidSoFar += Number(h.amount) || 0; });
+  for (i = 0; i < list.length; i++) {
+    p = list[i]; found = false;
+    for (j = 0; j < hist.length; j++) { if (hist[j] && (hist[j].id === p.id || hist[j].id === p.billPayId)) { found = true; break; } }
+    if (found) continue;
+    paidSoFar = svcRound2(paidSoFar + Number(p.amount));
+    var e = { id: p.billPayId || p.id, timestamp: svcPayIso(Number(p.at) || now), amount: svcRound2(p.amount), method: p.method, reference: p.ref || '', balanceAfter: svcRound2(Math.max(0, total - paidSoFar)), svcJobId: job.id };
+    if (p.kind === 'refund') { e.refund = true; if (p.refId) e.refId = p.refId; }
+    hist.push(e); changed++;
+  }
+  var sum = 0; hist.forEach(function (h) { if (h) sum += Number(h.amount) || 0; });
+  sum = svcRound2(sum);
+  if (Math.abs(sum - (Number(bill.amountPaid) || 0)) > 0.004) { bill.amountPaid = sum; changed++; }
+  return changed;
+}
+/* the one sync routine. o: {create (default false)}. -> {ok, bill, created, deferred, changed, job} */
+function svcPaySync(jobId, o) {
+  o = o || {};
+  var c = svcPayCheck(jobId); if (c.err) return c.err;
+  var list = svcPayList('bills'); if (!list) return { ok: false, code: 'nobills', why: 'Bills are not available on this screen.' };
+  SVC_PAY_BUSY++;
+  try {
+    var job = c.job, now = svcPayNowMs(), bill = svcPayFindBill(job), created = false, linesChanged = false, mirrored = 0;
+    if (bill) { mirrored = svcPayMirrorToJob(job, bill); if (mirrored) job = svcPayJob(jobId) || job; }
+    var t = svcTotals(job), target = svcPayTarget(job, t);
+    if (!bill) {
+      if (!o.create) return { ok: true, bill: null, created: false, job: job };
+      if (target.total <= svcPayTol() && !o.force) return { ok: true, bill: null, created: false, deferred: true, reason: 'nothing_to_bill', job: job };
+      bill = svcPayNewBill(job, target, now); list.push(bill); created = true; linesChanged = true;
+    } else if (bill.svcBill === true) {
+      var d = svcPayDiffLines(bill, target);
+      if (d.added || d.cancelled || d.adj) linesChanged = true;
+    }
+    var payCh = svcPayMirrorToBill(job, bill, now), st = svcPayRecompute(bill, now);
+    if (bill.svcBill !== true && !bill.svcJobId) { bill.svcJobId = job.id; bill.svcJobNo = job.no || ''; payCh++; }
+    var changed = created || linesChanged || payCh > 0 || st;
+    if (changed) { bill.updatedAt = Math.max(now, (Number(bill.updatedAt) || 0) + 1); svcPaySave('bills'); svcPayPush(); }
+    if (job.billId !== bill.id) {
+      var lk = svcCommit(function (j) { j.billId = bill.id; return j; }, { list: 'svcJobs', id: job.id, audit: created ? { act: 'bill', ref: bill.id, note: 'Bill created: ' + svcPayMoney(target.total) } : false });
+      if (lk && lk.ok) job = lk.rec;
+    }
+    return { ok: true, bill: bill, created: created, changed: changed, mirrored: mirrored, job: svcPayJob(jobId) || job };
+  } finally { SVC_PAY_BUSY--; }
+}
+/* svcEnsureBill(jobId, {force}) -> {ok, bill, created, deferred?}: exactly ONE bill per job (id svcb-<jobId>, found again by billId / svcJobId), lines = the job's current lines, idempotent */
+function svcEnsureBill(jobId, opts) { opts = opts || {}; return svcPaySync(jobId, { create: true, force: !!opts.force }); }
+function svcPayReconcile(jobId) { return svcPaySync(jobId, { create: false }); }
+
+/* ===== summary / outstanding ===== */
+function svcPayStatusOf(job, t) {
+  if (t.paymentStatus === 'partial') {
+    var onlyDeposit = svcPayLivePayments(job).every(function (p) { return p.kind === 'deposit' || p.kind === 'refund'; });
+    if (onlyDeposit) return 'deposit';
+  }
+  return t.paymentStatus;
+}
+function svcPaySummary(jobId) {
+  var job = svcPayJob(jobId); if (!job) return null;
+  var t = svcTotals(job), live = svcPayLivePayments(job), deposit = 0, refunded = 0;
+  live.forEach(function (p) { if (p.kind === 'deposit') deposit += Number(p.amount) || 0; if (p.kind === 'refund') refunded += Math.abs(Number(p.amount) || 0); });
+  var bill = job._legacy ? null : svcPayFindBill(job);
+  var payments = live.slice().sort(function (a, b) { return (Number(a.at) || 0) - (Number(b.at) || 0); }).map(function (p) {
+    return { id: p.id, at: p.at, amount: svcRound2(p.amount), method: p.method, ref: p.ref || '', by: p.by || '', kind: p.kind || 'partial', payer: p.payer || '', note: p.note || '', reason: p.reason || '', refId: p.refId || '', saleId: p.saleId || '', refundable: svcPayRefundable(job, p), change: p.change || 0, tendered: p.tendered != null ? p.tendered : null, viaBills: !!p.viaBills };
+  });
+  return { jobId: job.id, no: job.no, total: t.total, deposit: svcRound2(deposit), paid: t.paid, balance: t.balance, refunded: svcRound2(refunded), status: svcPayStatusOf(job, t), paymentStatus: t.paymentStatus,
+    payments: payments, billId: bill ? bill.id : (job.billId || null), billStatus: bill ? bill.status : null, billTotal: bill ? svcPayBillTotal(bill) : null, checkedOutAt: job.checkedOutAt || null, totals: t };
+}
+/* svcOutstanding({types, q, minBalance, overdueDays, since, until, includeLegacy, includeCancelled, sort:'balance'|'age'|'customer'}) -> {ok, rows, count, total, byType} */
+function svcOutstanding(filter) {
+  filter = filter || {};
+  if (!svcPayCan('svc:financials')) return { ok: false, code: 'perm', rows: [], count: 0, total: 0, byType: {}, why: 'You are not allowed to view financials' };
+  var jobs = [];
+  try { jobs = svcAllJobs({ includeLegacy: !!filter.includeLegacy, types: filter.types, q: filter.q }); } catch (e) { jobs = []; }
+  var now = svcPayNowMs(), tol = svcPayTol(), rows = [], total = 0, byType = {};
+  jobs.forEach(function (j) {
+    if (!j || j._deleted) return;
+    if (!filter.includeCancelled && Number(j.phase) === 4) return;
+    var created = Number(j.createdAt) || 0;
+    if (filter.since && created < Number(filter.since)) return;
+    if (filter.until && created > Number(filter.until)) return;
+    var t = svcTotals(j);
+    if (!(t.balance > tol) || t.balance < (Number(filter.minBalance) || 0)) return;
+    var live = svcPayLivePayments(j), last = 0; live.forEach(function (p) { if ((Number(p.at) || 0) > last) last = Number(p.at) || 0; });
+    var age = Math.floor((now - (last || created)) / 86400000);
+    if (filter.overdueDays != null && age < Number(filter.overdueDays)) return;
+    if (filter.customerKey && !(j.customer && j.customer.phoneKey === filter.customerKey)) return;
+    rows.push({ jobId: j.id, no: j.no, serviceType: j.serviceType, status: j.status, phase: j.phase, customerName: (j.customer && j.customer.name) || '', phone: (j.customer && j.customer.phone) || '', phoneKey: (j.customer && j.customer.phoneKey) || '',
+      asset: (j.assetSnap && j.assetSnap.label) || '', total: t.total, paid: t.paid, balance: t.balance, paymentStatus: svcPayStatusOf(j, t), createdAt: created, lastPaymentAt: last || null, ageDays: age, dueAt: j.dueAt || null, billId: j.billId || null, legacy: !!j._legacy });
+    total += t.balance; byType[j.serviceType] = svcRound2((byType[j.serviceType] || 0) + t.balance);
+  });
+  var sort = filter.sort || 'balance';
+  rows.sort(function (a, b) {
+    if (sort === 'age') return (b.ageDays - a.ageDays) || (b.balance - a.balance);
+    if (sort === 'customer') return String(a.customerName).toLowerCase() < String(b.customerName).toLowerCase() ? -1 : 1;
+    return (b.balance - a.balance) || (a.createdAt - b.createdAt);
+  });
+  return { ok: true, rows: rows, count: rows.length, total: svcRound2(total), byType: byType };
+}
+
+/* ===== the sale-log line of one payment (classic "Bill Payment - This Installment" shape, tagged with the job) ===== */
+function svcPaySaleName(kind, job) {
+  var no = job.no || job.id;
+  if (kind === 'refund') return 'Service Refund — ' + no;
+  if (kind === 'deposit') return 'Service Deposit — ' + no;
+  if (kind === 'final') return 'Service Final Payment — ' + no;
+  return 'Service Payment — ' + no;
+}
+function svcPayFindSale(payId) { var s = svcPayList('sales') || [], i; for (i = 0; i < s.length; i++) { if (s[i] && s[i].svcPayId === payId) return s[i]; } return null; }
+function svcPayMakeSale(job, row, bill) {
+  var amt = svcRound2(row.amount), total = svcPayBillTotal(bill), refNumber = '';
+  try { if (typeof generateReceiptRef === 'function') refNumber = generateReceiptRef(); } catch (e) { refNumber = ''; }
+  var sale = {
+    id: row.saleId || svcPaySaleId(), billId: bill.id, svcJobId: job.id, svcJobNo: job.no || '', svcPayId: row.id, svcPayKind: row.kind,
+    timestamp: svcPayIso(Number(row.at)), paid: true, servedBy: row.by || svcPayServedBy(), customerName: svcPayCustomerName(job), customerPhone: (job.customer && job.customer.phone) || null,
+    tableOrRoom: null, receivingAccount: null,
+    items: [{ name: svcPaySaleName(row.kind, job), price: amt, qty: 1, unit: 'payment', wholesalePrice: 0, isService: true, vatCategory: 'A' }],
+    installment: { original: total, paidToDate: svcRound2(Number(bill.amountPaid) || 0), thisInstallment: amt, remaining: svcRound2(Math.max(0, total - (Number(bill.amountPaid) || 0))) }
+  };
+  var f = svcPayMoneyFields(row.method, amt, row.ref, row.payer, row.tendered != null ? row.tendered : null, row.change || 0), k;
+  for (k in f) sale[k] = f[k];
+  if (refNumber) sale.refNumber = refNumber;
+  if (row.kind === 'refund') { sale.refund = true; sale.refundOf = row.refId || ''; if (row.reason) sale.voidReason = row.reason; }
+  return sale;
+}
+function svcPayPostSale(sale, o) {
+  o = o || {};
+  var sales = svcPayList('sales'); if (!sales) return false;
+  if (svcPayFindSale(sale.svcPayId)) return false;
+  sales.push(sale); svcPaySave('sales');
+  try { if (typeof ensureSaleSaved === 'function') { var p = ensureSaleSaved(sale); if (p && typeof p.catch === 'function') p.catch(function () { /* retried by the app */ }); } } catch (e) { /* the sale is in the list */ }
+  if (!o.refund) {
+    try { if (sale.customerPhone && typeof awardTokensForSale === 'function') awardTokensForSale(sale.customerPhone, Number(sale.items[0].price) || 0); } catch (e1) { /* loyalty is an extra */ }
+    try { if (typeof submitSaleToEtims === 'function') { var q = submitSaleToEtims(sale); if (q && typeof q.catch === 'function') q.catch(function () { /* eTIMS keeps its own retry */ }); } } catch (e2) { /* eTIMS is an extra */ }
+  }
+  return true;
+}
+
+/* ===== duplicate references ===== */
+function svcPayFindDupRef(ref, method, job) {
+  if (!ref) return null;
+  var up = String(ref).toUpperCase(), i, j, l;
+  var jobs = []; try { jobs = typeof svcJobs !== 'undefined' && Array.isArray(svcJobs) ? svcJobs : []; } catch (e) { jobs = []; }
+  for (i = 0; i < jobs.length; i++) {
+    if (!jobs[i]) continue;
+    l = Array.isArray(jobs[i].payments) ? jobs[i].payments : [];
+    for (j = 0; j < l.length; j++) {
+      if (l[j] && !l[j].voidedAt && l[j].kind !== 'refund' && l[j].method === method && String(l[j].ref || '').toUpperCase() === up) return { where: 'job', jobNo: jobs[i].no || '', jobId: jobs[i].id, at: l[j].at, amount: l[j].amount, sameJob: jobs[i].id === job.id };
+    }
+  }
+  if (method === 'mpesa') {
+    var s = svcPayList('sales') || [];
+    for (i = 0; i < s.length; i++) { if (s[i] && !s[i].voided && !s[i].refund && String(s[i].mpesaReceiptNumber || '').toUpperCase() === up && Number(s[i].mpesaAmount) > 0) return { where: 'sale', jobNo: s[i].svcJobNo || '', at: Date.parse(s[i].timestamp) || 0, amount: s[i].mpesaAmount, sameJob: s[i].svcJobId === job.id }; }
+  }
+  return null;
+}
+function svcPayWhy(r) {
+  if (!r) return 'Could not record that.';
+  if (r.why) return String(r.why);
+  if (r.error) return String(r.error);
+  return r.code ? 'Not allowed (' + r.code + ').' : 'Could not record that.';
+}
+
+/* ===== svcRecordPayment ===== */
+/* svcRecordPayment(jobId, {method, amount, ref, payer, note, tendered, kind:'deposit'|'partial'|'final'|'refund', idemKey}, {idemKey, allowDuplicateRef})
+   -> {ok, payment, job, totals, bill, sale, change, warnings[], duplicate?}  or {ok:false, code:'perm'|'notfound'|'legacy'|'cancelled'|'method'|'amount'|'overpay'|'final_short'|'tendered_short'|'dup_ref'|'kind', why, ...}
+   Overpayment is rejected; cash handed over (tendered) above the amount applied is recorded as CHANGE. The same idempotency key (or the same payment typed again within 8 s) returns the first record. */
+function svcRecordPayment(jobId, args, opts) {
+  args = args || {}; opts = opts || {};
+  var c = svcPayCheck(jobId); if (c.err) return c.err;
+  if (!svcPayCan('svc:pay')) return { ok: false, code: 'perm', why: 'You are not allowed to record payments.' };
+  var kindIn = String(args.kind || '').toLowerCase(); if (kindIn === 'balance') kindIn = 'final';
+  if (kindIn === 'refund') return svcRefund(jobId, args.paymentId || args.refId, args.amount, args.reason || args.note, opts);
+  if (kindIn && SVC_PAY_KINDS.indexOf(kindIn) === -1) return { ok: false, code: 'kind', why: 'Unknown payment kind.' };
+  var job = c.job, tol = svcPayTol(), key = svcPayCleanKey(opts.idemKey || args.idemKey || args.id);
+  if (key) { var ex = svcPayFindPayment(job, key); if (ex) return svcPayDupResult(job, ex); }
+  if (Number(job.phase) === 4) return { ok: false, code: 'cancelled', why: 'This job is cancelled: no new payments (refund what was paid instead).' };
+  if (svcPayList('bills') === null) return { ok: false, code: 'nobills', why: 'Bills are not available on this screen.' };
+  SVC_PAY_BUSY++;
+  try {
+    svcPayReconcile(job.id); job = svcPayJob(jobId) || job;
+    var method = String(args.method || 'cash').toLowerCase(), mdef = svcPayMethodDef(method);
+    if (!mdef) return { ok: false, code: 'method', why: 'That payment method is not available for this shop.' };
+    var t = svcTotals(job), amount, tendered = args.tendered;
+    var hasAmt = !(args.amount == null || args.amount === '');
+    if (!hasAmt && method === 'cash' && tendered != null && tendered !== '') amount = svcRound2(Math.min(svcNum(tendered), t.balance));
+    else amount = svcRound2(svcNum(args.amount));
+    if (!(amount > 0)) return { ok: false, code: 'amount', why: 'Enter an amount greater than zero.' };
+    var prior = svcPayLivePayments(job).filter(function (p) { return p.kind !== 'refund' && Number(p.amount) > 0; }).length;
+    var kind = kindIn || (amount >= t.balance - tol && t.total > tol ? 'final' : (prior === 0 ? 'deposit' : 'partial'));
+    var advance = t.total <= tol && kind === 'deposit';
+    if (!key && !opts.noDedupe) {
+      var now0 = svcPayNowMs(), hit = svcPayLivePayments(job).filter(function (p) { return p.kind !== 'refund' && p.method === method && Math.abs(Number(p.amount) - amount) < 0.005 && String(p.ref || '') === svcPayCleanRef(args.ref || args.reference, method) && now0 - (Number(p.at) || 0) >= 0 && now0 - (Number(p.at) || 0) < SVC_PAY_DUP_WINDOW_MS; })[0];
+      if (hit) return svcPayDupResult(job, hit);
+    }
+    if (!advance && amount > t.balance + tol) return { ok: false, code: 'overpay', balance: t.balance, maxAmount: t.balance, why: t.balance <= tol ? 'Nothing is owed on this job: it is already paid in full.' : 'That is more than the balance of ' + svcPayMoney(t.balance) + '.' };
+    if (kind === 'final' && Math.abs(amount - t.balance) > tol) return { ok: false, code: 'final_short', balance: t.balance, why: 'A final payment must settle the whole balance of ' + svcPayMoney(t.balance) + ' (take a partial payment instead).' };
+    var change = 0, tend = null;
+    if (method === 'cash' && tendered != null && tendered !== '') {
+      tend = svcRound2(svcNum(tendered));
+      if (tend + tol < amount) return { ok: false, code: 'tendered_short', why: 'The cash given is less than the amount.' };
+      change = svcRound2(Math.max(0, tend - amount));
+    }
+    var ref = svcPayCleanRef(args.ref || args.reference, method), warnings = [];
+    if (mdef.ref && !ref) warnings.push({ code: 'no_ref', msg: method === 'mpesa' ? 'No M-Pesa code recorded: add it so the payment can be verified.' : 'No reference recorded.' });
+    if (method === 'mpesa' && ref && !/^[A-Z0-9]{10}$/.test(ref)) warnings.push({ code: 'ref_format', msg: 'M-Pesa codes are 10 letters and digits: check this one.' });
+    if (ref) {
+      var dup = svcPayFindDupRef(ref, method, job);
+      if (dup) {
+        if (!opts.allowDuplicateRef) return { ok: false, code: 'dup_ref', warn: true, dup: dup, why: 'This reference was already used' + (dup.jobNo ? ' on ' + dup.jobNo : '') + '. Check it is not a repeat before recording it again.' };
+        if (!svcPayCan('svc:financials')) return { ok: false, code: 'perm', dup: dup, why: 'Only someone who can view financials may accept a repeated reference.' };
+        warnings.push({ code: 'dup_ref_override', msg: 'A repeated reference was accepted.' });
+      }
+    }
+    var actor = svcPayActor(), at = svcPayNowMs(), payId = key || svcPayNewId('pay-'), saleId = svcPaySaleId();
+    var row = { id: payId, at: at, amount: amount, method: method, ref: ref, by: actor.name, byId: actor.id, kind: kind, saleId: saleId, billPayId: payId, rev: 0 };
+    var payer = String(args.payer || '').trim().slice(0, 60), note = String(args.note || '').trim().slice(0, 160);
+    if (payer) row.payer = payer; if (note) row.note = note;
+    if (tend != null) { row.tendered = tend; row.change = change; }
+    if (advance) row.advance = true;
+    var billId = job.billId || svcPayBillId(job);
+    var label = (kind === 'deposit' ? 'Deposit ' : (kind === 'final' ? 'Final payment ' : 'Payment ')) + svcPayMoney(amount) + ' (' + svcPayMethodLabel(method) + (ref ? ' ' + ref : '') + ')';
+    var res = svcCommit(function (j) { j.payments = (Array.isArray(j.payments) ? j.payments : []).concat([row]); if (!j.billId) j.billId = billId; return j; }, { list: 'svcJobs', id: job.id, audit: { act: 'payment', ref: payId, to: kind, note: label } });
+    if (!res || !res.ok) return { ok: false, code: (res && res.code) || 'commit', why: (res && (res.why || res.error)) || 'The payment could not be saved.' };
+    var sync = svcPaySync(job.id, { create: true, force: true }), jobAfter = svcPayJob(job.id) || res.rec, bill = sync && sync.bill, sale = null, wasClosed = false;
+    if (bill) {
+      sale = svcPayFindSale(payId) || svcPayMakeSale(jobAfter, row, bill);
+      svcPayPostSale(sale);
+      svcPayPush();
+    }
+    var tAfter = svcTotals(jobAfter);
+    if (bill && bill.closed && tAfter.balance <= tol) { try { if (typeof createBillNotification === 'function') createBillNotification('paid', bill); } catch (e3) { /* bell only */ } }
+    var out = { ok: true, payment: row, job: jobAfter, totals: tAfter, bill: bill, sale: sale, change: change, warnings: warnings, kind: kind };
+    svcEmit('payment:recorded', { job: jobAfter, jobId: jobAfter.id, payment: row, kind: kind, totals: tAfter, bill: bill });
+    if (tAfter.balance <= tol && tAfter.total > tol) svcEmit('job:settled', { job: jobAfter, jobId: jobAfter.id, totals: tAfter, payment: row });
+    return out;
+  } finally { SVC_PAY_BUSY--; }
+}
+
+/* ===== svcRefund ===== */
+/* svcRefund(jobId, paymentId, amount, reason, opts) -> {ok, payment(negative row), job, totals, bill, sale} ; needs svc:pay AND svc:financials and a reason.
+   Append-only: a NEGATIVE payment row on the job, a negative paymentHistory entry on the bill (amountPaid goes down, the bill re-opens) and a negative salesLog line, so Daily Sales / cash totals fall by the refund
+   and nothing earlier is rewritten. */
+function svcRefund(jobId, paymentId, amount, reason, opts) {
+  opts = opts || {};
+  var c = svcPayCheck(jobId); if (c.err) return c.err;
+  if (!svcPayCan('svc:pay') || !svcPayCan('svc:financials')) return { ok: false, code: 'perm', why: 'Refunds need permission to record payments and to view financials.' };
+  var why = String(reason == null ? '' : reason).trim().slice(0, 160);
+  if (!why) return { ok: false, code: 'reason', why: 'A reason is required for a refund.' };
+  var job = c.job, tol = svcPayTol(), key = svcPayCleanKey(opts.idemKey);
+  if (key) { var ex = svcPayFindPayment(job, key); if (ex) return svcPayDupResult(job, ex); }
+  if (svcPayList('bills') === null) return { ok: false, code: 'nobills', why: 'Bills are not available on this screen.' };
+  SVC_PAY_BUSY++;
+  try {
+    svcPayReconcile(job.id); job = svcPayJob(jobId) || job;
+    var orig = svcPayFindPayment(job, paymentId);
+    if (!orig || orig.voidedAt || orig.kind === 'refund' || !(Number(orig.amount) > 0)) return { ok: false, code: 'payment', why: 'Choose the payment to refund.' };
+    var refundable = svcPayRefundable(job, orig), amt = amount == null || amount === '' ? refundable : svcRound2(svcNum(amount));
+    if (!(amt > 0)) return { ok: false, code: 'amount', why: 'Enter a refund amount greater than zero.' };
+    if (amt > refundable + tol) return { ok: false, code: 'refund_exceeds', refundable: refundable, why: 'Only ' + svcPayMoney(refundable) + ' of that payment can still be refunded.' };
+    if (!key) {
+      var now0 = svcPayNowMs(), hit = svcPayLivePayments(job).filter(function (p) { return p.kind === 'refund' && p.refId === orig.id && Math.abs(Math.abs(Number(p.amount)) - amt) < 0.005 && now0 - (Number(p.at) || 0) >= 0 && now0 - (Number(p.at) || 0) < SVC_PAY_DUP_WINDOW_MS; })[0];
+      if (hit) return svcPayDupResult(job, hit);
+    }
+    var actor = svcPayActor(), at = svcPayNowMs(), payId = key || svcPayNewId('rf-'), saleId = svcPaySaleId();
+    var ref = svcPayCleanRef(opts.ref, orig.method);
+    var row = { id: payId, at: at, amount: -amt, method: orig.method, ref: ref, by: actor.name, byId: actor.id, kind: 'refund', refId: orig.id, reason: why, saleId: saleId, billPayId: payId, rev: 0 };
+    var res = svcCommit(function (j) { j.payments = (Array.isArray(j.payments) ? j.payments : []).concat([row]); return j; }, { list: 'svcJobs', id: job.id, audit: { act: 'refund', ref: payId, from: orig.id, note: 'Refund ' + svcPayMoney(amt) + ' (' + svcPayMethodLabel(orig.method) + '): ' + why } });
+    if (!res || !res.ok) return { ok: false, code: (res && res.code) || 'commit', why: (res && (res.why || res.error)) || 'The refund could not be saved.' };
+    var sync = svcPaySync(job.id, { create: true, force: true }), jobAfter = svcPayJob(job.id) || res.rec, bill = sync && sync.bill, sale = null;
+    if (bill) { sale = svcPayFindSale(payId) || svcPayMakeSale(jobAfter, row, bill); svcPayPostSale(sale, { refund: true }); svcPayPush(); }
+    var tAfter = svcTotals(jobAfter);
+    var out = { ok: true, payment: row, job: jobAfter, totals: tAfter, bill: bill, sale: sale, kind: 'refund', warnings: [] };
+    svcEmit('payment:recorded', { job: jobAfter, jobId: jobAfter.id, payment: row, kind: 'refund', totals: tAfter, bill: bill });
+    return out;
+  } finally { SVC_PAY_BUSY--; }
+}
+
+/* ===== checkout ===== */
+function svcPayStatusDef(typeKey, key) {
+  var tpl = null, i; try { if (typeof svcGetTemplate === 'function') tpl = svcGetTemplate(typeKey); } catch (e) { tpl = null; }
+  var list = tpl && Array.isArray(tpl.statuses) ? tpl.statuses : [];
+  for (i = 0; i < list.length; i++) { if (list[i] && list[i].key === key) return list[i]; }
+  return null;
+}
+/* hand-over: move the job to the template's "collected" (else "completed") status, through at most one intermediate step. -> {moved, from, to, steps[], reason} */
+function svcPayCollect(job, note) {
+  var res = { moved: false, from: job.status, to: job.status, steps: [], reason: '' };
+  if (Number(job.phase) >= 3) { res.reason = 'closed'; return res; }
+  if (typeof svcAllowedNext !== 'function' || typeof svcSetStatus !== 'function') { res.reason = 'nostore'; return res; }
+  var targets = ['collected', 'completed'], ti, path = null;
+  for (ti = 0; ti < targets.length && !path; ti++) {
+    var def = svcPayStatusDef(job.serviceType, targets[ti]);
+    if (!def || def.scope === 'appt' || !(Number(def.phase) >= 3) || def.successful === false) continue;
+    var first = svcAllowedNext(job) || [];
+    if (first.indexOf(targets[ti]) !== -1) { path = [targets[ti]]; break; }
+    var ci;
+    for (ci = 0; ci < first.length; ci++) {
+      var mid = svcPayStatusDef(job.serviceType, first[ci]);
+      if (!mid || Number(mid.phase) >= 3 || Number(mid.phase) < Number(job.phase)) continue;
+      var pseudo = Object.assign({}, job, { status: first[ci], phase: Number(mid.phase) });
+      if ((svcAllowedNext(pseudo) || []).indexOf(targets[ti]) !== -1) { path = [first[ci], targets[ti]]; break; }
+    }
+  }
+  if (!path) { res.reason = 'no_path'; return res; }
+  var k;
+  for (k = 0; k < path.length; k++) {
+    var r = svcSetStatus(job.id, path[k], { note: note || 'Settled and handed over' });
+    if (!r || !r.ok) { res.reason = (r && (r.why || r.code)) || 'blocked'; return res; }
+    res.steps.push(path[k]); res.to = path[k]; res.moved = true;
+  }
+  return res;
+}
+/* svcCheckout(jobId, {method, ref, payer, tendered, note, idemKey, releaseWithBalance, reason, markCollected}) -> {ok, job, payment?, receipt(sale-shaped), statusMoved, statusTo, released?, totals}
+   Final settlement: with a balance it takes the final payment (method required) or, with svc:financials + a reason, releases the item with the balance left on the open bill. Idempotent. */
+function svcCheckout(jobId, opts) {
+  opts = opts || {};
+  var c = svcPayCheck(jobId); if (c.err) return c.err;
+  if (!svcPayCan('svc:pay')) return { ok: false, code: 'perm', why: 'You are not allowed to record payments.' };
+  var job = c.job, tol = svcPayTol();
+  if (Number(job.phase) === 4) return { ok: false, code: 'cancelled', why: 'This job is cancelled.' };
+  SVC_PAY_BUSY++;
+  try {
+    svcPayReconcile(job.id); job = svcPayJob(jobId) || job;
+    var t = svcTotals(job), payment = null, released = false, warnings = [];
+    if (job.checkedOutAt && t.balance <= tol) return { ok: true, duplicate: true, noop: true, job: job, totals: t, receipt: svcPayReceipt(job.id).sale, statusMoved: false, statusTo: job.status };
+    if (t.balance > tol) {
+      if (opts.method) {
+        var pr = svcRecordPayment(job.id, { method: opts.method, amount: t.balance, kind: 'final', ref: opts.ref, payer: opts.payer, tendered: opts.tendered, note: opts.note }, { idemKey: opts.idemKey, allowDuplicateRef: opts.allowDuplicateRef });
+        if (!pr.ok) return pr;
+        payment = pr.payment; warnings = pr.warnings || [];
+      } else if (opts.releaseWithBalance) {
+        if (!svcPayCan('svc:financials')) return { ok: false, code: 'perm', why: 'Releasing an item with a balance needs permission to view financials.' };
+        var why = String(opts.reason || '').trim().slice(0, 160);
+        if (!why) return { ok: false, code: 'reason', why: 'A reason is required to release the item with a balance.' };
+        var eb = svcEnsureBill(job.id, { force: true });
+        if (!eb.ok) return eb;
+        var rel = svcCommit(function (j) { j.balanceRelease = { at: svcPayNowMs(), by: svcPayActor().name, byId: svcPayActor().id, amount: t.balance, reason: why }; return j; },
+          { list: 'svcJobs', id: job.id, audit: { act: 'release_with_balance', ref: eb.bill ? eb.bill.id : undefined, note: 'Released with ' + svcPayMoney(t.balance) + ' owing: ' + why } });
+        if (!rel.ok) return { ok: false, code: rel.code || 'commit', why: rel.error || 'Could not record the release.' };
+        released = true;
+      } else {
+        return { ok: false, code: 'balance', balance: t.balance, why: 'A balance of ' + svcPayMoney(t.balance) + ' is still owing: take the payment first.' };
+      }
+    }
+    var collect = { moved: false, to: job.status, reason: '' };
+    job = svcPayJob(jobId) || job;
+    if (opts.markCollected !== false) collect = svcPayCollect(job, opts.note || (released ? 'Released with balance' : 'Settled and handed over'));
+    var mark = svcCommit(function (j) { if (!j.checkedOutAt) j.checkedOutAt = svcPayNowMs(); return j; }, { list: 'svcJobs', id: job.id, audit: { act: 'checkout', note: released ? 'Checkout: released with balance' : 'Checkout: settled ' + svcPayMoney(t.paid + (payment ? Number(payment.amount) : 0)) } });
+    var jobAfter = svcPayJob(jobId) || (mark && mark.rec) || job, tAfter = svcTotals(jobAfter), rc = svcPayReceipt(jobAfter.id);
+    return { ok: true, job: jobAfter, payment: payment, totals: tAfter, receipt: rc.ok ? rc.sale : null, statusMoved: collect.moved, statusTo: collect.to, statusReason: collect.reason, released: released, warnings: warnings };
+  } finally { SVC_PAY_BUSY--; }
+}
+
+/* ===== receipts (the shared receipt builder + printer path: renderSharedReceipt -> buildReceiptDoc) ===== */
+function svcPayAssetLine(job) {
+  var s = job.assetSnap || {}, label = s.label || '', key = s.plate || s.imei || s.serial || '', term = 'Item';
+  try { if (typeof svcTerm === 'function') term = svcTerm('asset', job.serviceType) || term; } catch (e) { /* default */ }
+  var txt = [label, key && label.indexOf(key) === -1 ? key : ''].filter(Boolean).join(' ').trim();
+  return txt ? term + ': ' + txt : '';
+}
+function svcPayReceiptHeader(job) {
+  var out = [];
+  out.push('Job: ' + (job.no || job.id));
+  var a = svcPayAssetLine(job); if (a) out.push(a);
+  if (job.customer && job.customer.phone) out.push('Phone: ' + job.customer.phone);
+  return out;
+}
+/* the payment block of the receipt as text lines: each payment, total paid, balance, status (pure; ctx {cols, kes}) */
+function svcPayReceiptLines(job, t, ctx) {
+  ctx = ctx || {};
+  var kes = ctx.kes || function (n) { return 'KES ' + Number(n || 0).toFixed(2); }, cols = ctx.cols || 32, out = [];
+  var money = function (l, v) {
+    try { if (typeof receiptMoneyRow === 'function') return receiptMoneyRow(l, v, cols); } catch (e) { /* plain row */ }
+    l = String(l); v = String(v); return [l + ' '.repeat(Math.max(1, cols - l.length - v.length)) + v];
+  };
+  var pays = svcPayLivePayments(job).slice().sort(function (a, b) { return (Number(a.at) || 0) - (Number(b.at) || 0); });
+  pays.forEach(function (p) {
+    var kind = p.kind === 'refund' ? 'Refund' : (p.kind === 'deposit' ? 'Deposit' : (p.kind === 'final' ? 'Final payment' : 'Payment'));
+    var d = new Date(Number(p.at) || 0), ds = d.toLocaleDateString('en-GB');
+    out = out.concat(money(kind + ' ' + ds, kes(p.amount)));
+    out.push('  ' + svcPayMethodLabel(p.method) + (p.ref ? ' ' + p.ref : ''));
+  });
+  if (pays.length) out.push((ctx.rule) || '-'.repeat(cols));
+  out = out.concat(money('TOTAL PAID', kes(t.paid)));
+  out = out.concat(money('BALANCE', kes(t.balance)));
+  out.push(t.balance <= svcPayTol() ? 'STATUS: PAID IN FULL' : 'STATUS: BALANCE DUE');
+  return out;
+}
+function svcPayReceiptHooks(job, t) {
+  return {
+    docLabel: function (s, ctx) { return ctx && ctx.isBill ? 'SERVICE INVOICE' : 'SERVICE RECEIPT'; },
+    headerExtra: function () { return svcPayReceiptHeader(job); },
+    paymentLines: function (s, ctx) {
+      var lines = svcPayReceiptLines(job, t, ctx);
+      if (t.balance > svcPayTol()) {
+        try { if (typeof receiptPaymentDetailsList === 'function') { var d = receiptPaymentDetailsList(); if (d && d.length) { lines.push((ctx && ctx.rule) || '-'.repeat(32)); lines.push('Please settle via:'); d.forEach(function (x) { lines.push(x); }); } } } catch (e) { /* details are an extra */ }
+      }
+      return lines;
+    }
+  };
+}
+/* svcPayReceipt(jobId) -> {ok, sale (receipt-shaped: job number, asset, service lines, payments, balance), totals, hooks, lines} . Pure: nothing is saved or printed. */
+function svcPayReceipt(jobId) {
+  var c = svcPayCheck(jobId); if (c.err) return c.err;
+  var job = c.job, t = svcTotals(job), target = svcPayTarget(job, t), bill = svcPayFindBill(job), pays = svcPayLivePayments(job).filter(function (p) { return p.kind !== 'refund'; }), last = pays[pays.length - 1] || null, tol = svcPayTol();
+  var lastSale = last ? svcPayFindSale(last.id) : null;
+  var sale = {
+    id: lastSale ? lastSale.id : 'svcr-' + job.id, refNumber: (bill && bill.refNumber) || (lastSale && lastSale.refNumber) || '',
+    timestamp: svcPayIso(last ? Number(last.at) : svcPayNowMs()), paymentMethod: t.balance > tol ? 'bill' : (last ? last.method : 'cash'), paid: t.balance <= tol,
+    servedBy: (last && last.by) || svcPayServedBy(), customerName: svcPayCustomerName(job), customerPhone: (job.customer && job.customer.phone) || null, tableOrRoom: null,
+    items: target.lines.map(function (l) { return { code: 'SVCJOB-' + String(l.kind).toUpperCase(), name: l.name, qty: l.qty, price: l.price, wholesalePrice: 0, unit: l.kind === 'part' ? 'pcs' : 'service', isService: true, vatCategory: 'A' }; }),
+    amountPaid: t.paid, svcJobId: job.id, svcJobNo: job.no || '', svcReceipt: true, jobNo: job.no || '', asset: svcPayAssetLine(job), balance: t.balance, total: t.total,
+    payments: svcPayLivePayments(job).map(function (p) { return { id: p.id, at: p.at, amount: p.amount, method: p.method, ref: p.ref || '', kind: p.kind }; })
+  };
+  if (last && last.method === 'cash') { sale.cashAmount = last.tendered != null ? Number(last.amount) : Number(last.amount); sale.amountTendered = last.tendered != null ? last.tendered : last.amount; sale.change = last.change || 0; }
+  if (last && last.method === 'mpesa' && last.ref) sale.mpesaReceiptNumber = last.ref;
+  var hooks = svcPayReceiptHooks(job, t);
+  return { ok: true, sale: sale, totals: t, hooks: hooks, lines: svcPayReceiptLines(job, t, {}), header: svcPayReceiptHeader(job) };
+}
+/* opens the shop's normal receipt preview (print / share / download): the whole job, or one payment when payId is given */
+function svcPayPrintReceipt(jobId, payId) {
+  var r = svcPayReceipt(jobId); if (!r.ok) return r;
+  if (typeof renderSharedReceipt !== 'function') return { ok: false, code: 'noprinter', why: 'Receipts are not available on this screen.' };
+  var job = svcPayJob(jobId), sale = r.sale, hooks = r.hooks;
+  if (payId) {
+    var line = svcPayFindSale(payId);
+    if (line) { sale = line; hooks = { docLabel: function () { return 'SERVICE RECEIPT'; }, headerExtra: function () { return svcPayReceiptHeader(job); } }; }
+  }
+  try { renderSharedReceipt(sale, hooks); } catch (e) { return { ok: false, code: 'print', why: String((e && e.message) || e) }; }
+  return { ok: true };
+}
+
+/* ===== bill follows the job when a charge / material / quote changes (no new charge UI here: the owner blocks emit, this only mirrors) ===== */
+function svcPayOnJobEvent(p) {
+  if (SVC_PAY_BUSY) return;
+  try {
+    var j = p && (p.job || p.rec), id = (j && j.id) || (p && p.jobId); if (!id) return;
+    var job = svcPayJob(id); if (!job || job._legacy || !job.billId) return;
+    var bill = svcPayFindBill(job); if (!bill || bill.svcBill !== true) return;
+    var t = svcTotals(job), target = svcPayTarget(job, t);
+    if (Math.abs(svcPayBillTotal(bill) - target.total) <= svcPayTol()) return;
+    svcPaySync(id, { create: false });
+  } catch (e) { /* the drawer re-syncs when it opens */ }
+}
+
+/* ===== payments drawer tab ===== */
+function svcPayBind(el) {
+  if (el.__svpBound) return; el.__svpBound = true;
+  el.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('[data-svp-act]') : null; if (!b || !el.contains(b)) return;
+    svcPayAct(el, b.getAttribute('data-svp-act'), b, ev);
+  });
+  el.addEventListener('submit', function (ev) { ev.preventDefault(); svcPayAct(el, 'submit', null, ev); });
+  el.addEventListener('input', function (ev) { var t = ev.target; if (t && (t.id === 'svp-amt' || t.id === 'svp-tend')) svcPaySheetInfo(el); });
+}
+function svcPayUiState(el, jobId) {
+  var s = el.__svp;
+  if (!s || s.jobId !== jobId) s = el.__svp = { jobId: jobId, sheet: null, method: 'cash', key: '', refId: '', busy: false, stk: null };
+  return s;
+}
+function svcPayVal(id) { var e = typeof document !== 'undefined' ? document.getElementById(id) : null; return e ? String(e.value == null ? '' : e.value) : ''; }
+function svcPayToast(msg, bad) { try { if (typeof showToast === 'function') showToast(String(msg), !!bad); } catch (e) { /* cosmetic */ } }
+function svcPayWhen(ms) { try { return new Date(Number(ms)).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } }
+function svcPayRefreshTab(el) {
+  var id = el.getAttribute('data-svp-job'), job = id && svcPayJob(id);
+  if (job) svcPayRenderTab(job, el);
+  try { if (typeof svcUiRefresh === 'function') svcUiRefresh(); } catch (e) { /* the drawer header refreshes on the next open */ }
+}
+function svcPayRenderTab(job, el) {
+  el.setAttribute('data-svp-job', job.id);
+  svcPayBind(el);
+  var st = svcPayUiState(el, job.id);
+  try { svcPayReconcile(job.id); } catch (e) { /* show what we have */ }
+  job = svcPayJob(job.id) || job;
+  var sum = svcPaySummary(job.id), t = sum.totals, tol = svcPayTol();
+  var canPay = svcPayCan('svc:pay'), canFin = svcPayCan('svc:financials'), cancelled = Number(job.phase) === 4;
+  var html = '<div class="svp" data-svp-root="1">';
+  var due = t.balance > tol;
+  html += '<section class="svp-tot" aria-label="Payment summary">' +
+    '<div class="svp-tile"><span>Total</span><b>' + svcPayEsc(svcPayMoney(t.total)) + '</b></div>' +
+    '<div class="svp-tile"><span>Deposit</span><b>' + svcPayEsc(svcPayMoney(sum.deposit)) + '</b></div>' +
+    '<div class="svp-tile"><span>Paid</span><b>' + svcPayEsc(svcPayMoney(t.paid)) + '</b></div>' +
+    '<div class="svp-tile is-bal ' + (due ? 'due' : 'ok') + '"><span>Balance</span><b>' + svcPayEsc(svcPayMoney(t.balance)) + '</b></div></section>';
+  var pillCls = sum.status === 'paid' ? 'paid' : (sum.status === 'unpaid' ? 'due' : (sum.status === 'overpaid' ? 'due' : 'part')), pillTxt = { unpaid: 'Unpaid', deposit: 'Deposit taken', partial: 'Part paid', paid: 'Paid in full', overpaid: 'Overpaid' }[sum.status] || sum.status;
+  html += '<div class="svp-stat"><span class="svp-pill ' + pillCls + '">' + svcPayEsc(pillTxt) + '</span>';
+  if (sum.refunded > 0) html += '<span class="svp-pill due">Refunded ' + svcPayEsc(svcPayMoney(sum.refunded)) + '</span>';
+  if (job.balanceRelease) html += '<span class="svp-pill part">Released with balance</span>';
+  if (job.checkedOutAt) html += '<span class="svp-pill paid">Checked out</span>';
+  html += '</div>';
+  if (cancelled) html += '<div class="svp-note warn">This job is cancelled. Payments already taken can be refunded below.</div>';
+  if (!canPay) html += '<div class="svp-note">You can view payments but not record them.</div>';
+  if (canPay && !cancelled) {
+    html += '<div class="svp-acts">';
+    if (due || t.total <= tol) html += '<button type="button" class="svp-btn" data-svp-act="open" data-mode="deposit">Take deposit</button>';
+    if (due) html += '<button type="button" class="svp-btn" data-svp-act="open" data-mode="partial">Take payment</button><button type="button" class="svp-btn primary" data-svp-act="open" data-mode="final">Settle balance ' + svcPayEsc(svcPayMoney(t.balance)) + '</button>';
+    if (!job.checkedOutAt || due) html += '<button type="button" class="svp-btn ' + (due ? '' : 'good') + '" data-svp-act="open" data-mode="checkout">' + (due ? 'Checkout…' : 'Checkout &amp; hand over') + '</button>';
+    html += '</div>';
+  }
+  if (st.sheet) html += svcPaySheetHtml(job, sum, st, canFin);
+  html += '<h4 class="svp-h">Payments</h4>';
+  if (!sum.payments.length) html += '<div class="svp-empty">No payments yet.</div>';
+  else {
+    html += '<ul class="svp-list">';
+    sum.payments.slice().reverse().forEach(function (p) {
+      var neg = p.amount < 0, kindTxt = { deposit: 'Deposit', partial: 'Payment', final: 'Final payment', refund: 'Refund' }[p.kind] || 'Payment', m = svcPayMethodDef(p.method);
+      html += '<li class="svp-item' + (neg ? ' neg' : '') + '"><div class="r1"><b>' + svcPayEsc(svcPayMoney(p.amount)) + '</b><span>' + svcPayEsc((m ? m.icon + ' ' : '') + svcPayMethodLabel(p.method)) + '</span></div>' +
+        '<div class="r2">' + svcPayEsc(kindTxt) + ' · ' + svcPayEsc(p.by || 'Staff') + ' · ' + svcPayEsc(svcPayWhen(p.at)) + (p.viaBills ? ' · via Bills tab' : '') + '</div>';
+      if (p.ref) html += '<div class="r3">Ref: ' + svcPayEsc(p.ref) + '</div>';
+      if (p.payer) html += '<div class="r3">Paid by: ' + svcPayEsc(p.payer) + '</div>';
+      if (p.tendered != null && p.change > 0) html += '<div class="r3">Cash given ' + svcPayEsc(svcPayMoney(p.tendered)) + ', change ' + svcPayEsc(svcPayMoney(p.change)) + '</div>';
+      if (p.reason) html += '<div class="r3">Reason: ' + svcPayEsc(p.reason) + '</div>';
+      if (p.note) html += '<div class="r3">' + svcPayEsc(p.note) + '</div>';
+      html += '<div class="r4"><button type="button" class="svp-btn sm" data-svp-act="receipt" data-pay="' + svcPayEsc(p.id) + '">🧾 Receipt</button>';
+      if (canPay && canFin && p.refundable > tol) html += '<button type="button" class="svp-btn sm danger" data-svp-act="open" data-mode="refund" data-pay="' + svcPayEsc(p.id) + '">↩ Refund</button>';
+      html += '</div></li>';
+    });
+    html += '</ul>';
+  }
+  html += '<div class="svp-acts"><button type="button" class="svp-btn" data-svp-act="receipt">🧾 Print job receipt</button></div>';
+  if (sum.billId) html += '<div class="svp-info" style="opacity:.75">Bill ' + svcPayEsc(sum.billId) + (sum.billStatus ? ' · ' + svcPayEsc(String(sum.billStatus).replace(/_/g, ' ')) : '') + '</div>';
+  html += '</div>';
+  el.innerHTML = html;
+  if (st.sheet) svcPaySyncSheet(el);
+}
+function svcPaySheetHtml(job, sum, st, canFin) {
+  var mode = st.sheet, tol = svcPayTol(), t = sum.totals, methods = svcPayMethods(), h = '';
+  var title = { deposit: 'Take deposit', partial: 'Take payment', final: 'Settle balance', checkout: 'Checkout', refund: 'Refund a payment' }[mode] || 'Payment';
+  h += '<form class="svp-sheet" data-svp-sheet="' + svcPayEsc(mode) + '" novalidate><h4>' + svcPayEsc(title) + '</h4>';
+  if (mode === 'checkout') {
+    if (t.balance > tol) h += '<div class="svp-info">Balance owing: <b>' + svcPayEsc(svcPayMoney(t.balance)) + '</b>. Take the final payment to hand the item over.</div>';
+    else h += '<div class="svp-info">Fully paid. Hand the item over and close the job.</div>';
+  }
+  if (mode === 'refund') {
+    var orig = null; sum.payments.forEach(function (p) { if (p.id === st.refId) orig = p; });
+    if (orig) h += '<div class="svp-info">Refunding the ' + svcPayEsc(svcPayMoney(orig.amount)) + ' ' + svcPayEsc(svcPayMethodLabel(orig.method)) + ' payment of ' + svcPayEsc(svcPayWhen(orig.at)) + '. Still refundable: <b>' + svcPayEsc(svcPayMoney(orig.refundable)) + '</b>.</div>';
+  }
+  var needAmount = mode !== 'checkout' || t.balance > tol;
+  if (needAmount) {
+    var locked = mode === 'final' || mode === 'checkout';
+    h += '<label for="svp-amt">' + (mode === 'refund' ? 'Refund amount (KSh)' : 'Amount (KSh)') + '</label><input id="svp-amt" type="text" inputmode="decimal" autocomplete="off" ' + (locked ? 'readonly value="' + svcPayEsc(String(t.balance)) + '"' : 'placeholder="0"') + '>';
+    if (!locked && mode !== 'refund' && t.balance > tol) h += '<div class="svp-chips"><button type="button" class="svp-chip" data-svp-act="quick" data-q="half">Half of balance</button><button type="button" class="svp-chip" data-svp-act="quick" data-q="full">Full balance</button></div>';
+    if (mode === 'refund') h += '<div class="svp-chips"><button type="button" class="svp-chip" data-svp-act="quick" data-q="refundall">Whole payment</button></div>';
+  }
+  if (mode !== 'refund' && (needAmount)) {
+    h += '<div class="svp-methods" role="group" aria-label="Payment method">';
+    methods.forEach(function (m) { h += '<button type="button" class="svp-meth" data-svp-act="method" data-m="' + svcPayEsc(m.key) + '" aria-pressed="' + (st.method === m.key ? 'true' : 'false') + '">' + svcPayEsc(m.icon + ' ' + m.label) + '</button>'; });
+    h += '</div>';
+    h += '<div data-svp-when="cash"><label for="svp-tend">Cash given (optional)</label><input id="svp-tend" type="text" inputmode="decimal" autocomplete="off" placeholder="to work out change"></div>';
+    h += '<div data-svp-when="ref"><label for="svp-ref">Reference / M-Pesa code</label><input id="svp-ref" type="text" autocomplete="off" autocapitalize="characters" maxlength="40"></div>';
+    h += '<div data-svp-when="mpesa"><label for="svp-payer">Payer name (optional)</label><input id="svp-payer" type="text" autocomplete="off" maxlength="60"></div>';
+    if (svcPayStkAvailable()) h += '<div data-svp-when="mpesa"><label for="svp-stk-phone">Customer phone for an M-Pesa prompt</label><input id="svp-stk-phone" type="tel" inputmode="tel" autocomplete="off" value="' + svcPayEsc((job.customer && job.customer.phone) || '') + '"><div class="svp-row"><button type="button" id="svp-stk-btn" class="svp-btn" data-svp-act="stk">📲 Send STK prompt</button></div><div id="svp-stk-status" class="svp-info" aria-live="polite"></div></div>';
+  }
+  if (mode === 'refund') {
+    h += '<label for="svp-reason">Reason (required)</label><input id="svp-reason" type="text" autocomplete="off" maxlength="160">';
+    h += '<label for="svp-ref">Refund reference (optional)</label><input id="svp-ref" type="text" autocomplete="off" maxlength="40">';
+  } else {
+    h += '<label for="svp-note">Note (optional)</label><input id="svp-note" type="text" autocomplete="off" maxlength="160">';
+  }
+  if (mode === 'checkout' && t.balance > tol && canFin) {
+    h += '<label class="svp-chk"><input type="checkbox" id="svp-release"> Release the item with the balance still owing (stays on the open bill)</label><div data-svp-when="release"><label for="svp-rel-reason">Reason (required)</label><input id="svp-rel-reason" type="text" autocomplete="off" maxlength="160"></div>';
+  }
+  if (mode !== 'refund') h += '<label class="svp-chk"><input type="checkbox" id="svp-print" checked> Open the receipt after saving</label>';
+  h += '<div id="svp-info" class="svp-info" aria-live="polite"></div><div id="svp-err" class="svp-err" role="alert"></div>';
+  h += '<div class="svp-row"><button type="button" class="svp-btn" data-svp-act="cancel">Cancel</button><button type="submit" class="svp-btn primary" data-svp-act="submit">' + svcPayEsc(mode === 'refund' ? 'Record refund' : (mode === 'checkout' ? 'Complete checkout' : 'Record payment')) + '</button></div></form>';
+  return h;
+}
+function svcPaySyncSheet(el) {
+  var st = svcPayUiState(el, el.getAttribute('data-svp-job')), m = svcPayMethodDef(st.method) || svcPayMethods()[0], rel = el.querySelector('#svp-release');
+  if (m && st.method !== m.key) st.method = m.key;
+  var blocks = el.querySelectorAll('[data-svp-when]'), i;
+  for (i = 0; i < blocks.length; i++) {
+    var w = blocks[i].getAttribute('data-svp-when'), show = false;
+    if (w === 'cash') show = st.method === 'cash';
+    else if (w === 'ref') show = !!(m && m.ref);
+    else if (w === 'mpesa') show = st.method === 'mpesa';
+    else if (w === 'release') show = !!(rel && rel.checked);
+    blocks[i].style.display = show ? '' : 'none';
+  }
+  var btns = el.querySelectorAll('[data-svp-act="method"]');
+  for (i = 0; i < btns.length; i++) btns[i].setAttribute('aria-pressed', btns[i].getAttribute('data-m') === st.method ? 'true' : 'false');
+  svcPaySheetInfo(el);
+}
+function svcPaySheetInfo(el) {
+  var info = el.querySelector('#svp-info'); if (!info) return;
+  var amt = svcNum(svcPayVal('svp-amt')), tend = svcPayVal('svp-tend'), rel = el.querySelector('#svp-release');
+  if (rel && rel.checked) { info.textContent = 'The job is released with the balance still owing; it stays in Bills until it is paid.'; return; }
+  if (svcPayVal('svp-tend') !== '' && amt > 0) { var ch = svcRound2(svcNum(tend) - amt); info.textContent = ch >= 0 ? 'Change to give: ' + svcPayMoney(ch) : 'The cash given is less than the amount.'; }
+  else info.textContent = '';
+}
+function svcPayShowErr(el, msg) { var e = el.querySelector('#svp-err'); if (e) e.textContent = msg || ''; }
+function svcPayAct(el, act, btn) {
+  var jobId = el.getAttribute('data-svp-job'), st = svcPayUiState(el, jobId);
+  if (act === 'open') {
+    st.sheet = btn.getAttribute('data-mode'); st.key = svcPayNewId('pk-'); st.refId = btn.getAttribute('data-pay') || ''; st.busy = false;
+    if (!svcPayMethodDef(st.method)) st.method = svcPayMethods()[0].key;
+    svcPayRefreshTabLocal(el);
+    try { var f = el.querySelector('#svp-amt'); if (f && !f.readOnly && f.focus) f.focus(); var sh = el.querySelector('.svp-sheet'); if (sh && sh.scrollIntoView) sh.scrollIntoView({ block: 'nearest' }); } catch (e) { /* focus is cosmetic */ }
+    return;
+  }
+  if (act === 'cancel') { st.sheet = null; st.stk = null; svcPayRefreshTabLocal(el); return; }
+  if (act === 'method') { st.method = btn.getAttribute('data-m'); svcPaySyncSheet(el); return; }
+  if (act === 'quick') {
+    var sum = svcPaySummary(jobId), q = btn.getAttribute('data-q'), f2 = el.querySelector('#svp-amt'); if (!sum || !f2) return;
+    if (q === 'half') f2.value = String(svcRound2(sum.balance / 2)); else if (q === 'full') f2.value = String(sum.balance);
+    else if (q === 'refundall') { var o = null; sum.payments.forEach(function (p) { if (p.id === st.refId) o = p; }); if (o) f2.value = String(o.refundable); }
+    svcPaySheetInfo(el); return;
+  }
+  if (act === 'receipt') {
+    var r = svcPayPrintReceipt(jobId, btn.getAttribute('data-pay') || null);
+    if (!r.ok) svcPayToast(svcPayWhy(r), true);
+    return;
+  }
+  if (act === 'stk') { svcPayStkSend(el, st); return; }
+  if (act === 'submit') svcPaySubmit(el, st);
+}
+function svcPayRefreshTabLocal(el) { var id = el.getAttribute('data-svp-job'), job = id && svcPayJob(id); if (job) svcPayRenderTab(job, el); }
+function svcPayStkSend(el, st) {
+  if (!st.stk) {
+    try {
+      st.stk = createMpesaStkFlow({ phoneInputId: 'svp-stk-phone', codeInputId: 'svp-ref', statusElId: 'svp-stk-status', sendBtnId: 'svp-stk-btn', description: 'Service payment', sendLabel: '📲 Send STK prompt',
+        amountFn: function () { return svcNum(svcPayVal('svp-amt')); }, onConfirmed: function () { svcPaySheetInfo(el); } });
+    } catch (e) { st.stk = null; }
+  }
+  if (st.stk && st.stk.send) st.stk.send(); else svcPayShowErr(el, 'M-Pesa prompts are not available: type the M-Pesa code instead.');
+}
+function svcPaySubmit(el, st) {
+  if (st.busy) return;
+  var jobId = el.getAttribute('data-svp-job'), mode = st.sheet; if (!mode) return;
+  st.busy = true;
+  var btn = el.querySelector('[data-svp-act="submit"]'); if (btn) btn.disabled = true;
+  var done = function () { st.busy = false; var b2 = el.querySelector('[data-svp-act="submit"]'); if (b2) b2.disabled = false; };
+  var res;
+  try {
+    var base = { method: st.method, ref: svcPayVal('svp-ref'), payer: svcPayVal('svp-payer'), note: svcPayVal('svp-note'), tendered: svcPayVal('svp-tend') === '' ? undefined : svcPayVal('svp-tend') };
+    var ropts = { idemKey: st.key };
+    if (mode === 'refund') res = svcRefund(jobId, st.refId, svcPayVal('svp-amt'), svcPayVal('svp-reason'), { idemKey: st.key, ref: svcPayVal('svp-ref') });
+    else if (mode === 'checkout') {
+      var rel = el.querySelector('#svp-release'), co = { idemKey: st.key, note: base.note };
+      if (rel && rel.checked) { co.releaseWithBalance = true; co.reason = svcPayVal('svp-rel-reason'); }
+      else if (svcPayVal('svp-amt') !== '' || svcPaySummary(jobId).balance > svcPayTol()) { co.method = base.method; co.ref = base.ref; co.payer = base.payer; co.tendered = base.tendered; }
+      res = svcCheckout(jobId, co);
+      if (res && res.code === 'dup_ref') res = svcPayConfirmDup(res, function () { co.allowDuplicateRef = true; return svcCheckout(jobId, co); });
+    } else {
+      base.kind = mode === 'final' ? 'final' : mode; base.amount = svcPayVal('svp-amt');
+      res = svcRecordPayment(jobId, base, ropts);
+      if (res && res.code === 'dup_ref') res = svcPayConfirmDup(res, function () { ropts.allowDuplicateRef = true; return svcRecordPayment(jobId, base, ropts); });
+    }
+  } catch (e) { res = { ok: false, why: String((e && e.message) || e) }; }
+  if (!res || !res.ok) { svcPayShowErr(el, svcPayWhy(res)); done(); return; }
+  var wantPrint = !el.querySelector('#svp-print') || el.querySelector('#svp-print').checked;
+  st.sheet = null; st.stk = null; st.key = ''; done();
+  var msg = mode === 'refund' ? 'Refund recorded.' : (mode === 'checkout' ? (res.released ? 'Released with the balance on the open bill.' : 'Checkout complete.') : 'Payment recorded.');
+  if (res.change > 0) msg += ' Change: ' + svcPayMoney(res.change) + '.';
+  svcPayToast(msg);
+  (res.warnings || []).forEach(function (w) { svcPayToast(w.msg, true); });
+  svcPayRefreshTab(el);
+  if (wantPrint && mode !== 'refund') svcPayPrintReceipt(jobId, mode === 'checkout' ? null : (res.payment && res.payment.id) || null);
+}
+function svcPayConfirmDup(res, retry) {
+  var ok = false;
+  try { ok = typeof confirm === 'function' && confirm(String(res.why || 'This reference was already used.') + '\n\nRecord it anyway?'); } catch (e) { ok = false; }
+  return ok ? retry() : res;
+}
+
+/* ===== registration (registries + events only: no edits outside this block) ===== */
+try {
+  if (typeof svcDrawerRegister === 'function') {
+    svcDrawerRegister('payments', { label: '💳 Payments', order: 60, render: svcPayRenderTab, visibleWhen: function (job) { return !!job && !job._legacy && (svcPayCan('svc:pay') || svcPayCan('svc:financials')); } });
+  }
+} catch (svcPayRegErr) { /* the drawer simply has no payments tab */ }
+try {
+  if (typeof svcOn === 'function') ['charge:added', 'material:used', 'quote:changed', 'job:updated'].forEach(function (ev) { svcOn(ev, svcPayOnJobEvent); });
+} catch (svcPayEvErr) { /* the bill re-syncs whenever the payments tab opens or a payment is taken */ }
+</script>

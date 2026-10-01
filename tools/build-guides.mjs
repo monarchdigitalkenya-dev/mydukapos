@@ -587,6 +587,11 @@ MODS.production = {
   ],
 };
 
+// Services engine chapters (SERVICES_ARCHITECTURE.md Appendix A): empty until the engine UI ships (B4 adds them, then runs `npm run guides` and `npm run sync`).
+// Add ch(...) entries here (e.g. 'Choosing your business type', 'Job board and quotes'); they are appended to the Services POS guide after its own chapters.
+// Keep every tab label of the Services app described in TAB / tabText (tests/guides.test.mjs).
+const SVC_GUIDE_CHAPTERS = [];
+
 MODS.services = {
   name: 'Services POS', title: 'Services POS — User Guide', tagline: 'Repair shops, salons and service businesses — job intake, client registry, bookings, parts sales and reports.',
   itemsPlural: 'items and services', itemWord: 'item', addTab: '📦 Add New Items', restockTab: '📥 Restock',
@@ -616,6 +621,7 @@ MODS.services = {
     ch('sale', '🛒', 'Selling parts', {
       steps: ['**🛒 Sales Counter** works like the Shop: search, add, choose payment, **Complete**. **🔥 Gas Refill** handles cylinder refills and exchanges.'],
     }),
+    ...SVC_GUIDE_CHAPTERS,
   ],
 };
 

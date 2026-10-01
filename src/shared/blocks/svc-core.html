@@ -1,0 +1,348 @@
+<!-- SVC CORE ---------------------------------------------------------------------------------------
+     Services engine block "svc-core". Written ONLY into services/index.html (tools/lib.mjs SHARED_BLOCKS `only`); never hand-edit it there.
+     OWNER: B1-A. Nobody else edits this file.
+     STATE: IMPLEMENTED (B1-A).
+     KIND: pure (DOM-free, vm-loadable). Plain global functions (no IIFE), ES2018 max, every global name starts with svc / Svc / SVC_.
+     CONTRACT: svcNow, svcId, svcNormPhone, svcPhoneKey, svcNormPlate, svcValidImei, svcNextJobNo, svcCan, svcActor, svcTotals (the FINAL contract of section 3.6), svcOn / svcEmit (events job:created job:status job:updated payment:recorded material:used charge:added quote:changed config:changed render:home).
+     SPEC: SERVICES_ARCHITECTURE.md 2.1 row 1, 3.6, 8.3 (svc-core). Dependency direction (8.3): B1 blocks never call B2/B3 functions; cross-block calls are guarded with typeof.
+     After editing run `npm run sync`; `npm run check` fails if services/index.html differs from this file. -->
+<script>
+/* ===== constants ===== */
+var SVC_KE_DEFAULTS = { country: 'KE', currency: 'KES', currencyLabel: 'KSh', dialCode: '254', phoneRule: 'ke', plateRule: 'ke' };
+var SVC_PERMS = ['svc:view', 'svc:create', 'svc:edit', 'svc:assign', 'svc:status', 'svc:quote', 'svc:approve', 'svc:charge', 'svc:inventory', 'svc:customers', 'svc:financials', 'svc:pay', 'svc:cancel', 'svc:history', 'svc:manageServices', 'svc:manageConfig'];
+var SVC_IMPLICIT_DENY = ['svc:approve', 'svc:manageServices', 'svc:manageConfig'];
+var SVC_EVENTS = ['job:created', 'job:status', 'job:updated', 'payment:recorded', 'material:used', 'charge:added', 'quote:changed', 'config:changed', 'render:home'];
+var SVC_MONEY_TOL = 0.005;
+var SVC_LISTENERS = {};
+var SVC_ID_SEQ = 0;
+
+/* ===== small pure helpers ===== */
+function svcNow() {
+  try { if (typeof window !== 'undefined' && window && typeof window.__svcNow === 'number') return window.__svcNow; } catch (e) { /* no window */ }
+  try { if (typeof window !== 'undefined' && window && typeof window.__svcNow === 'function') return Number(window.__svcNow()) || Date.now(); } catch (e2) { /* ignore */ }
+  return Date.now();
+}
+function svcNum(v) { var n = typeof v === 'number' ? v : parseFloat(String(v == null ? '' : v).replace(/,/g, '')); return isFinite(n) ? n : 0; }
+function svcRound2(n) { n = svcNum(n); return Math.round((n + (n < 0 ? -1 : 1) * 1e-9) * 100) / 100; }
+function svcPad(n, w) { var s = String(n); while (s.length < w) s = '0' + s; return s; }
+function svcSlug(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40); }
+function svcFirstName(name) { var t = String(name == null ? '' : name).trim().split(/\s+/)[0] || ''; return t; }
+function svcIsObj(v) { return v !== null && typeof v === 'object'; }
+function svcArr(v) { return Array.isArray(v) ? v : []; }
+function svcDayKey(ms) {
+  var t = ms == null ? svcNow() : ms;
+  try { if (typeof bizDayKey === 'function') { var k = bizDayKey(t); if (k) return k; } } catch (e) { /* fall through */ }
+  var d = new Date(Number(t) + 3 * 3600000);
+  return d.getUTCFullYear() + '-' + svcPad(d.getUTCMonth() + 1, 2) + '-' + svcPad(d.getUTCDate(), 2);
+}
+function svcId(prefix) {
+  var p = String(prefix == null ? '' : prefix).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 14);
+  var base = '';
+  try { if (typeof genSaleId === 'function') base = String(genSaleId()); } catch (e) { base = ''; }
+  base = base.replace(/[^A-Za-z0-9_-]/g, '');
+  if (base.length < 12) { SVC_ID_SEQ = (SVC_ID_SEQ + 1) % 46656; base = Date.now() + '-' + svcPad(SVC_ID_SEQ.toString(36), 3) + (Math.random().toString(36).slice(2, 8) + '000000').slice(0, 6); }
+  return (p + base).slice(0, 40);
+}
+
+/* ===== country / money ===== */
+function svcBizCfg(cfg) {
+  var c = cfg && typeof cfg === 'object' ? (cfg.value && typeof cfg.value === 'object' ? cfg.value : cfg) : null;
+  if (!c) { try { if (typeof svcConfigGet === 'function') { var r = svcConfigGet('cfg-business'); c = r && (r.value || r); } } catch (e) { c = null; } }
+  var out = {}, k;
+  for (k in SVC_KE_DEFAULTS) out[k] = SVC_KE_DEFAULTS[k];
+  if (c && typeof c === 'object') for (k in c) { if (c[k] !== undefined && c[k] !== null && c[k] !== '') out[k] = c[k]; }
+  out.dialCode = String(out.dialCode).replace(/\D/g, '') || '254';
+  return out;
+}
+function svcFormatMoney(amount, cfg) {
+  var b = svcBizCfg(cfg), n = svcRound2(amount), neg = n < 0; n = Math.abs(n);
+  var whole = n % 1 === 0, s = whole ? String(n) : n.toFixed(2);
+  var parts = s.split('.'); parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return (neg ? '-' : '') + (b.currencyLabel || b.currency) + ' ' + parts.join('.');
+}
+
+/* ===== phone ===== */
+function svcPhoneDigits(raw) { return String(raw == null ? '' : raw).replace(/\D/g, ''); }
+function svcPhoneKey(raw) {
+  var d = svcPhoneDigits(raw);
+  if (d.length < 7) return '';
+  return d.slice(-9);
+}
+function svcNormPhone(raw, cfg) {
+  var b = svcBizCfg(cfg), s = String(raw == null ? '' : raw).trim();
+  var res = { ok: false, e164: '', national: '', key: '', reason: '', level: 'error' };
+  if (!s) { res.reason = 'empty'; return res; }
+  if (/[A-Za-z]/.test(s)) { res.reason = 'Phone numbers contain digits only'; return res; }
+  s = s.replace(/[\s\-.()\/]/g, '');
+  if (/^00/.test(s)) s = '+' + s.slice(2);
+  var plus = s.charAt(0) === '+';
+  var d = s.replace(/\D/g, '');
+  if (!d || /[^\d+]/.test(s.replace(/^\+/, ''))) { res.reason = 'Phone numbers contain digits only'; return res; }
+  var m = null, dial = b.dialCode;
+  if (b.phoneRule === 'ke' && dial === '254') {
+    if (plus && !/^254/.test(d)) {
+      if (d.length >= 8 && d.length <= 15) { res.ok = true; res.level = 'warn'; res.reason = 'Non-Kenyan number'; res.national = '+' + d; res.e164 = '+' + d; res.key = svcPhoneKey(d); return res; }
+    } else {
+      if (/^254/.test(d)) m = /^254(?:0)?([17]\d{8})$/.exec(d);
+      else if (/^0/.test(d)) m = /^0([17]\d{8})$/.exec(d);
+      else m = /^([17]\d{8})$/.exec(d);
+      if (m) { res.ok = true; res.level = 'ok'; res.national = '0' + m[1]; res.e164 = '+254' + m[1]; res.key = m[1]; return res; }
+      var l = /^(?:254|0)([2-6]\d{7,8})$/.exec(d);
+      if (l) { res.ok = true; res.level = 'warn'; res.reason = 'Landline number'; res.national = '0' + l[1]; res.e164 = '+254' + l[1]; res.key = svcPhoneKey(d); return res; }
+    }
+    res.reason = 'Enter a valid Kenyan number, e.g. 0712 345 678 or +254 712 345 678';
+    return res;
+  }
+  /* generic rule: any country, never blocks (warn) */
+  var full;
+  if (plus) full = d; else if (d.charAt(0) === '0') full = dial + d.slice(1); else if (d.indexOf(dial) === 0 && d.length >= dial.length + 6) full = d; else full = dial + d;
+  if (full.length < 7 || full.length > 15) { res.reason = 'Enter a valid phone number'; return res; }
+  res.ok = true; res.level = 'warn'; res.reason = 'Number not checked against a country format';
+  res.e164 = '+' + full; res.national = full.indexOf(dial) === 0 ? '0' + full.slice(dial.length) : '+' + full; res.key = svcPhoneKey(full);
+  return res;
+}
+
+/* ===== number plates ===== */
+function svcPlateKey(raw) { return String(raw == null ? '' : raw).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function svcCheckPlate(raw, cfg) {
+  var key = svcPlateKey(raw), out = { ok: false, norm: '', key: key, kind: '', level: 'error', reason: '' };
+  if (!key) { out.reason = 'empty'; return out; }
+  var m;
+  if ((m = /^(K[A-Z]{2,3})(\d{3})([A-Z])$/.exec(key))) {
+    out.ok = true; out.level = 'ok'; out.kind = /^KM[A-Z]{2}/.test(key) && key.length === 8 ? 'motorcycle' : (/^KT[A-Z]{2}/.test(key) && key.length === 8 ? 'tuktuk' : 'standard');
+    out.norm = m[1] + ' ' + m[2] + m[3]; return out;
+  }
+  if ((m = /^(GK)(\d{3,4})([A-Z]?)$/.exec(key))) { out.ok = true; out.level = 'ok'; out.kind = 'government'; out.norm = 'GK ' + m[2] + m[3]; return out; }
+  if ((m = /^(\d{1,3})(CD)(\d{1,3})$/.exec(key))) { out.ok = true; out.level = 'ok'; out.kind = 'diplomatic'; out.norm = m[1] + ' CD ' + m[3]; return out; }
+  if ((m = /^(UN)(\d{1,4})([A-Z]?)$/.exec(key))) { out.ok = true; out.level = 'ok'; out.kind = 'un'; out.norm = 'UN ' + m[2] + m[3]; return out; }
+  if ((m = /^(K[A-Z]{2})(\d{3})$/.exec(key))) { out.ok = true; out.level = 'warn'; out.kind = 'old'; out.reason = 'Old-style plate'; out.norm = m[1] + ' ' + m[2]; return out; }
+  if (key.length >= 3 && key.length <= 10) {
+    out.ok = true; out.level = 'warn'; out.kind = 'other'; out.reason = 'Not a standard Kenyan format (accepted)'; out.norm = String(raw).toUpperCase().replace(/[^A-Z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim() || key;
+    if (/\s/.test(out.norm) === false && key.length > 3) out.norm = key; return out;
+  }
+  out.reason = key.length < 3 ? 'Plate is too short' : 'Plate is too long';
+  out.norm = key;
+  return out;
+}
+function svcNormPlate(raw) { var c = svcCheckPlate(raw); return c.norm || svcPlateKey(raw); }
+
+/* ===== IMEI ===== */
+function svcLuhn(digits) {
+  var sum = 0, dbl = false, i;
+  for (i = digits.length - 1; i >= 0; i--) {
+    var n = digits.charCodeAt(i) - 48;
+    if (n < 0 || n > 9) return false;
+    if (dbl) { n *= 2; if (n > 9) n -= 9; }
+    sum += n; dbl = !dbl;
+  }
+  return digits.length > 0 && sum % 10 === 0;
+}
+function svcValidImei(raw) {
+  var digits = String(raw == null ? '' : raw).replace(/[\s\-\/.]/g, '');
+  var res = { ok: false, digits: digits.replace(/\D/g, ''), luhn: false, level: 'error', reason: '' };
+  if (!digits) { res.reason = 'empty'; return res; }
+  if (/\D/.test(digits)) { res.reason = 'IMEI is digits only'; return res; }
+  if (digits.length !== 15) { res.reason = 'IMEI has 15 digits (dial *#06# to see it)'; res.level = 'warn'; return res; }
+  res.ok = true; res.luhn = svcLuhn(digits);
+  res.level = res.luhn ? 'ok' : 'warn';
+  if (!res.luhn) res.reason = 'IMEI checksum does not match - check the digits';
+  return res;
+}
+
+/* ===== built-in field validators: svcBuiltinValidate(kind, value, opts) -> {ok, level, msg} =====
+   kind: phone | phoneOptional | plate | imei | year | money | odometer | email. Empty values are "ok" (required is checked by the form). */
+function svcBuiltinValidate(kind, value, opts) {
+  opts = opts || {};
+  var cfg = opts.cfg, empty = value == null || String(value).trim() === '';
+  var okRes = { ok: true, level: 'ok', msg: '' };
+  if (empty) return okRes;
+  var r;
+  if (kind === 'phone' || kind === 'phoneOptional') {
+    r = svcNormPhone(value, cfg);
+    if (!r.ok) return { ok: false, level: kind === 'phone' && opts.required ? 'error' : 'warn', msg: r.reason };
+    if (r.level === 'warn') return { ok: true, level: 'warn', msg: r.reason };
+    return okRes;
+  }
+  if (kind === 'plate') {
+    r = svcCheckPlate(value, cfg);
+    if (!r.ok) return { ok: false, level: 'error', msg: r.reason };
+    return r.level === 'warn' ? { ok: true, level: 'warn', msg: r.reason } : okRes;
+  }
+  if (kind === 'imei') {
+    r = svcValidImei(value);
+    if (r.ok && r.luhn) return okRes;
+    return { ok: r.ok, level: 'warn', msg: r.reason };
+  }
+  if (kind === 'year') {
+    var y = parseInt(value, 10), maxY = new Date(svcNow()).getUTCFullYear() + 1;
+    if (!/^\d{4}$/.test(String(value).trim()) || y < 1950 || y > maxY) return { ok: false, level: 'error', msg: 'Enter a year between 1950 and ' + maxY };
+    return okRes;
+  }
+  if (kind === 'money') {
+    var n = Number(String(value).replace(/,/g, ''));
+    if (!isFinite(n) || n < 0) return { ok: false, level: 'error', msg: 'Enter an amount of 0 or more' };
+    return okRes;
+  }
+  if (kind === 'odometer') {
+    var o = Number(String(value).replace(/,/g, ''));
+    if (!isFinite(o) || o < 0 || o > 3000000) return { ok: false, level: 'error', msg: 'Enter the mileage in km' };
+    return okRes;
+  }
+  if (kind === 'email') {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(value).trim())) return { ok: false, level: 'error', msg: 'Enter a valid email address' };
+    return okRes;
+  }
+  return okRes;
+}
+
+/* ===== job numbers: PFX-yymmdd-T<till>-<seq3> (till-less devices use D<3 chars of the device id>) ===== */
+function svcJobNoPrefix(typeKey) {
+  try { if (typeof SVC_TYPES !== 'undefined' && SVC_TYPES[typeKey] && SVC_TYPES[typeKey].prefix) return SVC_TYPES[typeKey].prefix; } catch (e) { /* templates not loaded */ }
+  return 'SV';
+}
+function svcDeviceSeg(opts) {
+  var till = opts && opts.till != null ? Number(opts.till) : 0;
+  if (!(opts && opts.till != null)) { try { if (typeof tillNumber === 'function') till = Number(tillNumber()) || 0; } catch (e) { till = 0; } }
+  if (till >= 1 && till <= 99) return 'T' + till;
+  var id = '';
+  if (opts && opts.deviceId) id = String(opts.deviceId);
+  else { try { if (typeof getOrCreateDeviceId === 'function') id = String(getOrCreateDeviceId()); } catch (e2) { id = ''; } }
+  id = id.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  return 'D' + (id.slice(-3) || '000');
+}
+function svcNextJobNo(typeKey, opts) {
+  opts = opts || {};
+  var now = opts.now != null ? opts.now : svcNow();
+  var day = svcDayKey(now), yymmdd = day.slice(2, 4) + day.slice(5, 7) + day.slice(8, 10);
+  var seg = svcDeviceSeg(opts), tail = '-' + yymmdd + '-' + seg + '-';
+  var store = opts.storage; if (!store) { try { store = localStorage; } catch (e) { store = null; } }
+  var n = 0, st = null;
+  try { st = store ? JSON.parse(store.getItem('pos_svc_seq') || 'null') : null; } catch (e1) { st = null; }
+  if (st && st.day === day && st.seg === seg) n = Number(st.n) || 0;
+  else if (st && st.day === day && st.seg === undefined) n = Number(st.n) || 0;
+  var jobs = opts.jobs;
+  if (!jobs) { try { jobs = typeof svcJobs !== 'undefined' && Array.isArray(svcJobs) ? svcJobs : []; } catch (e3) { jobs = []; } }
+  var extra = opts.taken || [];
+  var taken = {}, i, j, no, p;
+  for (i = 0; i < jobs.length; i++) { no = jobs[i] && jobs[i].no; if (no) taken[no] = 1; }
+  for (j = 0; j < extra.length; j++) taken[extra[j]] = 1;
+  for (no in taken) {
+    p = no.indexOf(tail);
+    if (p > 0 && p <= 4 && /^\d+$/.test(no.slice(p + tail.length))) { var v = parseInt(no.slice(p + tail.length), 10); if (v > n) n = v; }
+  }
+  var pfx = svcJobNoPrefix(typeKey), out;
+  do { n += 1; out = pfx + tail + svcPad(n, 3); } while (taken[out]);
+  try { if (store && opts.persist !== false) store.setItem('pos_svc_seq', JSON.stringify({ day: day, seg: seg, n: n })); } catch (e4) { /* storage full / blocked: the scan above keeps numbers unique */ }
+  return out;
+}
+
+/* ===== actor / permissions ===== */
+function svcCurrentMember() { try { if (typeof currentServer !== 'undefined' && currentServer) return currentServer; } catch (e) { /* TDZ or absent */ } return null; }
+function svcActor() {
+  var m = svcCurrentMember();
+  if (m) return { id: String(m.id == null ? '' : m.id), name: String(m.name || 'Staff') };
+  return { id: 'owner', name: 'Owner' };
+}
+function svcCan(perm, member) {
+  var p = String(perm || ''); if (p.indexOf('svc:') !== 0) p = 'svc:' + p;
+  var m = arguments.length > 1 && member !== undefined ? member : svcCurrentMember();
+  if (!m) return true;                                    /* owner / admin session */
+  if (m.isManager) return true;
+  var roles = svcArr(m.roles), explicit = false, i;
+  for (i = 0; i < roles.length; i++) { if (String(roles[i]).indexOf('svc:') === 0) { explicit = true; break; } }
+  if (p === 'svc:manageConfig' && svcArr(m.adminPermissions).indexOf('settings-section-services') !== -1) return true;
+  if (explicit) return roles.indexOf(p) !== -1;
+  if (roles.indexOf('services-counter-tab') !== -1 || roles.indexOf('client-registry-tab') !== -1) return SVC_IMPLICIT_DENY.indexOf(p) === -1;
+  return false;
+}
+
+/* ===== pub / sub ===== */
+function svcOn(evt, fn) {
+  if (typeof fn !== 'function') return function () {};
+  (SVC_LISTENERS[evt] = SVC_LISTENERS[evt] || []).push(fn);
+  return function () { svcOff(evt, fn); };
+}
+function svcOff(evt, fn) {
+  var l = SVC_LISTENERS[evt]; if (!l) return;
+  var i = l.indexOf(fn); if (i !== -1) l.splice(i, 1);
+}
+function svcEmit(evt, payload) {
+  var l = (SVC_LISTENERS[evt] || []).slice().concat((SVC_LISTENERS['*'] || []).slice()), i, n = 0;
+  for (i = 0; i < l.length; i++) { try { l[i](payload, evt); n++; } catch (e) { try { if (typeof console !== 'undefined') console.error('svcEmit ' + evt, e); } catch (e2) { /* ignore */ } } }
+  return n;
+}
+
+/* ===== totals (SERVICES_ARCHITECTURE.md 3.6 - FINAL contract) ===== */
+function svcQuoteApprovedAmount(job) {
+  var log = svcArr(job && job.quoteLog), i, last = null;
+  for (i = 0; i < log.length; i++) {
+    var e = log[i]; if (!e) continue;
+    if (e.act === 'approve') last = e;
+    else if (last && (e.act === 'revise' || e.act === 'reject' || e.act === 'expire')) last = null;
+  }
+  if (!last) return null;
+  var vs = svcArr(job.quoteVersions), k;
+  for (k = vs.length - 1; k >= 0; k--) { if (vs[k] && vs[k].v === last.v && vs[k].total != null) return svcRound2(vs[k].total); }
+  return last.amount != null ? svcRound2(last.amount) : null;
+}
+function svcTotals(job, opts) {
+  job = job || {}; opts = opts || {};
+  var cfg = opts.cfg || svcBizCfg(null);
+  var taxMode = opts.taxMode || cfg.taxMode || 'none', taxRate = svcNum(opts.taxRate != null ? opts.taxRate : cfg.taxRate);
+  var lines = [], i, x, services = 0, materials = 0, materialCost = 0, labour = 0, additional = 0, discount = 0, rejected = 0;
+  var js = svcArr(job.jobServices);
+  for (i = 0; i < js.length; i++) {
+    x = js[i]; if (!x || x.removedAt || x.voidedAt || x.cancelled) continue;
+    var q = x.qty == null || x.qty === '' ? 1 : svcNum(x.qty), a = svcRound2(q * svcNum(x.price));
+    services += a; lines.push({ kind: 'service', name: x.name || 'Service', qty: q, price: svcNum(x.price), amount: a, source: x.source || 'base' });
+  }
+  var ms = svcArr(job.materials);
+  for (i = 0; i < ms.length; i++) {
+    x = ms[i]; if (!x || x.reversedAt || x.void) continue;
+    var mq = svcNum(x.qty);
+    materialCost += mq * svcNum(x.cost);
+    if (x.chargeable) { var ma = svcRound2(mq * svcNum(x.price)); materials += ma; lines.push({ kind: 'part', name: x.name || 'Part', qty: mq, price: svcNum(x.price), amount: ma }); }
+  }
+  var ch = svcArr(job.charges);
+  for (i = 0; i < ch.length; i++) {
+    x = ch[i]; if (!x || x.voidedAt) continue;
+    var amt = svcRound2(Math.abs(svcNum(x.amount)));
+    if (x.approved === false) { rejected += amt; continue; }
+    if (x.kind === 'discount') { discount += amt; lines.push({ kind: 'discount', name: x.label || 'Discount', qty: 1, price: -amt, amount: -amt }); }
+    else if (x.kind === 'labour') { labour += amt; lines.push({ kind: 'labour', name: x.label || 'Labour', qty: 1, price: amt, amount: amt }); }
+    else { additional += amt; lines.push({ kind: 'charge', name: x.label || 'Additional charge', qty: 1, price: amt, amount: amt }); }
+  }
+  if (job.discount && svcNum(job.discount.amount) > 0) { var da = svcRound2(svcNum(job.discount.amount)); discount += da; lines.push({ kind: 'discount', name: job.discount.reason || 'Discount', qty: 1, price: -da, amount: -da }); }
+  if (job._legacy) {                                        /* legacy rows: an agreed price (finalAmount / quoteAmount) overrides the sum, like SERVICE-ADJUSTMENT */
+    var priced = services + materials + labour + additional > 0;
+    var agreed = job.finalAmount != null && job.finalAmount !== '' ? svcNum(job.finalAmount) : (!priced && job.quoteAmount != null && job.quoteAmount !== '' ? svcNum(job.quoteAmount) : null);
+    if (agreed != null) {
+      var diff = svcRound2(agreed - (services + materials + labour + additional - discount));
+      if (Math.abs(diff) > SVC_MONEY_TOL) { additional += diff; lines.push({ kind: 'charge', name: diff > 0 ? 'Agreed price' : 'Agreed price adjustment', qty: 1, price: diff, amount: diff }); }
+    }
+  }
+  services = svcRound2(services); materials = svcRound2(materials); labour = svcRound2(labour); additional = svcRound2(additional); discount = svcRound2(discount);
+  var subtotal = svcRound2(services + materials + labour + additional - discount);
+  var tax = taxMode === 'exclusive' && taxRate > 0 ? svcRound2(Math.max(0, subtotal) * taxRate / (taxRate > 1 ? 100 : 1)) : 0;
+  if (tax > 0) lines.push({ kind: 'tax', name: 'Tax', qty: 1, price: tax, amount: tax });
+  var total = svcRound2(Math.max(0, subtotal + tax));
+  var paid = 0, ps = svcArr(job.payments), hasPay = false;
+  for (i = 0; i < ps.length; i++) { x = ps[i]; if (!x || x.voidedAt) continue; paid += svcNum(x.amount); hasPay = true; }
+  if (!hasPay && (job.billId || job.saleId || svcArr(job.saleIds).length)) {
+    var bl = opts.bills; if (!bl) { try { bl = typeof bills !== 'undefined' && Array.isArray(bills) ? bills : []; } catch (e) { bl = []; } }
+    var bill = null; for (i = 0; i < bl.length; i++) { if (bl[i] && bl[i].id === job.billId) { bill = bl[i]; break; } }
+    if (bill) paid = svcNum(bill.amountPaid);
+    else if ((job.saleId || svcArr(job.saleIds).length) && !job.billId) paid = total;
+  }
+  paid = svcRound2(paid);
+  var balance = svcRound2(Math.max(0, total - paid));
+  if (balance < SVC_MONEY_TOL) balance = 0;
+  var paymentStatus = paid > total + SVC_MONEY_TOL ? 'overpaid' : (paid <= SVC_MONEY_TOL ? 'unpaid' : (balance <= SVC_MONEY_TOL ? 'paid' : 'partial'));
+  materialCost = svcRound2(materialCost);
+  return {
+    servicesTotal: services, materialsTotal: materials, labour: labour, additional: additional, discount: discount, subtotal: subtotal, tax: tax, total: total,
+    paid: paid, balance: balance, paymentStatus: paymentStatus, approvedAmount: svcQuoteApprovedAmount(job), lines: lines,
+    services: services, materials: materials, charges: svcRound2(labour + additional), materialCost: materialCost, margin: svcRound2(total - tax - materialCost), rejectedCharges: svcRound2(rejected)
+  };
+}
+</script>

@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeCrm, lead, newPhone } from './crm-harness.mjs';
 
+// zip 162: the follow-up cases use "in 1-3 hours" - near midnight EAT that lands on tomorrow. Pin the clock to midday EAT (09:00 UTC) of today; it still ticks.
+{ const real = Date.now.bind(Date), d = new Date(real()); d.setUTCHours(9, 0, 0, 0); const off = d.getTime() - real(); Date.now = () => real() + off; }
 const shop = (c) => c.q(`select id from crm_products where key = 'shop'`)[0].id;
 
 test('single lead: validation errors name the field; phones are normalised; nothing is stored on a bad request', async () => {

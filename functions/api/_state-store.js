@@ -329,7 +329,10 @@ export async function noteOversize(env, clientId, bytes, policy) {
 // The append-only logs are what make a busy shop grow (~1.7 KB per sale). Archiving moves records OLDER than a cutoff out of
 // the live state into a gzipped archive record (kept, downloadable, restorable), leaving a "hot window" of recent history.
 export const ARCHIVE_PREFIX = 'pos-data:archive:';
-export const ARCHIVE_LOG_FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog'];
+export const ARCHIVE_LOG_FIELDS = ['salesLog', 'stockMovementLog', 'returns', 'expenses', 'tradeCredits', 'attendanceLog', 'adminActivityLog', 'dispatchLog',
+  // Services engine (SERVICES_ARCHITECTURE.md 3.4): a busy car wash adds ~4 KB per vehicle, so finished jobs / appointments must be archivable.
+  // Open ones (closedAt == null) are never archived: see isOpenRecord.
+  'svcJobs', 'svcAppointments'];
 
 // Best-effort time of a log record (ms epoch), or NaN when it has none we recognise (such records always stay live).
 export function recordTime(r) {
@@ -349,6 +352,8 @@ export function isOpenRecord(field, r) {
   if (!r || typeof r !== 'object') return false;
   if (field === 'tradeCredits') return !r._deleted && r.status !== 'settled' && !r.settledAt;
   if (field === 'attendanceLog') return !r._deleted && r.clockIn != null && (r.clockOut == null || r.clockOut === '');
+  // Services engine: a job / appointment that has not been closed yet is live work, whatever its date. Keep identical to isOpen() in storage-and-photos.html.
+  if (field === 'svcJobs' || field === 'svcAppointments') return !r._deleted && r.closedAt == null;
   return false;
 }
 
