@@ -422,8 +422,8 @@ export async function createClient(env, type, label, product, extra = {}) {
     // "Generate Link" won't have either unless the owner types them in.
     phone: extra.phone || '',
     email: extra.email || '',
-    // Where this client link came from — 'website' (public-site self-signup
-    // in demo-account.js, or the legacy anonymous flow in public-demo.js),
+    // Where this client link came from — 'signup' (account self-signup in demo-account.js), 'website' (the legacy
+    // anonymous flow in public-demo.js),
     // 'lead' (closed out of the Owner Console's own Leads tracker, see
     // the old Leads tab's generateLink action), or 'owner' (typed directly into the
     // 🔗 Licenses tab's "Generate Demo Link", the default for everything

@@ -222,7 +222,7 @@ export async function onRequestPost(context) {
         phone,
         clientName: account.fullName,
         email,
-        source: 'website',
+        source: 'signup',               // zip 169: an app account sign-up is NOT the public website (only the website's own form / anonymous demo are 'website')
         svcType: body.svcType,          // Services POS business type (optional passthrough)
       });
       account.demoUsed = true;

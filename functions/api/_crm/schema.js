@@ -9,7 +9,7 @@
 import { listProducts } from '../_license.js';
 
 export const CRM_SCHEMA_VERSION = 5;                      // zip 161: 4 -> 5 (the speed indexes below; a database at 4 gets them at its next first use)
-export const CRM_SEED_VERSION = 3;
+export const CRM_SEED_VERSION = 4;
 
 // Columns added after schema v1. A database created at v1 gets them through ALTER TABLE ... ADD COLUMN in ensureCrmSchema (CREATE TABLE IF NOT EXISTS
 // cannot add columns to a table that already exists); a fresh database (or migrations/0002_crm.sql) gets them from the CREATE TABLE itself.

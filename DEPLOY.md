@@ -105,3 +105,17 @@ What changed (see CHANGES_ZIP_163.md): sticky total + payment methods + Confirm 
 5. Payment methods: since zip 163 this is **Settings → "Payment methods you accept"** in every module (the old hotel-only box is gone).
 6. Services: existing shops stay in classic mode until the owner taps "Choose your business type"; nothing is migrated or rewritten.
 Details: `CHANGES_ZIP_162.md`, `SERVICES_ARCHITECTURE.md`.
+
+## Zip 168 — Sales Counter checkout workspace — no migration, no router change
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. Rebuild the APK/EXE (GitHub Actions); hard-refresh each app once (service worker `zip-168`).
+Details: `CHANGES_ZIP_168.md`.
+
+## Zip 169 — no migration file
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. Open `https://mydukapos.store/crm/` once while online (re-labels old sign-up leads).
+Details: `CHANGES_ZIP_169.md`.
