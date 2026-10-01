@@ -126,3 +126,24 @@ Details: `CHANGES_ZIP_169.md`.
 3. `npm run deploy`
 4. Rebuild the APK/EXE (GitHub Actions); hard-refresh each app once (service worker `zip-170`).
 Details: `CHANGES_ZIP_170.md`.
+
+## Zip 171 — no migration
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. Rebuild the APK/EXE only if you want it in the phone/PC apps; hard-refresh each app once (`zip-171`).
+Details: `CHANGES_ZIP_171.md`.
+
+## Zip 172 — no migration
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. Rebuild the APK/EXE only if you want it in the phone/PC apps; hard-refresh each app once (`zip-172`).
+Details: `CHANGES_ZIP_172.md`.
+
+## Zip 173 — no migration
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. `git add -A`, `git commit -m "Zip 173"`, `git push` (the push re-runs the Windows build); hard-refresh each app once (`zip-173`).
+Details: `CHANGES_ZIP_173.md`.

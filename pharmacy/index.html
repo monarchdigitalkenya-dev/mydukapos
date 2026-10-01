@@ -25773,9 +25773,14 @@ async function zReportPreflight() {
                 <div style="border:1px solid var(--light); border-radius:8px; padding:12px; margin-bottom:10px;">
                     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
                         <strong>${nameHtml}${b.isSelf ? ' <span style="color:#7f8c8d; font-weight:normal;">(this shop)</span>' : ''}</strong>
-                        ${b.isMainBranch
-                            ? `<span class="dual-unit-badge" style="background:var(--success);">★ Main Branch</span>`
-                            : `<button class="settings-small-btn" onclick="designateMainBranch('${escapeJsAttr(b.id)}')">Make Main</button>`}
+                        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                            ${b.isMainBranch
+                                ? `<span class="dual-unit-badge" style="background:var(--success);">★ Main Branch</span>`
+                                : `<button class="settings-small-btn" onclick="designateMainBranch('${escapeJsAttr(b.id)}')">Make Main</button>`}
+                            ${(!b.isSelf && !b.isMainBranch)
+                                ? `<button type="button" class="settings-small-btn" style="background:var(--danger); color:#fff;" title="Permanently delete this branch" onclick="deleteBranch('${escapeJsAttr(b.id)}', '${escapeJsAttr(b.label)}')">🗑 Delete branch</button>`
+                                : `<span style="font-size:11px; color:#95a5a6;">${b.isSelf ? "can't delete the branch you are in" : "make another branch Main to delete this one"}</span>`}
+                        </div>
                     </div>
                     <div style="font-size:12px; color:#7f8c8d; margin-top:6px;">
                         Today: KES ${b.todayRevenue.toFixed(2)} · This Month: KES ${b.monthRevenue.toFixed(2)} · Stock Value: KES ${b.stockValue.toFixed(2)} · ${b.lowStockCount} low stock · ${b.staffCount} staff
@@ -41150,6 +41155,128 @@ function msOpenPurchasesReport(days) {
         rxSet('pos_receipt_keys', JSON.stringify(o)); posRkRender(); rxToast('Shortcuts saved.');
     }
     function posRkReset() { try { localStorage.removeItem('pos_receipt_keys'); } catch (e) { /* default */ } posRkRender(); rxToast('Shortcuts reset to P / D / S / C.'); }
+    /* zip 170: "Payment methods I accept" and "Receipt keyboard shortcuts" used to sit as loose cards ABOVE the Settings tabs. They are tabs of
+       their own now (💳 Payment Methods, ⌨️ Shortcuts), placed after Receipt Settings. Same panels, same buttons - only moved. */
+    function posSettingsTabs() {
+        try {
+            var nav = document.getElementById('settings-subnav'), gen = document.getElementById('settings-section-general');
+            var pay = document.getElementById('pos-paymethods-panel'), keys = document.getElementById('pos-receiptkeys-panel');
+            if (!nav || !gen || !pay || document.getElementById('settings-section-paymethods')) return;
+            var mk = function (id, panel, label, afterBtn) {
+                var sec = document.createElement('div'); sec.className = 'settings-section-content'; sec.id = id;
+                panel.className = ''; panel.style.marginBottom = '0'; sec.appendChild(panel);
+                gen.parentNode.appendChild(sec);
+                var b = document.createElement('button'); b.type = 'button'; b.className = 'settings-subtab-btn'; b.setAttribute('data-section', id);
+                b.textContent = label; b.setAttribute('onclick', "showSettingsSection('" + id + "', this)");
+                if (afterBtn && afterBtn.parentNode) afterBtn.parentNode.insertBefore(b, afterBtn.nextSibling); else nav.appendChild(b);
+                return b;
+            };
+            var rb = nav.querySelector('[data-section="settings-section-receipts"]');
+            var b1 = mk('settings-section-paymethods', pay, '💳 Payment Methods', rb);
+            if (keys) mk('settings-section-shortcuts', keys, '⌨️ Shortcuts', b1);
+        } catch (e) { /* cosmetic */ }
+    }
+
+    /* zip 172: the Hotel's two newest Sales Counter tools in EVERY module: the ▲ Hide / ▼ Show top bar, and 💰 Sales (the day's Total / Cash / M-Pesa).
+       Hotel has its own copies in its page (ids hdr-hide-btn / my-sales-toggle-btn) - this block steps aside there. A staff member sees ONLY their own
+       sales (matched on "served by"); the admin sees everyone: an all-staff total and one block per server. Voided sales are left out. */
+    (function () {
+        var sqOpen = false, sqDay = '';
+        var esc = function (t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+        var r2 = function (n) { return Math.round((Number(n) || 0) * 100) / 100; };
+        var norm = function (n) { return String(n || '').trim().toLowerCase(); };
+        var cur = function () { try { return typeof currentServer !== 'undefined' && currentServer ? currentServer : null; } catch (e) { return null; } };
+        var dayKey = function (t) { try { return bizDayKey(t); } catch (e) { return new Date(t).toISOString().slice(0, 10); } };
+        var money_ = function (v) { try { return typeof money === 'function' ? money(v) : (Number(v) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); } catch (e) { return String(v); } };
+        function css() {
+            if (document.getElementById('pos-sq-css')) return;
+            var st = document.createElement('style'); st.id = 'pos-sq-css';
+            st.textContent = '#hdr-hide-btn{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:8px;padding:8px 12px;font-weight:700;cursor:pointer;min-height:40px;margin-left:8px}'
+                + '#hdr-show-bar{display:none;background:var(--primary,#2c3e50);padding:4px 10px;text-align:center}'
+                + '#hdr-show-btn{background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:999px;padding:6px 22px;font-size:18px;font-weight:800;cursor:pointer;min-height:36px;line-height:1}'
+                + 'body.hdr-hidden > header,body.hdr-hidden #app-container > header{display:none !important}body.hdr-hidden #hdr-show-bar{display:block}'
+                + '.pos-sq-bar{display:flex;align-items:center;gap:8px;margin-bottom:12px}.pos-sq-bar button{min-height:44px}.pos-sq-bar button.active{background:var(--success,#27ae60)}'
+                + '.pos-sq-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}.pos-sq-head label{font-weight:700;font-size:13px}.pos-sq-head input{font-size:16px;padding:6px 8px;min-height:38px}'
+                + '.pos-sq-who{font-size:12px;color:var(--text-muted,#7f8c8d)}.pos-sq-staff{font-weight:700;margin:12px 0 6px}.pos-sq-staff:first-child{margin-top:0}'
+                + '.pos-sq-boxes{display:flex;gap:6px;flex-wrap:nowrap}.pos-sq-box{flex:1;min-width:0;border-radius:8px;padding:10px 8px;border-left:4px solid}'
+                + '.pos-sq-box .lbl{display:block;font-size:12px;font-weight:600}.pos-sq-box .val{display:block;font-weight:700;font-size:clamp(13px,4.2vw,20px);overflow-wrap:anywhere}'
+                + '.pos-sq-box.total{background:var(--tint-info-bg,#e8f1fb);color:var(--text-main,#1d2b3a);border-left-color:#2980b9}.pos-sq-box.cash{background:var(--tint-success-bg,#e6f6ea);color:var(--tint-success-text,#14532d);border-left-color:#27ae60}'
+                + '.pos-sq-box.mpesa{background:#e6f6ea;color:#14532d;border-left-color:#16a34a}.pos-sq-box.card{background:#efe9fb;color:#4c1d95;border-left-color:#7c3aed}'
+                + '@media (max-width:480px){.pos-sq-boxes{flex-wrap:wrap}.pos-sq-box{flex:1 1 30%}}';
+            document.head.appendChild(st);
+        }
+        window.posHdrSet = function (hidden) {
+            document.body.classList.toggle('hdr-hidden', !!hidden);
+            try { if (hidden) localStorage.setItem('pos_hdr_hidden', '1'); else localStorage.removeItem('pos_hdr_hidden'); } catch (e) { /* not remembered */ }
+            try { window.dispatchEvent(new Event('resize')); } catch (e) { /* cosmetic */ }
+        };
+        function totals(day) {
+            var sv = cur(), me = sv ? norm(sv.name) : null, by = {}, list = [];
+            (typeof salesLog !== 'undefined' && salesLog || []).forEach(function (s) {
+                if (!s || s.voided || dayKey(s.timestamp) !== day) return;
+                var server = String(s.servedBy || '').trim() || (typeof adminServerName === 'function' ? adminServerName() : 'Admin');
+                if (sv && norm(server) !== me) return;                     // staff never see anyone else's sales
+                var k = norm(server), t = by[k];
+                if (!t) { t = by[k] = { server: server, cash: 0, mpesa: 0, card: 0, total: 0 }; list.push(t); }
+                var c = Number(s.cashAmount) || 0, m = Number(s.mpesaAmount) || 0, d = Number(s.cardAmount) || 0;
+                t.cash = r2(t.cash + c); t.mpesa = r2(t.mpesa + m); t.card = r2(t.card + d); t.total = r2(t.total + c + m + d);
+            });
+            return list.sort(function (a, b) { return a.server.localeCompare(b.server); });
+        }
+        function boxes(t) {
+            var b = function (cls, l, v) { return '<div class="pos-sq-box ' + cls + '"><span class="lbl">' + l + '</span><span class="val">' + money_(v) + '</span></div>'; };
+            return '<div class="pos-sq-boxes">' + b('total', 'Total', t.total) + b('cash', 'Cash', t.cash) + b('mpesa', 'M-Pesa', t.mpesa) + (t.card > 0 ? b('card', 'Card', t.card) : '') + '</div>';
+        }
+        function refresh() {
+            var btn = document.getElementById('my-sales-toggle-btn'), panel = document.getElementById('pos-sq-panel');
+            if (!btn || !panel) return;
+            btn.classList.toggle('active', sqOpen); btn.setAttribute('aria-expanded', sqOpen ? 'true' : 'false');
+            panel.style.display = sqOpen ? '' : 'none';
+            if (!sqOpen) return;
+            if (!sqDay) sqDay = dayKey(new Date());
+            var dayEl = document.getElementById('pos-sq-day'); if (dayEl && dayEl.value !== sqDay) dayEl.value = sqDay;
+            var sv = cur(), who = document.getElementById('pos-sq-who');
+            if (who) who.textContent = sv ? '👤 ' + sv.name + ' — your sales only' : '👑 All staff';
+            var tt = totals(sqDay), zero = { total: 0, cash: 0, mpesa: 0, card: 0 }, list = document.getElementById('pos-sq-list');
+            if (!list) return;
+            if (sv) { list.innerHTML = boxes(tt[0] || zero); return; }
+            var all = tt.reduce(function (a, t) { return { total: r2(a.total + t.total), cash: r2(a.cash + t.cash), mpesa: r2(a.mpesa + t.mpesa), card: r2(a.card + t.card) }; }, zero);
+            list.innerHTML = '<div class="pos-sq-staff">Everyone</div>' + boxes(all) + tt.map(function (t) { return '<div class="pos-sq-staff">👤 ' + esc(t.server) + '</div>' + boxes(t); }).join('');
+        }
+        window.posSqToggle = function () { sqOpen = !sqOpen; refresh(); };
+        window.posSqDay = function (v) { sqDay = v || dayKey(new Date()); refresh(); };
+        function init() {
+            try {
+                if (!document.getElementById('hdr-hide-btn')) {
+                    var hdr = document.querySelector('body > header, #app-container > header');
+                    var anchor = hdr && (hdr.querySelector('.help-btn') || hdr.querySelector('div:last-child > button:last-child'));
+                    if (hdr && anchor && anchor.parentNode) {
+                        css();
+                        var hb = document.createElement('button'); hb.type = 'button'; hb.id = 'hdr-hide-btn'; hb.title = 'Hide this top bar'; hb.setAttribute('aria-label', 'Hide the top bar'); hb.textContent = '▲ Hide';
+                        hb.addEventListener('click', function () { window.posHdrSet(true); });
+                        anchor.parentNode.insertBefore(hb, anchor.nextSibling);
+                        var bar = document.createElement('div'); bar.id = 'hdr-show-bar';
+                        bar.innerHTML = '<button type="button" id="hdr-show-btn" title="Show the top bar" aria-label="Show the top bar">▼</button>';
+                        bar.firstChild.addEventListener('click', function () { window.posHdrSet(false); });
+                        hdr.parentNode.insertBefore(bar, hdr.nextSibling);
+                        try { if (localStorage.getItem('pos_hdr_hidden') === '1') document.body.classList.add('hdr-hidden'); } catch (e) { /* default: shown */ }
+                    }
+                }
+                var tab = document.getElementById('sales-tab');
+                if (tab && !document.getElementById('my-sales-toggle-btn')) {
+                    css();
+                    var wrap = document.createElement('div');
+                    wrap.innerHTML = '<div class="pos-sq-bar"><button type="button" id="my-sales-toggle-btn" class="settings-small-btn" aria-expanded="false" aria-controls="pos-sq-panel">💰 Sales</button></div>'
+                        + '<div id="pos-sq-panel" style="display:none;margin-bottom:14px;"><div class="panel"><div class="pos-sq-head"><label for="pos-sq-day">Day</label><input type="date" id="pos-sq-day"><span id="pos-sq-who" class="pos-sq-who"></span></div><div id="pos-sq-list"></div></div></div>';
+                    while (wrap.lastChild) tab.insertBefore(wrap.lastChild, tab.firstChild);
+                    document.getElementById('my-sales-toggle-btn').addEventListener('click', window.posSqToggle);
+                    document.getElementById('pos-sq-day').addEventListener('change', function () { window.posSqDay(this.value); });
+                    setInterval(function () { if (sqOpen && !document.hidden) refresh(); }, 4000);
+                }
+            } catch (e) { /* the extras never break the till */ }
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(init, 400); }); else setTimeout(init, 400);
+    })();
     function posRkOpen() { var m = document.getElementById('receipt-modal'); return !!m && getComputedStyle(m).display !== 'none' && getComputedStyle(m).visibility !== 'hidden'; }
     document.addEventListener('keydown', function (ev) {
         try {
@@ -41234,7 +41361,7 @@ function msOpenPurchasesReport(days) {
                         upd();
                     }
                 } catch (e) { /* the old layout still works */ }
-                posApplyPayMethods(); posRenderPayMethodsPanel(); posRkRender(); posSyncCartBarOffset();
+                posApplyPayMethods(); posRenderPayMethodsPanel(); posRkRender(); posSettingsTabs(); posSyncCartBarOffset();
                 var bar = document.getElementById('cart-sticky-bar');
                 if (bar && window.ResizeObserver) new ResizeObserver(posSyncCartBarOffset).observe(bar);
                 window.addEventListener('resize', posSyncCartBarOffset); window.addEventListener('scroll', posSyncCartBarOffset, { passive: true });
@@ -42468,7 +42595,7 @@ function msOpenPurchasesReport(days) {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-170';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-173';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {

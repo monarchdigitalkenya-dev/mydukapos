@@ -22,5 +22,7 @@ if (-not $NoUninstaller) {
   if ($un) {
     $u = Start-Process $un.FullName -ArgumentList '/S' -PassThru
     if ($u.WaitForExit(120000)) { Write-Host "uninstaller exit code: $($u.ExitCode)" } else { Write-Host 'WARNING: the uninstaller did not finish within 2 minutes' }
+    # zip 173: the NSIS uninstaller hands the work to a copy of itself and returns at once - wait until the folder is really gone
+    for ($i = 0; $i -lt 45 -and (Test-Path $dir); $i++) { Start-Sleep -Seconds 2; if ($i -ge 20) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue } }
   }
 }
