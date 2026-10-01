@@ -17317,6 +17317,9 @@ function receiptPageRule(widthMm, contentEl, fixedLengthMm) {
                 h = px > 0 ? Math.ceil(px * 25.4 / 96) + 8 : 297;             // nothing to go on at all: an A4-long strip, cut after the last line
             }
             h = Math.max(40, Math.min(5000, h));
+            // zip 170: a page WIDER than it is tall is a LANDSCAPE page — a short order ticket (3-4 lines, ~30 mm) on an 80 mm roll came out rotated 90 degrees
+            // and fed a sheet of paper. Never let the page be shorter than the roll is wide: it then stays portrait.
+            if (h <= w) h = Math.ceil(w) + 2;
             return `@page { size: ${w}mm ${h}mm; margin: 0; }`;
         }
 

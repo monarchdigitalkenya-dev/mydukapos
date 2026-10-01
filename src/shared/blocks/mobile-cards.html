@@ -70,8 +70,10 @@
         }
         function attach(t) {
             if (skip(t)) return;
+            // zip 170: a table that is already watched is re-labelled by its own observer when its rows change. Re-labelling EVERY row of EVERY
+            // table every 2.5 s (the scan below) froze phones with a long stock / sales list; only (re)label when the cards class was dropped.
+            if (observers.has(t)) { if (!t.classList.contains('m-cards')) label(t); return; }
             label(t);
-            if (observers.has(t)) return;
             var scheduled = false;
             var mo = new MutationObserver(function () {
                 if (scheduled) return; scheduled = true;
@@ -92,7 +94,7 @@
         function start() {
             window.mobileCardsRefresh();
             if (timer) clearInterval(timer);
-            timer = setInterval(function () { if (narrow()) scan(); }, 2500);            // tables that appear later (modals, tabs opened for the first time)
+            timer = setInterval(function () { if (!document.hidden && narrow()) scan(); }, 2500);            // tables that appear later (modals, tabs opened for the first time)
             var mq = window.matchMedia && window.matchMedia('(max-width: ' + MAX + 'px)');
             if (mq && mq.addEventListener) mq.addEventListener('change', window.mobileCardsRefresh);
         }

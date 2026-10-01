@@ -119,3 +119,10 @@ Details: `CHANGES_ZIP_168.md`.
 3. `npm run deploy`
 4. Open `https://mydukapos.store/crm/` once while online (re-labels old sign-up leads).
 Details: `CHANGES_ZIP_169.md`.
+
+## Zip 170 — no migration
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. Rebuild the APK/EXE (GitHub Actions); hard-refresh each app once (service worker `zip-170`).
+Details: `CHANGES_ZIP_170.md`.

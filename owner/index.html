@@ -39,7 +39,7 @@
 
     var S = Storage.prototype;
     var origGet = S.getItem, origSet = S.setItem, origRemove = S.removeItem, origClear = S.clear, origKey = S.key;
-    var MIN = 12000, SLICE = 60000, MAN = '~lz1|';
+    var MIN = 12000, SLICE = 16000, MAN = '~lz1|'; // zip 170: 60000 -> 16000 chars: a sale changes only the LAST slice, so each save recompresses ~4x less (was ~50 ms per sale with 6,000 sales); older data still reads (the manifest counts slices)
     var SLICE_RE = /~s\d+$/;
     var cache = {};   // base key -> { man, slices: [raw text], stored: [compressed text] }
     var stats = window.__lsStats = { slicesCompressed: 0, slicesSkipped: 0 };   // for diagnostics and tests
@@ -17840,8 +17840,10 @@ async function storageMeasureUnknown() {
         }
         function attach(t) {
             if (skip(t)) return;
+            // zip 170: a table that is already watched is re-labelled by its own observer when its rows change. Re-labelling EVERY row of EVERY
+            // table every 2.5 s (the scan below) froze phones with a long stock / sales list; only (re)label when the cards class was dropped.
+            if (observers.has(t)) { if (!t.classList.contains('m-cards')) label(t); return; }
             label(t);
-            if (observers.has(t)) return;
             var scheduled = false;
             var mo = new MutationObserver(function () {
                 if (scheduled) return; scheduled = true;
@@ -17862,7 +17864,7 @@ async function storageMeasureUnknown() {
         function start() {
             window.mobileCardsRefresh();
             if (timer) clearInterval(timer);
-            timer = setInterval(function () { if (narrow()) scan(); }, 2500);            // tables that appear later (modals, tabs opened for the first time)
+            timer = setInterval(function () { if (!document.hidden && narrow()) scan(); }, 2500);            // tables that appear later (modals, tabs opened for the first time)
             var mq = window.matchMedia && window.matchMedia('(max-width: ' + MAX + 'px)');
             if (mq && mq.addEventListener) mq.addEventListener('change', window.mobileCardsRefresh);
         }
@@ -18341,7 +18343,7 @@ async function storageMeasureUnknown() {
         // while the POS site itself was reachable. Any answer from our own site (even a 404) proves the device is online. /favicon.ico
         // is never served by the service worker (only the page, the manifest and the icons are), so this is a real network answer.
         var OWN_PROBE = '/favicon.ico';
-        var BACKOFF = [2000, 4000, 8000, 15000, 30000];
+        var BACKOFF = [2000, 3000, 5000, 8000, 12000];       // zip 170: was up to 30 s between checks while "offline" - a connection that came back waited that long to be noticed
         var S = { state: 'checking', detail: '', since: Date.now(), lastOk: 0, lastCheck: 0, fails: 0, nextAt: 0, checking: null, checkStarted: 0, lastTick: Date.now(), authIssue: '', lastSync: null, history: [] };
         var listeners = [];
         var MSG = {
@@ -18462,8 +18464,11 @@ async function storageMeasureUnknown() {
                         set('backend_unavailable', 'the server answered ' + h.status);
                     } else {
                         // no answer from the health check: is it this device's internet, or only the POS server? Our own site first.
-                        var own = await probeOwnSite(9000);
-                        var net = own || await probeInternet(9000);
+                        // zip 170: both questions at once (they used to be asked one after the other: up to 18 s of "Checking…" on a slow line, and a
+                        // phone that had just come back stayed "Offline" that much longer). Any "yes" is enough.
+                        var ownP = probeOwnSite(9000), netP = probeInternet(9000);
+                        var own = await ownP;
+                        var net = own || await netP;
                         S.diag.ownSite = own; S.diag.internet = net;
                         if (stale()) set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
                         else if (own) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time (the site itself did)' : 'the POS server could not be reached (the site itself answered)');

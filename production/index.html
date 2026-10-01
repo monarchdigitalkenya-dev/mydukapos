@@ -39,7 +39,7 @@
 
     var S = Storage.prototype;
     var origGet = S.getItem, origSet = S.setItem, origRemove = S.removeItem, origClear = S.clear, origKey = S.key;
-    var MIN = 12000, SLICE = 60000, MAN = '~lz1|';
+    var MIN = 12000, SLICE = 16000, MAN = '~lz1|'; // zip 170: 60000 -> 16000 chars: a sale changes only the LAST slice, so each save recompresses ~4x less (was ~50 ms per sale with 6,000 sales); older data still reads (the manifest counts slices)
     var SLICE_RE = /~s\d+$/;
     var cache = {};   // base key -> { man, slices: [raw text], stored: [compressed text] }
     var stats = window.__lsStats = { slicesCompressed: 0, slicesSkipped: 0 };   // for diagnostics and tests
@@ -16444,6 +16444,9 @@ function qtyRoundShown(n) {
                 h = px > 0 ? Math.ceil(px * 25.4 / 96) + 8 : 297;             // nothing to go on at all: an A4-long strip, cut after the last line
             }
             h = Math.max(40, Math.min(5000, h));
+            // zip 170: a page WIDER than it is tall is a LANDSCAPE page — a short order ticket (3-4 lines, ~30 mm) on an 80 mm roll came out rotated 90 degrees
+            // and fed a sheet of paper. Never let the page be shorter than the roll is wide: it then stays portrait.
+            if (h <= w) h = Math.ceil(w) + 2;
             return `@page { size: ${w}mm ${h}mm; margin: 0; }`;
         }
 
@@ -42750,8 +42753,10 @@ async function zReportPreflight() {
            renderStockValuationSummary() already counts them. */
         function stockValueTotals(rows) {
             let retail = 0, wholesale = 0, cost = 0;
+            // zip 170: one code->item map instead of a scan of the whole stock list for every row (3,000 x 3,000 compares froze phones)
+            const byCode = new Map(); (typeof inventory !== 'undefined' ? inventory : []).forEach(x => { if (x && !byCode.has(x.code)) byCode.set(x.code, x); });
             (rows || []).forEach(r => {
-                const p = inventory.find(x => x.code === r.code);
+                const p = byCode.get(r.code);
                 if (!p) return;
                 const qty = r.closing || 0;
                 retail    += qty * (p.price || 0);
@@ -46286,7 +46291,7 @@ function msOpenPurchasesReport(days) {
                         };
                         if (tb && window.MutationObserver) new MutationObserver(upd).observe(tb, { childList: true, subtree: true });
                         if (window.ResizeObserver) new ResizeObserver(posCkFit).observe(pb);
-                        window.addEventListener('resize', posCkFit); window.addEventListener('scroll', posCkFit, { passive: true });
+                        window.addEventListener('resize', posCkFit);   /* zip 170: no scroll listener - it forced a full layout (max-height reset + measure) on every scroll frame */
                         upd();
                     }
                 } catch (e) { /* the old layout still works */ }
@@ -46451,8 +46456,10 @@ function msOpenPurchasesReport(days) {
         }
         function attach(t) {
             if (skip(t)) return;
+            // zip 170: a table that is already watched is re-labelled by its own observer when its rows change. Re-labelling EVERY row of EVERY
+            // table every 2.5 s (the scan below) froze phones with a long stock / sales list; only (re)label when the cards class was dropped.
+            if (observers.has(t)) { if (!t.classList.contains('m-cards')) label(t); return; }
             label(t);
-            if (observers.has(t)) return;
             var scheduled = false;
             var mo = new MutationObserver(function () {
                 if (scheduled) return; scheduled = true;
@@ -46473,7 +46480,7 @@ function msOpenPurchasesReport(days) {
         function start() {
             window.mobileCardsRefresh();
             if (timer) clearInterval(timer);
-            timer = setInterval(function () { if (narrow()) scan(); }, 2500);            // tables that appear later (modals, tabs opened for the first time)
+            timer = setInterval(function () { if (!document.hidden && narrow()) scan(); }, 2500);            // tables that appear later (modals, tabs opened for the first time)
             var mq = window.matchMedia && window.matchMedia('(max-width: ' + MAX + 'px)');
             if (mq && mq.addEventListener) mq.addEventListener('change', window.mobileCardsRefresh);
         }
@@ -46918,7 +46925,7 @@ function msOpenPurchasesReport(days) {
 
         injectStyles();
         injectHeaderButton();
-        if (!statusTimer) statusTimer = setInterval(updateStatusDot, 2500);
+        if (!statusTimer) statusTimer = setInterval(function () { if (!document.hidden) updateStatusDot(); }, 2500);
         document.addEventListener('visibilitychange', function () { if (!document.hidden) updateStatusDot(); });
         // The printer keeper (src/shared/functions.js): reconnects the last-used USB / Bluetooth printer by itself, and keeps looking while it is off.
         try { if (typeof hwKeeperStart === 'function') hwKeeperStart(); } catch (e) { /* hardware is optional */ }
@@ -47522,7 +47529,7 @@ function msOpenPurchasesReport(days) {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-169';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-170';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -47887,7 +47894,20 @@ function msOpenPurchasesReport(days) {
             return (h >>> 0).toString(36) + '.' + j.length.toString(36);
         }
         var SIG_NEW = /\|c[0-9a-z]+\.[0-9a-z]+$/;
+        // zip 170: sigOf() hashes the WHOLE record (stableJson + FNV) and capture() asks for it for EVERY sale on every save: ~70 ms per sale on a
+        // shop with 6,000 sales on a fast PC, seconds on a phone ("the POS hangs after a sale"). A record whose native JSON text is unchanged
+        // since the last time keeps its version string - the version is a pure function of the record's content, so this is exact.
+        var SIG_MEMO = typeof WeakMap === 'function' ? new WeakMap() : null;
         function sigOf(r) {
+            if (!r || typeof r !== 'object') return '';
+            var raw = null;
+            if (SIG_MEMO) { try { raw = JSON.stringify(r); } catch (e) { raw = null; } }
+            if (raw !== null) { var m = SIG_MEMO.get(r); if (m && m.raw === raw) return m.sig; }
+            var sg = sigOfFull(r);
+            if (raw !== null) SIG_MEMO.set(r, { raw: raw, sig: sg });
+            return sg;
+        }
+        function sigOfFull(r) {
             if (!r || typeof r !== 'object') return '';
             var items = r.items, n = 0, sum = 0;
             if (items && items.length) { n = items.length; for (var i = 0; i < n; i++) { var it = items[i]; if (it) sum += (+it.price || 0) * (+it.qty || 0); } }
@@ -49192,7 +49212,7 @@ function msOpenPurchasesReport(days) {
         // while the POS site itself was reachable. Any answer from our own site (even a 404) proves the device is online. /favicon.ico
         // is never served by the service worker (only the page, the manifest and the icons are), so this is a real network answer.
         var OWN_PROBE = '/favicon.ico';
-        var BACKOFF = [2000, 4000, 8000, 15000, 30000];
+        var BACKOFF = [2000, 3000, 5000, 8000, 12000];       // zip 170: was up to 30 s between checks while "offline" - a connection that came back waited that long to be noticed
         var S = { state: 'checking', detail: '', since: Date.now(), lastOk: 0, lastCheck: 0, fails: 0, nextAt: 0, checking: null, checkStarted: 0, lastTick: Date.now(), authIssue: '', lastSync: null, history: [] };
         var listeners = [];
         var MSG = {
@@ -49313,8 +49333,11 @@ function msOpenPurchasesReport(days) {
                         set('backend_unavailable', 'the server answered ' + h.status);
                     } else {
                         // no answer from the health check: is it this device's internet, or only the POS server? Our own site first.
-                        var own = await probeOwnSite(9000);
-                        var net = own || await probeInternet(9000);
+                        // zip 170: both questions at once (they used to be asked one after the other: up to 18 s of "Checking…" on a slow line, and a
+                        // phone that had just come back stayed "Offline" that much longer). Any "yes" is enough.
+                        var ownP = probeOwnSite(9000), netP = probeInternet(9000);
+                        var own = await ownP;
+                        var net = own || await netP;
                         S.diag.ownSite = own; S.diag.internet = net;
                         if (stale()) set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
                         else if (own) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time (the site itself did)' : 'the POS server could not be reached (the site itself answered)');

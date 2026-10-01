@@ -70,7 +70,20 @@
             return (h >>> 0).toString(36) + '.' + j.length.toString(36);
         }
         var SIG_NEW = /\|c[0-9a-z]+\.[0-9a-z]+$/;
+        // zip 170: sigOf() hashes the WHOLE record (stableJson + FNV) and capture() asks for it for EVERY sale on every save: ~70 ms per sale on a
+        // shop with 6,000 sales on a fast PC, seconds on a phone ("the POS hangs after a sale"). A record whose native JSON text is unchanged
+        // since the last time keeps its version string - the version is a pure function of the record's content, so this is exact.
+        var SIG_MEMO = typeof WeakMap === 'function' ? new WeakMap() : null;
         function sigOf(r) {
+            if (!r || typeof r !== 'object') return '';
+            var raw = null;
+            if (SIG_MEMO) { try { raw = JSON.stringify(r); } catch (e) { raw = null; } }
+            if (raw !== null) { var m = SIG_MEMO.get(r); if (m && m.raw === raw) return m.sig; }
+            var sg = sigOfFull(r);
+            if (raw !== null) SIG_MEMO.set(r, { raw: raw, sig: sg });
+            return sg;
+        }
+        function sigOfFull(r) {
             if (!r || typeof r !== 'object') return '';
             var items = r.items, n = 0, sum = 0;
             if (items && items.length) { n = items.length; for (var i = 0; i < n; i++) { var it = items[i]; if (it) sum += (+it.price || 0) * (+it.qty || 0); } }

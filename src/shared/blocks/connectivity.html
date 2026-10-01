@@ -25,7 +25,7 @@
         // while the POS site itself was reachable. Any answer from our own site (even a 404) proves the device is online. /favicon.ico
         // is never served by the service worker (only the page, the manifest and the icons are), so this is a real network answer.
         var OWN_PROBE = '/favicon.ico';
-        var BACKOFF = [2000, 4000, 8000, 15000, 30000];
+        var BACKOFF = [2000, 3000, 5000, 8000, 12000];       // zip 170: was up to 30 s between checks while "offline" - a connection that came back waited that long to be noticed
         var S = { state: 'checking', detail: '', since: Date.now(), lastOk: 0, lastCheck: 0, fails: 0, nextAt: 0, checking: null, checkStarted: 0, lastTick: Date.now(), authIssue: '', lastSync: null, history: [] };
         var listeners = [];
         var MSG = {
@@ -146,8 +146,11 @@
                         set('backend_unavailable', 'the server answered ' + h.status);
                     } else {
                         // no answer from the health check: is it this device's internet, or only the POS server? Our own site first.
-                        var own = await probeOwnSite(9000);
-                        var net = own || await probeInternet(9000);
+                        // zip 170: both questions at once (they used to be asked one after the other: up to 18 s of "Checking…" on a slow line, and a
+                        // phone that had just come back stayed "Offline" that much longer). Any "yes" is enough.
+                        var ownP = probeOwnSite(9000), netP = probeInternet(9000);
+                        var own = await ownP;
+                        var net = own || await netP;
                         S.diag.ownSite = own; S.diag.internet = net;
                         if (stale()) set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
                         else if (own) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time (the site itself did)' : 'the POS server could not be reached (the site itself answered)');
