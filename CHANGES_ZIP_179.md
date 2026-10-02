@@ -20,3 +20,15 @@
   - The ✕ close button no longer prints (it was printing at the top-right of receipts in Water, Hotel, Hospital, Pharmacy, Production and Services).
   - A logo / QR that has not loaded yet is counted when the page length is measured (a receipt with a logo could spill onto a second page).
 - Still true: the page can never be shorter than the roll is wide (zip 170/175, so the printer does not turn the ticket sideways), so a short ticket on an 80 mm roll is a 80 x 80 mm page. That blank length is at the END of the ticket, not the top. If your printer driver still shows space above, tell me the printer model and the paper size chosen in the Chrome print window.
+
+## 5. Verification is not offered and never forced (set it up later)
+- Nobody is ever blocked: `generate-demo` only refuses unverified accounts when `VERIFICATION_REQUIRED=1`, which is not set.
+- The dashboard's "Verify your account" box (email / WhatsApp code) is now hidden unless the secret/variable `SHOW_VERIFY_UI=1` is set, so no half-configured WhatsApp button can show an error.
+- When you are ready: finish WhatsApp (template approved, token, phone ID), set `SHOW_VERIFY_UI` = `1`, test, and only then (optional) `VERIFICATION_REQUIRED` = `1`.
+
+## 6. Zip 180 — Sales Counter: cart first, price menu on every module
+- **Cart is clearly visible**: the cart list is now at least 230px tall (150px on short screens) and the payment area is tighter, so several lines show at once.
+- **Hold sale / Held** moved out of the cart area into the checkout card header (small pill buttons next to the item count).
+- **Receiving Account** is hidden on the Sales Counter in every module. Sales go to the default account.
+- **Price is a real button on every module** (Shop, Water, Pharmacy, Production, Services, and now Hotel and Hospital): click it and pick **Retail**, **Wholesale** (greyed "not set" if the item has no wholesale price) or **Custom amount**. The chip shows the current tier. The management-password and minimum-price rules still apply.
+- Customer phone label now shows "Customer phone (optional)" correctly.

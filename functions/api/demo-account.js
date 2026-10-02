@@ -347,6 +347,7 @@ export async function onRequestPost(context) {
       phone: account.phone,
       email: realEmailOf(account),
       emailVerified: !!account.emailVerified, phoneVerified: !!account.phoneVerified,
+      verifyUi: String(env.SHOW_VERIFY_UI) === '1',      // zip 179: the "Verify your account" box stays hidden until you set SHOW_VERIFY_UI=1
       product: account.product || null,
       demoUsed: !!account.demoUsed,
       demoStatus: live.demoStatus,

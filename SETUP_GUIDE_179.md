@@ -55,7 +55,7 @@ What it does: the dashboard's "Verify your account" can send a 6-digit code to t
    - `WHATSAPP_OTP_LANG` = `en` (only if your template language is not English)
 7. Redeploy: `npm run deploy:fast`
 8. Test: sign up on the website with a WhatsApp number, open the dashboard, tap **WhatsApp me a code**, enter the code. Until the template is approved the dashboard says WhatsApp verification is not available; that is expected.
-9. Optional: to force every website account to verify before it can create a demo, add variable `VERIFICATION_REQUIRED` = `1`. Leave it off at first.
+9. The verify box stays hidden until you add `SHOW_VERIFY_UI` = `1` (set it only after steps 1-8 work). Optional: to force every website account to verify before it can create a demo, add variable `VERIFICATION_REQUIRED` = `1`. Leave it off at first.
 
 Notes: Meta charges per authentication message (check Meta's Kenya price list). Numbers are accepted as `0712…`, `+254712…` or `712…`; numbers outside Kenya must start with `+` and the country code.
 

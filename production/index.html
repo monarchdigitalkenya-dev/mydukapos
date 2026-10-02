@@ -46391,7 +46391,7 @@ function msOpenPurchasesReport(days) {
                     wrap.style.maxHeight = '';
                     var topH = cart.getBoundingClientRect().top - p.getBoundingClientRect().top;
                     var barOther = bar.offsetHeight - wrap.offsetHeight + 28;   /* + the card's bottom padding */
-                    var avail = maxH - topH - (innerHeight < 860 ? 80 : innerHeight < 1000 ? 110 : 170) - barOther;   /* room kept for the cart list */
+                    var avail = maxH - topH - (innerHeight < 860 ? 150 : innerHeight < 1000 ? 215 : 280) - barOther;   /* room kept for the cart list */
                     wrap.style.maxHeight = Math.max(avail, 90) + 'px';
                 }
             } catch (e) { /* cosmetic */ }
@@ -46402,6 +46402,132 @@ function msOpenPurchasesReport(days) {
             var bar = document.getElementById('cart-sticky-bar'), tab = document.getElementById('sales-tab'), r = bar && bar.getBoundingClientRect();
             var on = bar && tab && tab.classList.contains('active') && bar.offsetParent !== null && r.top < innerHeight - 4 && r.bottom > 0;
             document.documentElement.style.setProperty('--cartbar-h', on ? bar.offsetHeight + 'px' : '0px');
+        } catch (e) { /* cosmetic */ }
+    }
+    /* ===== zip 180: cart price menu (Retail / Wholesale / Custom) on every module + Sales Counter tidy-up ===== */
+    (function () {
+        var S = { edit: null, open: null };
+        function jsq(s) { return (typeof escapeJsAttr === 'function') ? escapeJsAttr(s) : String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+        function hq(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+        function fmt(n) { return (Number(n) || 0).toFixed(2); }
+        function unitOf(u) { try { return (typeof unitLabel === 'function' && u) ? unitLabel(u) : (u || ''); } catch (e) { return u || ''; } }
+        /* the line's own retail / wholesale price: variant -> piece mode -> product */
+        function tiers(line) {
+            var item = null, src = null, r = 0, w = 0, known = false;
+            try {
+                if (typeof inventory !== 'undefined' && Array.isArray(inventory)) item = inventory.find(function (p) { return p.code === line.code; }) || null;
+                else if (typeof products !== 'undefined' && Array.isArray(products)) {
+                    if (line.code) item = products.find(function (p) { return p.code === line.code; }) || null;
+                    if (!item && line.refillSizeId && typeof refillSizes !== 'undefined') item = refillSizes.find(function (s) { return s.id === line.refillSizeId; }) || null;
+                }
+            } catch (e) { item = null; }
+            if (item) {
+                known = true; src = item;
+                if (line.variantId && item.variants) { var v = item.variants.find(function (x) { return x.id === line.variantId; }); if (v) src = v; }
+                var piece = line.variantSaleMode === 'piece' || line.saleMode === 'piece';
+                if (piece) { r = Number(src.piecePrice) || Number(item.piecePrice) || 0; w = Number(src.pieceWholesalePrice) || Number(item.pieceWholesalePrice) || 0; }
+                else { r = Number(src.price) || 0; w = Number(src.wholesaleSellingPrice) || 0; }
+                if (!r && src !== item) r = Number(item.price) || 0;
+            }
+            return { known: known, retail: r, wholesale: line.isService ? 0 : w };
+        }
+        function tierOf(line, t) {
+            var p = Number(line.price) || 0;
+            if (t.known && t.retail > 0 && Math.abs(p - t.retail) < 0.005) return 'Retail';
+            if (t.wholesale > 0 && Math.abs(p - t.wholesale) < 0.005) return 'Wholesale';
+            return 'Custom';
+        }
+        function supported(line) {
+            try {
+                if (typeof cartLineSupportsPriceMenu === 'function') return !!cartLineSupportsPriceMenu(line);   /* water: bales / custom-quote items price themselves */
+                if (line.isCrossBranch || line.type === 'bale') return false;
+            } catch (e) { /* fall through */ }
+            return true;
+        }
+        function closeMenu() { S.open = null; var m = document.getElementById('cart-price-menu'); if (m) m.style.display = 'none'; }
+        function cell(line, unit) {
+            var key = line.cartKey || line.key || line.code;
+            if (!supported(line)) return (typeof money === 'function') ? money(line.price) : 'KES ' + fmt(line.price);
+            var u = unitOf(unit);
+            if (S.edit === key) {
+                return '<div style="text-align:center;white-space:nowrap;">KES <input id="cart-custom-price-input-' + hq(key) + '" class="price-input" style="width:84px;text-align:center;" type="number" min="0" step="0.01" value="' + fmt(line.price) + '" onblur="confirmCartCustomPrice(\'' + jsq(key) + '\', this.value)" onkeydown="if (event.key === \'Enter\') this.blur();">' + (u ? ' <span style="color:#7f8c8d;font-size:12px;">/' + hq(u) + '</span>' : '') + '</div>';
+            }
+            var tier = tierOf(line, tiers(line));
+            return '<div class="cart-price-menu-wrap" style="text-align:center;"><button type="button" class="cart-price-chip tier-' + tier.toLowerCase() + '" data-key="' + hq(key) + '" title="Click to choose Retail, Wholesale or Custom price" onclick="toggleCartPriceMenu(\'' + jsq(key) + '\', this)"><span class="cpc-amt">KES ' + fmt(line.price) + (u ? '<small>/' + hq(u) + '</small>' : '') + '</span><span class="cpc-tier">' + tier + ' ▾</span></button></div>';
+        }
+        function toggle(key, btn) {
+            if (S.open === key) { closeMenu(); return; }
+            var line = (typeof currentCart !== 'undefined') ? currentCart[key] : null;
+            if (!btn) { var all = document.querySelectorAll('.cart-price-chip'); for (var i = 0; i < all.length; i++) if (all[i].getAttribute('data-key') === key) btn = all[i]; }
+            if (!line || !btn) { closeMenu(); return; }
+            var t = tiers(line), cur = tierOf(line, t), m = document.getElementById('cart-price-menu');
+            if (!m) { m = document.createElement('div'); m.id = 'cart-price-menu'; document.body.appendChild(m); }
+            function row(tier, label, price, ok) {
+                var on = cur === tier;
+                return '<button type="button" class="cpm-row' + (on ? ' on' : '') + (ok ? '' : ' off') + '"' + (ok ? ' onclick="selectCartPriceOption(\'' + jsq(key) + '\',\'' + tier.toLowerCase() + '\')"' : ' disabled') + '><span>' + (on ? '✓ ' : '') + label + '</span><b>' + (ok ? 'KES ' + fmt(price) : (tier === 'Wholesale' ? 'not set' : '')) + '</b></button>';
+            }
+            m.innerHTML = '<div class="cpm-title">Price for this line</div>' + (t.known ? row('Retail', 'Retail', t.retail, t.retail > 0) : '') + (t.known ? row('Wholesale', 'Wholesale', t.wholesale, t.wholesale > 0) : '') + '<button type="button" class="cpm-row' + (cur === 'Custom' ? ' on' : '') + '" onclick="selectCartPriceOption(\'' + jsq(key) + '\',\'custom\')"><span>' + (cur === 'Custom' ? '✓ ' : '') + '✏️ Custom amount…</span><b>type a price</b></button>';
+            m.style.display = 'block';
+            var r = btn.getBoundingClientRect(), w = m.offsetWidth || 230, h = m.offsetHeight || 150;
+            var left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8)), top = r.bottom + 4;
+            if (top + h > innerHeight - 8) top = Math.max(8, r.top - h - 4);
+            m.style.left = left + 'px'; m.style.top = top + 'px';
+            S.open = key;
+        }
+        function gate(key, price) {
+            var line = currentCart[key]; if (!line) return;
+            var msg = 'Enter the management password to change the price of "' + line.name + '".';
+            try {
+                if (typeof REQUIRE_CART_PRICE_PW !== 'undefined' && REQUIRE_CART_PRICE_PW && typeof pendingCartPriceKey !== 'undefined') {
+                    pendingCartPriceKey = key; pendingCartPriceValue = price; adminPwModalPurpose = 'change-cart-price';
+                    showAdminPwModal('Management Access', msg, 'No management password is set yet. Create one now to protect cart price changes.');
+                    renderCart(); return;
+                }
+                if (typeof requireCartPricePw !== 'undefined' && requireCartPricePw && typeof pendingCartPriceChangeKey !== 'undefined') {
+                    pendingCartPriceChangeKey = key; pendingCartPriceChangeValue = price;
+                    showAdminPwModal('cart-price-change', msg);
+                    renderCart(); return;
+                }
+            } catch (e) { /* no gate available: fall through to the change */ }
+            performCartPriceChange(key, price);
+        }
+        function select(key, kind) {
+            var line = currentCart[key]; closeMenu(); if (!line) return;
+            if (kind === 'custom') {
+                S.edit = key; renderCart();
+                var i = document.getElementById('cart-custom-price-input-' + key) || document.querySelector('input[id^="cart-custom-price-input-"]');
+                if (i) { i.focus(); i.select(); }
+                return;
+            }
+            var t = tiers(line), p = kind === 'wholesale' ? t.wholesale : t.retail;
+            if (!(p > 0)) { try { showToast(kind === 'wholesale' ? 'No wholesale price is set for this item.' : 'No retail price is set for this item.', true); } catch (e) {} return; }
+            gate(key, p);
+        }
+        function confirmCustom(key, value) {
+            var line = currentCart[key]; S.edit = null;
+            if (!line) { renderCart(); return; }
+            var price = parseFloat(value);
+            if (isNaN(price) || price < 0) { showToast('Please enter a valid price.', true); renderCart(); return; }
+            try {
+                var mn = (typeof cartLineMinimumPrice === 'function') ? cartLineMinimumPrice(line) : 0;
+                if (mn > 0 && price < mn - 0.005) { showToast('Entered price is below the minimum allowed threshold of ' + (typeof money === 'function' ? money(mn) : fmt(mn)) + '.', true); renderCart(); return; }
+            } catch (e) { /* no minimum to enforce */ }
+            gate(key, price);
+        }
+        function install() { window.renderCartPriceCell = cell; window.toggleCartPriceMenu = toggle; window.selectCartPriceOption = select; window.confirmCartCustomPrice = confirmCustom; }
+        install(); window.__cartPriceInstall = install;
+        document.addEventListener('click', function (e) { if (S.open && !(e.target.closest && (e.target.closest('#cart-price-menu') || e.target.closest('.cart-price-chip')))) closeMenu(); }, true);
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeMenu(); });
+        window.addEventListener('resize', closeMenu);
+        document.addEventListener('scroll', function (e) { if (S.open && !(e.target && e.target.closest && e.target.closest('#cart-price-menu'))) closeMenu(); }, true);
+    })();
+    /* the Hold / Held buttons live in the card header, out of the way of the cart */
+    function posPlaceHold() {
+        try {
+            var bar = document.getElementById('held-sale-bar'), h3 = document.querySelector('.pos-checkout > h3');
+            if (!bar || !h3 || bar.parentNode === h3) return;
+            bar.classList.add('pos-hold-mini');
+            var c = document.getElementById('pos-ck-count'); h3.insertBefore(bar, c || null);
         } catch (e) { /* cosmetic */ }
     }
     (function () {
@@ -46421,7 +46547,7 @@ function msOpenPurchasesReport(days) {
                         if (wrap && wrap.parentNode !== pb) { wrap.classList.add('pos-pay-details'); pb.insertBefore(wrap, pb.firstChild); }
                         panel.classList.add('pos-checkout');
                         var ts = panel.querySelector('.table-scroll'); if (ts) ts.classList.add('pos-cart-scroll');
-                        var lab = wrap && wrap.querySelector('label.label'); if (lab && /Customer Phone/i.test(lab.textContent)) lab.innerHTML = 'Customer phone <span style="font-weight:normal;color:#7f8c8d;">(optional)</span>';
+                        var lab = null; if (wrap) Array.prototype.slice.call(wrap.querySelectorAll('label.label')).forEach(function (l) { if (!lab && /Customer Phone/i.test(l.textContent)) lab = l; }); if (lab) lab.innerHTML = 'Customer phone <span style="font-weight:normal;color:#7f8c8d;">(optional)</span>';
                         var h3 = panel.querySelector(':scope > h3');
                         if (h3) { h3.insertAdjacentHTML('beforeend', ' <span id="pos-ck-count" class="pos-ck-count"></span>'); }
                         var tb = document.getElementById('cart-table');
@@ -46445,7 +46571,7 @@ function msOpenPurchasesReport(days) {
                                 var c = document.getElementById('pos-ck-count'); if (c) c.textContent = n ? n + (n === 1 ? ' item' : ' items') : '';
                                 panel.classList.toggle('pos-cart-empty', !n);
                             } catch (e) { /* cosmetic */ }
-                            posCkFit();
+                            posPlaceHold(); posCkFit();
                         };
                         if (tb && window.MutationObserver) new MutationObserver(upd).observe(tb, { childList: true, subtree: true });
                         if (window.ResizeObserver) new ResizeObserver(posCkFit).observe(pb);
@@ -46453,6 +46579,9 @@ function msOpenPurchasesReport(days) {
                         upd();
                     }
                 } catch (e) { /* the old layout still works */ }
+                try { if (window.__cartPriceInstall) window.__cartPriceInstall(); } catch (e) { /* the app's own menu still works */ }
+                try { var rhs = window.renderHeldSaleBar; if (typeof rhs === 'function' && !rhs.__pos) { var wr = function () { var r = rhs.apply(this, arguments); posPlaceHold(); return r; }; wr.__pos = true; window.renderHeldSaleBar = wr; } posPlaceHold(); } catch (e) { /* cosmetic */ }
+                try { if (typeof renderCart === 'function') renderCart(); } catch (e) { /* cosmetic */ }
                 posApplyPayMethods(); posRenderPayMethodsPanel(); posRkRender(); posSettingsTabs(); posSyncCartBarOffset();
                 var bar = document.getElementById('cart-sticky-bar');
                 if (bar && window.ResizeObserver) new ResizeObserver(posSyncCartBarOffset).observe(bar);
@@ -46472,7 +46601,7 @@ function msOpenPurchasesReport(days) {
         @media (min-width: 901px) {
             .pos-checkout { position: sticky; top: 8px; align-self: start; display: flex; flex-direction: column; overflow: hidden; height: var(--pos-h, auto); }
             .pos-checkout > * { flex: 0 0 auto; }
-            .pos-checkout > .pos-cart-scroll { flex: 1 1 auto; min-height: 120px; overflow-y: auto; border: 1px solid var(--border-color, #e5e9ec); border-radius: 10px; }
+            .pos-checkout > .pos-cart-scroll { flex: 1 1 auto; min-height: 230px; overflow-y: auto; border: 1px solid var(--border-color, #e5e9ec); border-radius: 10px; }
             .pos-checkout > .pos-cart-scroll thead th { position: sticky; top: 0; z-index: 2; background: var(--bg-surface-alt, #f4f6f7); }
             .pos-checkout #cart-sticky-bar { display: flex !important; flex-direction: column !important; flex-wrap: nowrap !important; position: relative; flex: 0 0 auto; margin: 10px -6px 0; }
             .pos-checkout #cart-sticky-bar .pos-pay-details { flex: 0 0 auto; }
@@ -46581,7 +46710,7 @@ function msOpenPurchasesReport(days) {
             #sales-tab.tab-content { padding-top: 10px; padding-bottom: 12px; }
             #sales-tab .pos-grid > .panel, #sales-tab #sales-cart-slot > .panel { padding: 12px 14px; }
             #sales-tab .pos-grid > .panel > h3, #sales-tab #sales-cart-slot > .panel > h3 { font-size: 15px; margin-bottom: 8px; padding-bottom: 7px; }
-            .pos-checkout > .pos-cart-scroll { min-height: 70px; }
+            .pos-checkout > .pos-cart-scroll { min-height: 150px; }
             .pos-checkout .order-type-toggle button { padding-top: 6px; padding-bottom: 6px; }
             .pos-checkout > #sales-location-group select { height: 34px; padding-top: 4px; padding-bottom: 4px; }
             .pos-checkout .pos-cart-scroll table td { padding-top: 5px; padding-bottom: 5px; }
@@ -46594,6 +46723,25 @@ function msOpenPurchasesReport(days) {
             .scroll-to-top-btn, .mobile-cart-fab, #floating-kb-toggle { bottom: calc(var(--cartbar-h, 0px) + 14px) !important; }
             #sales-tab input, #sales-tab select { font-size: 16px; }
         }
+
+        /* ===== zip 180: cart first. Receiving Account is hidden (sales go to the default account), Hold sits in the card header, price chip is a real button ===== */
+        #receiving-account-wrap, #receiving-account-group, .pos-checkout #receiving-account-wrap, .pos-checkout #receiving-account-group { display: none !important; }
+        .pos-checkout > h3 { flex-wrap: wrap; }
+        .pos-hold-mini { display: inline-flex !important; gap: 6px !important; margin: 0 0 0 auto !important; align-items: center; flex-wrap: nowrap !important; }
+        .pos-hold-mini .settings-small-btn { padding: 4px 10px !important; font-size: 12px !important; border-radius: 999px !important; white-space: nowrap; line-height: 1.3; }
+        .pos-hold-mini + .pos-ck-count { margin-left: 6px !important; }
+        .pos-checkout #cart-sticky-bar .pos-pay-details input[type=number], .pos-checkout #cart-sticky-bar .pos-pay-details input[type=tel], .pos-checkout #cart-sticky-bar .pos-pay-details input[type=text] { padding-top: 6px; padding-bottom: 6px; }
+        .pos-checkout #cart-sticky-bar .pos-pay-details #cash-payment-panel > *, .pos-checkout #cart-sticky-bar .pos-pay-details #card-payment-panel > * { margin-top: 0; }
+        .cart-price-chip { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; min-width: 112px; padding: 4px 10px; border-radius: 10px; border: 1.5px solid var(--border-color, #cfd8dc); background: var(--bg-surface, #fff); color: inherit; cursor: pointer; font: inherit; white-space: nowrap; line-height: 1.2; transition: border-color .12s, box-shadow .12s; }
+        .cart-price-chip:hover { border-color: var(--accent, #2980b9); box-shadow: 0 0 0 3px rgba(41, 128, 185, .14); }
+        .cart-price-chip .cpc-amt { font-weight: 800; font-size: 14px; } .cart-price-chip .cpc-amt small { font-weight: 500; font-size: 11px; color: #7f8c8d; margin-left: 2px; }
+        .cart-price-chip .cpc-tier { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: #2980b9; }
+        .cart-price-chip.tier-wholesale .cpc-tier { color: #8e44ad; } .cart-price-chip.tier-custom .cpc-tier { color: #d35400; }
+        #cart-price-menu { display: none; position: fixed; z-index: 100000; min-width: 230px; padding: 6px; border-radius: 14px; background: var(--bg-surface, #fff); color: var(--text, #2c3e50); border: 1px solid var(--border-color, #dfe4ea); box-shadow: 0 14px 36px rgba(16, 24, 40, .22); }
+        #cart-price-menu .cpm-title { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #7f8c8d; padding: 4px 10px 6px; }
+        #cart-price-menu .cpm-row { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 14px; padding: 10px 12px; border: 0; border-radius: 10px; background: transparent; color: inherit; font: inherit; font-size: 14px; cursor: pointer; text-align: left; }
+        #cart-price-menu .cpm-row:hover:not(.off) { background: var(--bg-surface-alt, #eef4fa); } #cart-price-menu .cpm-row.on { background: rgba(41, 128, 185, .12); font-weight: 700; }
+        #cart-price-menu .cpm-row.off { opacity: .45; cursor: not-allowed; } #cart-price-menu .cpm-row b { font-size: 13px; }
     </style>
 <!-- @shared-block:receipt-extras:end -->
     <!-- @shared-block:hold-sale:begin -->
@@ -47766,7 +47914,7 @@ function msOpenPurchasesReport(days) {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-179';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-180';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {

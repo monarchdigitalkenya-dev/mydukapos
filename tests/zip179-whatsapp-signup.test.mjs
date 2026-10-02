@@ -59,3 +59,15 @@ test('STK push: a payment the status poll confirmed is verified at once, others 
     assert.equal(b.mpesaCheck.status, 'not_found', 'a typed code is not trusted');
   } finally { close && close(); }
 });
+
+test('verification is never forced and its box is hidden by default', async () => {
+  const da = await load('functions/api/demo-account.js');
+  const env = { mydukapos_kv: makeKV(), WHATSAPP_TOKEN: 't', WHATSAPP_PHONE_NUMBER_ID: '1', WHATSAPP_OTP_TEMPLATE: 'x' };   // WhatsApp fully configured, still nothing forced
+  const call = (b) => da.onRequestPost({ request: post(b, '4.4.4.4'), env });
+  let r = await call({ ...base, product: 'shop', businessName: 'Duka' }); assert.equal(r.status, 200, await r.clone().text());
+  const tok = (await r.json()).token;
+  r = await call({ action: 'dashboard', token: tok }); assert.equal((await r.json()).verifyUi, false);
+  r = await call({ action: 'generate-demo', token: tok, product: 'shop', businessName: 'Duka 2' });
+  assert.notEqual((await r.json()).code, 'verification_required');
+  env.SHOW_VERIFY_UI = '1'; r = await call({ action: 'dashboard', token: tok }); assert.equal((await r.json()).verifyUi, true);
+});

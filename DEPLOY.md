@@ -180,3 +180,7 @@ Details: `CHANGES_ZIP_178.md`. Menu file (sent separately): `Menu_import.xlsx` â
 
 ## Zip 179
 WhatsApp number required / email optional at sign-up; sign-in by number or email; STK push sales verify instantly. No new environment variables. See CHANGES_ZIP_179.md.
+
+
+## Zip 180
+Sales Counter: taller cart, Hold moved to the card header, Receiving Account hidden, Retail / Wholesale / Custom price menu on every module. No migrations, no new secrets. Deploy as usual (`npm run deploy`), then hard-refresh each app.
