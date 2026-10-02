@@ -32,3 +32,4 @@
 - **Receiving Account** is hidden on the Sales Counter in every module. Sales go to the default account.
 - **Price is a real button on every module** (Shop, Water, Pharmacy, Production, Services, and now Hotel and Hospital): click it and pick **Retail**, **Wholesale** (greyed "not set" if the item has no wholesale price) or **Custom amount**. The chip shows the current tier. The management-password and minimum-price rules still apply.
 - Customer phone label now shows "Customer phone (optional)" correctly.
+- **AquaPOS inventory**: a Wholesale Bale's quantity is now editable directly (halves allowed). The edit is applied to the real stock source: the bale's own bottle count (tracked bales), the linked Sealed Bottle (linked bales, loose bottles kept), or its own quantity. Custom/Executive bales stay made-to-order.
