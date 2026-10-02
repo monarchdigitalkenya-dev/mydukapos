@@ -106,7 +106,8 @@ for (const app of VARIANT_APPS) {
     const b = await open(app, [V1]); const { w } = b;
     w.eval("updateVariantField('V1', 'va', 'qty', '9')");
     assert.equal(w.eval("inventory[0].variants[0].qty"), 9);
-    const mv = JSON.parse(w.eval("JSON.stringify(stockMovementLog.filter(m => m.code === 'V1'))"));
+    // zip 185: a variant's stock movement is logged under the VARIANT's own code (the server only applies movements to variant codes - 'variant-parent' is refused)
+    const mv = JSON.parse(w.eval("JSON.stringify(stockMovementLog.filter(m => m.code === 'V1-R'))"));
     assert.equal(mv.length, 1); assert.equal(mv[0].delta, 3);
     b.close();
   });

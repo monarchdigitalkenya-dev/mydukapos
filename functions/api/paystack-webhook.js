@@ -59,7 +59,8 @@ export async function onRequestPost(context) {
   const signature = request.headers.get('x-paystack-signature') || '';
   const expected = await hmacSha512Hex(secret, rawBody);
 
-  if (!signature || signature !== expected) {
+  let sigDiff = signature.length ^ expected.length; for (let i = 0; i < expected.length; i++) sigDiff |= (signature.charCodeAt(i) || 0) ^ expected.charCodeAt(i); // zip 184: constant-time compare
+  if (!signature || sigDiff !== 0) {
     // Reject anything that isn't genuinely from Paystack.
     return new Response('Invalid signature', { status: 401 });
   }

@@ -22,7 +22,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { checkCallback } from './_callback-key.js';
+import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 import { recordGatewayTxn } from './_ledger.js';
 
 function tillPaymentKey(clientId, transId) {
@@ -55,15 +55,12 @@ export async function onRequestPost(context) {
     return ack();
   }
 
-  let data;
-  try {
-    data = await request.json();
-  } catch (e) {
-    return ack();
-  }
+  const data = await readCallbackJson(request);      // zip 185: size-bounded
+  if (!data || typeof data !== 'object') return ack();
 
-  const transId = data.transactionReference;
-  if (!transId) return ack();
+  const transId = data.transactionReference != null ? String(data.transactionReference) : '';
+  if (!transId || transId.length > 60) return ack();
+  if (!(await shopKnown(env, clientId))) return ack(transId);   // zip 185: not a real shop -> nothing is written
 
   const signed = await checkCallback(env, clientId, 'kcb', request.url);
   const record = {
@@ -79,6 +76,7 @@ export async function onRequestPost(context) {
     receivedAt: Date.now(),
     // zip 143: false when the URL did not carry this shop's key (see _callback-key.js) — kept for the record, never proof of payment
     trusted: signed.ok,
+    ...(signed.legacy ? { legacy: true } : {}),   // zip 185: accepted only because this shop has no KCB key yet (save KCB settings to create one)
     provider: 'kcb',
   };
 

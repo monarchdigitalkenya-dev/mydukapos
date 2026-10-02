@@ -24,6 +24,7 @@ import { requireValidLicense } from './_license.js';
 import { listBackupDates, restoreBackup } from './_backups.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { managerGuard, secLimit, secNum } from './_sec-guard.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -74,6 +75,12 @@ export async function onRequestPost(context) {
   } catch (e) {
     return jsonResponse({ error: 'Invalid request body.' }, 400);
   }
+
+  // zip 185: restoring replaces every device's data — when the shop requires staff sessions, only the Admin / a manager (no change otherwise), and at most a few per hour.
+  const mgrDenied = await managerGuard(request, env, license.clientId, CORS_HEADERS);
+  if (mgrDenied) return mgrDenied;
+  const capped = await secLimit(env, 'restore', license.clientId, secNum(env.RESTORE_HOURLY_LIMIT, 10), 3600, 'backup restores', CORS_HEADERS);
+  if (capped) return capped;
 
   const result = await restoreBackup(env, license.clientId, body && body.date);
   if (result.error) return jsonResponse({ error: result.error }, result.status || 400);

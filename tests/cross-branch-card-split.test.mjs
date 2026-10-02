@@ -10,7 +10,8 @@ for (const app of ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'pro
     const html = readFileSync(new URL(`../${app}`, import.meta.url), 'utf8');
     for (const m of ['cash', 'mpesa', 'card']) {
       assert.ok(
-        html.includes(`${m}Amount: Math.round(${m}Amount * (1 - crossBranchRatio) * 100) / 100,`),
+        html.includes(`${m}Amount: Math.round(${m}Amount * (1 - crossBranchRatio) * 100) / 100,`) ||
+          html.includes(`${m}Amount: round2(${m}Amount * (1 - crossBranchRatio)),`),
         `${m}Amount must be scaled by (1 - crossBranchRatio)`
       );
     }

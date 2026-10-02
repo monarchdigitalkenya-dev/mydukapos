@@ -215,7 +215,7 @@ export async function onRequestPost(context) {
         id: `${idBase}:${w.item.code}${w.unit === 'pieceQty' ? ':p' : ''}`, lg: 1, timestamp: stamp, code: w.item.code, name: w.item.name,
         delta: -Math.round(w.qty * 1000) / 1000, type: 'removed', reason: `Cross-branch sale (${callerRecord.label})`, unit: w.unit, by: body.servedBy || '?',
       }));
-      return { sale: saleRecord, moves };
+      return { sale: saleRecord, moves, wanted };
     };
 
     // zip 153: the sale belongs to the TARGET branch's books — written to its D1 ledger first (idempotent on the sale id), and the request fails
@@ -234,9 +234,22 @@ export async function onRequestPost(context) {
       if (p.repeated) return jsonResponse({ sale: p.repeated, repeated: true });
       const busy = await toLedger(p);
       if (busy) return busy;
-      let res;
-      try { res = await shopCall(env, targetClientId, 'push', { body: pushBody(p), serverNow: Date.now() }); } catch (e) { res = null; }
+      // zip 185: the stock check is repeated INSIDE the database's own request together with the push (op 'xb-sell'), so a concurrent sale of the last
+      // unit cannot slip between check and push. A database that does not know the op yet (older deploy: 404) falls back to the plain push.
+      const checks = [...p.wanted.values()].map((w) => ({ code: w.item.code, unit: w.unit, qty: w.qty }));
+      let res, out = null;
+      try {
+        res = await shopCall(env, targetClientId, 'xb-sell', { body: pushBody(p), checks, serverNow: Date.now() });
+        if (res && res.status === 404) res = await shopCall(env, targetClientId, 'push', { body: pushBody(p), serverNow: Date.now() });
+        else if (res && res.ok) { try { out = await res.json(); } catch (e) { out = null; } }
+      } catch (e) { res = null; }
       if (!res || !res.ok) return jsonResponse({ error: 'That branch\u2019s shop database did not answer \u2014 nothing was sold. Try again in a moment.', code: 'busy' }, 503);
+      if (out && out.ok === false) {
+        // lost the race for the last unit: stock was NOT taken, so the sale already written to the ledger is voided (never deleted; kept in the audit)
+        try { await recordPush(env, targetClientId, { salesLog: [{ ...p.sale, voided: true, updatedAt: Date.now() }] }, { source: 'cross-branch-sale' }); } catch (e) { /* the sale row stays; reconcile shows it */ }
+        const nm = (p.wanted.get(String(out.short.code) + '|qty') || p.wanted.get(String(out.short.code) + '|pieceQty') || {}).item;
+        return jsonResponse({ error: `Only ${out.short.available} of "${nm ? nm.name : out.short.code}" available at that branch now \u2014 someone else may have just bought it.` }, 409);
+      }
       return jsonResponse({ sale: p.sale });
     }
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ROOT } from './helpers.mjs';
-import { makeKV } from './kv-fake.mjs';
+import { makeKV, seedShop } from './kv-fake.mjs';
 
 // Zip 143 — payment callbacks carry a per-shop secret key. Before, anyone who knew a shop's id (it is visible to whoever opens the
 // shop's link) could post a fake "payment received" and then have a made-up M-Pesa code accepted by /api/mpesa-verify.
@@ -15,7 +15,7 @@ test('C2B / KCB: a shop with no key yet (URLs registered before this release) wo
     ['functions/api/mpesa-c2b-confirmation.js', { TransID: 'QAB12345', TransAmount: '500' }, 'QAB12345'],
     ['functions/api/kcb-ipn.js', { transactionReference: 'KCB12345', transactionAmount: '750' }, 'KCB12345'],
   ]) {
-    const m = await load(file); const kv = makeKV(); const env = { mydukapos_kv: kv };
+    const m = await load(file); const kv = makeKV(); seedShop(kv, 'C1'); const env = { mydukapos_kv: kv };   // zip 185: callbacks for a shop id that has no licence are ignored
     await m.onRequestPost({ request: post('https://x/api/cb?c=C1', body), env });
     const rec = JSON.parse(await kv.get(`till-payment:C1:${id}`));
     assert.equal(rec.trusted, true, file);
@@ -26,7 +26,7 @@ test('C2B: once the shop registers its URLs, a forged confirmation (no key / wro
   const cb = await load('functions/api/_callback-key.js');
   const conf = await load('functions/api/mpesa-c2b-confirmation.js');
   const verifyMod = await load('functions/api/mpesa-verify.js');
-  const kv = makeKV(); const env = { mydukapos_kv: kv };
+  const kv = makeKV(); seedShop(kv, 'C1'); const env = { mydukapos_kv: kv };   // zip 185: callbacks for a shop id that has no licence are ignored
   const key = await cb.ensureCallbackKey(env, 'C1', 'c2b');               // what "Register Till URLs" does
   // forged: no key, then a wrong key
   await conf.onRequestPost({ request: post('https://x/api/mpesa-c2b-confirmation?c=C1', { TransID: 'FAKE1234', TransAmount: '9000' }), env });
@@ -53,7 +53,7 @@ test('C2B: once the shop registers its URLs, a forged confirmation (no key / wro
 test('STK: a callback without the shop\'s key cannot mark a prompt paid; the real (keyed) callback does; an in-flight prompt from before the key existed still completes', async () => {
   const cb = await load('functions/api/_callback-key.js');
   const m = await load('functions/api/mpesa-callback.js');
-  const kv = makeKV(); const env = { mydukapos_kv: kv };
+  const kv = makeKV(); seedShop(kv, 'C1'); const env = { mydukapos_kv: kv };   // zip 185: callbacks for a shop id that has no licence are ignored
   const ok = (id, receipt) => ({ Body: { stkCallback: { CheckoutRequestID: id, ResultCode: 0, ResultDesc: 'ok', CallbackMetadata: { Item: [{ Name: 'MpesaReceiptNumber', Value: receipt }, { Name: 'Amount', Value: 100 }] } } } });
   // a prompt sent before the key existed
   await kv.put('mpesa-tx:C1:OLD', JSON.stringify({ status: 'pending', createdAt: Date.now() - 60000 }));

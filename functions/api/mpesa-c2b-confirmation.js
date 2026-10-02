@@ -19,7 +19,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { checkCallback } from './_callback-key.js';
+import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 import { recordGatewayTxn } from './_ledger.js';
 
 function tillPaymentKey(clientId, transId) {
@@ -46,15 +46,12 @@ export async function onRequestPost(context) {
     return ack();
   }
 
-  let data;
-  try {
-    data = await request.json();
-  } catch (e) {
-    return ack();
-  }
+  const data = await readCallbackJson(request);      // zip 185: size-bounded
+  if (!data || typeof data !== 'object') return ack();
 
-  const transId = data.TransID;
-  if (!transId) return ack();
+  const transId = data.TransID != null ? String(data.TransID) : '';
+  if (!transId || transId.length > 40) return ack();
+  if (!(await shopKnown(env, clientId))) return ack();   // zip 185: not a real shop -> nothing is written
 
   // A customer's registered name arrives as up to three separate fields —
   // joined here into one, skipping any that are genuinely blank (a
@@ -79,6 +76,8 @@ export async function onRequestPost(context) {
     receivedAt: Date.now(),
     // zip 143: false when the URL did not carry this shop's key (see _callback-key.js) — kept for the record, never proof of payment
     trusted: signed.ok,
+    // zip 185: true when accepted only because this shop has no callback key yet (URLs registered before zip 143). Owner fix: Register Till URLs again.
+    ...(signed.legacy ? { legacy: true } : {}),
   };
 
   // IDEMPOTENT: providers re-send the same notification (a timeout on their side, a retry). The first copy is the payment; a

@@ -17,7 +17,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { checkCallback } from './_callback-key.js';
+import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 import { recordGatewayTxn } from './_ledger.js';
 
 function txKey(clientId, id) {
@@ -42,17 +42,15 @@ export async function onRequestPost(context) {
   const { request, env } = context;
   const clientId = new URL(request.url).searchParams.get('c') || '';
 
-  let body;
-  try {
-    body = await request.json();
-  } catch (e) {
-    return ack();
-  }
+  const body = await readCallbackJson(request);    // zip 185: size-bounded
+  if (!body) return ack();
 
   const callback = body && body.Body && body.Body.stkCallback;
   if (!callback || !callback.CheckoutRequestID || !clientId) {
     return ack();
   }
+  // zip 185: only a real, licensed shop's id is believed (a made-up ?c= used to create records for any id)
+  if (String(callback.CheckoutRequestID).length > 100 || !(await shopKnown(env, clientId))) return ack();
 
   const kvKey = txKey(clientId, callback.CheckoutRequestID);
   const existingRaw = await env.mydukapos_kv.get(kvKey);
@@ -63,13 +61,16 @@ export async function onRequestPost(context) {
   // moment of an update) is still accepted for that prompt.
   const signed = await checkCallback(env, clientId, 'stk', request.url);
   if (!signed.ok && !(existing.createdAt && existing.createdAt < signed.keyCreatedAt)) return ack();
+  // zip 185: a shop with no key yet (URLs handed out before zip 143) is "legacy": its callbacks carry no secret, but every REAL one answers a prompt
+  // this shop created — mpesa-stkpush.js stored a pending record under that exact CheckoutRequestID. An id we never issued is not a result.
+  if (signed.legacy && !existing.createdAt) return ack();
 
   if (callback.ResultCode === 0) {
     const items = callback.CallbackMetadata && callback.CallbackMetadata.Item;
     // zip 140: also indexed by the M-Pesa receipt number, so a code typed on a till can be checked against Safaricom's own record
     const receipt = String(extractMetadataValue(items, 'MpesaReceiptNumber') || '').toUpperCase();
     if (/^[A-Z0-9]{8,14}$/.test(receipt)) {
-      await env.mydukapos_kv.put(`mpesa-receipt:${clientId}:${receipt}`, JSON.stringify({ source: 'stk', amount: Number(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0, phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone || '', at: Date.now(), checkoutRequestId: callback.CheckoutRequestID }), { expirationTtl: 400 * 24 * 3600 });
+      await env.mydukapos_kv.put(`mpesa-receipt:${clientId}:${receipt}`, JSON.stringify({ source: 'stk', amount: Number(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0, phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone || '', at: Date.now(), checkoutRequestId: callback.CheckoutRequestID, ...(signed.legacy ? { legacy: true } : {}) }), { expirationTtl: 400 * 24 * 3600 });
     }
     await env.mydukapos_kv.put(kvKey, JSON.stringify({
       ...existing,

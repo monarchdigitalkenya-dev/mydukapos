@@ -50,6 +50,7 @@ function mapVatCategoryToKra(vatCategory) {
     case 'A': return { taxTyCd: 'B', rate: 0.16 }; // this app's "Standard rate" -> KRA's 16% bracket
     case 'B': return { taxTyCd: 'E', rate: 0.08 }; // this app's "Reduced rate (fuel)" -> KRA's 8% bracket
     case 'C': return { taxTyCd: 'C', rate: 0 };    // this app's "Zero-rated/exempt" -> KRA's zero-rated bracket
+    case 'Z': return { taxTyCd: 'C', rate: 0 };    // zip 184: the app's current zero-rated code (C is migrated to Z) was falling to the 16% default
     default: return { taxTyCd: 'B', rate: 0.16 };  // unrecognized — safest default is the standard rate, not silently exempting a sale
   }
 }

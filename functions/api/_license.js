@@ -239,11 +239,16 @@ async function slugTaken(env, slug) {
 // Finds a free, unique subdomain slug based on the label, appending -2, -3,
 // etc. on collision. Reserves nothing by itself — call claimSlug() once the
 // client record is actually being created.
+// zip 185: names that would make a customer's shop look like the company's own site, mail host or sign-in page (www.<root>, owner.<root>, login.<root> ...).
+// A new business asking for one gets the usual "-2" style suffix instead; existing slugs are never touched (this runs only when a link is created).
+export const RESERVED_SLUGS = new Set(['www', 'api', 'app', 'apps', 'admin', 'administrator', 'owner', 'crm', 'mail', 'webmail', 'email', 'smtp', 'imap', 'pop', 'pop3', 'ftp', 'ns', 'ns1', 'ns2', 'mx',
+  'login', 'signin', 'signup', 'register', 'account', 'accounts', 'dashboard', 'console', 'billing', 'pay', 'payments', 'secure', 'security', 'support', 'help', 'status', 'blog', 'docs', 'cdn',
+  'static', 'assets', 'img', 'media', 'staging', 'stage', 'dev', 'beta', 'root', 'autodiscover', 'mydukapos', 'myduka', 'official', 'wildcard', 'router']);
 async function pickUniqueSlug(env, label) {
   const wanted = slugify(label);
   let candidate = wanted;
   let n = 2;
-  while (await slugTaken(env, candidate)) {
+  while (RESERVED_SLUGS.has(candidate) || await slugTaken(env, candidate)) {
     candidate = `${wanted}-${n}`;
     n += 1;
   }

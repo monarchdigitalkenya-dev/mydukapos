@@ -77,6 +77,15 @@ export async function onRequestPost(context) {
     if (existing) {
       return jsonResponse({ error: 'An owner account already exists. Please sign in instead.' }, 409);
     }
+    // zip 185: OPTIONAL bootstrap lock. Until the owner account exists, anyone who reaches this URL first can create it. When the environment variable
+    // OWNER_SETUP_TOKEN is set, signup also needs that value (body.setupToken, or the X-Setup-Token header). Not set = exactly the old behaviour.
+    if (env.OWNER_SETUP_TOKEN) {
+      const given = String(body.setupToken || request.headers.get('X-Setup-Token') || '');
+      const want = String(env.OWNER_SETUP_TOKEN);
+      let diff = given.length ^ want.length;
+      for (let i = 0; i < want.length; i++) diff |= (given.charCodeAt(i) || 0) ^ want.charCodeAt(i);
+      if (diff !== 0) return jsonResponse({ error: 'Setup token required.', code: 'setup_token_required' }, 403);
+    }
     try {
       const account = await createOwnerAccount(env, identifier, password);
       const token = await createOwnerSession(env, account);

@@ -29,6 +29,8 @@ import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
 import { getCallbackKey, ensureCallbackKey, withKey } from './_callback-key.js';
+import { managerGuard, secLimit, secNum } from './_sec-guard.js';
+import { readMode, verifyToken, staffTokenOf } from './_staff-auth.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -52,6 +54,19 @@ export async function onRequestGet(context) {
   const cfg = await loadGatewayConfig(env, clientId);
   const origin = new URL(request.url).origin;
 
+  // zip 185: the KCB IPN / Paywave webhook URLs carry this shop's secret callback key (&k=...), and the owner needs the FULL url to give to KCB /
+  // paste into Paywave, so it is shown in full as before — except when the shop requires staff sessions and the caller is not the Admin / a
+  // manager: they get the key masked (the same mask mpesa-c2b-register.js uses).
+  let showKey = true;
+  try {
+    if ((await readMode(env, clientId)) === 'enforce') {
+      const tok = staffTokenOf(request);
+      const claims = tok ? await verifyToken(env, clientId, tok) : null;
+      showKey = !!(claims && !claims.expired && claims.mgr);
+    }
+  } catch (e) { showKey = false; }
+  const shown = (u) => (showKey ? u : u.replace(/&k=[^&]*/, '&k=•••'));
+
   return jsonResponse({
     hasPaystackKey: hasPaystackConfig(cfg),
     hasDarajaConfig: hasDarajaConfig(cfg),
@@ -64,8 +79,8 @@ export async function onRequestGet(context) {
     forcedProvider: cfg.forcedProvider || '',
     paystackWebhookUrl: `${origin}/api/paystack-webhook?c=${encodeURIComponent(clientId)}`,
     mpesaCallbackUrl: `${origin}/api/mpesa-callback?c=${encodeURIComponent(clientId)}`,
-    paywaveWebhookUrl: `${origin}/api/paywave-webhook?c=${encodeURIComponent(clientId)}`,
-    kcbIpnUrl: withKey(`${origin}/api/kcb-ipn?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'kcb')),
+    paywaveWebhookUrl: shown(withKey(`${origin}/api/paywave-webhook?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'paywave'))),   // zip 185: keyed for shops created from now on
+    kcbIpnUrl: shown(withKey(`${origin}/api/kcb-ipn?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'kcb'))),
   });
 }
 
@@ -80,6 +95,12 @@ export async function onRequestPost(context) {
   // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
   const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
   if (deviceDenied) return deviceDenied;
+
+  // zip 185: payment credentials — only the Admin / a manager when the shop requires staff sessions (no change otherwise), and a per-shop hourly cap
+  const mgrDenied = await managerGuard(request, env, clientId, {});
+  if (mgrDenied) return mgrDenied;
+  const capped = await secLimit(env, 'gwcfg', clientId, secNum(env.GATEWAY_CONFIG_HOURLY_LIMIT, 60), 3600, 'payment-gateway changes');
+  if (capped) return capped;
 
   let body;
   try {
@@ -105,6 +126,11 @@ export async function onRequestDelete(context) {
   // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
   const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
   if (deviceDenied) return deviceDenied;
+
+  const mgrDenied = await managerGuard(request, env, clientId, {});   // zip 185: see POST above
+  if (mgrDenied) return mgrDenied;
+  const capped = await secLimit(env, 'gwcfg', clientId, secNum(env.GATEWAY_CONFIG_HOURLY_LIMIT, 60), 3600, 'payment-gateway changes');
+  if (capped) return capped;
 
   let body;
   try {

@@ -220,6 +220,8 @@
     var err = el('div', { class: 'err' });
     method.addEventListener('change', function () { code.hidden = method.value !== 'mpesa'; });
     var go = el('button', { type: 'button', class: 'add', text: 'I have paid', on: { click: function () {
+      // zip 185: an empty / zero / non-numeric amount was sent as null / 0 and came back as a confusing server error - say it here
+      if (!(Number(amount.value) > 0)) { err.textContent = 'Enter the amount you paid.'; return; }
       go.disabled = true; err.textContent = '';
       var nm = 'pay-' + o.id + '-' + method.value + '-' + amount.value + '-' + code.value;
       send({ action: 'pay', method: method.value, amount: Number(amount.value), mpesaCode: code.value.trim() }, nm, o.id).then(function (x) {

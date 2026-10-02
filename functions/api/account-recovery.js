@@ -55,6 +55,9 @@
 
 import { loginBlocked, noteLoginFailure } from './_ratelimit.js';
 import { requireValidLicense } from './_license.js';
+import { deviceGuard } from './_device-auth.js';
+import { corsHeadersFor } from './_cors.js';
+import { managerGuard } from './_sec-guard.js';
 import { sendEmail } from './_email.js';
 import { hashPassword, checkPassword, upgradeOnLogin } from './_password.js';
 
@@ -259,6 +262,13 @@ export async function onRequestPost(context) {
     const license = await requireValidLicense(request, env);
     if (!license.valid) return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
     const clientId = license.clientId;
+    // zip 185: link / unlink / change-password change who can recover the shop — paired devices only when the shop has switched that on (no change
+    // otherwise). 'verify-for-client' and 'forgot-password-for-client' are SIGN-IN paths for a device that has no cached hash yet (often an unpaired
+    // new device), so they are deliberately NOT guarded here — they keep their own rate limits.
+    if (action === 'link' || action === 'unlink' || action === 'change-password') {
+      const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+      if (deviceDenied) return deviceDenied;
+    }
 
     if (action === 'status') {
       const email = await emailForClient(env, clientId);
@@ -298,6 +308,23 @@ export async function onRequestPost(context) {
       if (!isValidEmail(email)) return jsonResponse({ error: 'Enter a valid email address.' }, 400);
       if (password.length < 4) return jsonResponse({ error: 'Password must be at least 4 characters.' }, 400);
 
+      // zip 185: this shop already has a recovery email. Anyone holding the link could replace it with THEIR email + password (saveAccountRecord
+      // overwrites account-recovery-client:<clientId>). Pointing the shop at a DIFFERENT email now needs proof of the current recovery password
+      // (body.currentPassword), counted and rate-limited like any password guess. First-time linking (no email yet) and re-linking the same email are unchanged.
+      const curEmail = await emailForClient(env, clientId);
+      if (curEmail && curEmail !== email) {
+        const blockedCur = await loginBlocked(env, request, 'recovery:' + clientId);
+        if (blockedCur) return blockedCur;
+        const curRec = await getAccountRecord(env, curEmail);
+        if (curRec && !(await checkPassword(curRec, String(body.currentPassword || '')))) {
+          await noteLoginFailure(env, request, 'recovery:' + clientId);
+          return jsonResponse({ error: 'This shop already has a recovery email. Unlink it first, or enter the current recovery password to replace it.', code: 'already_linked' }, 409);
+        }
+        await removeClientLink(env, clientId);                  // proven: the old email is released, then the new one is linked below
+      }
+
+      const blockedEmail = await loginBlocked(env, request, 'recovery-email:' + email);   // zip 185: password guesses against an email were unlimited here
+      if (blockedEmail) return blockedEmail;
       const existing = await getAccountRecordMigrating(env, email);
       if (existing) {
         // Joining an email that's already linked to one or more shops —
@@ -306,6 +333,7 @@ export async function onRequestPost(context) {
         // every branch rather than silently forking on whichever branch
         // links second.
         if (!(await checkPassword(existing, password))) {
+          await noteLoginFailure(env, request, 'recovery-email:' + email);   // zip 185
           return jsonResponse({ error: 'That email is already linked elsewhere with a different password. Use the same password to add this branch, or reset it first.' }, 409);
         }
         if (!existing.clientIds.includes(clientId)) existing.clientIds.push(clientId);
@@ -320,6 +348,21 @@ export async function onRequestPost(context) {
     }
 
     if (action === 'unlink') {
+      // zip 185: unlinking is what lets someone else link THEIR email next. When the shop requires staff sessions, only the Admin / a manager.
+      // The app sends no password here today, so a password is checked only when one is supplied (body.currentPassword) — or required for every
+      // unlink when ACCOUNT_RECOVERY_STRICT=1 is set (once the app asks for it).
+      const mgrDenied = await managerGuard(request, env, clientId, CORS_HEADERS);
+      if (mgrDenied) return mgrDenied;
+      const linkedEmail = await emailForClient(env, clientId);
+      if (linkedEmail && (body.currentPassword != null || String(env.ACCOUNT_RECOVERY_STRICT) === '1')) {
+        const blockedU = await loginBlocked(env, request, 'recovery:' + clientId);
+        if (blockedU) return blockedU;
+        const recU = await getAccountRecord(env, linkedEmail);
+        if (recU && !(await checkPassword(recU, String(body.currentPassword || '')))) {
+          await noteLoginFailure(env, request, 'recovery:' + clientId);
+          return jsonResponse({ error: 'Current password is incorrect.' }, 401);
+        }
+      }
       await removeClientLink(env, clientId);
       return jsonResponse({ ok: true });
     }
@@ -341,7 +384,9 @@ export async function onRequestPost(context) {
       const currentPassword = String(body.currentPassword || '');
       const newPassword = String(body.newPassword || '');
       const confirmNewPassword = String(body.confirmNewPassword || '');
-      if (!(await checkPassword(record, currentPassword))) return jsonResponse({ error: 'Current password is incorrect.' }, 401);
+      const blockedC = await loginBlocked(env, request, 'recovery:' + clientId);   // zip 185: the current-password check had no guess limit
+      if (blockedC) return blockedC;
+      if (!(await checkPassword(record, currentPassword))) { await noteLoginFailure(env, request, 'recovery:' + clientId); return jsonResponse({ error: 'Current password is incorrect.' }, 401); }
       if (newPassword.length < 4) return jsonResponse({ error: 'New password must be at least 4 characters.' }, 400);
       if (newPassword !== confirmNewPassword) return jsonResponse({ error: 'New passwords do not match.' }, 400);
 
@@ -368,8 +413,9 @@ export async function onRequestPost(context) {
     const blocked = await loginBlocked(env, request, 'recovery-email:' + email);
     if (blocked) return blocked;
     const record = await getAccountRecordMigrating(env, email);
-    if (!record) return jsonResponse({ error: 'No shop is linked to that email.' }, 404);
-    if (!(await passwordOk(env, record, password))) { await noteLoginFailure(env, request, 'recovery-email:' + email); return jsonResponse({ error: 'Incorrect password.' }, 401); }
+    // zip 185: an unknown email used to answer 404 "No shop is linked" while a known one answered 401 — that told anyone which emails have shops.
+    // Both now give the same 401 (the app shows data.error either way).
+    if (!record || !(await passwordOk(env, record, password))) { await noteLoginFailure(env, request, 'recovery-email:' + email); return jsonResponse({ error: 'Incorrect email or password.' }, 401); }
     return jsonResponse({ ok: true });
   }
 

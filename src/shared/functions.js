@@ -621,7 +621,7 @@ function checkBillReminders() {
             let changed = false;
             bills.forEach(b => {
                 if (b.voided || b.closed || !b.dueDate) return;
-                const itemsTotal = (b.items || []).reduce((sum, l) => sum + l.price * l.qty, 0);
+                const itemsTotal = billTotalOf(b);   // zip 185: items + delivery fee
                 const balance = round2(Math.max(0, itemsTotal - (b.amountPaid || 0)));
                 if (balance <= 0.005) return;
                 const due = new Date(b.dueDate + 'T00:00:00');
@@ -1769,7 +1769,7 @@ function copyTextToClipboard(text, successMsg) {
 
 //@fn createBillNotification
 function createBillNotification(type, bill) {
-            const itemsTotal = (bill.items || []).reduce((sum, l) => sum + l.price * l.qty, 0);
+            const itemsTotal = billTotalOf(bill);   // zip 185: items + delivery fee
             const balance = round2(Math.max(0, itemsTotal - (bill.amountPaid || 0)));
             const who = bill.customerName || 'a customer';
             const dueLabel = bill.dueDate ? formatShortDate(bill.dueDate) : '';
@@ -2799,6 +2799,9 @@ function getOrCreateDeviceId() {
 // and exchange already recorded against that receipt for that item (synced from every till). Returns true when `qty` may go ahead;
 // otherwise shows why in `errEl` and returns false. Items not picked from a receipt (free search) are not limited.
 function returnQtyGuard(item, qty, errEl) {
+            // zip 185: a return picked by free search (no receipt) is deliberately not limited to a receipt, but the quantity itself must be a real
+            // positive number: nothing may restock NaN / Infinity / zero / negative stock.
+            if (!(Number(qty) > 0) || !isFinite(Number(qty))) { const t = 'Enter a valid quantity.'; if (errEl) errEl.textContent = t; else if (typeof showToast === 'function') showToast(t, true); return false; }
             if (!item || !item.sourceRefNumber || !item.code) return true;
             const ref = String(item.sourceRefNumber);
             const sale = (typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []).find((x) => x && x.refNumber === ref);
@@ -2871,7 +2874,8 @@ function restockReturnedItem(product, qty, sel, reason) {
                     const piece = sel.variantSaleMode === 'piece';
                     if (piece) variant.pieceQty = stockRound3((variant.pieceQty || 0) + qty); else variant.qty = stockRound3((variant.qty || 0) + qty);
                     product.qty = product.variants.reduce((sum, v) => sum + (Number(v && v.qty) || 0), 0);
-                    logStockMovement(product.code, `${product.name} (${variant.name})`, qty, reason, piece ? 'pieceQty' : 'qty');
+                    // zip 185: a variant's stock is its own cell on the server (keyed by the VARIANT's code); a movement under the parent's code is refused ('variant-parent') and only the safety net repaired it
+                    logStockMovement(variant.code != null && variant.code !== '' ? variant.code : product.code, `${product.name} (${variant.name})`, qty, reason, piece ? 'pieceQty' : 'qty');
                     return saved();
                 }
             }
@@ -2949,7 +2953,7 @@ function cartStockShortfall(entries) {
 // eTIMS and returns all read the item lines. A line whose new total does not divide into whole cents (3 x 33.33...) is split in two so every
 // line stays an exact 2-decimal price. Returns a NEW items array; the input lines are not changed.
 function bakeItemShares(items, shares) {
-            const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+            const r2 = (n) => { const x = (Number(n) || 0) * 100; return Math.round(x + (x < 0 ? -1 : 1) * 1e-9) / 100; };      // zip 185: half-cents (1.005) round up, not down
             const out = [];
             (items || []).forEach((src, i) => {
                 const it = { ...src };
@@ -2974,7 +2978,7 @@ function bakeItemShares(items, shares) {
 //@fn spreadDiscountOverItems
 // The share of `amount` each item line carries, in proportion to what the line is worth (only the lines in `idxs`, or all of them).
 function spreadDiscountOverItems(items, amount, idxs) {
-            const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+            const r2 = (n) => { const x = (Number(n) || 0) * 100; return Math.round(x + (x < 0 ? -1 : 1) * 1e-9) / 100; };      // zip 185: half-cents (1.005) round up, not down
             const shares = (items || []).map(() => 0);
             const worth = (i) => (Number(items[i].price) || 0) * (Number(items[i].qty) || 0);
             const targets = (idxs && idxs.length ? idxs : shares.map((x, i) => i)).filter(i => items[i] && worth(i) > 0);
@@ -3331,7 +3335,23 @@ function getPaperCols() {
                 const native = (mm >= 56 && mm <= 58) ? 32 : (mm >= 80 && mm < 100) ? 48 : Math.floor(printableMm / 1.5);
                 cols = Math.min(cols, native);
             }
+            const cap = deviceColsCap();                          // zip 185: this printer's real head holds fewer than the paper suggests (many "80 mm" heads print 42, not 48)
+            if (cap > 0) cols = Math.min(cols, cap);
             return Math.max(1, cols);
+        }
+
+//@fn deviceColsCap
+function deviceColsCap() {
+            // THIS till's own "characters a line" limit (0 = none). Set from Settings when the right edge of a receipt is cut off.
+            try { const n = parseInt(localStorage.getItem('pos_device_cols') || '0', 10); return n >= 20 && n <= 64 ? n : 0; } catch (e) { return 0; }
+        }
+
+//@fn setDeviceCols
+function setDeviceCols(value) {
+            const n = parseInt(String(value == null ? '' : value).trim(), 10);
+            try { if (n >= 20 && n <= 64) localStorage.setItem('pos_device_cols', String(n)); else localStorage.removeItem('pos_device_cols'); } catch (e) { /* private mode: this session only */ }
+            try { if (typeof syncDevicePaperWidthUI === 'function') syncDevicePaperWidthUI(); receiptRelayoutOpen(); receiptApplyPaperVars(); } catch (e) { /* cosmetic */ }
+            if (typeof showToast === 'function') showToast(`This device's printer: ${getPaperCols()} characters a line.`);
         }
 
 //@fn getServiceAvailableQty
@@ -4334,7 +4354,7 @@ async function maybeSendBillCreatedSms(bill) {
                 const statusRes = await fetch(apiUrl('/api/sms-config?status=1'));
                 const status = await statusRes.json();
                 if (!status.configured) return;
-                const itemsTotal = (bill.items || []).reduce((sum, l) => sum + l.price * l.qty, 0);
+                const itemsTotal = billTotalOf(bill);   // zip 185: items + delivery fee
                 const owed = Math.max(0, itemsTotal - (bill.amountPaid || 0));
                 const message = buildBillOwedMessage(bill.customerName, owed);
                 await fetch(apiUrl('/api/sms-send'), {
@@ -4692,7 +4712,7 @@ function openDeliveryOrderModal(saleId, source) {
                 <hr class="settings-divider">
                 ${itemsHtml}
                 <hr class="settings-divider">
-                <p><b>Total:</b> ${money(record.total)}</p>
+                <p><b>Total:</b> ${money(billTotalOf(record))}</p>
                 <p><b>Payment:</b> ${dd.pod && bills.some(b => b.id === record.id) ? 'Unpaid — Pay on Delivery' : (record.paymentMethod || '').toUpperCase()}</p>
             `;
             document.getElementById('delivery-order-modal').style.display = 'flex';
@@ -4940,6 +4960,14 @@ function performCartPriceChange(key, price) {
             const line = currentCart[key];
             if (!line) return;
             line.price = price;
+            // AquaPOS bales re-price by quantity tier; a hand-picked price (wholesale / custom) must survive a quantity change, the tier price must not freeze.
+            try {
+                if (line.type === 'bale' && typeof getTieredPrice === 'function' && typeof products !== 'undefined') {
+                    const bp = products.find(x => x.code === line.code);
+                    const half = (bp && typeof getHalfBalePrice === 'function') ? getHalfBalePrice(bp) * 2 : -1;
+                    line.priceLocked = !!bp && Math.abs(price - getTieredPrice(bp, Math.max(1, line.qty))) > 0.005 && Math.abs(price - half) > 0.005;
+                }
+            } catch (e) { /* plain re-pricing */ }
             renderCart();
         }
 
@@ -5001,16 +5029,31 @@ function performCartTotalQuote(newTotal) {
             if (belowMin) { showToast(belowMin, true); renderCart(); return; }
 
             const scale = newTotal / itemsTotal;
+            const oldPrices = entries.map((l) => l.price);
             let allocated = 0;
             entries.forEach((l, idx) => {
                 if (idx === entries.length - 1) {
                     const remaining = round2(newTotal - allocated);
-                    l.price = l.qty > 0 ? round2(remaining / l.qty) : l.price;
+                    if (l.qty > 0) {
+                        // zip 185: 3 x 50 quoted at 100 gave 3 x 33.33 = 99.99 - the cart ended 1 cent off what the customer was told. When the rounded unit
+                        // price does not multiply back to the remainder, the last line keeps the exact (unrounded) unit price, as bakeItemShares does for
+                        // a line it cannot split.
+                        const unit = round2(remaining / l.qty);
+                        l.price = Math.abs(unit * l.qty - remaining) < 0.004 ? unit : remaining / l.qty;
+                    }
                 } else {
                     l.price = round2(l.price * scale);
                     allocated = round2(allocated + l.price * l.qty);
                 }
             });
+            // zip 185: the minimum was checked against the ratio BEFORE rounding; check each line again with its new price (a cent of rounding is allowed).
+            const broke = entries.find((l) => { const min = cartLineMinimumPrice(l); return min > 0 && l.price < min - 0.005; });
+            if (broke) {
+                entries.forEach((l, i) => { l.price = oldPrices[i]; });
+                showToast(`That total is too low: "${broke.name}" would fall below its minimum price of ${money(cartLineMinimumPrice(broke))}.`, true);
+                renderCart();
+                return;
+            }
             renderCart();
             showToast(`Sale re-quoted at ${money(newTotal)} — unit prices recalculated to match.`);
         }
@@ -5046,6 +5089,7 @@ function performEditOpeningStock(code) {
 function performResetExceptInventory() {
             const salesCleared = salesLog.length, billsCleared = bills.length;
             salesLog = [];
+            try { if (typeof markBulkDelete === 'function') markBulkDelete('bills'); } catch (e) { /* the reset still runs */ }   // zip 185: deliberate bulk delete - send the tombstones
             bills = [];
             stockMovementLog = [];
             let rolledBack = 0;
@@ -5587,12 +5631,14 @@ async function pullStateOnce() {
                     // one now - otherwise its first real edit of a setting goes out unstamped. Never when it holds unsent edits: those must stay changes.
                     try { if (!(window.__fieldAck && window.__fieldAck.size) && typeof hasUnsyncedWork === 'function' && !hasUnsyncedWork()) ackLocalFields(); } catch (e) { /* baseline only */ }
                     window.__pullOkOnce = true;
-                    markSync('synced'); return;
+                    markSync(typeof hasUnsyncedWork === 'function' && hasUnsyncedWork() ? 'syncing' : 'synced'); return;      // zip 185: never green while something is still waiting to go
                 }
                 if (data && data.updatedAt && data.updatedAt > localUpdatedAt) {
                     // zip 156: something was saved on this device WHILE the reply was on its way (a bill, a void, a settlement). Applying the server's copy now
                     // would replace it in memory and in storage. Send it first, then pull again.
-                    if (hasUnsyncedWork()) {
+                    // zip 185: ...or the password hashes are being sealed on this device right now (sealStoredHashes writes the sealed form first and
+                    // only then sends it): the server's older form must not land on top of it in that gap. Read-only look at a flag; login code untouched.
+                    if (hasUnsyncedWork() || window.__sealing) {
                         markSync('syncing');
                         setTimeout(() => { try { Promise.resolve(flushThenPull()).catch(() => {}); } catch (e2) { /* the poll will */ } }, 300);
                         return;
@@ -5600,11 +5646,14 @@ async function pullStateOnce() {
                     applyRemotePayload(preparePulledPayload(data));
                 }
                 window.__pullOkOnce = true;
-                markSync('synced');
+                markSync(typeof hasUnsyncedWork === 'function' && hasUnsyncedWork() ? 'syncing' : 'synced');      // zip 185: see above
             } catch (e) {
                 // Timed out or failed. Reachable server = just slow: say "Syncing", try again at once with more patience. No answer = Offline.
                 const answered = await probeServer(5000);
-                if (answered > 0) {
+                if (answered > 0 && e && e.name !== 'AbortError') {
+                    // zip 184: a fast non-timeout failure (e.g. a 200 reply that is not JSON) used to retry every 300 ms forever. The 7 s poll retries.
+                    markSync('error');
+                } else if (answered > 0) {
                     window.__pullPatienceMs = Math.min(90000, timeoutMs * 2);
                     markSync('syncing');
                     setTimeout(() => { try { pullState(); } catch (e2) { /* the poll will */ } }, 300);
@@ -5773,16 +5822,43 @@ async function pushNow(opts) {
                     } finally { window.__prePullBusy = false; }
                 }
             } catch (e) { /* never block a push */ }
-            return trackPush(async () => {
+            // zip 185: the pre-pull above is NOT inside the one-push-at-a-time lock (a pull that flushes would otherwise wait for the push that waits
+            // for it); the push itself is.
+            const core = (o) => trackPush(async () => {
                 markSync('syncing');
                 // Snapshot BEFORE collecting the payload — see ackLocalDirty()'s
                 // note on why this must be the count at push-start, not whatever
                 // it is by the time the response comes back.
                 let seqAtStart = '0';
                 try { seqAtStart = localStorage.getItem('pos_dirty_seq') || '0'; } catch (e) { /* best effort */ }
-                const payload = collectSyncPayload();
-                try { await syncHaveCheck(payload); } catch (e) { /* batching covers it */ }
-                const slim = slimPayloadForPush(payload);
+                // zip 185: collecting / slimming used to sit OUTSIDE the try — an exception left the dot on "Syncing" and rejected unhandled.
+                let payload, slim, capInv = null, capExtra = null, capEpoch = 0;
+                try {
+                    payload = collectSyncPayload();
+                    try { await syncHaveCheck(payload); } catch (e) { /* batching covers it */ }
+                    // zip 185: that await can take seconds (the first push of a session asks the server what it already holds). An edit made meanwhile
+                    // was NOT stamped (stamping happened in collectSyncPayload, before it) — stamp again now, then remember exactly what is being sent.
+                    try { stampDirtyInventory(); stampDirtyExtraSyncedFields(); } catch (e) { /* never block a push */ }
+                    slim = slimPayloadForPush(payload);
+                    capEpoch = window.__snapEpoch || 0;
+                    try {
+                        // the same maps snapshotInventorySync / snapshotExtraSyncedFields would build, taken NOW (synchronously with the body below)
+                        capInv = {};
+                        (Array.isArray(inventory) ? inventory : []).forEach((it) => { if (it && it.code != null) capInv[it.code] = stockRecSig(it); });
+                        capExtra = {};
+                        ensureExtraSyncedFieldsInitialized();
+                        extraSyncedFields.forEach(({ name, getter, keyField }) => {
+                            let arr; try { arr = getter(); } catch (e) { return; }
+                            if (!Array.isArray(arr)) return;
+                            arr.forEach((r) => { if (r && r[keyField] != null) capExtra[`${name}:${r[keyField]}`] = extraRecSig(name, r); });
+                        });
+                    } catch (e) { capInv = capExtra = null; }
+                } catch (e) {
+                    window.__pushFailKind = 'http';
+                    try { console.error('pushNow: could not build the payload', e); } catch (e2) { /* none */ }
+                    markSync('error');
+                    return false;
+                }
                 // A push that never gets an answer used to sit at "Syncing…" for as long as the browser cared to wait (minutes), blocking
                 // every later push and pull behind it. It now gives up after 40 s (the poll retries).
                 const pushAbortController = new AbortController();
@@ -5795,9 +5871,13 @@ async function pushNow(opts) {
                         signal: pushAbortController.signal
                     });
                     if (res.ok) {
+                        // zip 184: read the reply BEFORE marking anything as sent. A captive portal / proxy can answer 200 with an HTML page; marking
+                        // the sale "sent" first and then failing to parse left it acknowledged but never uploaded.
+                        let data = null;
+                        try { data = await res.json(); } catch (e) { data = null; }
+                        if (!data || typeof data !== 'object') { window.__pushFailKind = 'network'; markSync('error'); return false; }
                         slim.commit();
                         pushBacklogAfter(slim);
-                        const data = await res.json();
                         if (data && data.till) rememberTillNumber(data.till);
                         // zip 153: the transaction database says a bill this till settled had ALREADY been settled by another till
                         if (data && Array.isArray(data.duplicates) && data.duplicates.length && typeof window.__onDuplicateSettlement === 'function') { try { window.__onDuplicateSettlement(data.duplicates); } catch (e) { /* the report still flags it */ } }
@@ -5819,10 +5899,18 @@ async function pushNow(opts) {
                         else setTimeout(() => { try { if (window.__pullInFlight) window.__pullAgain = true; else pullState(); } catch (e) { /* the poll will */ } }, 50);
                         if (!slim.more) ackLocalDirty(seqAtStart);               // more batches to send: still "unsent work"
                         schedulePushVerify(slim.body);                            // zip 146: then check the server really kept them
-                        snapshotInventorySync();
-                        snapshotExtraSyncedFields();
+                        // zip 185: the baseline is what was SENT, not whatever the live lists look like now (an edit made while the push was on its
+                        // way would otherwise count as sent, and go out later under the same stamp). If a pull re-took the baseline meanwhile, leave it.
+                        if (capInv && capExtra && capEpoch === (window.__snapEpoch || 0)) {
+                            invSyncSnapshot = capInv; window.__invSnapTaken = true;
+                            extraSyncSnapshot = capExtra; window.__extraSnapTaken = true;
+                            window.__snapEpoch = (window.__snapEpoch || 0) + 1;
+                        } else if (!capInv || !capExtra) { snapshotInventorySync(); snapshotExtraSyncedFields(); }
                         window.__pushFails = 0; window.__pushBackoffUntil = 0; window.__pushFailKind = '';
-                        markSync('synced');
+                        // zip 185: green only when nothing is left to send (more batches, a push queued behind this one, an edit made meanwhile)
+                        let pending = !!(slim.more || window.__pushQueued || window.__pushNext || window.__pushBacklog);
+                        try { pending = pending || (parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0) > (parseInt(localStorage.getItem('pos_acked_seq') || '0', 10) || 0); } catch (e) { /* best effort */ }
+                        markSync(pending ? 'syncing' : 'synced');
                         return true;
                     } else {
                         notePushHttp(res);                                  // the server ANSWERED: busy (sent again in seconds) or refused
@@ -5847,6 +5935,31 @@ async function pushNow(opts) {
                     clearTimeout(pushAbortTimer);
                 }
             }, o);
+            return pushNowSerial(core, o);
+            // zip 185: ONE push at a time. The 300 ms timer (queuePush), flushThenPull, the retry timer and the backlog all call pushNow(); two overlapping
+            // runs shared the global flags (A's commit cleared B's "failed", A's finally cleared B's retry timer, A's "synced" hid B's failure). A call made
+            // while one is on its way waits for it and then runs exactly ONE more push for everybody who asked meanwhile (it sends the newest state).
+            function pushNowSerial(core, o) {
+                const start = (oo) => {
+                    const p = core(oo || {});
+                    window.__pushRun = p; window.__pushRunAt = Date.now();
+                    const clear = () => { if (window.__pushRun === p) window.__pushRun = null; };
+                    p.then(clear, clear);
+                    return p;
+                };
+                if (window.__pushRun && Date.now() - (window.__pushRunAt || 0) > 120000) { window.__pushRun = null; window.__pushNext = null; }      // a run that never ended must not block every later push
+                if (!window.__pushRun) return start(o);
+                if (o && Object.keys(o).length) window.__pushNextOpts = Object.assign(window.__pushNextOpts || {}, o);
+                if (!window.__pushNext) {
+                    const noop = () => {};
+                    window.__pushNext = window.__pushRun.then(noop, noop).then(() => new Promise((r) => setTimeout(r, 0))).then(() => {      // one tick: whoever awaited the run that just ended continues first
+                        window.__pushNext = null;
+                        const o2 = window.__pushNextOpts; window.__pushNextOpts = null;
+                        return pushNowSerial(core, o2 || {});                  // re-enters: starts it, or queues again if something else slipped in first
+                    });
+                }
+                return window.__pushNext;
+            }
         }
 
 //@fn pushSharedReceiptSettingsIfNeeded
@@ -7206,7 +7319,16 @@ function retakePhoto() {
         }
 
 //@fn round2
-function round2(n) { return Math.round((n || 0) * 100) / 100; }
+function round2(n) {
+            // zip 185: Math.round(1.005 * 100) is 100 (1.005 * 100 = 100.49999999999999), so a half-cent was lost: round2(1.005) gave 1.00, not 1.01.
+            // A tiny nudge away from zero (far below any real money digit) puts those half-cents on the right side; halves round away from zero.
+            const v = Number(n) || 0;                                  // undefined / null / NaN / '' / 0 stay 0, as before
+            if (v === 0 || !isFinite(v)) return v === 0 ? 0 : v;
+            if (Math.abs(v) > 1e12) return v;                          // beyond any money figure: no cents to lose (and x * 100 loses digits)
+            const x = v * 100;
+            const r = Math.round(x + (x < 0 ? -1 : 1) * Math.max(1e-9, Math.abs(x) * 1e-12)) / 100;
+            return r === 0 ? 0 : r;                                    // never -0
+        }
 
 //@fn runBackgroundCameraScanTick
 async function runBackgroundCameraScanTick(video) {
@@ -7356,6 +7478,7 @@ function safeSetItem(key, value) {
             } catch (e) {
                 console.error('localStorage write failed for', key, e);
                 P.pend[key] = value;                                      // the newest value wins: a later write of the same key replaces it
+                if (P.tries >= 200) P.tries = 0;                          // zip 185: a NEW failure is something to retry: the old give-up must not swallow it
                 try {
                     if (window.storageAutoArchive) {
                         window.storageAutoArchive('write-failed').then(function () { try { storageRetryPending(); } catch (e2) { /* the timer retries */ } });
@@ -7377,9 +7500,12 @@ function storageRetryLater() {
 function storageRetryPending(fromTimer) {
             const P = window.__ssPending;
             if (!P) return;
+            let progressed = false;
             Object.keys(P.pend).forEach((k) => {
-                try { localStorage.setItem(k, P.pend[k]); delete P.pend[k]; } catch (e) { /* still no room */ }
+                try { localStorage.setItem(k, P.pend[k]); delete P.pend[k]; progressed = true; } catch (e) { /* still no room */ }
             });
+            // zip 185: a retry that got one key stored means room came back: the give-up counter (200 tries) starts again for the rest
+            if (progressed) P.tries = 0;
             if (Object.keys(P.pend).length) {
                 if (fromTimer) P.tries++;
                 if (P.tries < 200) storageRetryLater();
@@ -7401,7 +7527,7 @@ function storageFullBar() {
                     el.id = 'storage-full-bar';
                     el.className = 'no-print';
                     el.setAttribute('role', 'status');
-                    el.style.cssText = 'position:fixed; left:50%; bottom:52px; transform:translateX(-50%); z-index:99990; background:#c0392b; color:#fff; padding:8px 14px; border-radius:8px; font:13px system-ui,sans-serif; box-shadow:0 2px 10px rgba(0,0,0,.3); max-width:92vw; text-align:center;';
+                    el.style.cssText = 'position:fixed; left:50%; bottom:52px; transform:translateX(-50%); z-index:99990; background:#c0392b; color:#fff; padding:8px 14px; border-radius:8px; font:13px system-ui,sans-serif; box-shadow:0 2px 10px rgba(0,0,0,.3); max-width:calc(92vw / var(--pos-z,1)); text-align:center;';
                     document.body.appendChild(el);
                 }
                 el.textContent = '\u26a0 This device\'s storage is full: your latest changes are on screen and are being sent to the server, but are not stored on this device yet. Keep the app open and free up space (Settings \u2192 Storage).';
@@ -7920,8 +8046,17 @@ async function saveWebAuthnCredential(record) {
 //@fn scheduleSyncSocketReconnect
 function scheduleSyncSocketReconnect() {
             if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-            wsReconnectTimer = setTimeout(connectSyncSocket, wsReconnectDelay);
-            wsReconnectDelay = Math.min(wsReconnectDelay * 1.6, 30000);
+            // zip 185: onopen resets wsReconnectDelay to 2 s and flushes a full push, so a server that accepts the socket and closes it at once made one
+            // push per 2 s for ever. A socket that lived under 10 s (counted from when this attempt was due) is NOT a healthy connection: the delay
+            // keeps growing across such attempts (to 30 s) instead of starting again at 2 s.
+            const now = Date.now();
+            const lived = window.__wsDueAt ? now - window.__wsDueAt : Infinity;
+            let delay = wsReconnectDelay;
+            if (lived < 10000) delay = Math.min(30000, Math.max(delay, Math.round((window.__wsFlapDelay || 2000) * 1.6)));
+            window.__wsFlapDelay = lived < 10000 ? delay : 0;
+            window.__wsDueAt = now + delay;
+            wsReconnectTimer = setTimeout(connectSyncSocket, delay);
+            wsReconnectDelay = Math.min(delay * 1.6, 30000);
         }
 
 //@fn scopedField
@@ -8161,7 +8296,7 @@ async function sendBillReminderSms(billId) {
                     showToast('SMS isn’t set up yet — add your Africa’s Talking account in ⚙️ Settings first.', true);
                     return;
                 }
-                const itemsTotal = (bill.items || []).reduce((sum, l) => sum + l.price * l.qty, 0);
+                const itemsTotal = billTotalOf(bill);   // zip 185: items + delivery fee
                 const owed = Math.max(0, itemsTotal - (bill.amountPaid || 0));
                 const message = buildBillOwedMessage(bill.customerName, owed);
                 const res = await fetch(apiUrl('/api/sms-send'), {
@@ -8900,7 +9035,30 @@ function slimPayloadForPush(payload) {
                     changed.push(r);
                 }
                 const cap = Math.max(10, Math.floor((CAP[field] || 200) * scale));
-                const send = changed.length > cap ? changed.slice(changed.length - cap) : changed;
+                let send = changed.length > cap ? changed.slice(changed.length - cap) : changed;
+                // zip 185: an item that is NEW to the server arrives with its stock figure already counting its local movements, and the server then takes
+                // those movements as "initial" (not applied again). The same item's movements left for a LATER batch would be applied on top of that figure a
+                // second time. So the movements of items the server has not acknowledged yet always travel with the item, whatever the batch cap says.
+                if (field === 'stockMovementLog' && changed.length > cap) {
+                    try {
+                        if (!window.__keyAck) window.__keyAck = loadKeyAck();
+                        const invAck = window.__keyAck.inventory;
+                        const invNow = Array.isArray(payload.inventory) ? payload.inventory : [];
+                        if (invAck && invAck.size !== undefined && invNow.length) {
+                            const newCodes = new Set();
+                            invNow.forEach((it) => {
+                                if (!it || it.code == null || pushKeyOf(it) == null || invAck.has(pushKeyOf(it))) return;
+                                newCodes.add(String(it.code));
+                                if (Array.isArray(it.variants)) it.variants.forEach((v) => { if (v && v.code != null) newCodes.add(String(v.code)); });
+                            });
+                            if (newCodes.size) {
+                                const inSend = new Set(send);
+                                const extra = changed.filter((r) => !inSend.has(r) && r && newCodes.has(String(r.code)));
+                                if (extra.length) send = extra.concat(send);
+                            }
+                        }
+                    } catch (e) { /* the plain batch is sent */ }
+                }
                 if (send.length < changed.length) more = true;
                 pending[field] = new Map(send.map((r) => [keyOf(r), sigOf(r)]));
                 body[field] = send;
@@ -8940,7 +9098,8 @@ function slimPayloadForPush(payload) {
                 ackSet.forEach((k) => { if (!cur.has(k)) missing.push(k); });
                 if (missing.length === 0) return;
                 // Safety net: if most of a list vanished at once it was replaced (a reset, a bad load), not edited — never turn that into deletions.
-                if (missing.length > 20 && missing.length > ackSet.size * 0.5) { window.__keyAck[col] = cur; return; }
+                // zip 185: ...unless the app said, with markBulkDelete(col), that this list is being emptied ON PURPOSE (a deliberate "delete all" / bulk delete).
+                if (missing.length > 20 && missing.length > ackSet.size * 0.5 && !(window.__bulkDelete && window.__bulkDelete[col])) { window.__keyAck[col] = cur; return; }
                 gone[col] = missing;
             });
             Object.keys(gone).forEach((col) => {
@@ -8970,6 +9129,7 @@ function slimPayloadForPush(payload) {
                     Object.keys(pending).forEach((f) => { const m = window.__pushAck[f] || (window.__pushAck[f] = new Map()); pending[f].forEach((sg, k) => m.set(k, sg)); });
                     fieldSigs.forEach((sg, f) => { window.__fieldAck.set(f, sg); });
                     Object.keys(keysNow).forEach((c) => { window.__keyAck[c] = keysNow[c]; });
+                    Object.keys(gone).forEach((c) => { if (window.__bulkDelete) delete window.__bulkDelete[c]; });      // zip 185: the tombstones are delivered; the opt-in is spent
                     saveKeyAck();
                     window.__pushFailed = false;
                     try { if (typeof window.salesJournalSent === 'function') window.salesJournalSent(sentVersions); } catch (e) { /* never block a push */ }
@@ -9101,7 +9261,7 @@ async function confirmSaleStored(sale) {
             } catch (e) { /* next */ }
             // storage full: make room (oldest synced history goes to the device archive) and save the list again
             try { if (window.storageAutoArchive) await window.storageAutoArchive('sale-not-saved'); } catch (e) { /* next */ }
-            try { const key = (window.__LOG_KEYS && window.__LOG_KEYS.salesLog) || 'pos_sales_log'; localStorage.setItem(key, JSON.stringify(salesLog)); } catch (e) { /* still full */ }
+            try { const key = (window.__LOG_KEYS && window.__LOG_KEYS.salesLog) || 'pos_sales_log'; localStorage.setItem(key, JSON.stringify(salesLog)); try { if (window.__ssPending && window.__ssPending.pend) delete window.__ssPending.pend[key]; } catch (e2) { /* none */ } /* zip 185: this write is the newest value: an OLDER pending one for the key must not overwrite it on a later retry */ } catch (e) { /* still full */ }
             if (saleStoredLocally(sale)) return { ok: true, where: 'device' };
             // last: the server (only when there is a connection) — a sale the server accepted is recorded
             try {
@@ -9174,7 +9334,7 @@ function unsavedSalesBar() {
                     el.id = 'unsaved-sales-bar';
                     el.className = 'no-print';
                     el.setAttribute('role', 'status');
-                    el.style.cssText = 'position:fixed; left:50%; bottom:12px; transform:translateX(-50%); z-index:99990; background:#c0392b; color:#fff; padding:8px 14px; border-radius:8px; font:13px system-ui,sans-serif; box-shadow:0 4px 14px rgba(0,0,0,.3); max-width:94vw; text-align:center;';
+                    el.style.cssText = 'position:fixed; left:50%; bottom:12px; transform:translateX(-50%); z-index:99990; background:#c0392b; color:#fff; padding:8px 14px; border-radius:8px; font:13px system-ui,sans-serif; box-shadow:0 4px 14px rgba(0,0,0,.3); max-width:calc(94vw / var(--pos-z,1)); text-align:center;';
                     document.body.appendChild(el);
                 }
                 el.textContent = `⚠ ${n} sale${n === 1 ? '' : 's'} not stored yet (device storage full or blocked) — saving and sending again automatically. Keep the app open until this disappears.`;
@@ -9305,14 +9465,18 @@ function ackLocalFields() {
             // is what gets stamped as a real change on the next push.
             try {
                 const p = collectSyncPayload();
+                // zip 183: while this device still has changes the server has not confirmed (an item just removed, a setting just edited), agreeing "with the
+                // server" would erase them - the removal was never sent, so the next pull brought the item back. Only record what is not already tracked.
+                const pending = (typeof hasUnsyncedWork === 'function') && hasUnsyncedWork();
                 window.__fieldAck = window.__fieldAck || new Map();
-                Object.keys(p).forEach((f) => { if (f !== 'updatedAt' && p[f] !== undefined) window.__fieldAck.set(f, pushSigOf(p[f])); });
+                Object.keys(p).forEach((f) => { if (f !== 'updatedAt' && p[f] !== undefined && !(pending && window.__fieldAck.has(f))) window.__fieldAck.set(f, pushSigOf(p[f])); });
                 // ...and which records of the deletable lists exist now (a record missing later = the person deleted it; see slimPayloadForPush)
                 if (!window.__keyAck) window.__keyAck = loadKeyAck();
                 ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions', 'rawMaterials'].forEach((col) => {
                     if (!Array.isArray(p[col])) return;
                     const set = new Set();
                     p[col].forEach((r) => { const k = pushKeyOf(r); if (k != null) set.add(k); });
+                    if (pending && window.__keyAck[col]) window.__keyAck[col].forEach((k) => set.add(k));   // keys removed here but not yet reported stay tracked, so the push sends their tombstones
                     window.__keyAck[col] = set;
                 });
                 saveKeyAck();
@@ -9465,6 +9629,7 @@ async function flushPendingPush() {
 //@fn snapshotExtraSyncedFields
 function snapshotExtraSyncedFields() {
             ensureExtraSyncedFieldsInitialized();
+            window.__snapEpoch = (window.__snapEpoch || 0) + 1;      // zip 185: lets a push tell whether the baseline was re-taken (a pull) while it was on its way
             extraSyncSnapshot = {};
             window.__extraSnapTaken = true;      // zip 160: from now on "not in the snapshot" means "created after it", not "never looked at"
             extraSyncedFields.forEach(({ name, getter, keyField }) => {
@@ -9479,6 +9644,7 @@ function snapshotExtraSyncedFields() {
 
 //@fn snapshotInventorySync
 function snapshotInventorySync() {
+            window.__snapEpoch = (window.__snapEpoch || 0) + 1;      // zip 185: see snapshotExtraSyncedFields
             invSyncSnapshot = {};
             window.__invSnapTaken = true;
             // zip 160: this runs once at boot, when the other synced lists are not declared yet. Take THEIR baseline right after the page's script
@@ -10918,12 +11084,22 @@ function unitLabel(unit) {
 async function unlinkRecoveryEmail() {
             if (!confirm('Unlink your recovery email? You will no longer be able to reset your password by email or sign in on a new device this way.')) return;
             const msgEl = document.getElementById('recovery-link-msg');
+            // zip 185: unlinking is what lets somebody else attach THEIR email next, so it asks for the account password (the server checks it)
+            let pw = '';
+            try { pw = window.prompt('Enter your account password to confirm unlinking.'); } catch (e) { pw = ''; }
+            if (pw === null) return;
             try {
-                await fetch(apiUrl('/api/account-recovery'), {
+                const res = await fetch(apiUrl('/api/account-recovery'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'unlink' }),
+                    body: JSON.stringify({ action: 'unlink', currentPassword: String(pw || '') }),
                 });
+                if (res && res.ok === false) {
+                    let out = {}; try { out = await res.json(); } catch (e) { out = {}; }
+                    msgEl.className = 'settings-msg error';
+                    msgEl.textContent = (out && out.error) || 'Could not unlink the email.';
+                    return;
+                }
                 msgEl.className = 'settings-msg success';
                 msgEl.textContent = 'Email unlinked.';
                 loadRecoveryStatus();
@@ -11937,9 +12113,10 @@ function buildReceiptDoc(sale, hooks) {
             if (deliverySale) headerLines.push('CLIENT COPY');
             headerLines.push(rule);
             // One line when it fits (80 mm), otherwise Date and Time on lines of their own — never wrapped mid-way (zip 144)
-            const dateTime = `Date: ${date.toLocaleDateString('en-GB')}   Time: ${date.toLocaleTimeString('en-GB')}`;
+            const stamp = bizReceiptStamp(date);
+            const dateTime = `Date: ${stamp.date}   Time: ${stamp.time}`;
             if (dateTime.length <= cols) headerLines.push(dateTime);
-            else { headerLines.push(`Date: ${date.toLocaleDateString('en-GB')}`); headerLines.push(`Time: ${date.toLocaleTimeString('en-GB')}`); }
+            else { headerLines.push(`Date: ${stamp.date}`); headerLines.push(`Time: ${stamp.time}`); }
             headerLines.push(`Served by: ${sale.servedBy || adminServerName()}`);   // bills and receipts always say who served
             if (sale.customerName) headerLines.push(`Customer: ${sale.customerName}`);
             if (sale.tableOrRoom) {
@@ -14080,7 +14257,7 @@ function renderDeliveriesTab() {
                     </div>
                     <div style="font-size:12px; color:#7f8c8d; margin-top:2px;">Ref: ${escapeHtml(record.refNumber)} — ${escapeHtml(dd.address || '')}</div>
                     ${!currentServer && agent ? `<div style="font-size:12px; color:#7f8c8d;">Agent: ${escapeHtml(agent.name)}</div>` : ''}
-                    <div style="font-size:12px; color:#7f8c8d;">Total: ${money(record.total)} ${unpaid ? `<span class="delivery-pod-flag">UNPAID / POD</span>` : ''}</div>
+                    <div style="font-size:12px; color:#7f8c8d;">Total: ${money(billTotalOf(record))} ${unpaid ? `<span class="delivery-pod-flag">UNPAID / POD</span>` : ''}</div>
                     <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">
                         <button class="settings-small-btn" onclick="openDeliveryOrderModal('${escapeJsAttr(record.id)}', '${source}')">📋 View Details</button>
                         ${status !== 'delivered' ? `<button class="settings-small-btn" style="background:var(--accent); color:white;" onclick="advanceDeliveryStatus('${escapeJsAttr(record.id)}', '${source}')">${nextDeliveryStatusActionLabel(status)}</button>` : ''}
@@ -15094,7 +15271,7 @@ function pastSaleStore(saleRecord, payment) {
                     billId: saleRecord.id,
                     id: genSaleId(), timestamp: saleRecord.timestamp, paid: true, paymentMethod: m, servedBy: saleRecord.servedBy, recordedLate: true,
                     customerName: payment.billName,
-                    items: [{ name: `Partial payment — Bill (${payment.billName})`, price: saleRecord.amountPaid, qty: 1, unit: 'payment', wholesalePrice: 0, vatCategory: 'A' }],
+                    items: [{ name: `Partial payment — Bill (${payment.billName})`, price: saleRecord.amountPaid, qty: 1, unit: 'payment', wholesalePrice: 0, vatCategory: 'A', costShare: (total > 0 && typeof reportSaleCost === 'function') ? round2(reportSaleCost(saleRecord) * Math.min(1, saleRecord.amountPaid / total)) : 0 }],   /* zip 185: this payment's share of the bill's cost of goods */
                     cashAmount: m === 'cash' ? saleRecord.amountPaid : 0, mpesaAmount: m === 'mpesa' ? saleRecord.amountPaid : 0, cardAmount: m === 'card' ? saleRecord.amountPaid : 0,
                     amountTendered: m === 'cash' ? saleRecord.amountPaid : 0, change: 0,
                 });
@@ -15757,6 +15934,22 @@ function bizTzOffsetMin() {
             return out;
         }
 
+//@fn bizReceiptStamp
+function bizReceiptStamp(t) {
+            // zip 185: the date and time printed on receipts / bills come from the SHOP's time zone (East Africa by default, see bizTzOffsetMin), not from the
+            // clock of whichever phone or PC printed them. A waiter's phone left on another time zone printed a bill stamped 04:28 for a 14:28 sale.
+            const d = t instanceof Date ? t : new Date(t);
+            const local = () => ({ date: d.toLocaleDateString('en-GB'), time: d.toLocaleTimeString('en-GB') });
+            if (isNaN(d.getTime())) return local();
+            let off = null;
+            try { off = bizTzOffsetMin(); } catch (e) { off = null; }
+            if (off == null || !isFinite(off)) return local();
+            try {
+                const s = new Date(d.getTime() + off * 60000);
+                return { date: s.toLocaleDateString('en-GB', { timeZone: 'UTC' }), time: s.toLocaleTimeString('en-GB', { timeZone: 'UTC' }) };
+            } catch (e) { return local(); }
+        }
+
 //@fn bizDayKey
 // zip 127: the business date (YYYY-MM-DD) of a moment. Daily Sales, reports, X/Z and "today" all use it, so a sale always lands on the
 // same day on every device of the shop — even a till whose time zone is set wrong (a PC left on UTC used to file every sale made
@@ -16047,7 +16240,9 @@ function reportSaleTotal(s) {
 //@fn reportSaleCost
 function reportSaleCost(s) {
             return (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => {
-                if (it.unit === 'payment' || it.isPayment) return sum;
+                // zip 185: a payment line (credit-bill sale, instalment) has no goods of its own, but the Shop may stamp the cost of goods this payment
+                // covers on it as a numeric `costShare` (KES, whole line). Counted when present; without it the line is skipped, exactly as before.
+                if (it.unit === 'payment' || it.isPayment) return typeof it.costShare === 'number' && isFinite(it.costShare) ? sum + it.costShare : sum;
                 let cost = Number(it.wholesalePrice);
                 if (!(cost > 0) && it.code != null) { const p = inventory.find((x) => x.code === it.code); cost = p ? Number(p.wholesalePrice) || 0 : 0; }
                 return sum + (cost || 0) * (Number(it.qty) || 0);
@@ -16252,9 +16447,9 @@ function reportBuildStock(range) {
 function reportBuildBillsDebts() {
             const now = Date.now();
             const openBills = (typeof bills !== 'undefined' ? bills : []).filter((b) => b && !b.closed && !b.voided);
-            const owed = (b) => Math.max(0, (b.items || []).reduce((s, l) => s + (Number(l.price) || 0) * (Number(l.qty) || 0), 0) - (Number(b.amountPaid) || 0));
+            const owed = (b) => Math.max(0, billTotalOf(b) - (Number(b.amountPaid) || 0));   // zip 185: items + delivery fee
             const age = (t) => Math.max(0, Math.floor((now - new Date(t).getTime()) / 86400000));
-            const bRows = openBills.map((b) => [b.customerName || 'Customer', new Date(b.timestamp).toLocaleDateString('en-GB'), reportMoney((b.items || []).reduce((s, l) => s + (Number(l.price) || 0) * (Number(l.qty) || 0), 0)), reportMoney(b.amountPaid || 0), reportMoney(owed(b)), age(b.timestamp) + ' d']).sort((a, b) => parseInt(b[5]) - parseInt(a[5]));
+            const bRows = openBills.map((b) => [b.customerName || 'Customer', new Date(b.timestamp).toLocaleDateString('en-GB'), reportMoney(billTotalOf(b)), reportMoney(b.amountPaid || 0), reportMoney(owed(b)), age(b.timestamp) + ' d']).sort((a, b) => parseInt(b[5]) - parseInt(a[5]));
             const debtList = (typeof debts !== 'undefined' ? debts : []).filter((d) => d && !d.removed);
             const dOwed = (d) => Math.max(0, (Number(d.amount) || 0) - (Number(d.paidAmount) || 0) - (Array.isArray(d.payments) ? d.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0) : 0));
             const dRows = debtList.filter((d) => dOwed(d) > 0).map((d) => [d.customerName || d.name || 'Customer', new Date(d.createdAt || d.timestamp || now).toLocaleDateString('en-GB'), reportMoney(d.amount), reportMoney(dOwed(d)), age(d.createdAt || d.timestamp || now) + ' d']);
@@ -17151,6 +17346,11 @@ function syncDevicePaperWidthUI() {
                 b.classList.toggle('active', on);
                 b.setAttribute('aria-pressed', on ? 'true' : 'false');
             });
+            document.querySelectorAll('[data-device-cols]').forEach((b) => {
+                const on = String(b.dataset.deviceCols || '0') === String(deviceColsCap());
+                b.classList.toggle('active', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
             document.querySelectorAll('.device-paper-now').forEach((el) => {
                 el.textContent = `${receiptPaperMm()} mm paper · ${getPaperCols()} characters a line${dev ? '' : ' (shop setting)'}`;
             });
@@ -17200,7 +17400,7 @@ function ensureReceiptGridCss() {
                 'body.printing-receipt .receipt-paper.align-right{padding-left:calc(var(--rg-side,4mm) + 3mm) !important;padding-right:max(0mm, calc(var(--rg-side,4mm) - 3mm)) !important;}',
                 'body.printing-receipt .receipt-grid,body.printing-kitchen-ticket .receipt-grid{font-size:var(--rg-font,11px) !important;}',
                 '.device-paper-picker,.universal-modal-x{display:none !important;}',
-                // zip 179: the paper starts at the top edge, whatever the screen layout says. The page body is a flex column with min-height:100vh and a bottom padding
+                // zip 179: the paper starts at the top edge, whatever the screen layout says. The page body is a flex column with min-height:calc(100vh / var(--pos-z,1)) and a bottom padding
                 // for the floating buttons; on paper that can add blank length above/below the slip, so it is flattened for any receipt / ticket / report print.
                 'html:has(body.printing-receipt),html:has(body.printing-kitchen-ticket),html:has(body.printing-report){height:auto !important;min-height:0 !important;margin:0 !important;padding:0 !important;}',
                 'body.printing-receipt,body.printing-kitchen-ticket,body.printing-report{display:block !important;height:auto !important;min-height:0 !important;margin:0 !important;padding:0 !important;overflow:visible !important;}',
@@ -17290,8 +17490,8 @@ async function printPaperWidthTest() {
             // 48-character one breaks onto a second line the printer is 58 mm. This is how to find out what a printer really holds.
             const msgEl = document.getElementById('device-paper-test-msg');
             const say = (t, err) => { if (msgEl) { msgEl.className = err ? 'settings-msg error' : 'settings-msg success'; msgEl.textContent = t; } else if (typeof showToast === 'function') showToast(t, !!err); };
-            const r32 = '12345678901234567890123456789012', r48 = r32 + '3456789012345678';
-            const text = ['PAPER WIDTH TEST', '', '32 characters:', r32, '', '48 characters:', r48, '', 'If the 48 line broke in two:', 'choose 58 mm.', 'If it printed on one line:', 'choose 80 mm.', '', '', ''].join('\n');
+            const r32 = '12345678901234567890123456789012', r42 = r32 + '3456789012', r48 = r32 + '3456789012345678';
+            const text = ['PAPER WIDTH TEST', '', '32 characters:', r32, '', '42 characters:', r42, '', '48 characters:', r48, '', 'Last number you can read in full', 'on a line = your printer width.', 'Cut off or broken at 42? Set', 'Characters a line = 42 (or 32).', '', '', ''].join('\n');
             const bytes = new Uint8Array([0x1B, 0x40, 0x1B, 0x4D, 0x00, ...new TextEncoder().encode(text), 0x1D, 0x56, 0x42, 0x00]);
             try {
                 if (printerMode === 'bluetooth' && typeof btPrinterCharacteristic !== 'undefined' && btPrinterCharacteristic) { await sendBytesViaBluetooth(bytes); say('Test sent over Bluetooth — see the note on the paper.'); return; }

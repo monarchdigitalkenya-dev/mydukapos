@@ -95,6 +95,9 @@
                 + '|c' + contentHash(r);
         }
         window.salesJournalSig = sigOf;
+        // zip 185: a direct localStorage write of a log key is the NEWEST value of that key; an older value that safeSetItem kept pending (storage was
+        // full a moment ago) must not be written over it by a later retry.
+        function okWrote(key) { try { if (window.__ssPending && window.__ssPending.pend) delete window.__ssPending.pend[key]; } catch (e) { /* none */ } }
         function deviceId() { try { return typeof getOrCreateDeviceId === 'function' ? getOrCreateDeviceId() : (localStorage.getItem('pos_device_id') || ''); } catch (e) { return ''; } }
         function bizDay(ts) { try { return typeof bizDayKey === 'function' ? bizDayKey(ts) : String(ts).slice(0, 10); } catch (e) { return ''; } }
         // Aqua POS: the site on screen ('both' = every site)
@@ -273,7 +276,7 @@
                         } else if (e.st === 'pending' || e.st === 'unconfirmed') e.ls = lsOk;
                     }
                 }
-                if (fixed) { try { localStorage.setItem(LOGKEYS[f], JSON.stringify(a)); } catch (err) { /* the journal below holds it */ } }
+                if (fixed) { try { localStorage.setItem(LOGKEYS[f], JSON.stringify(a)); okWrote(LOGKEYS[f]); } catch (err) { /* the journal below holds it */ } }
                 // Stock changes, returns and expenses have several ways of being deleted on purpose (delete an expense, a stock take...):
                 // once the IndexedDB journal is loaded, one that this device's own SUCCESSFUL save left out was removed on purpose.
                 // Sales are never assumed removed — only the explicit salesJournalForget() calls (reset, purge, delete voided) do that.
@@ -398,6 +401,11 @@
                 if (back.length) patchRecords(f, back, { status: 'pending', syncedAt: null });
             } catch (e) { /* bookkeeping */ }
         };
+        // zip 185: the push sends "this record was deleted" tombstones for records that vanished from a synced list - EXCEPT when more than 20
+        // and more than half of a list vanish at once (that looks like a reset / bad load, not an edit). An app that deliberately deletes most of a
+        // list (a "delete all customers" button) calls markBulkDelete('customers') BEFORE removing them, so the tombstones are sent and the records
+        // do not come back on the next pull. One-shot: it is cleared when the push carrying the tombstones is acknowledged.
+        window.markBulkDelete = function (listName) { try { (window.__bulkDelete = window.__bulkDelete || {})[String(listName)] = true; } catch (e) { /* the safety net applies */ } };
         window.salesJournalSeenRecords = function (f, records) { var o = {}; o[f] = records; window.salesJournalSeen(o); };
         window.salesJournalPushStarted = function () {
             var now = Date.now();
@@ -509,7 +517,7 @@
             var fields = Object.keys(restored);
             if (!fields.length) return 0;
             var n = 0, sales = restored.salesLog ? restored.salesLog.length : 0;
-            fields.forEach(function (f) { n += restored[f].length; try { localStorage.setItem(LOGKEYS[f], JSON.stringify(arrOf(f))); } catch (e) { /* the journal still holds them */ } });
+            fields.forEach(function (f) { n += restored[f].length; try { localStorage.setItem(LOGKEYS[f], JSON.stringify(arrOf(f))); okWrote(LOGKEYS[f]); } catch (e) { /* the journal still holds them */ } });
             stats.restored += n;
             try { if (typeof markLocalDirty === 'function') markLocalDirty(); } catch (e) { /* optional */ }
             try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll will send them */ }
@@ -749,7 +757,7 @@
             var a = arrOf('salesLog');
             if (!x || !Array.isArray(a) || a.some(function (s) { return s && String(s.id) === String(id); })) return false;
             a.push(x);
-            try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); } catch (e) { /* in memory for this session */ }
+            try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); okWrote(LOGKEYS.salesLog); } catch (e) { /* in memory for this session */ }
             Object.keys(extras).forEach(function (k) { extras[k].list = extras[k].list.filter(function (s) { return String(s.id) !== String(id); }); });
             return true;
         };
@@ -831,7 +839,7 @@
                 if (!isFinite(guess) && Array.isArray(s.paymentHistory) && s.paymentHistory[0]) guess = Date.parse(s.paymentHistory[0].timestamp);
                 if (isFinite(guess)) { s.timestampRecovered = s.timestamp == null ? '' : String(s.timestamp); s.timestamp = new Date(guess).toISOString(); fixed++; }
             });
-            if (fixed) { try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); } catch (e) { /* the journal holds it */ } try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll */ } }
+            if (fixed) { try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); okWrote(LOGKEYS.salesLog); } catch (e) { /* the journal holds it */ } try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll */ } }
             return fixed;
         }
         window.salesJournalImpossibleDates = function () { return (arrOf('salesLog') || []).filter(function (s) { return s && !s.voided && impossibleDate(s); }); };
@@ -842,7 +850,7 @@
             s.deviceTimestamp = s.deviceTimestamp || s.timestamp;
             s.timestamp = new Date().toISOString();
             s.dateCorrectedAt = Date.now();
-            try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); } catch (e) { /* in memory */ }
+            try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); okWrote(LOGKEYS.salesLog); } catch (e) { /* in memory */ }
             try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll */ }
             return true;
         };
@@ -937,7 +945,7 @@
             var a = arrOf('salesLog'); if (!Array.isArray(a) || !list || !list.length) return 0;
             var have = new Set(a.map(function (s) { return String(s && s.id); })), n = 0;
             list.forEach(function (s) { if (s && !have.has(String(s.id))) { a.push(s); n++; } });
-            if (n) { try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); } catch (e) { /* in memory for this session */ } try { renderDailySales(); } catch (e) { /* cosmetic */ } }
+            if (n) { try { localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); okWrote(LOGKEYS.salesLog); } catch (e) { /* in memory for this session */ } try { renderDailySales(); } catch (e) { /* cosmetic */ } }
             return n;
         };
         window.salesJournalReconcileUi = async function () {

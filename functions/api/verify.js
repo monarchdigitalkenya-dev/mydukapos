@@ -15,6 +15,7 @@ import { checkRateLimit } from './_ratelimit.js';
 const H = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' };
 const json = (b, s = 200, x = {}) => new Response(JSON.stringify(b), { status: s, headers: { ...H, ...x } });
 const KEY = (email, ch) => `otp:${ch}:${email}`;
+const checkLocks = new Map();   // zip 185: per-code in-instance serialization of 'check'
 const TTL = 600, MAX_TRIES = 5, COOLDOWN_MS = 60000;
 
 export const verificationRequired = (env) => String(env && env.VERIFICATION_REQUIRED) === '1';
@@ -70,12 +71,26 @@ export async function onRequestPost(context) {
   }
 
   if (b.action === 'check') {
+    // zip 185: the try counter was read, compared, THEN written — N parallel guesses all read tries=0 and so all got checked (more than 5). Now the
+    // attempt is counted and saved BEFORE the code is compared, and checks for one code are serialized within a Worker instance. (KV has no
+    // atomic increment, so across instances a few extra parallel guesses remain possible; the code still dies after MAX_TRIES recorded misses.)
+    const lockKey = KEY(email, channel);
+    const prevLock = checkLocks.get(lockKey) || Promise.resolve();
+    let release; const mine = new Promise((r) => { release = r; });
+    const chain = prevLock.then(() => mine);
+    checkLocks.set(lockKey, chain);
+    await prevLock;
+    try { return await checkCode(); } finally { release(); if (checkLocks.get(lockKey) === chain) checkLocks.delete(lockKey); }
+  }
+  return json({ error: 'Unknown action.' }, 400);
+
+  async function checkCode() {
     const rec = await env.mydukapos_kv.get(KEY(email, channel)).then((r) => (r ? JSON.parse(r) : null)).catch(() => null);
     if (!rec) return json({ error: 'That code has expired. Ask for a new one.', code: 'expired' }, 400);
     if (rec.tries >= MAX_TRIES) { await env.mydukapos_kv.delete(KEY(email, channel)); return json({ error: 'Too many wrong tries. Ask for a new code.', code: 'too_many_tries' }, 429); }
     const code = String(b.code || '').replace(/\D/g, '');
+    rec.tries += 1; await env.mydukapos_kv.put(KEY(email, channel), JSON.stringify(rec), { expirationTtl: TTL });   // zip 185: counted first
     if (code.length !== 6 || (await sha256Hex(rec.salt + code + email)) !== rec.h) {
-      rec.tries += 1; await env.mydukapos_kv.put(KEY(email, channel), JSON.stringify(rec), { expirationTtl: TTL });
       return json({ error: 'That code is not right.', code: 'bad_code', triesLeft: Math.max(0, MAX_TRIES - rec.tries) }, 400);
     }
     await env.mydukapos_kv.delete(KEY(email, channel));
@@ -83,5 +98,4 @@ export async function onRequestPost(context) {
     await saveAccount(env, account);
     return json({ ok: true, emailVerified: !!account.emailVerified, phoneVerified: !!account.phoneVerified });
   }
-  return json({ error: 'Unknown action.' }, 400);
 }

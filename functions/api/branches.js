@@ -43,6 +43,8 @@ import { readState } from './_state-store.js';
 import { linkNewClientToSameAccount, removeClientLink } from './account-recovery.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { managerGuard, secLimit, secNum } from './_sec-guard.js';
+import { ensureShopCallbackKeys } from './_callback-key.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -136,6 +138,13 @@ export async function onRequestPost(context) {
   const record = await getLicense(env, clientId);
   if (!record) return jsonResponse({ error: 'Client not found.' }, 404);
 
+  // zip 185: creating a branch mints a permanent licence and deleting one erases a shop's data — when the shop requires staff sessions, only
+  // the Admin / a manager may do either (no change for shops that have not switched that on).
+  if (body.action === 'create' || body.action === 'delete') {
+    const mgrDenied = await managerGuard(request, env, clientId, CORS_HEADERS);
+    if (mgrDenied) return mgrDenied;
+  }
+
   if (body.action === 'create') {
     // A demo account creating a branch used to hand that branch a full
     // permanent license, regardless of the demo status of the account
@@ -155,6 +164,10 @@ export async function onRequestPost(context) {
       await saveLicense(env, record);
       await addToBranchGroup(env, record.branchGroupId, record.id);
     }
+
+    // zip 185: a cap per group per day (default 20, BRANCH_CREATE_DAILY_LIMIT) so a leaked link cannot mint unlimited permanent licences.
+    const capped = await secLimit(env, 'branch-create', record.branchGroupId, secNum(env.BRANCH_CREATE_DAILY_LIMIT, 20), 86400, 'branches created', CORS_HEADERS);
+    if (capped) return capped;
 
     // Branch limit removed: any client holding a permanent link (the only
     // way to reach this point — demos are blocked above) can create as
@@ -216,6 +229,7 @@ export async function onRequestPost(context) {
       clientName: record.clientName || '',
     });
     await addToBranchGroup(env, record.branchGroupId, branch.id);
+    await ensureShopCallbackKeys(env, branch.id);          // zip 185: the new branch starts with signed payment-callback URLs
 
     // Seed the branch's own pos-sync record so its link opens straight to
     // the login picker (never Sign Up) with the admin as the ONLY option —
@@ -337,6 +351,8 @@ export async function onRequestPost(context) {
     const targetClientId = String(body.targetClientId || '');
     if (!record.branchGroupId) return jsonResponse({ error: 'This shop has no branches.' }, 400);
     if (!targetClientId) return jsonResponse({ error: 'No branch specified.' }, 400);
+    const delCapped = await secLimit(env, 'branch-delete', record.branchGroupId, secNum(env.BRANCH_DELETE_HOURLY_LIMIT, 30), 3600, 'branch deletions', CORS_HEADERS);   // zip 185
+    if (delCapped) return delCapped;
 
     const members = await getBranchGroupMembers(env, record.branchGroupId);
     if (!members.includes(targetClientId)) {

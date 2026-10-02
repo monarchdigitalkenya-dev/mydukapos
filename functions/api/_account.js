@@ -167,9 +167,26 @@ export async function emailFromToken(env, token) {
     try { account = await getAccount(env, email); } catch (e) { account = null; }
     const body = p[1] + '.' + p[2] + '.' + p[3];
     if (account && account.passwordHash && sameText(await hmacHex(await sessionKey(account), body), p[4])) return email;
+    // zip 185: this KV fallback exists because the account record can still be spreading between locations right after sign-in, and
+    // because a PBKDF2 upgrade-on-login changes the hash (and so the signing key) without the password changing. It used to let a session
+    // outlive a password RESET. A reset now stamps account.sessionsValidFrom; the fallback refuses a session issued before that stamp.
+    if (account && account.sessionsValidFrom && (parseInt(p[3], 36) - SESSION_TTL_SECONDS * 1000) < account.sessionsValidFrom) return '';
     return (await env.mydukapos_kv.get(SESSION_PREFIX + p[2])) || '';      // the account record itself is still spreading
   }
-  return (await env.mydukapos_kv.get(SESSION_PREFIX + token)) || '';
+  // zip 185: an old plain token carries no issue time, so after a reset it cannot prove it was issued afterwards.
+  const plain = await env.mydukapos_kv.get(SESSION_PREFIX + token);
+  if (plain) {
+    let acct = null;
+    try { acct = await getAccount(env, plain); } catch (e) { acct = null; }
+    if (acct && acct.sessionsValidFrom) return '';
+  }
+  return plain || '';
+}
+
+// zip 185: call when a password is RESET (forgotten-password flow): every session issued before this moment stops working, even through the KV fallback.
+export function revokeSessionsBefore(account, at = Date.now()) {
+  account.sessionsValidFrom = at;
+  return account;
 }
 
 // Verifies a plaintext password against a stored account. Returns the

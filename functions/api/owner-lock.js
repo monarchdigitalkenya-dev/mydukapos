@@ -222,6 +222,7 @@ export async function onRequestPost(context) {
       // standard demo duration (see getDemoDurationHours in _license.js) —
       // matches the "72 hours" label this button used to show verbatim,
       // now tracking that setting instead of a fixed number.
+      if (body.hours !== undefined && body.hours !== null && !(Number.isFinite(body.hours) && body.hours > 0 && body.hours <= 24 * 3650)) return jsonResponse({ error: 'Enter a number of hours between 1 and 87,600.' }, 400);   // zip 185: a huge or non-numeric value used to write an unusable expiry
       const hours = Number.isFinite(body.hours) && body.hours > 0 ? body.hours : await getDemoDurationHours(context.env);
       const now = Date.now();
       const base = record.expiresAt && record.expiresAt > now ? record.expiresAt : now;

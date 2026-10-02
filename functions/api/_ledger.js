@@ -177,8 +177,28 @@ export function buildGroups(db, clientId, body, opt = {}) {
     pays.forEach((p) => st.push(db.prepare(`INSERT INTO ledger_payments (client_id, payment_id, sale_id, bill_id, method, amount, mpesa_code, status, confirmed_by, source, ts, business_date, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (client_id, payment_id) DO UPDATE SET status = excluded.status, mpesa_code = COALESCE(excluded.mpesa_code, ledger_payments.mpesa_code)
-      WHERE (ledger_payments.status <> excluded.status AND NOT (ledger_payments.status = 'DUPLICATE' AND excluded.status = 'CONFIRMED')) OR (ledger_payments.mpesa_code IS NULL AND excluded.mpesa_code IS NOT NULL)`)
-      .bind(clientId, `sale:${id}:${p.method}`, id, str(s.billId || s.billNo || s.tabId || s.partOfTab, 60), p.method, p.amount, p.code, payStatus, str(s.servedBy, 60), source, ts, bizDate(ts, off), now)));
+      WHERE (ledger_payments.status <> excluded.status AND NOT (ledger_payments.status = 'DUPLICATE' AND excluded.status = 'CONFIRMED') AND (excluded.status <> 'CONFIRMED' OR (ABS(ledger_payments.amount - excluded.amount) < 0.005 AND EXISTS (SELECT 1 FROM ledger_sales x WHERE x.client_id = ledger_payments.client_id AND x.sale_id = ledger_payments.sale_id AND x.version = ?)))) OR (ledger_payments.mpesa_code IS NULL AND excluded.mpesa_code IS NOT NULL)`)
+      .bind(clientId, `sale:${id}:${p.method}`, id, str(s.billId || s.billNo || s.tabId || s.partOfTab, 60), p.method, p.amount, p.code, payStatus, str(s.servedBy, 60), source, ts, bizDate(ts, off), now, version)));
+    // zip 185: an EDITED sale (amount / method changed) used to leave its old payment row CONFIRMED with the old figure (the payment_amount_locked
+    // trigger refuses a re-amount, and the upsert above only moves the status). Now, once this version is the sale's current one: every CONFIRMED
+    // payment row of the sale that is not part of the wanted set (method + amount) is REVERSED (a status change, which the trigger allows), and a
+    // changed amount is recorded as a NEW row 'sale:<id>:<method>:a<cents>' (revived if an earlier edit had already used that amount). The base
+    // upsert above no longer revives a REVERSED row whose amount differs. Nothing is deleted; the audit keeps every version.
+    const wantKeys = payStatus === 'CONFIRMED' ? pays.map((p) => `${p.method}|${Math.round(p.amount * 100)}`) : [];
+    const pfx = `sale:${id}:`;
+    const curVer = `EXISTS (SELECT 1 FROM ledger_sales x WHERE x.client_id = ? AND x.sale_id = ? AND x.version = ?)`;
+    st.push(db.prepare(`UPDATE ledger_payments SET status = 'REVERSED' WHERE client_id = ? AND sale_id = ? AND substr(payment_id, 1, ?) = ? AND status = 'CONFIRMED'
+      AND (method || '|' || CAST(ROUND(amount * 100) AS INTEGER)) NOT IN (${(wantKeys.length ? wantKeys : ['-']).map(() => '?').join(',')}) AND ${curVer}`)
+      .bind(clientId, id, pfx.length, pfx, ...(wantKeys.length ? wantKeys : ['-']), clientId, id, version));
+    pays.forEach((p) => {
+      const baseId = `sale:${id}:${p.method}`;
+      st.push(db.prepare(`INSERT INTO ledger_payments (client_id, payment_id, sale_id, bill_id, method, amount, mpesa_code, status, confirmed_by, source, ts, business_date, created_at)
+        SELECT ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', ?, ?, ?, ?, ? WHERE ? = 'CONFIRMED' AND ${curVer}
+          AND EXISTS (SELECT 1 FROM ledger_payments b WHERE b.client_id = ? AND b.payment_id = ? AND ABS(b.amount - ?) >= 0.005)
+        ON CONFLICT (client_id, payment_id) DO UPDATE SET status = 'CONFIRMED' WHERE ledger_payments.status = 'REVERSED'`)
+        .bind(clientId, `${baseId}:a${Math.round(p.amount * 100)}`, id, str(s.billId || s.billNo || s.tabId || s.partOfTab, 60), p.method, p.amount, p.code, str(s.servedBy, 60), source, ts, bizDate(ts, off), now,
+          payStatus, clientId, id, version, clientId, baseId, p.amount));
+    });
     if (fullSettle) {
       // DOUBLE / CONCURRENT SETTLEMENT: D1 runs writes one at a time, so whichever till's sale lands second sees the first and is marked
       // DUPLICATE (with its payments): kept for the audit, never counted in Daily Sales or the bill's paid amount, and reported to the till.
@@ -350,7 +370,12 @@ async function parkInOutbox(env, clientId, item) {
   try {
     const raw = await env.mydukapos_kv.get(outboxKey(clientId));
     const list = raw ? JSON.parse(raw) : [];
-    if (!list.some((x) => x.type === item.type && x.ev && x.ev.paymentId === item.ev.paymentId)) list.push(item);
+    // zip 185: gateway events carry `txnId`, not `paymentId` - comparing paymentId (undefined === undefined) treated every parked gateway event after the first as a duplicate and dropped it
+    const evKey = (i) => (i && i.ev ? (i.ev.paymentId != null ? i.ev.paymentId : i.ev.txnId) : undefined);
+    if (!list.some((x) => x.type === item.type && x.ev && evKey(x) === evKey(item))) list.push(item);
+    // zip 185: the cap used to drop the OLDEST parked events silently. The number dropped is now kept beside the list (never summed down) so the loss is visible.
+    const dropped = Math.max(0, list.length - 500);
+    if (dropped > 0) { try { const prev = Number(await env.mydukapos_kv.get(outboxKey(clientId) + ':dropped')) || 0; await env.mydukapos_kv.put(outboxKey(clientId) + ':dropped', String(prev + dropped), { expirationTtl: 30 * 86400 }); } catch (e) { /* counter only */ } try { console.error('ledger outbox full: dropped ' + dropped + ' oldest parked event(s) for ' + clientId); } catch (e) { /* log only */ } }
     await env.mydukapos_kv.put(outboxKey(clientId), JSON.stringify(list.slice(-500)), { expirationTtl: 30 * 86400 });
   } catch (e) { /* nothing more can be done */ }
 }

@@ -17,6 +17,9 @@ import { corsHeadersFor } from './_cors.js';
 import { deviceGuard } from './_device-auth.js';
 import { staffGuard } from './_staff-auth.js';
 
+// zip 185: additive table (also in migrations/0006_mpesa_claims.sql); created lazily so a deploy never depends on the migration.
+const MPESA_CLAIMS_DDL = `CREATE TABLE IF NOT EXISTS mpesa_code_claims (client_id TEXT NOT NULL, code TEXT NOT NULL, sale_id TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (client_id, code)) WITHOUT ROWID`;
+
 export async function onRequestOptions(context) {
   return new Response(null, { status: 204, headers: corsHeadersFor(context.request, context.env) });
 }
@@ -46,8 +49,28 @@ export async function onRequestPost(context) {
   const paid = Number(rec.amount) || 0;
   if (paid + 0.5 < amount) return reply({ status: 'amount_mismatch', paid, source });
   const usedKey = `mpesa-used:${c}:${code}`;
+  // zip 185: claim the code ATOMICALLY in D1 (PRIMARY KEY (client_id, code) + INSERT OR IGNORE, then read back the owner), so two tills
+  // verifying the same code at the same instant cannot both win (the old KV get-then-put had no compare-and-set). Falls back to the KV
+  // logic below when D1 is unavailable. The same sale re-verifying its own code still succeeds (owner === saleId).
+  let owner = null;
+  const db = env && (env.LEDGER_DB || env.DB);
+  if (db) {
+    try {
+      await db.prepare(MPESA_CLAIMS_DDL).run();
+      await db.prepare('INSERT OR IGNORE INTO mpesa_code_claims (client_id, code, sale_id, at) VALUES (?, ?, ?, ?)').bind(c, code, saleId, Date.now()).run();
+      const row = await db.prepare('SELECT sale_id FROM mpesa_code_claims WHERE client_id = ? AND code = ?').bind(c, code).first();
+      if (row && row.sale_id) owner = String(row.sale_id);
+    } catch (e) { owner = null; }
+  }
   const used = await kv.get(usedKey);
-  if (used && used !== saleId) return reply({ status: 'duplicate', usedBy: used, paid, source });
-  if (!used) await kv.put(usedKey, saleId, { expirationTtl: 400 * 24 * 3600 });
+  if (owner) {
+    // D1 is the arbiter. A code already claimed in KV by another sale before this fix (no D1 row then) must still be honoured.
+    if (owner === saleId && used && used !== saleId) return reply({ status: 'duplicate', usedBy: used, paid, source });
+    if (owner !== saleId) return reply({ status: 'duplicate', usedBy: owner, paid, source });
+    if (!used) await kv.put(usedKey, saleId, { expirationTtl: 400 * 24 * 3600 });
+  } else {
+    if (used && used !== saleId) return reply({ status: 'duplicate', usedBy: used, paid, source });
+    if (!used) await kv.put(usedKey, saleId, { expirationTtl: 400 * 24 * 3600 });
+  }
   return reply({ status: 'verified', amount: paid, source, name: rec.customerName || '' });
 }

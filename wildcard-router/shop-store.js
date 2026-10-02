@@ -248,7 +248,9 @@ export class ShopStore {
       this._ledgerOn = false;
       if (cells) this.cellsAfter(cells, serverNow);
 
-      const updatedAt = preserveUpdatedAt && Number(body.updatedAt) ? Number(body.updatedAt) : serverNow;
+      // zip 185: never let the shop's updatedAt go BACKWARDS (a Durable Object isolate clock a little behind the one that wrote `prev`, or an imported
+      // record dated ahead): a device asking '?since=<last updatedAt>' would be told 'unchanged' for a change it has not seen. At least prev + 1.
+      const updatedAt = preserveUpdatedAt && Number(body.updatedAt) ? Number(body.updatedAt) : Math.max(serverNow, prev + 1);
       this.setCore('updatedAt', updatedAt, coreText.updatedAt);
       return { updatedAt, prev, ledger: 1, ...(tills.till ? { till: tills.till } : {}) };
     });
@@ -515,6 +517,20 @@ export class ShopStore {
           if (clash) return json({ ok: false, conflict: clash });
           this.push({ facilityBookings: [rec] }, Number(body.serverNow) || Date.now());
           return json({ ok: true });
+        }
+        // zip 185: a cross-branch sale into a shop kept in its own database. The availability check and the push happen in this ONE request (a
+        // Durable Object runs one request at a time), so two branches selling the last unit at the same moment cannot both succeed - the
+        // check-then-push the caller used to do from outside had a gap between the two. body.checks = [{ code, unit: 'qty'|'pieceQty', qty }]
+        // (what the whole cart takes of each stock figure). -> { ok: true } | { ok: false, short: { code, available } }
+        case '/xb-sell': {
+          const checks = Array.isArray(body.checks) ? body.checks : [];
+          for (const c of checks) {
+            const row = this.getRow('inventory', 'code:' + String(c.code));
+            let item = null; if (row && row.del !== 1) { try { item = JSON.parse(row.json); } catch (e) { item = null; } }
+            const available = item ? Number(c.unit === 'pieceQty' ? item.pieceQty : item.qty) || 0 : 0;
+            if (!item || Number(c.qty) > available) return json({ ok: false, short: { code: String(c.code), available } });
+          }
+          return json({ ok: true, result: this.push(body.body || {}, Number(body.serverNow) || Date.now()) });
         }
         // zip 141: one staff record, for the server's PIN check when a staff member starts a server session (staff-session.js)
         case '/staff-member': {

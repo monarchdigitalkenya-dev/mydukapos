@@ -53,6 +53,7 @@ import { getGeminiCaptureKeys } from './gemini-capture-config.js';
 import { shapeCaptureResult } from './_capture-shape.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { secLimit, secNum } from './_sec-guard.js';
 
 const GEMINI_MODEL = 'gemini-3.6-flash';
 const SHOP_CONFIG_PREFIX = 'ai-capture-shop-config:';
@@ -474,6 +475,13 @@ export async function onRequestPut(context) {
   const keys = await resolveGeminiKeys(env, license.clientId);
   if (keys.length === 0) {
     return jsonResponse({ error: 'AI Capture List has not been enabled by the platform admin yet — or add your own Gemini API key in Settings.' }, 400);
+  }
+
+  // zip 185: the platform's paid Gemini pool had no per-shop cap — a leaked link could drain it. Generous (300 captures/hour per shop, env
+  // AI_CAPTURE_HOURLY_LIMIT) so no real shop meets it; only counted when the platform pool is in play (a shop's own key costs the platform nothing).
+  if (keys.some(k => k.source === 'platform')) {
+    const capped = await secLimit(env, 'aicapture', license.clientId, secNum(env.AI_CAPTURE_HOURLY_LIMIT, 300), 3600, 'AI capture requests', corsHeadersFor(request, env));
+    if (capped) return capped;
   }
 
   let body;

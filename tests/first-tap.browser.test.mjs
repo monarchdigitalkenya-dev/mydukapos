@@ -47,7 +47,7 @@ test('first tap counts even when the screen redraws under the finger — and nev
       const { ctx, page } = await open(browser, base);
       await page.evaluate(() => addToCart('A1')); await page.waitForTimeout(200);
       if (redraw === 'price-box') {                                                   // typing a price, then tapping + (the box's blur redraws the cart)
-        await page.evaluate(() => { cartCustomPriceEditKey = Object.keys(currentCart)[0]; renderCart(); });
+        await page.evaluate(() => { window.selectCartPriceOption(Object.keys(currentCart)[0], 'custom'); });   // zip 180: the price menu's Custom entry opens the box
         await page.locator('input[id^="cart-custom-price-input-"]').first().tap(); await page.waitForTimeout(150);
       } else if (redraw !== 'none') {
         await page.evaluate((ev) => document.addEventListener(ev, () => renderCart(), true), redraw);   // what a sync arriving mid-tap does

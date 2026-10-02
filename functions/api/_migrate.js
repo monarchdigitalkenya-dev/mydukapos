@@ -29,11 +29,16 @@ export async function migrateShopToDatabase(env, clientId) {
     }
     // A save that was already on its way when the move began may land in the old record just after it was read. Give it a moment,
     // then bring anything newer across too (the database merges by record and applies each stock movement once). (zip 123)
-    for (let i = 0; i < 3; i++) {
+    // zip 185: the loop used to stop at the FIRST quiet read, so a push that began just before the 'migrating' flag and took a little longer to
+    // reach KV could still land in the old record after the shop had gone live in the database (and be lost). It now needs TWO quiet reads in a row
+    // (and up to 6 rounds). Pre-flip only: nothing is re-imported after the shop is live, so no later stock number can be overwritten.
+    let quiet = 0;
+    for (let i = 0; i < 6 && quiet < 2; i++) {
       await new Promise((r) => setTimeout(r, env.MIGRATE_SETTLE_MS != null ? Number(env.MIGRATE_SETTLE_MS) : 1500));
       const again = await readStateRaw(env, 'pos-data:state:' + clientId);
       const later = again ? JSON.parse(again.text) : null;
-      if (!later || (Number(later.updatedAt) || 0) <= (Number(state.updatedAt) || 0)) break;
+      if (!later || (Number(later.updatedAt) || 0) <= (Number(state.updatedAt) || 0)) { quiet++; continue; }
+      quiet = 0;
       const imp2 = await shopCall(env, clientId, 'import', { state: later });
       if (!imp2.ok) throw new Error('import failed');
       state.updatedAt = later.updatedAt;

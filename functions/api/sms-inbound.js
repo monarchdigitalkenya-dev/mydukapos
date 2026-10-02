@@ -21,6 +21,11 @@
 // both no-ops).
 
 import { requireValidLicense } from './_license.js';
+import { deviceGuard } from './_device-auth.js';
+import { corsHeadersFor } from './_cors.js';
+import { checkCallback } from './_callback-key.js';
+
+const MAX_OPTOUTS = 5000;   // zip 185: the opt-out list is one KV value; it must not be grown without bound
 
 function textResponse(body) {
   return new Response(body, { status: 200, headers: { 'Content-Type': 'text/plain' } });
@@ -36,17 +41,23 @@ export async function onRequestPost(context) {
   let from = '';
   let text = '';
   try {
+    const len = Number(request.headers.get('Content-Length'));
+    if (Number.isFinite(len) && len > 20000) return textResponse('ok');   // zip 185: a real reply is a few hundred bytes
     const form = await request.formData();
     from = (form.get('from') || '').trim();
     text = (form.get('text') || '').trim();
   } catch (e) {
     return textResponse('ok');
   }
-  if (!from) return textResponse('ok');
+  if (!from || from.length > 20 || !/^\+?[0-9]{6,19}$/.test(from)) return textResponse('ok');   // zip 185: only a phone number can be an opt-out entry
 
   const license = await requireValidLicense(request, env);
   if (!license.valid) return textResponse('ok');
   const clientId = license.clientId;
+  // zip 185: Africa's Talking does not sign these. A shop that has an 'sms' callback key in KV (optional: callback-key:sms:<id>, then give AT the
+  // URL with &k=<key>) only believes posts that carry it; a shop with no key behaves exactly as before (legacy).
+  const signed = await checkCallback(env, clientId, 'sms', request.url);
+  if (!signed.ok) return textResponse('ok');
 
   const normalized = text.toUpperCase();
   const optOutsKey = `sms-optouts:${clientId}`;
@@ -54,7 +65,7 @@ export async function onRequestPost(context) {
   let optOuts = existingRaw ? JSON.parse(existingRaw) : [];
 
   if (normalized === 'STOP') {
-    if (!optOuts.includes(from)) {
+    if (!optOuts.includes(from) && optOuts.length < MAX_OPTOUTS) {
       optOuts.push(from);
       await env.mydukapos_kv.put(optOutsKey, JSON.stringify(optOuts));
     }
@@ -81,6 +92,9 @@ export async function onRequestGet(context) {
       headers: { 'Content-Type': 'application/json' },
     });
   }
+  // zip 185: the list is customers' phone numbers — paired devices only when the shop has switched that on (no change otherwise)
+  const deviceDenied = await deviceGuard(request, env, license.clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
   const optOutsRaw = await env.mydukapos_kv.get(`sms-optouts:${license.clientId}`);
   const optOuts = optOutsRaw ? JSON.parse(optOutsRaw) : [];
   return new Response(JSON.stringify({ optOuts }), {

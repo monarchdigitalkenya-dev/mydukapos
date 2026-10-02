@@ -352,7 +352,8 @@ async function handlePost(context) {
 
     // Always stamp with the server's clock so all devices agree on ordering,
     // regardless of each device's local clock drift.
-    record = { ...mergeIncomingState(existing, body), updatedAt: serverNow };
+    // zip 185: never go backwards - two isolates with skewed clocks could stamp a later write EARLIER, and a device holding ?since=<the later stamp> then answered 'unchanged' and never saw it
+    record = { ...mergeIncomingState(existing, body), updatedAt: Math.max(serverNow, (Number(existing.updatedAt) || 0) + 1) };
 
     // SIZE GUARD. A shop is one KV value (25 MiB hard cap) that this function reads, parses, merges and re-serialises
     // on every push. Past the cap `put` throws and the shop silently stops syncing while every till looks "offline".

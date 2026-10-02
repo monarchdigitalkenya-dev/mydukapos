@@ -55,7 +55,14 @@ export function recordKey(r) {
 // — inventory — are different: the same code is deliberately added again, so a newer record still replaces the tombstone there.)
 export const FINAL_TOMBSTONE_FIELDS = ['bills', 'debts', 'suppliers', 'deliveryZones', 'recurringExpenses', 'contracts',
   // Services engine (SERVICES_ARCHITECTURE.md 3.4): unique ids that are never re-created, so a deleted job / appointment / catalog entry stays deleted.
-  'svcJobs', 'svcAppointments', 'svcCatalog'];
+  'svcJobs', 'svcAppointments', 'svcCatalog',
+  // zip 185: a stale push (a till that was asleep) that merely touched a deleted customer / staff member / offer / site / delivery agent / patient /
+  // resource gave it a newer `updatedAt` than the tombstone and brought it back (a removed staff member regaining access, a deleted patient returning).
+  // Verified in the apps: every one of these gets a fresh unique id when created (genSaleId / 'dagent-' / 'site-' / 'offer-' / 'res-' / 'PT-<random>'
+  // / 'st-<invite token>', an invite being single use), and an edit keeps the id — so a deleted id is never legitimately re-created.
+  // DELIBERATELY NOT in this list: `inventory` / `products` (keyed by code, which shops re-use on purpose) and `inventoryCategories` (Hotel POS: its id
+  // is built from kind + NAME, 'cat-<kind>-<name>', so deleting "Drinks" and adding "Drinks" again legitimately reuses the id — a newer record must win).
+  'customers', 'staff', 'offers', 'sites', 'deliveryAgents', 'patients', 'resources'];
 
 // A bill only ever moves FORWARD: voided, then closed (settled), then more money paid, then more payments recorded. A till that was slow to
 // sync still holds the bill as it was (open, unpaid); when it pushes it with a newer time it must not put the bill back to that state — that
@@ -471,7 +478,8 @@ export const MERGE_BY_ID_FIELDS = [
   // Draught kegs (zip 142): each keg taken into use, merged per record with NESTED_MERGE.kegs (per-device served counters + events).
   'kegs',
   // Inventory categories (zip 159, Hotel POS): one record per category (id, type, name, active, order). Removal is a `_deleted` tombstone kept in the
-  // list, so a till that missed the deletion cannot bring the category back. Newest updatedAt wins per category.
+  // list; newest updatedAt wins per category. zip 185: NOT a final tombstone (see FINAL_TOMBSTONE_FIELDS): the id is built from the name, so the same
+  // category can be deleted and added again; an OLDER copy still loses to the tombstone, but a copy edited AFTER the deletion replaces it.
   'inventoryCategories',
   // Aqua POS raw materials (caps, labels, preforms ...). Were replaced as ONE whole list, so any device's push put back every
   // other device's material edits and stock counts. Now per record (its stock is ledger-managed: see CELL_SPECS).
@@ -623,6 +631,16 @@ export function moveTime(m) {
   const cap = Date.now() + MOVE_CLOCK_SLACK_MS;
   return t > cap ? cap : t;
 }
+// zip 185: the time a COUNT is ordered by. A count with no / unreadable time (moveTime = 0) used to make `laterMoves(.., 0)` return EVERY stored
+// movement of the item, so the count's figure had all of history added on top of it (corrupt stock). It is taken as "now" (server receipt time) instead.
+// A count is also never dated later than the server's own clock (the +60 s slack of moveTime is for sales): a till whose clock runs 60-119 s fast
+// otherwise out-ranked, and silently refused, every other till's real sale taken in that window ('before-count'). Correctly-clocked tills are
+// unaffected: their count time is never in the server's future.
+export function countTime(m, serverNow) {
+  const t = moveTime(m);
+  if (!t) return serverNow;
+  return t > serverNow ? serverNow : t;
+}
 const moveUnit = (m) => (m && m.unit === 'pieceQty' ? 'pieceQty' : 'qty');
 export function isLedgerMove(m) {
   if (!m || typeof m !== 'object' || m.id == null || m.code == null || m._deleted === true) return false;
@@ -722,7 +740,7 @@ export function applyStockLedger({ existingInv, mergedInv, newMoves, laterMoves,
     }
     const cur = r3(obj[unit]);
     const svBefore = Number(obj._sv) || 0;
-    const T = moveTime(m);
+    const T = m.kind === 'count' ? countTime(m, serverNow) : moveTime(m);   // zip 185: see countTime
     const lastCount = (obj._ct && typeof obj._ct === 'object' && Number(obj._ct[unit])) || 0;
     const stale = m.baseSv != null && Number(m.baseSv) !== svBefore;
     if (T && lastCount && T <= lastCount) {
@@ -855,7 +873,7 @@ export function applyCellLedger({ col, existingArr, mergedArr, newMoves, laterMo
     if (fresh.has(`${m.cell.k}#${cid}`)) { notes.set(String(m.id), { applied: true, reason: 'initial', after: r3(read()), at: serverNow }); continue; }
     const cur = r3(read());
     const svBefore = (isObj(rec._sv) && Number(rec._sv[cid])) || 0;
-    const T = moveTime(m);
+    const T = m.kind === 'count' ? countTime(m, serverNow) : moveTime(m);   // zip 185: see countTime
     const lastCount = (isObj(rec._ct) && Number(rec._ct[cid])) || 0;
     const stale = m.baseSv != null && Number(m.baseSv) !== svBefore;
     if (T && lastCount && T <= lastCount) {
@@ -870,11 +888,13 @@ export function applyCellLedger({ col, existingArr, mergedArr, newMoves, laterMo
     } else {
       after = r3(cur + m.delta);
     }
+    const unclamped = after;
     after = Math.max(0, after);                                         // Aqua never goes below zero (same rule as setStockAt)
     if (isMap) rec[m.cell.f] = { ...(isObj(rec[m.cell.f]) ? rec[m.cell.f] : {}), [m.cell.s]: after };
     else rec[m.cell.f] = after;
     rec._sv = { ...(isObj(rec._sv) ? rec._sv : {}), [cid]: svBefore + 1 };
-    notes.set(String(m.id), { applied: true, before: cur, after, sv: svBefore + 1, at: serverNow, ...(m.kind === 'count' ? { kind: 'count' } : {}), ...(stale ? { stale: true } : {}) });
+    notes.set(String(m.id), { applied: true, before: cur, after, sv: svBefore + 1, at: serverNow, ...(m.kind === 'count' ? { kind: 'count' } : {}), ...(stale ? { stale: true } : {}),
+      ...(m.kind !== 'count' && unclamped < 0 ? { lost: r3(-unclamped) } : {}) });   // zip 185: audit of the amount the floor at 0 swallowed
   }
   arr.forEach((rec) => {
     if (!rec || recordKey(rec) == null || rec._deleted === true) return;

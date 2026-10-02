@@ -32,10 +32,11 @@ import { verificationRequired, isVerified } from './verify.js';
 import { pushWebsiteLead } from './_crm/demo-lead.js';
 import { ledgerDb } from './_ledger.js';
 import { removeClientLink } from './account-recovery.js';
+import { ensureShopCallbackKeys } from './_callback-key.js';
 import { seedInitialState } from './pos-sync.js';
 import {
   normalizeEmail, isValidEmail, sha256Hex, randomToken,
-  getAccount, saveAccount, createSession, emailFromToken, readIndex,
+  getAccount, saveAccount, createSession, emailFromToken, readIndex, revokeSessionsBefore,
   createAccount, verifyPassword, deleteAccount, resolveLoginId, realEmailOf,
 } from './_account.js';
 
@@ -215,7 +216,7 @@ export async function onRequestPost(context) {
     let link = null;
     let expiresAt = null;
     const product = body.product;
-    const businessName = String(body.businessName || '').trim();
+    const businessName = String(body.businessName || '').trim().slice(0, 60);   // zip 185: same 60-character cap as public-demo.js
     if (product && businessName) {
       const validProducts = listProducts().map((p) => p.id);
       if (!validProducts.includes(product)) {
@@ -230,6 +231,7 @@ export async function onRequestPost(context) {
         source: 'signup',               // zip 169: an app account sign-up is NOT the public website (only the website's own form / anonymous demo are 'website')
         svcType: body.svcType,          // Services POS business type (optional passthrough)
       });
+      await ensureShopCallbackKeys(env, record.id);       // zip 185: a brand-new shop starts with signed payment-callback URLs (see _callback-key.js)
       account.demoUsed = true;
       account.demoClientId = record.id;
       account.demoStatus = 'active';
@@ -323,6 +325,7 @@ export async function onRequestPost(context) {
     const fresh = await hashPassword(password);
     account.passwordHash = fresh.passwordHash;
     account.salt = fresh.salt;
+    revokeSessionsBefore(account);                      // zip 185: sessions issued before this reset must not survive it (see _account.js emailFromToken)
     await saveAccount(env, account);
     await env.mydukapos_kv.delete(RESET_PREFIX + token);
 
@@ -366,7 +369,7 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: 'Your one free demo has already been used. Contact us if you need it reset.' }, 403);
     }
     const product = body.product;
-    const businessName = String(body.businessName || '').trim();
+    const businessName = String(body.businessName || '').trim().slice(0, 60);   // zip 185: 60-character cap, as public-demo.js
     const validProducts = listProducts().map((p) => p.id);
     if (!validProducts.includes(product)) return jsonResponse({ error: 'Unknown product.' }, 400);
     if (!businessName) return jsonResponse({ error: 'Enter your business name.' }, 400);
@@ -378,6 +381,7 @@ export async function onRequestPost(context) {
       email: realEmailOf(account),
       svcType: body.svcType,          // Services POS business type (optional passthrough)
     });
+    await ensureShopCallbackKeys(env, record.id);         // zip 185: new shop = signed payment-callback URLs from the start
     account.demoUsed = true;
     account.demoClientId = record.id;
     account.demoStatus = 'active';

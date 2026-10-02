@@ -163,6 +163,10 @@ export async function onRequestDelete(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
   }
 
+  // zip 185: the DELETE was the one eTIMS action without the paired-device check (a no-op unless the shop switched "paired devices only" on)
+  const deviceDenied = await deviceGuard(request, env, license.clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
+
   await clearEtimsConfig(env, license.clientId);
   return jsonResponse({ ok: true });
 }

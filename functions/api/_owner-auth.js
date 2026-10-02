@@ -19,14 +19,19 @@
 // powers — generating/managing links for other shops — are gated
 // separately, by the session token below, never by that license token.
 
-import { createClient } from './_license.js';
+import { createClient, deleteClient } from './_license.js';
 import { hashPassword, checkPassword, upgradeOnLogin } from './_password.js';
 
 const OWNER_KEY = 'owner-account:v1';
 const SESSION_PREFIX = 'owner-session:';
 // Sessions effectively never expire on their own — logging out (or clearing
 // the browser) is the only way to end one, matching "sign in for life".
-const SESSION_TTL_SECONDS = 20 * 365 * 24 * 60 * 60; // ~20 years
+const SESSION_TTL_SECONDS = 20 * 365 * 24 * 60 * 60; // ~20 years  (sessions issued BEFORE zip 185 keep this lifetime — see below)
+// zip 185: a session issued from now on lasts 30 days (a stolen token no longer works for 20 years). Sessions issued before this deploy
+// are grandfathered: their token's own issue time (iat, signed) is earlier than the cutoff, so they are accepted exactly as before.
+const NEW_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const SESSION_EXPIRY_FROM_MS = Date.UTC(2026, 9, 3);       // tokens issued on/after this instant expire NEW_SESSION_TTL_SECONDS after issue
+const sessionExpired = (iatMs) => iatMs >= SESSION_EXPIRY_FROM_MS && Date.now() - iatMs > NEW_SESSION_TTL_SECONDS * 1000;
 
 function randomToken(len = 32) {
   const bytes = crypto.getRandomValues(new Uint8Array(len));
@@ -60,6 +65,12 @@ export async function createOwnerAccount(env, identifier, password) {
     ownerClientId: ownerClient.id,
     createdAt: Date.now(),
   };
+  // zip 185: creating the licence above takes a moment; two simultaneous first sign-ups both passed the check at the top. Look again right before
+  // writing so the second one loses (KV has no compare-and-set, so this narrows the window to a single read-then-write, it cannot close it).
+  if (await getOwnerAccount(env)) {
+    try { await deleteClient(env, ownerClient.id); } catch (e) { /* the unused licence stays in the trash list */ }
+    throw new Error('An owner account already exists for this deployment. Please sign in instead.');
+  }
   await env.mydukapos_kv.put(OWNER_KEY, JSON.stringify(account));
   return account;
 }
@@ -105,7 +116,7 @@ function parseSigned(token) {
 
 export async function createOwnerSession(env, account) {
   const rand = randomToken();
-  await env.mydukapos_kv.put(SESSION_PREFIX + rand, '1', { expirationTtl: SESSION_TTL_SECONDS });
+  await env.mydukapos_kv.put(SESSION_PREFIX + rand, '1', { expirationTtl: NEW_SESSION_TTL_SECONDS });   // zip 185: was ~20 years
   const acct = account || (await getOwnerAccount(env));
   if (!acct) return rand;                                   // no account to sign with (should not happen): a plain KV session
   const iat = Date.now().toString(36);
@@ -135,6 +146,7 @@ export async function requireOwnerAuth(context) {
   if (!token || token.length > 300) return false;
   const s = parseSigned(token);
   if (s) {
+    if (sessionExpired(parseInt(s.iat, 36))) return false;    // zip 185: a 30-day session (issued from the cutoff on) that has run out; older tokens are unaffected
     if (await env.mydukapos_kv.get(REVOKED_PREFIX + s.rand)) return false;
     const account = await getOwnerAccount(env);
     if (account && sameText(await hmacHex(await sessionKey(account), s.rand + '.' + s.iat), s.sig)) return true;
@@ -144,4 +156,4 @@ export async function requireOwnerAuth(context) {
   return !!raw;
 }
 
-export { tokenFromRequest };
+export { tokenFromRequest, sessionExpired as _sessionExpired };

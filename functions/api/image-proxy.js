@@ -87,7 +87,7 @@ export async function onRequestGet(context) {
   if (!upstream.ok) return errorResponse('Image not found at that URL.', 404);
 
   const contentType = upstream.headers.get('content-type') || '';
-  if (!contentType.startsWith('image/')) return errorResponse('That URL is not an image.', 415);
+  if (!/^image\/(jpeg|jpg|png|webp|gif|avif|bmp)\b/i.test(contentType)) return errorResponse('That URL is not a supported image.', 415); // zip 184: no SVG (script would run on the shop origin)
 
   const contentLength = parseInt(upstream.headers.get('content-length') || '0', 10);
   if (contentLength > MAX_IMAGE_BYTES) return errorResponse('Image is too large.', 413);
@@ -100,6 +100,8 @@ export async function onRequestGet(context) {
     headers: {
       'Content-Type': contentType,
       'Cache-Control': 'public, max-age=3600',
+      'Content-Security-Policy': "sandbox; default-src 'none'",
+      'X-Content-Type-Options': 'nosniff',
       ...CORS_HEADERS,
     },
   });

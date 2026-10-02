@@ -1,4 +1,5 @@
 import { recordGatewayTxn } from './_ledger.js';
+import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 // functions/api/paywave-webhook.js — Cloudflare Pages Function
 //
 // Receives Paywave Express's payment notifications, scoped to one client
@@ -37,12 +38,13 @@ export async function onRequestPost(context) {
     return ack();
   }
 
-  let data;
-  try {
-    data = await request.json();
-  } catch (e) {
-    return ack();
-  }
+  // zip 185: this webhook was believed with nothing but ?c=<shop id> (visible to anyone with the shop's link): a forged "payment received"
+  // could be written for any shop, or for an id that is not a shop at all. Now: a real shop only, a bounded body, and either this shop's key
+  // (new shops get one; their Settings shows the URL with &k=) or — for a shop with no key yet — an id that matches a prompt THIS shop sent.
+  if (!(await shopKnown(env, clientId))) return ack();
+  const data = await readCallbackJson(request);
+  if (!data || typeof data !== 'object') return ack();
+  const signed = await checkCallback(env, clientId, 'paywave', request.url);
 
   // Tries several plausible field names for the transaction identifier —
   // built from Paywave's public docs without a live account to verify the
@@ -55,9 +57,12 @@ export async function onRequestPost(context) {
     return ack();
   }
 
+  if (String(checkoutId).length > 100) return ack();
   const kvKey = txKey(clientId, checkoutId);
   const existingRaw = await env.mydukapos_kv.get(kvKey);
   const existing = existingRaw ? JSON.parse(existingRaw) : {};
+  // zip 185: no valid key -> the id must be one this shop's own STK prompt created (mpesa-stkpush.js stores a pending record under it).
+  if (!signed.ok ? !(existing.createdAt && existing.createdAt < signed.keyCreatedAt) : (signed.legacy && !existing.createdAt)) return ack();
   // A completed payment is final: a repeated or late notification never turns it back into "failed" (or re-stamps it).
   if (existing.status === 'success') return ack();
 

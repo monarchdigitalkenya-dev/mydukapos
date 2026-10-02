@@ -350,7 +350,12 @@ export async function onRequestOptions() {
 // Lightweight status check used by the Settings panel — no charge is made.
 export async function onRequestGet(context) {
   const { request, env } = context;
-  const clientId = await resolveClientId(request, env);
+  // zip 185: this used to answer for ANY id (it disclosed which provider a shop uses without a licence check). Same guards as the POST below.
+  const license = await requireValidLicense(request, env);
+  if (!license.valid) return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
+  const clientId = license.clientId;
+  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  if (deviceDenied) return deviceDenied;
   const cfg = await loadGatewayConfig(env, clientId);
   return jsonResponse({ provider: resolveProvider(cfg) });
 }

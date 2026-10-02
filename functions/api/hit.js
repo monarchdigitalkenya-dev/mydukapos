@@ -16,7 +16,9 @@ export async function onRequestPost(context) {
     return new Response(JSON.stringify({ days }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
   }
   let p = String(b.path || '/').split('?')[0].split('#')[0];
-  if (p.startsWith('/products/')) p = p.slice(0, 40);
+  if (p.length > 1) p = p.replace(/\/+$/, '') || '/';
+  // zip 185: only the real product pages are counted - any /products/<text> used to create a new KV key per distinct text (unbounded writes from anyone)
+  if (/^\/products\/(shop|hotel|hospital|production|pharmacy|services|water)$/.test(p)) { /* counted */ }
   else if (!OK.has(p)) return new Response(null, { status: 204 });
   const key = `an:${day()}:${p}`;
   try { await env.mydukapos_kv.put(key, String((Number(await env.mydukapos_kv.get(key)) || 0) + 1), { expirationTtl: 400 * 86400 }); } catch (e) { /* best effort */ }

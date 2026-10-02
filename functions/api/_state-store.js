@@ -267,7 +267,7 @@ export async function kvMergeUpdate(env, key, build, { maxAttempts = 5, verifyFi
     if (built && built.abort !== undefined) return { aborted: built.abort };
     const body = built.body;
     const now = Date.now();
-    const record = { ...mergeIncomingState(existing, structuredClone(body)), updatedAt: now };
+    const record = { ...mergeIncomingState(existing, structuredClone(body)), updatedAt: Math.max(now, (Number(existing && existing.updatedAt) || 0) + 1) };   // zip 185: never backwards (same rule as the shop database)
     let fenced = false;
     if (fence) {
       const claim = await fenceClaim(env, fence, stored);
@@ -494,6 +494,9 @@ export async function dropArchivedIncoming(env, clientId, body, cutoff, opts = {
     const kept = arr.filter((r) => {
       const t = recordTime(r), k = recordKeyOf(r);
       if (!(Number.isFinite(t) && t < cutoff && k && known.has(k))) return true;
+      // zip 185: a stock movement is immutable. A copy of an archived movement re-sent with a fresh `updatedAt` (a device re-stamping its whole log)
+      // is NOT an edit: the 'edited after it was archived' branch below would let it through as new and the ledger would apply it a second time.
+      if (f === 'stockMovementLog') return false;
       const archivedAt = Number(times[k]) || Number(opts.lastArchiveAt) || 0;
       if (!archivedAt) return false;
       if (typeof r.updatedAt === 'number') return r.updatedAt + offset >= archivedAt;     // edited after it was archived: keep

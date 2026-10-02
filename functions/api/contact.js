@@ -34,7 +34,7 @@ export async function onRequestPost(context) {
   }
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   if (b.website) return json({ ok: true });                                        // honeypot filled: pretend success, store nothing
-  const name = clean(b.name, 100), contact = clean(b.contact, 120), message = clean(b.message, 2000);
+  const name = clean(b.name, 100).replace(/\s+/g, ' '), contact = clean(b.contact, 120).replace(/\s+/g, ' '), message = clean(b.message, 2000);   // zip 185: name / contact end up in an e-mail subject and body line - no line breaks (clean() keeps CR / LF / tab)
   if (!name || !contact || message.length < 5) return json({ error: 'Please fill in your name, how to reach you, and a message.' }, 400);
   if (Number(b.t) && Date.now() - Number(b.t) < 1500) return json({ ok: true });  // submitted faster than a person can type
   const rl = await checkRateLimit(env, 'contact', 'ip:' + ip);

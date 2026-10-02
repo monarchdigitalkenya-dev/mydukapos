@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ROOT, until } from './helpers.mjs';
-import { makeKV } from './kv-fake.mjs';
+import { makeKV, seedShop } from './kv-fake.mjs';
 import { makeServer, openDevice, deviceStorage } from './e2e-harness.mjs';
 
 // PHASE 18 (zip 118): "what happens if this exact request is received twice?" must never be "it happens twice".
@@ -16,7 +16,7 @@ test('M-Pesa C2B and KCB confirmations re-delivered: the payment is stored once 
     ['functions/api/kcb-ipn.js', { transactionReference: 'KCB9', transactionAmount: '750', customerMobileNumber: '2547' }],
   ]) {
     const m = await load(file);
-    const kv = makeKV(); const env = { mydukapos_kv: kv };
+    const kv = makeKV(); seedShop(kv, 'C1'); const env = { mydukapos_kv: kv };   // zip 185: callbacks for an unlicensed shop id are ignored
     const id = body.TransID || body.transactionReference;
     await m.onRequestPost({ request: post('https://x/api/cb?c=C1', body), env });
     const key = `till-payment:C1:${id}`;
@@ -29,9 +29,11 @@ test('M-Pesa C2B and KCB confirmations re-delivered: the payment is stored once 
 
 test('STK / Paywave: a late or repeated "failed" callback never downgrades a completed payment', async () => {
   const m = await load('functions/api/mpesa-callback.js');
-  const kv = makeKV(); const env = { mydukapos_kv: kv };
+  const kv = makeKV(); seedShop(kv, 'C1'); const env = { mydukapos_kv: kv };   // zip 185: callbacks for an unlicensed shop id are ignored
   const ok = { Body: { stkCallback: { CheckoutRequestID: 'ws_1', ResultCode: 0, ResultDesc: 'ok', CallbackMetadata: { Item: [{ Name: 'MpesaReceiptNumber', Value: 'R1' }, { Name: 'Amount', Value: 100 }] } } } };
   const bad = { Body: { stkCallback: { CheckoutRequestID: 'ws_1', ResultCode: 1032, ResultDesc: 'cancelled' } } };
+  await kv.put('mpesa-tx:C1:ws_1', JSON.stringify({ status: 'pending', createdAt: Date.now() - 5000 }));   // zip 185: a real STK callback answers a prompt this shop sent
+  await kv.put('mpesa-tx:C1:pw_1', JSON.stringify({ status: 'pending', createdAt: Date.now() - 5000 }));
   await m.onRequestPost({ request: post('https://x/api/mpesa-callback?c=C1', ok), env });
   await m.onRequestPost({ request: post('https://x/api/mpesa-callback?c=C1', bad), env });
   await m.onRequestPost({ request: post('https://x/api/mpesa-callback?c=C1', ok), env });

@@ -178,7 +178,7 @@ export async function handle(context) {
     const out = await m.r.handler(ctx);
     return done(out instanceof Response ? out : json(out));
   } catch (e) {
-    if (!(e instanceof HttpError)) console.error('crm error', request.method, request.url, e && e.stack || e);
+    if (!(e instanceof HttpError)) console.error('crm error', request.method, new URL(request.url).pathname, e && e.stack || e);   // zip 185: path only - the query string can carry an invitation / reset token
     return done(errorResponse(e));
   }
 }

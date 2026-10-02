@@ -184,3 +184,9 @@ WhatsApp number required / email optional at sign-up; sign-in by number or email
 
 ## Zip 180
 Sales Counter: taller cart, Hold moved to the card header, Receiving Account hidden, Retail / Wholesale / Custom price menu on every module. No migrations, no new secrets. Deploy as usual (`npm run deploy`), then hard-refresh each app.
+
+
+## Zip 185
+- New additive D1 migration `migrations/0006_mpesa_claims.sql`: run `npx wrangler d1 migrations apply mydukapos-ledger --remote` (the table is also created on demand, so deploy order is not critical).
+- Optional environment variables (all have safe defaults): `OWNER_SETUP_TOKEN`, `ACCOUNT_RECOVERY_STRICT=1`, `GATEWAY_CONFIG_HOURLY_LIMIT`, `BRANCH_CREATE_DAILY_LIMIT`, `BRANCH_DELETE_HOURLY_LIMIT`, `RESTORE_HOURLY_LIMIT`, `AI_CAPTURE_HOURLY_LIMIT`.
+- The Pages Functions, the wildcard router (`npm run deploy:router`) and every app change in this zip, so run both deploys.

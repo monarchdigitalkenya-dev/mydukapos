@@ -9,6 +9,34 @@
            4. EXTRA SETTINGS SYNC - extraSettingsCollect / extraSettingsApply: the settings above travel with the shop's other settings
               (every app's collectSyncPayload / applyRemotePayload call them), so a new phone, the Android app or the Windows app has them too.
          Nothing here is required for a sale: every entry point is wrapped so a failure only loses the extra. -->
+    <style id="pos-ui-zoom-css">
+        /* zip 182: on a desktop screen the whole app is drawn at 80% (what you used to get by pressing Ctrl and minus twice) — phones and tablets (under 1100px wide) and printing are untouched.
+           Change it with ?zoom=90 (or 100 to switch it off) on the address once; the choice is remembered on that device. */
+        @media screen and (min-width: 1100px) { html.pos-zoom { zoom: var(--pos-ui-zoom, .8); --pos-z: var(--pos-ui-zoom, .8); } }
+    </style>
+    <script>
+    (function () {
+        try {
+            var root = document.documentElement, z = 0.8;
+            try {
+                var q = /[?&]zoom=(\d+)/.exec(location.search);
+                if (q) { var pct = parseInt(q[1], 10); if (pct >= 50 && pct <= 120) localStorage.setItem('pos_ui_zoom', String(pct / 100)); }
+                var v = parseFloat(localStorage.getItem('pos_ui_zoom')); if (v >= 0.5 && v <= 1.2) z = v;
+            } catch (e) { /* default */ }
+            if (Math.abs(z - 1) < 0.001 || !('zoom' in root.style)) return;
+            root.style.setProperty('--pos-ui-zoom', String(z)); root.classList.add('pos-zoom');
+            /* CSS zoom reports sizes in screen pixels but lays out in zoomed pixels — make the page's own measuring code see layout pixels, exactly like real browser zoom does */
+            var f = 1, calc = function () { try { f = parseFloat(getComputedStyle(root).zoom) || 1; } catch (e) { f = 1; } };
+            calc(); window.addEventListener('resize', calc); window.addEventListener('beforeprint', function () { f = 1; }); window.addEventListener('afterprint', calc);
+            var grc = Element.prototype.getBoundingClientRect;
+            Element.prototype.getBoundingClientRect = function () { var r = grc.call(this); return f === 1 ? r : new DOMRect(r.x / f, r.y / f, r.width / f, r.height / f); };
+            ['innerWidth', 'innerHeight'].forEach(function (k) {
+                var d = Object.getOwnPropertyDescriptor(window, k); if (!d || !d.get) return;
+                Object.defineProperty(window, k, { configurable: true, enumerable: true, get: function () { return d.get.call(window) / f; } });
+            });
+        } catch (e) { /* the app simply stays at 100% */ }
+    })();
+    </script>
     <script>
     /* ---------- tiny safe storage helpers (localStorage can throw in private windows) ---------- */
     function rxGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
@@ -559,7 +587,7 @@
                 + '.pos-sq-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}.pos-sq-head label{font-weight:700;font-size:13px}.pos-sq-head input{font-size:16px;padding:6px 8px;min-height:38px}'
                 + '.pos-sq-who{font-size:12px;color:var(--text-muted,#7f8c8d)}.pos-sq-staff{font-weight:700;margin:12px 0 6px}.pos-sq-staff:first-child{margin-top:0}'
                 + '.pos-sq-boxes{display:flex;gap:6px;flex-wrap:nowrap}.pos-sq-box{flex:1;min-width:0;border-radius:8px;padding:10px 8px;border-left:4px solid}'
-                + '.pos-sq-box .lbl{display:block;font-size:12px;font-weight:600}.pos-sq-box .val{display:block;font-weight:700;font-size:clamp(13px,4.2vw,20px);overflow-wrap:anywhere}'
+                + '.pos-sq-box .lbl{display:block;font-size:12px;font-weight:600}.pos-sq-box .val{display:block;font-weight:700;font-size:clamp(13px,calc(4.2vw / var(--pos-z,1)),20px);overflow-wrap:anywhere}'
                 + '.pos-sq-box.total{background:var(--tint-info-bg,#e8f1fb);color:var(--text-main,#1d2b3a);border-left-color:#2980b9}.pos-sq-box.cash{background:var(--tint-success-bg,#e6f6ea);color:var(--tint-success-text,#14532d);border-left-color:#27ae60}'
                 + '.pos-sq-box.mpesa{background:#e6f6ea;color:#14532d;border-left-color:#16a34a}.pos-sq-box.card{background:#efe9fb;color:#4c1d95;border-left-color:#7c3aed}'
                 + '@media (max-width:480px){.pos-sq-boxes{flex-wrap:wrap}.pos-sq-box{flex:1 1 30%}}';
@@ -712,6 +740,10 @@
                 if (piece) { r = Number(src.piecePrice) || Number(item.piecePrice) || 0; w = Number(src.pieceWholesalePrice) || Number(item.pieceWholesalePrice) || 0; }
                 else { r = Number(src.price) || 0; w = Number(src.wholesaleSellingPrice) || 0; }
                 if (!r && src !== item) r = Number(item.price) || 0;
+                if (item.category === 'bale' && typeof getTieredPrice === 'function') {   /* AquaPOS bales: the retail rate follows the quantity tiers (half bale = its own rate); wholesale is the bale's own wholesale price */
+                    r = (line.qty < 1 && typeof getHalfBalePrice === 'function') ? getHalfBalePrice(item) * 2 : getTieredPrice(item, Math.max(1, line.qty));
+                    w = Number(item.wholesaleSellingPrice) || 0;
+                }
             }
             return { known: known, retail: r, wholesale: line.isService ? 0 : w };
         }
@@ -805,6 +837,17 @@
         window.addEventListener('resize', closeMenu);
         document.addEventListener('scroll', function (e) { if (S.open && !(e.target && e.target.closest && e.target.closest('#cart-price-menu'))) closeMenu(); }, true);
     })();
+    /* zip 181: the Sales (and, in the hotel, Bills) buttons live in the Product Search header — the row they used to take is given to the cart */
+    function posPlaceSalesBar() {
+        try {
+            var tab = document.getElementById('sales-tab'); if (!tab) return false;
+            var bar = tab.querySelector('#my-bills-bar') || tab.querySelector('.pos-sq-bar');
+            var h3 = tab.querySelector('.pos-grid > .panel > h3'); if (!bar || !h3) return false;
+            if (bar.parentNode !== h3) { bar.classList.add('pos-head-actions'); h3.appendChild(bar); }
+            return true;
+        } catch (e) { return false; }
+    }
+    (function () { var n = 0, t = setInterval(function () { n++; if (posPlaceSalesBar() || n > 30) { clearInterval(t); setTimeout(function () { try { if (typeof posCkFit === 'function') posCkFit(); } catch (e) {} }, 100); } }, 400); })();
     /* the Hold / Held buttons live in the card header, out of the way of the cart */
     function posPlaceHold() {
         try {
@@ -857,7 +900,10 @@
                             } catch (e) { /* cosmetic */ }
                             posPlaceHold(); posCkFit();
                         };
-                        if (tb && window.MutationObserver) new MutationObserver(upd).observe(tb, { childList: true, subtree: true });
+                        /* zip 185 (P-C): a cart redraw fires this observer once per mutation burst; do the count + fit once per frame (it was once per burst, each re-measuring the layout) */
+                        var updRaf = 0, raf = window.requestAnimationFrame ? function (f) { return window.requestAnimationFrame(f); } : function (f) { return setTimeout(f, 16); };
+                        var updSoon = function () { if (updRaf) return; updRaf = raf(function () { updRaf = 0; upd(); }); };
+                        if (tb && window.MutationObserver) new MutationObserver(updSoon).observe(tb, { childList: true, subtree: true });
                         if (window.ResizeObserver) new ResizeObserver(posCkFit).observe(pb);
                         window.addEventListener('resize', posCkFit);   /* zip 170: no scroll listener - it forced a full layout (max-height reset + measure) on every scroll frame */
                         upd();
@@ -870,7 +916,15 @@
                 var bar = document.getElementById('cart-sticky-bar');
                 if (bar && window.ResizeObserver) new ResizeObserver(posSyncCartBarOffset).observe(bar);
                 window.addEventListener('resize', posSyncCartBarOffset); window.addEventListener('scroll', posSyncCartBarOffset, { passive: true });
-                document.addEventListener('click', function () { setTimeout(posSyncCartBarOffset, 60); setTimeout(posCkFit, 120); }, true);   /* zip 176: ▲ Hide / ▼ Show changes how tall the workspace can be */
+                /* zip 176: ▲ Hide / ▼ Show changes how tall the workspace can be.
+                   zip 185 (P-C): this ran two timers + a layout read/write on EVERY click anywhere in the app (each product tap, each cart button). Only the controls that can change
+                   the workspace height need it: the top-bar Hide / Show buttons and the tab buttons (a tab switch shows / hides the Sales Counter). Everything else is already
+                   covered by the ResizeObservers on the cart bar and the checkout card, and the MutationObserver on the cart table. */
+                document.addEventListener('click', function (e) {
+                    var t = e && e.target;
+                    if (!t || !t.closest || !t.closest('#hdr-hide-btn, #hdr-show-btn, .tab-link, [data-tab]')) return;
+                    setTimeout(posSyncCartBarOffset, 60); setTimeout(posCkFit, 120);
+                }, true);
             };
             if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(go, 300); }); else setTimeout(go, 300);
         } catch (e) { /* cosmetic */ }
@@ -878,9 +932,9 @@
     </script>
     <style>
         #cart-sticky-bar { position: sticky; bottom: 0; z-index: 60; flex-direction: column; align-items: stretch !important; gap: 8px; margin: 16px -6px 0; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bg-surface, #fff); border-top: 1px solid var(--border-color, #dfe6e9); border-radius: 14px 14px 0 0; box-shadow: 0 -8px 20px rgba(0,0,0,.14); }
-        #cart-sticky-bar .pos-pay-details { margin: 0; max-height: 46vh; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding-right: 2px; }
-        @media (max-height: 700px) { #cart-sticky-bar .pos-pay-details { max-height: 36vh; } }
-        @media (max-width: 900px) { #cart-sticky-bar .pos-pay-details { max-height: 27vh; } #cart-sticky-bar .pos-pay-details .settings-hint { display: none; } }
+        #cart-sticky-bar .pos-pay-details { margin: 0; max-height: calc(46vh / var(--pos-z,1)); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding-right: 2px; }
+        @media (max-height: 700px) { #cart-sticky-bar .pos-pay-details { max-height: calc(36vh / var(--pos-z,1)); } }
+        @media (max-width: 900px) { #cart-sticky-bar .pos-pay-details { max-height: calc(27vh / var(--pos-z,1)); } #cart-sticky-bar .pos-pay-details .settings-hint { display: none; } }
         /* zip 168: one checkout card (desktop) */
         @media (min-width: 901px) {
             .pos-checkout { position: sticky; top: 8px; align-self: start; display: flex; flex-direction: column; overflow: hidden; height: var(--pos-h, auto); }
@@ -982,7 +1036,7 @@
         .pos-checkout .pos-cart-scroll thead th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: #7f8c8d; padding: 9px 12px; }
         .pos-checkout .pos-cart-scroll table td { padding: 8px 12px; }
         .pos-checkout .pos-cart-scroll tbody tr:hover { background: var(--bg-surface-alt, #f6f8fa); }
-        .pos-checkout .pos-cart-scroll td.empty-state { padding: clamp(24px, 9vh, 90px) 16px; text-align: center; color: #95a5a6; font-size: 15px; }
+        .pos-checkout .pos-cart-scroll td.empty-state { padding: clamp(24px, calc(9vh / var(--pos-z,1)), 90px) 16px; text-align: center; color: #95a5a6; font-size: 15px; }
         .pos-checkout .pos-cart-scroll td.empty-state::before { content: '🛒'; display: block; font-size: 44px; opacity: .5; margin-bottom: 6px; }
         /* total, payment methods, Confirm */
         #cart-sticky-bar .grand-total { align-items: center; padding: 10px 14px; border-radius: 12px; background: rgba(39, 174, 96, .10); border: 1px solid rgba(39, 174, 96, .25); font-size: 26px; }
@@ -1026,4 +1080,14 @@
         #cart-price-menu .cpm-row { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 14px; padding: 10px 12px; border: 0; border-radius: 10px; background: transparent; color: inherit; font: inherit; font-size: 14px; cursor: pointer; text-align: left; }
         #cart-price-menu .cpm-row:hover:not(.off) { background: var(--bg-surface-alt, #eef4fa); } #cart-price-menu .cpm-row.on { background: rgba(41, 128, 185, .12); font-weight: 700; }
         #cart-price-menu .cpm-row.off { opacity: .45; cursor: not-allowed; } #cart-price-menu .cpm-row b { font-size: 13px; }
+
+        /* ===== zip 181: Sales / Bills buttons beside the product search; their old row is gone so the cart gets the space ===== */
+        .pos-head-actions { display: inline-flex !important; align-items: center; gap: 6px !important; margin: 0 0 0 auto !important; }
+        .pos-head-actions button { min-height: 0 !important; padding: 5px 14px !important; font-size: 13px !important; border-radius: 999px !important; white-space: nowrap; line-height: 1.3; }
+        #sales-tab > .pos-sq-bar:empty, #sales-tab > .my-bills-bar:empty { display: none; }
+        .pos-checkout > .form-group:has(#sales-location-select) { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+        .pos-checkout > .form-group:has(#sales-location-select) > .label { margin: 0; font-size: 12px; white-space: nowrap; flex: 0 0 auto; }
+        .pos-checkout > .form-group:has(#sales-location-select) > .label span { display: none; }
+        .pos-checkout > .form-group:has(#sales-location-select) > div { flex: 1 1 auto; min-width: 0; }
+        .pos-checkout > .form-group:has(#sales-location-select) select { height: 36px; padding-top: 4px; padding-bottom: 4px; }
     </style>
