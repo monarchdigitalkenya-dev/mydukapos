@@ -12,7 +12,7 @@ async function demo(env, body, { ip = '1.1.1.1', referer } = {}) {
   const res = await m.onRequestPost({ request: new Request('https://mydukapos.store/api/demo-account', { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Connecting-IP': ip, ...(referer ? { Referer: referer } : {}) }, body: JSON.stringify(body) }), env });
   return { status: res.status, body: await res.json() };
 }
-const reg = (o = {}) => ({ action: 'register', fullName: 'Grace Njeri', phone: '0722 333 444', email: 'grace@example.com', password: 'secret99', confirmPassword: 'secret99', ...o });
+const reg = (o = {}) => ({ action: 'register', acceptTerms: true, fullName: 'Grace Njeri', phone: '0722 333 444', email: 'grace@example.com', password: 'secret99', confirmPassword: 'secret99', ...o });
 
 test('demo signup -> CRM: a registration with a demo becomes ONE website lead (product, business, attribution); signup response is unchanged', async () => {
   const c = await makeCrm();

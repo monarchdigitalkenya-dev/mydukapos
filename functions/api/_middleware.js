@@ -16,8 +16,8 @@ import { originAllowed } from './_cors.js';
 function withDefaultsSafe(res, t0) { try { return !res || res.status === 101 || res.webSocket ? res : withDefaults(res, t0); } catch (e) { return res; } }
 function withDefaults(res, t0) {
   const needCache = res.headers.get('Cache-Control') == null && res.status !== 101 && res.status !== 304;
-  if (!needCache && res.headers.get('Server-Timing') != null) return res;
-  const apply = (r) => { if (needCache) r.headers.set('Cache-Control', 'no-store'); if (r.headers.get('Server-Timing') == null) r.headers.set('Server-Timing', `app;dur=${Date.now() - t0}`); return r; };
+  if (!needCache && res.headers.get('Server-Timing') != null && res.headers.get('X-Content-Type-Options') != null) return res;
+  const apply = (r) => { if (r.headers.get('X-Content-Type-Options') == null) r.headers.set('X-Content-Type-Options', 'nosniff'); if (needCache) r.headers.set('Cache-Control', 'no-store'); if (r.headers.get('Server-Timing') == null) r.headers.set('Server-Timing', `app;dur=${Date.now() - t0}`); return r; };
   try { return apply(res); }                                       // a Response built in this Worker has mutable headers: no copy, same object
   catch (e) { return apply(new Response(res.body, res)); }         // one that came from fetch() / another handler has immutable headers: copy
 }

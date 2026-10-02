@@ -270,7 +270,7 @@ test('C. sign-up: #signup-biz-type is read into window.__svcSignupType (client s
     d.getElementById('signup-biz-type').value = 'car_wash';
     w.eval('submitDirectSignup()');
     assert.equal(w.eval('window.__svcSignupType'), 'car_wash');
-    assert.ok(read('services/index.html').includes("body: JSON.stringify({ action: 'register', fullName, phone, email, password, confirmPassword: passwordConfirm })"), 'the /api/demo-account register body is NOT changed');
+    assert.ok(read('services/index.html').includes("body: JSON.stringify({ action: 'register', fullName, phone, email, password, acceptTerms: true, confirmPassword: passwordConfirm })"), 'the /api/demo-account register body is NOT changed');
     w.eval("window.__order = []; window.pushNowOrWarn = async function () { window.__order.push('push'); }; window.svcApplySignupType = function () { window.__order.push('apply:' + window.__svcSignupType); }");
     await w.eval("finishDirectAuth('Biz', 'pw1234')");
     assert.deepEqual(J(w, 'return window.__order;'), ['apply:car_wash', 'push'], 'applied before pushNowOrWarn so the choice rides the first push');
@@ -497,7 +497,7 @@ test('F. client archive (storage-and-photos) archives finished svc jobs once the
     w.eval(`svcJobs = ${JSON.stringify(jobs)}; svcAppointments = [];`);
     assert.equal(w.eval("window.__LOG_KEYS.svcJobs"), 'pos_svc_jobs');
     w.eval("safeSetItem('pos_svc_jobs', JSON.stringify(svcJobs))");
-    w.eval(`safeSetItem('pos_filler_for_test', ${JSON.stringify(hard(3300000))})`);          // push the device past 80% so the periodic check archives
+    w.eval(`safeSetItem('pos_filler_for_test', ${JSON.stringify(hard(2650000))})`);          // push the device past 80% so the periodic check archives
     assert.ok(w.eval('__storageUsedChars()') >= 4000000, 'device is ~80% full');
     assert.equal(await w.eval("storageAutoArchive('check')"), false, 'nothing moves while the server has not acknowledged the records (they are what gets sent)');
     assert.equal(w.eval('svcJobs.length'), 4);
@@ -554,7 +554,7 @@ test('G. licence plumbing: createClient stores svcType for Services links only; 
   // the public demo register (optional passthrough; the in-app sign-up body is not changed)
   const da = await imp('functions/api/demo-account.js');
   const reg = await da.onRequestPost({ request: new Request('https://x.pages.dev/api/demo-account', { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '9.9.9.9' },
-    body: JSON.stringify({ action: 'register', fullName: 'Jane Doe', phone: '0712345678', email: 'jane@example.com', password: 'pw1234', confirmPassword: 'pw1234', product: 'services', businessName: 'Jane Salon', svcType: 'salon' }) }), env, waitUntil() {} });
+    body: JSON.stringify({ action: 'register', acceptTerms: true, fullName: 'Jane Doe', phone: '0712345678', email: 'jane@example.com', password: 'pw1234', confirmPassword: 'pw1234', product: 'services', businessName: 'Jane Salon', svcType: 'salon' }) }), env, waitUntil() {} });
   assert.equal(reg.status, 200, await reg.clone().text());
   const licKeys = [...kv.data.keys()].filter((k) => k.startsWith('license:'));
   const rec = licKeys.map((k) => JSON.parse(kv.data.get(k).value)).find((r) => r.label === 'Jane Salon');

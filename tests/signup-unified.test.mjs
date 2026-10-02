@@ -12,7 +12,7 @@ const SHOPS = APPS.filter((a) => a !== 'owner/index.html');
 for (const app of SHOPS) {
   test(`${app}: sign-up form and Change Password are the unified ones (no separate "management password" at sign-up or in Settings)`, () => {
     const html = fs.readFileSync(path.join(ROOT, app), 'utf8');
-    for (const id of ['signup-full-name', 'signup-phone', 'signup-biz-name', 'signup-email', 'signup-password', 'signup-password-confirm', 'auth-signup-submit-btn', 'change-pw-current', 'change-pw-new', 'change-pw-new-confirm', 'change-pw-msg']) {
+    for (const id of ['signup-full-name', 'signup-phone', 'signup-biz-name', 'signup-email', 'signup-password', 'signup-password-confirm', 'signup-accept-terms', 'auth-signup-submit-btn', 'change-pw-current', 'change-pw-new', 'change-pw-new-confirm', 'change-pw-msg']) {
       assert.ok(html.includes(`id="${id}"`), `${app} has #${id}`);
     }
     for (const gone of ['biz-admin-password-input', 'biz-admin-password-confirm-input', 'change-admin-current-pw', 'change-login-current-pw', 'onclick="registerBusiness()"', 'onclick="changeAdminPassword()"', 'onclick="changeLoginPassword()"']) {
@@ -43,6 +43,7 @@ test('pharmacy: a brand-new device is offered Log In / Sign Up, and signing up c
   d.getElementById('signup-email').value = 'jane@example.com';
   d.getElementById('signup-password').value = 'secret99';
   d.getElementById('signup-password-confirm').value = 'secret99';
+  d.getElementById('signup-accept-terms').checked = true;
   await w.eval('submitDirectSignup()');
   assert.ok(calls.includes('/api/demo-account') && calls.includes('/api/account-recovery'), 'account created and linked on the server');
   assert.equal(w.localStorage.getItem('pos_pw_hash'), sha('secret99'));

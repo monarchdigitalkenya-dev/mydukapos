@@ -367,7 +367,7 @@ test('_headers: valid Pages syntax; icons cached a day, service workers always r
   assert.equal(rules['/sw.js']['Cache-Control'], 'no-cache');
   assert.equal(rules['/*/sw.js']['Cache-Control'], 'no-cache');
   for (const [p, h] of Object.entries(rules)) if (h['Cache-Control'] && !/no-cache/.test(h['Cache-Control'])) assert.ok(p.startsWith('/icons/'), 'only icons may be cached: ' + p);
-  assert.equal(Object.keys(rules).some((p) => p === '/*' || (/\.(js|css|html)$/.test(p) && !/(^|\/)sw\.js$/.test(p))), false, 'no blanket or per-app-file caching');
+  assert.equal(Object.entries(rules).some(([p, h]) => h['Cache-Control'] && (p === '/*' || (/\.(js|css|html)$/.test(p) && !/(^|\/)sw\.js$/.test(p)))), false, 'no blanket or per-app-file caching');
 });
 
 // ---------------------------------------------------------------- daily health check is chunked

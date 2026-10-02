@@ -26,6 +26,9 @@ import { loginBlocked, noteLoginFailure } from './_ratelimit.js';
 import { createClient, clientLink, listProducts, evaluateLicense, getLicense, deleteClient, getDemoDurationMs } from './_license.js';
 import { requireOwnerAuth } from './_owner-auth.js';
 import { sendEmail } from './_email.js';
+import { hashPassword, passwordProblem } from './_password.js';
+import { termsRecord } from './_legal.js';
+import { verificationRequired, isVerified } from './verify.js';
 import { pushWebsiteLead } from './_crm/demo-lead.js';
 import { ledgerDb } from './_ledger.js';
 import { removeClientLink } from './account-recovery.js';
@@ -33,7 +36,7 @@ import { seedInitialState } from './pos-sync.js';
 import {
   normalizeEmail, isValidEmail, sha256Hex, randomToken,
   getAccount, saveAccount, createSession, emailFromToken, readIndex,
-  createAccount, verifyPassword, deleteAccount,
+  createAccount, verifyPassword, deleteAccount, resolveLoginId, realEmailOf,
 } from './_account.js';
 
 const CORS_HEADERS = {
@@ -139,7 +142,7 @@ export async function onRequestPost(context) {
 
   if (action === 'owner-reset') {
     if (!(await requireOwnerAuth(context))) return jsonResponse({ error: 'Not authorized.' }, 401);
-    const email = normalizeEmail(body.email);
+    const email = await resolveLoginId(env, body.email);
     const account = await getAccount(env, email);
     if (!account) return jsonResponse({ error: 'No account with that email.' }, 404);
     // Manual reset by the Super Admin — the one documented way around the
@@ -166,7 +169,7 @@ export async function onRequestPost(context) {
     // left dangling; then the account record and its Web Signups index
     // entry are gone for good. No undo.
     if (!(await requireOwnerAuth(context))) return jsonResponse({ error: 'Not authorized.' }, 401);
-    const email = normalizeEmail(body.email);
+    const email = await resolveLoginId(env, body.email);
     const account = await getAccount(env, email);
     if (!account) return jsonResponse({ error: 'No account with that email.' }, 404);
     if (account.demoClientId) {
@@ -180,8 +183,9 @@ export async function onRequestPost(context) {
   /* ---------------------- visitor / account-holder actions --------------------- */
 
   if (action === 'register') {
-    const email = normalizeEmail(body.email);
     const phone = String(body.phone || '').trim();
+    // zip 177: nobody is signed up without saying yes to the Terms and Privacy Policy (the version and the time are kept on the account)
+    if (body.acceptTerms !== true) return jsonResponse({ error: 'Please accept the Terms of Service and the Privacy Policy to create your account.', code: 'terms_required' }, 400);
 
     const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
     const bypass = isBypassIp(env, ip);
@@ -194,7 +198,7 @@ export async function onRequestPost(context) {
 
     let account;
     try {
-      account = await createAccount(env, body);
+      account = await createAccount(env, body, { strongPassword: body.channel === 'website', extra: { terms: termsRecord(request, body.channel === 'website' ? 'website' : 'app') } });
     } catch (e) {
       return jsonResponse({ error: e.message || 'Could not create account.' }, e.message && e.message.includes('already exists') ? 409 : 400);
     }
@@ -202,7 +206,8 @@ export async function onRequestPost(context) {
       await env.mydukapos_kv.put(rateKey, String(count + 1), { expirationTtl: REG_RATE_WINDOW_SECONDS });
     }
 
-    const token = await createSession(env, email);
+    const email = realEmailOf(account);                       // '' when the person gave only a WhatsApp number
+    const token = await createSession(env, account.email);
 
     // If the visitor registered from a specific product's page (the common
     // case — see public-site/app.html), provision that one demo right away
@@ -253,24 +258,24 @@ export async function onRequestPost(context) {
   }
 
   if (action === 'login') {
-    const email = normalizeEmail(body.email);
+    const email = await resolveLoginId(env, body.email || body.phone || body.login);   // an email OR the WhatsApp number
     const blocked = await loginBlocked(env, request, 'demo:' + email);
     if (blocked) return blocked;
     const account = await verifyPassword(env, email, body.password);
-    if (!account) { await noteLoginFailure(env, request, 'demo:' + email); return jsonResponse({ error: 'Incorrect email or password.' }, 401); }
+    if (!account) { await noteLoginFailure(env, request, 'demo:' + email); return jsonResponse({ error: 'Incorrect WhatsApp number / email or password.' }, 401); }
     const token = await createSession(env, email);
     return jsonResponse({ token });
   }
 
   if (action === 'forgot-password') {
-    const email = normalizeEmail(body.email);
+    const email = await resolveLoginId(env, body.email || body.phone || body.login);
     // Always return the same generic success message regardless of whether
     // the account exists, so this endpoint can't be used to check which
     // emails are registered. The rate limit below is keyed by the
     // submitted email itself (not IP) — cheap since KV writes are cheap,
     // and it stops someone hammering one specific address with reset mail.
-    const genericResponse = { ok: true, message: "If that email has an account, we've sent a password reset link to it." };
-    if (!isValidEmail(email)) return jsonResponse(genericResponse);
+    const genericResponse = { ok: true, message: "If that account has an email, we've sent a password reset link to it. Signed up with only a WhatsApp number? Message us on WhatsApp and we'll reset it for you." };
+    if (!isValidEmail(email) || String(email).endsWith('@phone.mydukapos.invalid')) return jsonResponse(genericResponse);
 
     const rateKey = RESET_RATE_PREFIX + email;
     const rawCount = await env.mydukapos_kv.get(rateKey);
@@ -306,7 +311,7 @@ export async function onRequestPost(context) {
     const password = String(body.password || '');
     const confirmPassword = String(body.confirmPassword || '');
     if (!token) return jsonResponse({ error: 'Missing reset token.' }, 400);
-    if (password.length < 6) return jsonResponse({ error: 'Password must be at least 6 characters.' }, 400);
+    { const bad = passwordProblem(password); if (bad) return jsonResponse({ error: bad }, 400); }   // zip 177: a reset also needs a real password
     if (password !== confirmPassword) return jsonResponse({ error: 'Passwords do not match.' }, 400);
 
     const email = await env.mydukapos_kv.get(RESET_PREFIX + token);
@@ -315,9 +320,9 @@ export async function onRequestPost(context) {
     const account = await getAccount(env, email);
     if (!account) return jsonResponse({ error: 'Account not found.' }, 404);
 
-    const salt = randomToken(16);
-    account.passwordHash = await sha256Hex(salt + password);
-    account.salt = salt;
+    const fresh = await hashPassword(password);
+    account.passwordHash = fresh.passwordHash;
+    account.salt = fresh.salt;
     await saveAccount(env, account);
     await env.mydukapos_kv.delete(RESET_PREFIX + token);
 
@@ -340,7 +345,8 @@ export async function onRequestPost(context) {
     return jsonResponse({
       fullName: account.fullName,
       phone: account.phone,
-      email: account.email,
+      email: realEmailOf(account),
+      emailVerified: !!account.emailVerified, phoneVerified: !!account.phoneVerified,
       product: account.product || null,
       demoUsed: !!account.demoUsed,
       demoStatus: live.demoStatus,
@@ -354,6 +360,7 @@ export async function onRequestPost(context) {
     if (!email) return jsonResponse({ error: 'Session expired — please sign in again.' }, 401);
     const account = await getAccount(env, email);
     if (!account) return jsonResponse({ error: 'Account not found.' }, 404);
+    if (verificationRequired(env) && !isVerified(account)) return jsonResponse({ error: 'Please verify your email or WhatsApp number first.', code: 'verification_required' }, 403);
     if (account.demoUsed) {
       return jsonResponse({ error: 'Your one free demo has already been used. Contact us if you need it reset.' }, 403);
     }
@@ -367,7 +374,7 @@ export async function onRequestPost(context) {
       durationMs: await getDemoDurationMs(env),
       phone: account.phone,
       clientName: account.fullName,
-      email: account.email,
+      email: realEmailOf(account),
       svcType: body.svcType,          // Services POS business type (optional passthrough)
     });
     account.demoUsed = true;
@@ -387,7 +394,7 @@ export async function onRequestPost(context) {
     // the first time it's opened, same as a link with no account behind
     // it at all.
 
-    await queueCrmLead(context, { fullName: account.fullName, phone: account.phone, email: account.email, product, businessName, kind: 'demo', expiresAt: record.expiresAt, attrInput: attrOf(request, body) });
+    await queueCrmLead(context, { fullName: account.fullName, phone: account.phone, email: realEmailOf(account), product, businessName, kind: 'demo', expiresAt: record.expiresAt, attrInput: attrOf(request, body) });
     const origin = new URL(request.url).origin;
     return jsonResponse({ link: clientLink(env, record, origin), expiresAt: record.expiresAt });
   }

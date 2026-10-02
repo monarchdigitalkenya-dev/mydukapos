@@ -20,7 +20,7 @@
 // untouched. Getting this condition wrong in either direction either hides
 // the new public site or, far worse, breaks an existing client's link.
 
-import { getRootDomain, hostnameFromRequest, subdomainLabel } from './api/_license.js';
+import { LEGAL_PAGES, APEX_PAGES, APEX_FILES, PRODUCT_PAGES, SITE_NAME, isApexRequest } from './_site.js';
 
 // `wrangler pages deploy .` uploads the WHOLE project folder as public files, so without this the live site would serve the source of the
 // tests, the shared code, the tools, the design notes (SYNC_AUTH_DESIGN.md describes exactly which endpoints a leaked link exposes),
@@ -34,6 +34,41 @@ export function isInternalPath(pathname) {
   return INTERNAL_DIRS.test(p) || INTERNAL_FILES.test(p);
 }
 
+// zip 177 — clean URLs for the public site, and "do not index the POS".
+//   * /terms /privacy /cookies /acceptable-use answer on EVERY host (a client's own subdomain links to them from its sign-up screen).
+//   * /faq /contact /offers, /products/<id> and the files the marketing pages load (/app.html, /dashboard.html, /site.css, /img/...) answer on the
+//     apex only. They live in /public-site/; the apex used to serve only "/" from there, so the relative links on those pages had nothing at the
+//     root to point at.
+//   * Every other host (a client's shop) gets `X-Robots-Tag: noindex, nofollow` on its pages: a shop's POS is private and must never be searchable.
+const servePublic = (env, request, file) => env.ASSETS.fetch(new Request(new URL('/public-site/' + file, request.url), request));
+
+// /products/<id>: app.html with this product's own title, description, canonical URL and structured data (the page itself is filled in by script).
+async function serveProductPage(env, request, key) {
+  const res = await servePublic(env, request, 'app.html');
+  if (!res || res.status !== 200) return res;
+  const p = PRODUCT_PAGES[key];
+  const origin = new URL(request.url).origin;
+  const url = `${origin}/products/${key}`;
+  const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const title = `${p.name} — ${SITE_NAME}, point of sale for Kenyan business`;
+  const ld = { '@context': 'https://schema.org', '@type': 'SoftwareApplication', name: p.name, applicationCategory: 'BusinessApplication', operatingSystem: 'Android, iOS, Windows, any modern browser', description: p.description, url, publisher: { '@type': 'Organization', name: SITE_NAME, url: origin } };
+  const tags = [
+    `<link rel="canonical" href="${esc(url)}">`,
+    `<meta name="description" content="${esc(p.description)}">`,
+    `<meta property="og:type" content="website"><meta property="og:site_name" content="${SITE_NAME}">`,
+    `<meta property="og:title" content="${esc(title)}"><meta property="og:description" content="${esc(p.description)}">`,
+    `<meta property="og:url" content="${esc(url)}"><meta property="og:image" content="${esc(origin + '/img/og-default.png')}">`,
+    `<meta name="twitter:card" content="summary_large_image">`,
+    `<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`,
+  ].join('\n');
+  let html = await res.text();
+  html = html.replace('<!--@seo-->', tags).replace(/<title>[\s\S]*?<\/title>/, `<title>${esc(title)}</title>`);
+  const headers = new Headers(res.headers);
+  headers.set('Content-Type', 'text/html; charset=utf-8');
+  headers.delete('Content-Length'); headers.delete('ETag');
+  return new Response(html, { status: 200, headers });
+}
+
 export async function onRequest(context) {
   const { request, env, next } = context;
 
@@ -41,25 +76,45 @@ export async function onRequest(context) {
     return new Response('Not found', { status: 404, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } });
   }
 
-  if (request.method !== 'GET') return next();
+  if (request.method !== 'GET' && request.method !== 'HEAD') return next();
 
   const url = new URL(request.url);
-  if (url.pathname !== '/') return next();
+  let path = url.pathname;
+  if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
 
-  const hostname = hostnameFromRequest(request, env);
-  const rootDomain = getRootDomain(env);
-  const label = subdomainLabel(hostname, rootDomain);
+  // legal pages: every host
+  if (path in LEGAL_PAGES && env.ASSETS) return servePublic(env, request, LEGAL_PAGES[path] + '.html');
 
-  // subdomainLabel() returns '' for both the bare apex/www AND for any
-  // hostname that isn't under this root domain at all (e.g. a *.pages.dev
-  // preview URL) — the explicit hostname === rootDomain / www check below
-  // is what narrows this down to specifically the apex case, not just
-  // "not a recognized client subdomain".
-  const isApex = !label && (hostname === rootDomain || hostname === `www.${rootDomain}`);
-  if (!isApex) return next();
+  // the legal pages' stylesheet, on every host too (they are linked from a client's own sign-up screen)
+  if (path === '/site.css' && env.ASSETS) return servePublic(env, request, 'site.css');
 
-  // Served as a plain static-asset fetch, not a redirect — the address bar
-  // keeps showing the clean apex URL rather than jumping to /public-site/.
-  const publicUrl = new URL('/public-site/index.html', url);
-  return env.ASSETS.fetch(new Request(publicUrl, request));
+  // anything that is not "/" and not a public-site path goes straight on (the apex and a client subdomain both) — but a client's own pages are
+  // marked noindex on the way out
+  const needsApex = path === '/' || path in APEX_PAGES || path.startsWith('/products/') || APEX_FILES.test(path);
+  if (!needsApex) return noindexIfShop(request, env, await next());
+
+  if (!isApexRequest(request, env)) return noindexIfShop(request, env, await next());
+
+  // Served as a plain static-asset fetch, not a redirect — the address bar keeps showing the clean apex URL rather than jumping to /public-site/.
+  if (path === '/') return servePublic(env, request, 'index.html');
+  if (path in APEX_PAGES) return servePublic(env, request, APEX_PAGES[path] + '.html');
+  if (path.startsWith('/products/')) {
+    const key = decodeURIComponent(path.slice('/products/'.length));
+    if (Object.prototype.hasOwnProperty.call(PRODUCT_PAGES, key)) return serveProductPage(env, request, key);
+    return next();                                                                    // unknown product: the branded 404 page
+  }
+  return servePublic(env, request, path.slice(1));                                    // /app.html, /dashboard.html, /site.css, /img/...
+}
+
+// A client's shop (any host that is not the apex) must not be searchable.
+async function noindexIfShop(request, env, res) {
+  try {
+    if (!res || res.status === 101 || res.webSocket) return res;
+    if (isApexRequest(request, env)) return res;
+    const ct = res.headers.get('Content-Type') || '';
+    if (!/text\/html/i.test(ct)) return res;
+    const out = new Response(res.body, res);
+    out.headers.set('X-Robots-Tag', 'noindex, nofollow');
+    return out;
+  } catch (e) { return res; }
 }

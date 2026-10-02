@@ -154,3 +154,29 @@ Details: `CHANGES_ZIP_173.md`.
 3. `npm run deploy`
 4. Hard-refresh each app once (`zip-175`).
 Details: `CHANGES_ZIP_175.md`.
+
+## Zip 176 — no migration
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. `git add -A`, `git commit -m "Zip 176"`, `git push` (the push builds the new Windows app); hard-refresh each app once (`zip-176`).
+Details: `CHANGES_ZIP_176.md`.
+
+## Zip 177 — public website, SEO, sign-up hardening — no migration
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. `git add -A`, `git commit -m "Zip 177"`, `git push`; hard-refresh each app once (`zip-177`).
+5. Optional Cloudflare variables (Pages → Settings → Variables and secrets) — all off/blank by default, nothing breaks without them: `VERIFICATION_REQUIRED=1`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_OTP_TEMPLATE` (+ `WHATSAPP_OTP_LANG`), `CONTACT_NOTIFY_EMAIL`, `TURNSTILE_SECRET`. See `SECURITY_AND_CONFIG_177.md`.
+6. Open `https://mydukapos.store/robots.txt`, `/sitemap.xml`, `/llms.txt`, `/offers`, `/faq`, `/terms`, then Owner Console ▸ 🏷️ Offers.
+Details: `CHANGES_ZIP_177.md`.
+
+## Zip 178 — menu import with sub-categories — no migration
+1. `npm install`
+2. `npm run check`
+3. `npm run deploy`
+4. `git add -A`, `git commit -m "Zip 178"`, `git push`; hard-refresh each app once (`zip-178`).
+Details: `CHANGES_ZIP_178.md`. Menu file (sent separately): `Menu_import.xlsx` — Hotel / Restaurant ▸ Inventory ▸ ⬆️ Import.
+
+## Zip 179
+WhatsApp number required / email optional at sign-up; sign-in by number or email; STK push sales verify instantly. No new environment variables. See CHANGES_ZIP_179.md.

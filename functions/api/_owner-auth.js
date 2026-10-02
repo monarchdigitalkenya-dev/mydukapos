@@ -20,6 +20,7 @@
 // separately, by the session token below, never by that license token.
 
 import { createClient } from './_license.js';
+import { hashPassword, checkPassword, upgradeOnLogin } from './_password.js';
 
 const OWNER_KEY = 'owner-account:v1';
 const SESSION_PREFIX = 'owner-session:';
@@ -49,8 +50,7 @@ export async function createOwnerAccount(env, identifier, password) {
     throw new Error('An owner account already exists for this deployment. Please sign in instead.');
   }
 
-  const salt = randomToken(16);
-  const passwordHash = await sha256Hex(salt + password);
+  const { salt, passwordHash } = await hashPassword(password);
   const ownerClient = await createClient(env, 'permanent', 'Owner Console (you)', 'shop');
 
   const account = {
@@ -68,8 +68,11 @@ export async function verifyOwnerLogin(env, identifier, password) {
   const account = await getOwnerAccount(env);
   if (!account) return null;
   if (account.identifier.trim().toLowerCase() !== String(identifier || '').trim().toLowerCase()) return null;
-  const hash = await sha256Hex(account.salt + password);
-  if (hash !== account.passwordHash) return null;
+  if (!(await checkPassword(account, password))) return null;
+  try {                                                  // zip 177: old one-round SHA-256 record -> PBKDF2, now that the owner proved the password
+    const up = await upgradeOnLogin(account, String(password));
+    if (up) { account.salt = up.salt; account.passwordHash = up.passwordHash; await env.mydukapos_kv.put(OWNER_KEY, JSON.stringify(account)); }
+  } catch (e) { /* retried at the next sign-in */ }
   return account;
 }
 

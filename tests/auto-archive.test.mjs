@@ -14,7 +14,7 @@ test('at 80% full the oldest history moves to the device archive, the lists are 
   const toasts = [];
   const { w, errors, close } = await boot('index.html', { indexedDB: new IDBFactory(), wait: 300 });
   w.eval('showToast = function (m) { window.__toasts = (window.__toasts || []).concat(m); }');
-  const old = Array.from({ length: 300 }, (_, i) => sale('old' + i, 200 + (i % 100), hard(10500)));   // ~3.2M chars that do not compress (~4.2M stored)
+  const old = Array.from({ length: 300 }, (_, i) => sale('old' + i, 200 + (i % 100), hard(8650)));   // ~2.65M chars that do not compress (~4.2M stored: random text expands ~1.6x in 16,000-char slices)
   const recent = Array.from({ length: 40 }, (_, i) => sale('new' + i, i % 30, 'x'));
   w.eval(`salesLog = ${JSON.stringify([...old, ...recent])}`);
   w.eval("safeSetItem('pos_sales_log', JSON.stringify(salesLog))");
@@ -54,7 +54,7 @@ test('below 80% nothing happens; without IndexedDB nothing is ever removed', asy
 test('a save that runs out of room does not show the cashier an error; the device archives and the save goes through', async () => {
   const { w, close } = await boot('index.html', { indexedDB: new IDBFactory(), wait: 300 });
   w.eval('showToast = function (m) { window.__toasts = (window.__toasts || []).concat(m); }');
-  const old = Array.from({ length: 250 }, (_, i) => sale('old' + i, 200 + (i % 100), hard(10500)));
+  const old = Array.from({ length: 250 }, (_, i) => sale('old' + i, 200 + (i % 100), hard(8650)));
   w.eval(`salesLog = ${JSON.stringify([...old, sale('new0', 1, 'x')])}`);
   w.eval("safeSetItem('pos_sales_log', JSON.stringify(salesLog))");
   w.eval("salesJournalSeenRecords('salesLog', salesLog.slice(0, 250))");     // the old sales are confirmed on the server

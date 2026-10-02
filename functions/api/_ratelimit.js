@@ -23,6 +23,10 @@ export const LIMITS = {
   // staff server sessions (zip 141): PIN attempts per staff member per hour, and sign-ins per shop per hour
   staffPin: (env) => num(env && env.STAFF_PIN_HOURLY_LIMIT, 20),
   staffShop: (env) => num(env && env.STAFF_SIGNIN_HOURLY_LIMIT, 400),
+  // zip 177: public contact form, per caller IP per hour
+  // zip 177: verification codes sent, per account per hour
+  otp: (env) => num(env && env.OTP_HOURLY_LIMIT, 6),
+  contact: (env) => num(env && env.CONTACT_HOURLY_LIMIT, 5),
 };
 
 // -> { ok, used, limit, retryAfter }   `cost` = how many units this request would consume (e.g. recipients).

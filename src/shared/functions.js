@@ -1922,6 +1922,9 @@ function deleteBarcode(id) {
 //@fn deleteBranch
 async function deleteBranch(targetClientId, label) {
             if (!confirm(`Permanently delete "${label}"? Its link stops working immediately, its staff/sales/stock data is gone for good, and this can't be undone.`)) return;
+            // zip 173: a second, typed confirmation — a stray tap on the red button must never be enough to destroy a branch.
+            const typedName = prompt('To confirm, type the branch name exactly:\n' + label);
+            if (typedName === null || String(typedName).trim() !== String(label).trim()) { showToast('The name did not match, so nothing was deleted.', true); return; }
             try {
                 const res = await fetch(apiUrl('/api/branches'), {
                     method: 'POST',
@@ -17196,7 +17199,14 @@ function ensureReceiptGridCss() {
                 'body.printing-receipt .receipt-paper.align-left{padding-left:max(0mm, calc(var(--rg-side,4mm) - 3mm)) !important;padding-right:calc(var(--rg-side,4mm) + 3mm) !important;}',
                 'body.printing-receipt .receipt-paper.align-right{padding-left:calc(var(--rg-side,4mm) + 3mm) !important;padding-right:max(0mm, calc(var(--rg-side,4mm) - 3mm)) !important;}',
                 'body.printing-receipt .receipt-grid,body.printing-kitchen-ticket .receipt-grid{font-size:var(--rg-font,11px) !important;}',
-                '.device-paper-picker{display:none !important;}',
+                '.device-paper-picker,.universal-modal-x{display:none !important;}',
+                // zip 179: the paper starts at the top edge, whatever the screen layout says. The page body is a flex column with min-height:100vh and a bottom padding
+                // for the floating buttons; on paper that can add blank length above/below the slip, so it is flattened for any receipt / ticket / report print.
+                'html:has(body.printing-receipt),html:has(body.printing-kitchen-ticket),html:has(body.printing-report){height:auto !important;min-height:0 !important;margin:0 !important;padding:0 !important;}',
+                'body.printing-receipt,body.printing-kitchen-ticket,body.printing-report{display:block !important;height:auto !important;min-height:0 !important;margin:0 !important;padding:0 !important;overflow:visible !important;}',
+                'body.printing-receipt #receipt-modal,body.printing-kitchen-ticket #kitchen-ticket-modal{top:0 !important;margin:0 !important;padding:0 !important;}',
+                'body.printing-receipt .receipt-paper,body.printing-kitchen-ticket .receipt-paper{padding-top:1mm !important;margin-top:0 !important;}',
+                'body.printing-receipt .receipt-content-area,body.printing-kitchen-ticket .receipt-content-area{margin:0 !important;}',
                 '}',
             ].join('');
             document.head.appendChild(st);
@@ -17302,6 +17312,8 @@ function receiptPageRule(widthMm, contentEl, fixedLengthMm) {
                 try {
                     px = contentEl ? Math.max(contentEl.scrollHeight || 0, contentEl.getBoundingClientRect ? contentEl.getBoundingClientRect().height : 0) : 0;
                     // the on-screen buttons, the paper picker and the close button do not print: they are not paper to feed
+                    // a logo / QR picture that has not finished loading has no height yet: count it at its largest (26 mm) so the page is never cut short
+                    if (px > 0) contentEl.querySelectorAll('.receipt-brand-block img, .receipt-qr-block img').forEach((im) => { if (im.offsetParent !== null && !(im.complete && im.naturalHeight > 0)) px += 26 * 96 / 25.4; });
                     if (px > 0) contentEl.querySelectorAll('.receipt-actions, .device-paper-picker, .universal-modal-x').forEach((x) => { px -= x.getBoundingClientRect().height || 0; });
                 } catch (e) { px = 0; }
                 if (!(px > 0) && contentEl) {

@@ -269,7 +269,7 @@ async function demo(env, body, { ip = '1.1.1.1', referer } = {}) {
   const res = await m.onRequestPost({ request: new Request('https://mydukapos.store/api/demo-account', { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Connecting-IP': ip, ...(referer ? { Referer: referer } : {}) }, body: JSON.stringify(body) }), env });
   return { status: res.status, body: await res.json() };
 }
-const reg = (o = {}) => ({ action: 'register', fullName: 'Grace Njeri', phone: '0722 333 444', email: 'grace@example.com', password: 'secret99', confirmPassword: 'secret99', ...o });
+const reg = (o = {}) => ({ action: 'register', acceptTerms: true, fullName: 'Grace Njeri', phone: '0722 333 444', email: 'grace@example.com', password: 'secret99', confirmPassword: 'secret99', ...o });
 
 test('OWNER NOTE - a website demo sign-up still creates exactly ONE CRM lead with its attribution, and a repeat with the same phone or email is de-duplicated (after the speed changes)', async () => {
   const c = await makeCrm();

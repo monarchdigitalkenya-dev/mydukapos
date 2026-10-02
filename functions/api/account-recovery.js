@@ -56,6 +56,15 @@
 import { loginBlocked, noteLoginFailure } from './_ratelimit.js';
 import { requireValidLicense } from './_license.js';
 import { sendEmail } from './_email.js';
+import { hashPassword, checkPassword, upgradeOnLogin } from './_password.js';
+
+// zip 177: PBKDF2 (see _password.js). Checks a password against a recovery record and, when the record still has the old one-round hash and
+// the password is right, rewrites it in the new form (best effort — a failed upgrade never fails the sign-in).
+async function passwordOk(env, record, password) {
+  if (!(await checkPassword(record, password))) return false;
+  try { const up = await upgradeOnLogin(record, password); if (up) { record.salt = up.salt; record.passwordHash = up.passwordHash; await saveAccountRecord(env, record); } } catch (e) { /* next time */ }
+  return true;
+}
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -270,8 +279,7 @@ export async function onRequestPost(context) {
       if (!record) return jsonResponse({ error: 'This link has no account set up yet.' }, 404);
       const blocked = await loginBlocked(env, request, 'recovery:' + clientId);
       if (blocked) return blocked;
-      const hash = await sha256Hex(record.salt + password);
-      if (hash !== record.passwordHash) { await noteLoginFailure(env, request, 'recovery:' + clientId); return jsonResponse({ error: 'Incorrect password.' }, 401); }
+      if (!(await passwordOk(env, record, password))) { await noteLoginFailure(env, request, 'recovery:' + clientId); return jsonResponse({ error: 'Incorrect password.' }, 401); }
       return jsonResponse({ ok: true });
     }
 
@@ -297,8 +305,7 @@ export async function onRequestPost(context) {
         // one already on file, so it stays genuinely one password across
         // every branch rather than silently forking on whichever branch
         // links second.
-        const hash = await sha256Hex(existing.salt + password);
-        if (hash !== existing.passwordHash) {
+        if (!(await checkPassword(existing, password))) {
           return jsonResponse({ error: 'That email is already linked elsewhere with a different password. Use the same password to add this branch, or reset it first.' }, 409);
         }
         if (!existing.clientIds.includes(clientId)) existing.clientIds.push(clientId);
@@ -306,8 +313,7 @@ export async function onRequestPost(context) {
         return jsonResponse({ ok: true, email: maskEmail(email) });
       }
 
-      const salt = randomToken(16);
-      const passwordHash = await sha256Hex(salt + password);
+      const { salt, passwordHash } = await hashPassword(password);
       const record = { email, salt, passwordHash, linkedAt: Date.now(), clientIds: [clientId] };
       await saveAccountRecord(env, record);
       return jsonResponse({ ok: true, email: maskEmail(email) });
@@ -335,14 +341,13 @@ export async function onRequestPost(context) {
       const currentPassword = String(body.currentPassword || '');
       const newPassword = String(body.newPassword || '');
       const confirmNewPassword = String(body.confirmNewPassword || '');
-      const currentHash = await sha256Hex(record.salt + currentPassword);
-      if (currentHash !== record.passwordHash) return jsonResponse({ error: 'Current password is incorrect.' }, 401);
+      if (!(await checkPassword(record, currentPassword))) return jsonResponse({ error: 'Current password is incorrect.' }, 401);
       if (newPassword.length < 4) return jsonResponse({ error: 'New password must be at least 4 characters.' }, 400);
       if (newPassword !== confirmNewPassword) return jsonResponse({ error: 'New passwords do not match.' }, 400);
 
-      const salt = randomToken(16);
-      record.passwordHash = await sha256Hex(salt + newPassword);
-      record.salt = salt;
+      const fresh = await hashPassword(newPassword);
+      record.passwordHash = fresh.passwordHash;
+      record.salt = fresh.salt;
       await saveAccountRecord(env, record);
       return jsonResponse({ ok: true });
     }
@@ -364,8 +369,7 @@ export async function onRequestPost(context) {
     if (blocked) return blocked;
     const record = await getAccountRecordMigrating(env, email);
     if (!record) return jsonResponse({ error: 'No shop is linked to that email.' }, 404);
-    const hash = await sha256Hex(record.salt + password);
-    if (hash !== record.passwordHash) { await noteLoginFailure(env, request, 'recovery-email:' + email); return jsonResponse({ error: 'Incorrect password.' }, 401); }
+    if (!(await passwordOk(env, record, password))) { await noteLoginFailure(env, request, 'recovery-email:' + email); return jsonResponse({ error: 'Incorrect password.' }, 401); }
     return jsonResponse({ ok: true });
   }
 
@@ -392,9 +396,9 @@ export async function onRequestPost(context) {
     const record = await getAccountRecordMigrating(env, email);
     if (!record) return jsonResponse({ error: 'This email is no longer linked to a shop.' }, 404);
 
-    const salt = randomToken(16);
-    record.passwordHash = await sha256Hex(salt + password);
-    record.salt = salt;
+    const fresh = await hashPassword(password);
+    record.passwordHash = fresh.passwordHash;
+    record.salt = fresh.salt;
     await saveAccountRecord(env, record); // updates every linked clientId's reverse index too, harmlessly re-writing unchanged entries
     await env.mydukapos_kv.delete(RESET_PREFIX + token);
 

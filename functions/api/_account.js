@@ -14,6 +14,8 @@
 //   demo-account-session:<token>      -> email (session lookup)
 //   demo-account-index:v1             -> array of lead summaries, newest first
 
+import { hashPassword, checkPassword, upgradeOnLogin, passwordProblem } from './_password.js';
+
 export const ACCOUNT_PREFIX = 'demo-account:';
 export const SESSION_PREFIX = 'demo-account-session:';
 export const INDEX_KEY = 'demo-account-index:v1';
@@ -32,6 +34,31 @@ export async function sha256Hex(text) {
 
 export function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
+}
+
+// zip 179: WhatsApp number is the one required contact; email is optional. Same Kenyan-number rules as verify.js (copied: verify.js imports this file).
+export function intlPhone(p) {
+  const d = String(p || '').replace(/[^\d]/g, '');
+  if (/^0[17]\d{8}$/.test(d)) return '254' + d.slice(1);
+  if (/^[17]\d{8}$/.test(d)) return '254' + d;
+  if (/^254[17]\d{8}$/.test(d)) return d;
+  return /^\d{10,15}$/.test(d) && String(p).trim().startsWith('+') ? d : '';
+}
+export const PHONE_PREFIX = 'demo-account-phone:';
+export const PHONE_KEY_DOMAIN = '@phone.mydukapos.invalid';       // an account with no email is stored under <number>@phone... (never mailed)
+export const isPhoneKey = (k) => String(k || '').endsWith(PHONE_KEY_DOMAIN);
+export const realEmailOf = (account) => (account && account.email && !isPhoneKey(account.email) ? account.email : '');
+
+// Turns whatever a person typed on a sign-in / reset form (an email OR a WhatsApp number) into the account key.
+export async function resolveLoginId(env, raw) {
+  const t = String(raw || '').trim();
+  if (!t) return '';
+  if (t.includes('@')) return normalizeEmail(t);
+  const intl = intlPhone(t);
+  if (!intl) return normalizeEmail(t);
+  try { const k = await env.mydukapos_kv.get(PHONE_PREFIX + intl); if (k) return k; } catch (e) { /* fall back */ }
+  try { const hit = (await readIndex(env)).find((e) => intlPhone(e.phone) === intl); if (hit) return hit.email; } catch (e) { /* fall back */ }
+  return intl + PHONE_KEY_DOMAIN;
 }
 
 export function isValidEmail(email) {
@@ -75,6 +102,8 @@ export async function upsertIndexSummary(env, account) {
 
 export async function saveAccount(env, account) {
   await env.mydukapos_kv.put(ACCOUNT_PREFIX + account.email, JSON.stringify(account));
+  const intl = intlPhone(account.phone);
+  if (intl) { try { await env.mydukapos_kv.put(PHONE_PREFIX + intl, account.email); } catch (e) { /* the index lookup still finds it */ } }
   await upsertIndexSummary(env, account);
 }
 
@@ -87,7 +116,10 @@ export async function saveAccount(env, account) {
 // before calling this. There's no undo.
 export async function deleteAccount(env, email) {
   const normalized = normalizeEmail(email);
+  const old = await getAccount(env, normalized).catch(() => null);
   await env.mydukapos_kv.delete(ACCOUNT_PREFIX + normalized);
+  const intl = old && intlPhone(old.phone);
+  if (intl) { try { if ((await env.mydukapos_kv.get(PHONE_PREFIX + intl)) === normalized) await env.mydukapos_kv.delete(PHONE_PREFIX + intl); } catch (e) { /* harmless */ } }
   const list = await readIndex(env);
   const next = list.filter((e) => e.email !== normalized);
   await env.mydukapos_kv.put(INDEX_KEY, JSON.stringify(next));
@@ -148,8 +180,12 @@ export async function emailFromToken(env, token) {
 export async function verifyPassword(env, email, password) {
   const account = await getAccount(env, email);
   if (!account) return null;
-  const hash = await sha256Hex(account.salt + String(password || ''));
-  if (hash !== account.passwordHash) return null;
+  if (!(await checkPassword(account, password))) return null;
+  // zip 177: an account still on the old one-round SHA-256 hash is rewritten as PBKDF2 now that its owner proved the password
+  try {
+    const up = await upgradeOnLogin(account, String(password || ''));
+    if (up) { account.salt = up.salt; account.passwordHash = up.passwordHash; await saveAccount(env, account); }
+  } catch (e) { /* the sign-in itself succeeded; the upgrade is retried next time */ }
   return account;
 }
 
@@ -158,7 +194,7 @@ export async function verifyPassword(env, email, password) {
 // email is already taken — same rules demo-account.js's 'register' action
 // already enforced, kept identical here so POS-side signup can't create an
 // account that's weaker than a website signup would allow.
-export async function createAccount(env, { fullName, phone, email, password, confirmPassword }) {
+export async function createAccount(env, { fullName, phone, email, password, confirmPassword }, opts = {}) {
   fullName = String(fullName || '').trim();
   phone = String(phone || '').trim();
   email = normalizeEmail(email);
@@ -166,19 +202,27 @@ export async function createAccount(env, { fullName, phone, email, password, con
   confirmPassword = String(confirmPassword || '');
 
   if (!fullName) throw new Error('Enter your full name.');
-  if (!phone) throw new Error('Enter your phone number.');
-  if (!isValidEmail(email)) throw new Error('Enter a valid email address.');
-  if (password.length < 4) throw new Error('Password must be at least 4 characters (a 4-digit PIN works fine).');
+  if (!phone) throw new Error('Enter your WhatsApp number.');
+  const intl = intlPhone(phone);
+  if (!intl) throw new Error('Enter a valid WhatsApp number, for example 0712 345 678 (outside Kenya, start with + and the country code).');
+  if (email && !isValidEmail(email)) throw new Error('That email address does not look right. Fix it or leave it blank — only the WhatsApp number is required.');
+  const contactEmail = email;
+  if (!email) email = intl + PHONE_KEY_DOMAIN;
+  if (opts.strongPassword) { const bad = passwordProblem(password); if (bad) throw new Error(bad); }   // zip 177: the website sign-up asks for a real password
+  else if (password.length < 4) throw new Error('Password must be at least 4 characters (a 4-digit PIN works fine).');
   if (password !== confirmPassword) throw new Error('Passwords do not match.');
 
   const existing = await getAccount(env, email);
-  if (existing) throw new Error('An account already exists for that email. Please sign in instead.');
+  if (existing) throw new Error(contactEmail ? 'An account already exists for that email. Please sign in instead.' : 'An account already exists for that WhatsApp number. Please sign in instead.');
+  const byPhone = await resolveLoginId(env, intl);
+  if (byPhone && !isPhoneKey(byPhone) && byPhone !== email && await getAccount(env, byPhone)) throw new Error('An account already exists for that WhatsApp number. Please sign in instead.');
+  if (isPhoneKey(byPhone) && byPhone !== email && await getAccount(env, byPhone)) throw new Error('An account already exists for that WhatsApp number. Please sign in instead.');
 
-  const salt = randomToken(16);
-  const passwordHash = await sha256Hex(salt + password);
+  const { salt, passwordHash } = await hashPassword(password);
   const now = Date.now();
   const account = {
     fullName, phone, email, salt, passwordHash, createdAt: now,
+    ...(opts.extra || {}),
     demoUsed: false, demoClientId: null, demoStatus: 'none',
     approvalStatus: 'pending', branchName: '', product: '',
     generatedAt: null, expiresAt: null,

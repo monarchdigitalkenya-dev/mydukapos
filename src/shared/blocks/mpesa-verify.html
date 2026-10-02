@@ -11,6 +11,25 @@
     window.__mpesaVerifyInit = true;
     var FINAL = { verified: 1, amount_mismatch: 1, duplicate: 1 };
     var busy = false, unsupported = false;
+    // zip 179: an STK push the status poll has already confirmed (the shop's own signed Safaricom callback) is remembered here, so the sale that
+    // carries that receipt is verified at once instead of showing "not verified" until the background lookup answers.
+    var CONF = {};
+    try { CONF = JSON.parse(localStorage.getItem('pos_stk_confirmed') || '{}') || {}; } catch (e) { CONF = {}; }
+    window.mpesaNoteConfirmed = function (code, amount) {
+        code = String(code || '').trim().toUpperCase(); if (!code) return;
+        CONF[code] = { amount: Number(amount) || 0, at: Date.now() };
+        var cut = Date.now() - 3 * 86400000; Object.keys(CONF).forEach(function (k) { if ((CONF[k].at || 0) < cut) delete CONF[k]; });
+        try { localStorage.setItem('pos_stk_confirmed', JSON.stringify(CONF)); } catch (e) { /* in-memory still works */ }
+        setTimeout(function () { try { window.mpesaVerifyNow(); } catch (e) { /* periodic run */ } }, 1500);
+    };
+    function confirmedLocally(s) {
+        var c = CONF[String(s.mpesaReceiptNumber || '').trim().toUpperCase()];
+        if (!c || !(c.amount + 0.5 >= Number(s.mpesaAmount))) return false;
+        if (list().some(function (o) { return o !== s && !o.voided && o.mpesaCheck && o.mpesaCheck.source === 'stk-confirmed' && String(o.mpesaReceiptNumber || '').toUpperCase() === String(s.mpesaReceiptNumber).toUpperCase(); })) return false;   // one STK payment covers one sale
+        s.mpesaCheck = { status: 'verified', at: Date.now(), tries: 0, paid: c.amount, source: 'stk-confirmed' };
+        s.updatedAt = Date.now();
+        return true;
+    }
     function list() { try { return typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog : []; } catch (e) { return []; } }
     function needs(s) {
         if (!s || s.voided || !(Number(s.mpesaAmount) > 0) || !s.mpesaReceiptNumber) return false;
@@ -22,11 +41,12 @@
     window.mpesaVerifyPending = function () { return list().filter(function (s) { return s && !s.voided && Number(s.mpesaAmount) > 0 && s.mpesaReceiptNumber && !(s.mpesaCheck && s.mpesaCheck.status === 'verified'); }); };
     window.mpesaVerifyNow = async function () {
         if (busy || unsupported) return 0;
-        try { if (typeof window.posNetOffline === 'function' ? window.posNetOffline() : navigator.onLine === false) return 0; } catch (e) { /* try */ }
-        var todo = list().filter(needs).slice(0, 20);
-        if (!todo.length) return 0;
-        busy = true;
         var n = 0;
+        list().filter(needs).forEach(function (s) { if (confirmedLocally(s)) n++; });
+        if (!(function () { try { return typeof window.posNetOffline === 'function' ? window.posNetOffline() : navigator.onLine === false; } catch (e) { return false; } })() === false) { if (n) finish(n); return n; }   // offline: only the local confirmations above
+        var todo = list().filter(needs).slice(0, 20);
+        if (!todo.length) { if (n) finish(n); return n; }
+        busy = true;
         try {
             for (var i = 0; i < todo.length; i++) {
                 var s = todo[i], res;
@@ -41,13 +61,16 @@
                 n++;
             }
         } finally { busy = false; }
+        finish(n);
+        return n;
+    };
+    function finish(n) {
         if (n) {
             try { safeSetItem(window.__LOG_KEYS && window.__LOG_KEYS.salesLog || 'pos_sales_log', JSON.stringify(list())); } catch (e) { /* next save */ }
             try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll sends it */ }
             try { window.mpesaVerifyBanner(); } catch (e) { /* cosmetic */ }
         }
-        return n;
-    };
+    }
     var LABEL = { amount_mismatch: 'paid less than the sale', duplicate: 'code already used for another sale', not_found: 'no M-Pesa record found yet' };
     window.mpesaVerifyBanner = function () {
         var tab = document.getElementById('daily-sales-tab');

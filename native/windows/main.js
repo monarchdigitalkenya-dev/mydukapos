@@ -8,7 +8,7 @@
 //   * the list of Windows printers, with their real status from Windows.
 // First start: the launcher asks for the shop's link and checks it with the server (licence + module: a Hotel link does not open in
 // the Shop app). After that the app opens straight into the shop.
-const { app, BrowserWindow, ipcMain, shell, net, session, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, net, session, Menu, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const netSock = require('net');
@@ -28,6 +28,28 @@ function isLauncher(u) { return typeof u === 'string' && u.startsWith('file:') &
 
 let win = null;
 
+// zip 176 — "the Windows app hangs and is too zoomed".
+//  * Size: the window opens at ~92% of the usable screen (never bigger than it), centred — not a fixed 1280x820.
+//  * Zoom: the web app is laid out for ~1600 CSS px of width. On a laptop at Windows scaling 125% / 150% the screen is only 1280-1536
+//    "device-independent" px wide, so everything looked magnified. We start at a zoom that fits the screen (0.8 .. 1.0) and the cashier
+//    can change it with Ctrl +  /  Ctrl -  /  Ctrl 0; the choice is remembered.
+//  * Hangs: a page that stops answering for 6 s is reloaded (its data is on this PC), and "Safe graphics" (View menu) turns off GPU
+//    acceleration for old graphics drivers that freeze Chromium.
+const ZOOM_MIN = 0.5, ZOOM_MAX = 1.6;
+function clampZoom(z) { z = Number(z); return isFinite(z) ? Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(z * 100) / 100)) : 1; }
+function autoZoom() {
+  try { const w = screen.getPrimaryDisplay().workAreaSize.width; return clampZoom(Math.min(1, w / 1600)); } catch (e) { return 1; }
+}
+function currentZoom() { const c = readConfig(); return c.zoom ? clampZoom(c.zoom) : autoZoom(); }
+function applyZoom() { try { if (win && !win.isDestroyed()) win.webContents.setZoomFactor(currentZoom()); } catch (e) { /* closing */ } }
+function stepZoom(delta) {
+  const z = delta === 0 ? autoZoom() : clampZoom(currentZoom() + delta);
+  const c = readConfig(); if (delta === 0) delete c.zoom; else c.zoom = z; writeConfig(c);
+  applyZoom();
+}
+// Safe graphics must be decided before the app is ready
+try { if (readConfig().safeGraphics) app.disableHardwareAcceleration(); } catch (e) { /* first start: no config yet */ }
+
 function launcherPath() {
   const packed = path.join(process.resourcesPath || '', 'launcher', 'launcher.html');
   return fs.existsSync(packed) ? packed : path.join(__dirname, '..', 'launcher', 'launcher.html');
@@ -39,8 +61,13 @@ function offlinePath() {
 }
 
 function createWindow() {
+  let wa = { x: 0, y: 0, width: 1366, height: 768 };
+  try { wa = screen.getPrimaryDisplay().workArea; } catch (e) { /* default */ }
+  const ww = Math.max(Math.min(wa.width, 800), Math.min(1600, Math.round(wa.width * 0.92)));
+  const wh = Math.max(Math.min(wa.height, 560), Math.min(980, Math.round(wa.height * 0.92)));
   win = new BrowserWindow({
-    width: 1280, height: 820, minWidth: 360, minHeight: 500,
+    width: ww, height: wh, x: wa.x + Math.round((wa.width - ww) / 2), y: wa.y + Math.round((wa.height - wh) / 2),
+    minWidth: 360, minHeight: 500,
     title: APP.name,
     icon: path.join(__dirname, 'build', APP.key + '.png'),
     backgroundColor: '#ffffff',
@@ -68,6 +95,14 @@ function createWindow() {
     e.preventDefault();
     if (/^(https?|mailto|tel):/i.test(url)) shell.openExternal(url);
   });
+
+  // zoom that fits this screen (or the cashier's own choice), set again after every page load (the launcher, the shop, the offline screen)
+  win.webContents.on('did-finish-load', applyZoom);
+  win.webContents.on('dom-ready', applyZoom);
+  // a frozen page: wait 6 s, then reload it instead of leaving the cashier with a dead window
+  let hangTimer = null;
+  win.on('unresponsive', () => { clearTimeout(hangTimer); hangTimer = setTimeout(() => { try { if (!win.isDestroyed()) win.webContents.reload(); } catch (err) { /* closing */ } }, 6000); });
+  win.on('responsive', () => { clearTimeout(hangTimer); });
 
   // The shop's page could not be loaded at all (no internet on the very first open, DNS, server down): show the app's own
   // "Can't reach your shop" screen, which keeps trying and opens the shop by itself, instead of a blank error page.
@@ -182,7 +217,18 @@ else {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: 'App', submenu: [{ role: 'reload', label: 'Reload' }, { role: 'toggleDevTools', visible: false }, { type: 'separator' }, { role: 'quit' }] },
       { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
-      { label: 'View', submenu: [{ role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'resetZoom' }, { role: 'togglefullscreen' }] },
+      { label: 'View', submenu: [
+        { label: 'Zoom in', accelerator: 'CmdOrCtrl+=', click: () => stepZoom(0.05) },
+        { label: 'Zoom in (numpad)', accelerator: 'CmdOrCtrl+numadd', visible: false, click: () => stepZoom(0.05) },
+        { label: 'Zoom out', accelerator: 'CmdOrCtrl+-', click: () => stepZoom(-0.05) },
+        { label: 'Zoom out (numpad)', accelerator: 'CmdOrCtrl+numsub', visible: false, click: () => stepZoom(-0.05) },
+        { label: 'Fit to this screen', accelerator: 'CmdOrCtrl+0', click: () => stepZoom(0) },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+        { type: 'separator' },
+        { label: 'Safe graphics (use if the app freezes) — restarts the app', type: 'checkbox', checked: !!readConfig().safeGraphics,
+          click: (item) => { const c = readConfig(); c.safeGraphics = item.checked; writeConfig(c); app.relaunch(); app.quit(); } },
+      ] },
     ]));
     createWindow();
   });

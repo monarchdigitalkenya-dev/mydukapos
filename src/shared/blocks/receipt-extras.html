@@ -661,19 +661,21 @@
             posCkRaf = 0;
             try {
                 var p = document.querySelector('.pos-checkout'); if (!p) return;
-                var tab = document.getElementById('sales-tab');
-                if (window.innerWidth <= 900 || (tab && !tab.classList.contains('active'))) { p.style.maxHeight = ''; return; }
-                p.style.maxHeight = '';
-                var top = p.getBoundingClientRect().top;
-                var room = innerHeight - Math.max(top, 8) - 10; if (room < 560) room = innerHeight - 18;   /* card sits low on the page (e.g. under the products): size it for when it is scrolled into view */
-                var maxH = Math.max(room, 420); p.style.maxHeight = maxH + 'px';
+                var tab = document.getElementById('sales-tab'), grid = tab && tab.querySelector('.pos-grid');
+                if (window.innerWidth <= 900 || !tab || !grid || !tab.classList.contains('active')) { p.style.maxHeight = ''; if (tab) tab.style.removeProperty('--pos-h'); return; }
+                /* zip 176: on a desktop the product card and the checkout card are the SAME height — exactly what is left of the screen below the
+                   header — so the product grid and the cart list use all the room (no big blank area under them) and scroll inside their cards */
+                var gtop = grid.getBoundingClientRect().top + (window.pageYOffset || 0);
+                var maxH = Math.max(Math.round(innerHeight - gtop - 14), 500);
+                tab.style.setProperty('--pos-h', maxH + 'px');
+                p.style.maxHeight = maxH + 'px';
                 /* the payment details take what is left after the header, a minimum cart list and the total / methods / Confirm; they scroll inside */
                 var wrap = p.querySelector('#cart-sticky-bar > .pos-pay-details'), cart = p.querySelector('.pos-cart-scroll'), bar = document.getElementById('cart-sticky-bar');
                 if (wrap && cart && bar) {
                     wrap.style.maxHeight = '';
                     var topH = cart.getBoundingClientRect().top - p.getBoundingClientRect().top;
-                    var barOther = bar.offsetHeight - wrap.offsetHeight + 12;
-                    var avail = maxH - topH - 130 - barOther;
+                    var barOther = bar.offsetHeight - wrap.offsetHeight + 28;   /* + the card's bottom padding */
+                    var avail = maxH - topH - (innerHeight < 860 ? 80 : innerHeight < 1000 ? 110 : 170) - barOther;   /* room kept for the cart list */
                     wrap.style.maxHeight = Math.max(avail, 90) + 'px';
                 }
             } catch (e) { /* cosmetic */ }
@@ -707,11 +709,25 @@
                         var h3 = panel.querySelector(':scope > h3');
                         if (h3) { h3.insertAdjacentHTML('beforeend', ' <span id="pos-ck-count" class="pos-ck-count"></span>'); }
                         var tb = document.getElementById('cart-table');
+                        /* zip 176: the product card — hint + "Sell Unlisted Item" become one footer row under the grid, so the grid can fill the card */
+                        var ig = document.getElementById('item-image-grid'), lp = ig && ig.parentNode;
+                        if (lp && lp.classList && lp.classList.contains('panel') && !lp.classList.contains('pos-products')) {
+                            lp.classList.add('pos-products');
+                            var foot = document.createElement('div'), hint = null, btns = []; foot.className = 'pos-left-foot';
+                            Array.prototype.slice.call(lp.children).forEach(function (k) {
+                                if (k.tagName === 'P' && /Click a matching product/i.test(k.textContent)) hint = k;
+                                else if (k.tagName === 'BUTTON' && k.classList.contains('settings-small-btn')) btns.push(k);
+                            });
+                            if (hint) foot.appendChild(hint);
+                            btns.forEach(function (k) { foot.appendChild(k); });
+                            if (foot.children.length) lp.appendChild(foot);
+                        }
                         var upd = function () {
                             try {
                                 var n = 0, q = 0; var rows = tb.querySelectorAll('tbody tr');
                                 rows.forEach(function (r) { if (r.querySelector('.empty-state') || r.classList.contains('cart-empty-row')) return; n++; var qi = r.querySelector('input[type=number]'); q += qi ? (parseFloat(qi.value) || 0) : 1; });
                                 var c = document.getElementById('pos-ck-count'); if (c) c.textContent = n ? n + (n === 1 ? ' item' : ' items') : '';
+                                panel.classList.toggle('pos-cart-empty', !n);
                             } catch (e) { /* cosmetic */ }
                             posCkFit();
                         };
@@ -725,7 +741,7 @@
                 var bar = document.getElementById('cart-sticky-bar');
                 if (bar && window.ResizeObserver) new ResizeObserver(posSyncCartBarOffset).observe(bar);
                 window.addEventListener('resize', posSyncCartBarOffset); window.addEventListener('scroll', posSyncCartBarOffset, { passive: true });
-                document.addEventListener('click', function () { setTimeout(posSyncCartBarOffset, 60); }, true);
+                document.addEventListener('click', function () { setTimeout(posSyncCartBarOffset, 60); setTimeout(posCkFit, 120); }, true);   /* zip 176: ▲ Hide / ▼ Show changes how tall the workspace can be */
             };
             if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(go, 300); }); else setTimeout(go, 300);
         } catch (e) { /* cosmetic */ }
@@ -738,7 +754,7 @@
         @media (max-width: 900px) { #cart-sticky-bar .pos-pay-details { max-height: 27vh; } #cart-sticky-bar .pos-pay-details .settings-hint { display: none; } }
         /* zip 168: one checkout card (desktop) */
         @media (min-width: 901px) {
-            .pos-checkout { position: sticky; top: 8px; align-self: start; display: flex; flex-direction: column; overflow: hidden; }
+            .pos-checkout { position: sticky; top: 8px; align-self: start; display: flex; flex-direction: column; overflow: hidden; height: var(--pos-h, auto); }
             .pos-checkout > * { flex: 0 0 auto; }
             .pos-checkout > .pos-cart-scroll { flex: 1 1 auto; min-height: 120px; overflow-y: auto; border: 1px solid var(--border-color, #e5e9ec); border-radius: 10px; }
             .pos-checkout > .pos-cart-scroll thead th { position: sticky; top: 0; z-index: 2; background: var(--bg-surface-alt, #f4f6f7); }
@@ -746,14 +762,25 @@
             .pos-checkout #cart-sticky-bar .pos-pay-details { flex: 0 0 auto; }
         }
         #cart-sticky-bar { display: flex; flex-direction: column; flex-wrap: nowrap; }
-        @media (min-width: 1280px) {
-            .pos-checkout #cart-sticky-bar .pos-pay-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; align-items: start; }
-            .pos-checkout #cart-sticky-bar .pos-pay-details > .bill-payment-panel, .pos-checkout #cart-sticky-bar .pos-pay-details > #receiving-account-group { grid-column: 1 / -1; }
-            .pos-checkout #cart-sticky-bar .pos-pay-details > .form-group, .pos-checkout #cart-sticky-bar .pos-pay-details > div { margin-top: 0 !important; margin-bottom: 0; }
-            .pos-checkout #cart-sticky-bar .pos-pay-details .mpesa-prompt-panel { padding: 8px 10px; }
+        /* zip 176: payment details use the full width of the card — 6 columns: phone + cash/card side by side; split, M-Pesa and bill take a whole row */
+        @media (min-width: 1100px) {
+            .pos-checkout #cart-sticky-bar .pos-pay-details { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px 14px; align-items: start; }
+            .pos-checkout #cart-sticky-bar .pos-pay-details > * { grid-column: 1 / -1; min-width: 0; margin-top: 0 !important; margin-bottom: 0; }
+            .pos-checkout #cart-sticky-bar .pos-pay-details > .form-group, .pos-checkout #cart-sticky-bar .pos-pay-details > #cash-payment-panel, .pos-checkout #cart-sticky-bar .pos-pay-details > #card-payment-panel { grid-column: span 3; }
+            .pos-checkout:has(#pay-split-btn.active) #cart-sticky-bar .pos-pay-details > .form-group { grid-column: span 2; }
+            .pos-checkout #cart-sticky-bar .pos-pay-details:has(> .form-group) > #split-payment-panel { grid-column: span 4; }
+            .pos-checkout:has(#pay-mpesa-btn.active) #cart-sticky-bar .pos-pay-details > .form-group,
+            .pos-checkout:has(#pay-bill-btn.active) #cart-sticky-bar .pos-pay-details > .form-group { grid-column: 1 / -1; }
+            .pos-checkout #cart-sticky-bar .pos-pay-details > #receiving-account-group, .pos-checkout #cart-sticky-bar .pos-pay-details > #receiving-account-wrap { grid-column: 1 / -1; }
+            .pos-checkout #cart-sticky-bar .pos-pay-details .mpesa-prompt-panel { padding: 10px 12px; }
+            .pos-checkout #cart-sticky-bar #split-payment-panel.show { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 2px 14px; align-items: end; padding: 10px 12px; }
+            .pos-checkout #cart-sticky-bar #split-payment-panel.show > .split-amounts-row { grid-column: 1; grid-row: 1 / span 2; }
+            .pos-checkout #cart-sticky-bar #split-payment-panel.show > label { grid-column: 2; grid-row: 1; margin: 0 !important; font-size: 11px; line-height: 1.2; }
+            .pos-checkout #cart-sticky-bar #split-payment-panel.show > #split-cash-tendered-input { grid-column: 2; grid-row: 2; margin: 0; }
+            .pos-checkout #cart-sticky-bar #split-payment-panel.show > .split-balance-line, .pos-checkout #cart-sticky-bar #split-payment-panel.show > .change-due-line { grid-column: 1 / -1; margin-top: 4px; min-height: 0; }
         }
-        @media (min-width: 1280px) {
-            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 8px; align-items: end; }
+        @media (min-width: 1100px) {
+            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px 12px; align-items: end; }
             .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > * { margin: 0 !important; min-width: 0; }
             .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > #mpesa-status-line { grid-column: 1 / -1; order: 3; min-height: 0; }
             .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > #mpesa-phone-input { order: 1; }
@@ -762,12 +789,23 @@
             .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > label:has(+ #mpesa-code-input) { order: 5; }
             .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > #mpesa-payer-name-input { order: 6; width: 100%; }
             .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > #mpesa-code-input { order: 7; width: 100%; }
-            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > input { height: 34px; box-sizing: border-box; padding: 4px 8px; font-size: 13px; border-radius: 8px; }
+            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > input { height: 38px; box-sizing: border-box; padding: 4px 10px; font-size: 13px; border-radius: 10px; border: 1.5px solid var(--border-color, #dfe4ea); }
             .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > p { display: none; }
             .pos-checkout > h3 { margin-bottom: 8px; padding-bottom: 6px; }
             .pos-checkout > #sales-location-group { margin-bottom: 4px; }
             .pos-checkout > #sales-location-group > .label { font-size: 11px; margin: 0 0 2px; }
             .pos-checkout > #held-sale-bar { margin: 0 0 6px; }
+        }
+        /* wide card: the M-Pesa prompt is ONE row — phone | payer | code | Send (the placeholders name the fields) */
+        .pos-checkout #cart-sticky-bar .pos-pay-details { container-type: inline-size; }
+        @container (min-width: 760px) {
+            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr) auto; }
+            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > label { display: none; }
+            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > #mpesa-phone-input { order: 1; }
+            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > #mpesa-payer-name-input { order: 2; }
+            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > #mpesa-code-input { order: 3; }
+            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > #mpesa-send-btn { order: 4; width: auto; height: 38px; padding: 0 16px; white-space: nowrap; }
+            .pos-checkout #cart-sticky-bar .mpesa-prompt-panel.show > #mpesa-status-line { order: 5; }
         }
         .pos-ck-count { font-size: 12px; font-weight: 700; color: #7f8c8d; background: var(--bg-surface-alt, #eef1f3); border-radius: 999px; padding: 2px 9px; vertical-align: middle; margin-left: 6px; }
         .pos-checkout .pos-cart-scroll table td { padding-top: 6px; padding-bottom: 6px; }
@@ -779,6 +817,63 @@
         #cart-sticky-bar .payment-toggle { max-width: none; flex-wrap: wrap; gap: 6px; }
         #cart-sticky-bar .payment-toggle button { flex: 1 1 auto; min-width: 0; padding: 9px 4px; font-size: 12.5px; white-space: nowrap; }
         #cart-sticky-bar #main-checkout-btn, #cart-sticky-bar #add-order-to-tab-btn { width: 100%; min-height: 46px; font-size: 16px; margin: 0; }
+        /* ===== zip 176: Sales Counter workspace — fills the screen, cleaner and more professional ===== */
+        #sales-tab.tab-content { padding: 16px 20px 18px; }
+        #sales-tab .pos-grid { gap: 18px; }
+        @media (min-width: 901px) {
+            #sales-tab .pos-grid { grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); }
+            #sales-tab .pos-products { position: sticky; top: 8px; align-self: start; display: flex; flex-direction: column; height: var(--pos-h, auto); overflow-x: hidden; overflow-y: auto; }
+            #sales-tab .pos-products > * { flex: 0 0 auto; }
+            #sales-tab .pos-products > #item-image-grid { flex: 1 1 auto; min-height: 150px; max-height: none; align-content: start; order: 8; }
+            #sales-tab .pos-products > .pos-left-foot { order: 9; }
+        }
+        #sales-tab .pos-grid > .panel, #sales-tab #sales-cart-slot > .panel { border-radius: 16px; border: 1px solid var(--border-color, #e5e9ec); box-shadow: 0 4px 18px rgba(16, 24, 40, .06); padding: 16px 18px; }
+        #sales-tab .pos-grid > .panel > h3, #sales-tab #sales-cart-slot > .panel > h3 { display: flex; align-items: center; gap: 9px; font-size: 17px; margin-bottom: 12px; padding-bottom: 10px; }
+        #sales-tab .pos-grid > .panel > h3::before, #sales-tab #sales-cart-slot > .panel > h3::before { content: ''; flex: 0 0 5px; height: 20px; border-radius: 3px; background: var(--accent, #2980b9); }
+        .pos-ck-count { margin-left: auto !important; }
+        .pos-checkout #cart-sticky-bar .split-amounts-row .form-group label { font-size: 12px; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #sales-tab #sales-search, #sales-tab #universal-search { height: 46px; border-radius: 12px; font-size: 15px; padding: 0 14px; border: 1.5px solid var(--border-color, #dfe4ea); background: var(--bg-surface-alt, #f7f9fa); transition: border-color .12s, box-shadow .12s, background .12s; box-sizing: border-box; }
+        #sales-tab #sales-search:focus, #sales-tab #universal-search:focus { outline: none; background: var(--bg-surface, #fff); border-color: var(--accent, #2980b9); box-shadow: 0 0 0 3px rgba(41, 128, 185, .16); }
+        #sales-tab .search-container .settings-small-btn { border-radius: 12px; min-width: 48px; }
+        #sales-tab #item-image-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); grid-auto-rows: max-content; gap: 12px; margin-top: 8px; padding: 12px 6px 6px 2px; overscroll-behavior: contain; }
+        #sales-tab .item-grid-cell { border-radius: 14px; background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e3e8ec); box-shadow: 0 1px 3px rgba(16, 24, 40, .06); transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease; }
+        #sales-tab .item-grid-cell:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(16, 24, 40, .13); border-color: var(--accent, #2980b9); }
+        #sales-tab .item-grid-cell:active { transform: scale(.97); }
+        #sales-tab .item-grid-cell img, #sales-tab .item-grid-cell .igc-noimg { aspect-ratio: 4 / 3; }
+        #sales-tab .item-grid-cell .igc-noimg { font-size: 30px; background: linear-gradient(135deg, var(--icon-muted-bg, #eef1f4), var(--bg-surface-alt, #f6f8fa)); }
+        #sales-tab .item-grid-cell .igc-name { box-sizing: content-box; font-size: 13px; font-weight: 700; line-height: 1.25; padding: 8px 10px 0; min-height: 2.5em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        #sales-tab .item-grid-cell .igc-price { font-size: 12.5px; font-weight: 800; color: var(--success, #27ae60); padding: 3px 10px 10px; }
+        #sales-tab .item-grid-cell .igc-price.igc-out { color: #e74c3c; }
+        #sales-tab .pos-left-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--light, #eef1f3); }
+        #sales-tab .pos-left-foot > p { flex: 1 1 200px; margin: 0 !important; font-size: 12px !important; }
+        @media (min-width: 901px) { #sales-tab .pos-left-foot > p { display: none; } #sales-tab .pos-left-foot { justify-content: flex-end; } }   /* the hint is obvious on a desktop, and the on-screen keyboard button sits there */
+        #sales-tab .pos-left-foot > button { margin: 0 !important; border-radius: 10px; }
+        /* the cart list */
+        .pos-checkout .pos-cart-scroll { border-radius: 12px; background: var(--bg-surface, #fff); }
+        .pos-checkout .pos-cart-scroll thead th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: #7f8c8d; padding: 9px 12px; }
+        .pos-checkout .pos-cart-scroll table td { padding: 8px 12px; }
+        .pos-checkout .pos-cart-scroll tbody tr:hover { background: var(--bg-surface-alt, #f6f8fa); }
+        .pos-checkout .pos-cart-scroll td.empty-state { padding: clamp(24px, 9vh, 90px) 16px; text-align: center; color: #95a5a6; font-size: 15px; }
+        .pos-checkout .pos-cart-scroll td.empty-state::before { content: '🛒'; display: block; font-size: 44px; opacity: .5; margin-bottom: 6px; }
+        /* total, payment methods, Confirm */
+        #cart-sticky-bar .grand-total { align-items: center; padding: 10px 14px; border-radius: 12px; background: rgba(39, 174, 96, .10); border: 1px solid rgba(39, 174, 96, .25); font-size: 26px; }
+        #cart-sticky-bar .payment-toggle button { padding: 11px 4px; font-size: 13px; font-weight: 700; border-radius: 10px; }
+        #cart-sticky-bar #main-checkout-btn { min-height: 52px; font-size: 17px; font-weight: 800; border-radius: 14px; background-image: linear-gradient(180deg, rgba(255, 255, 255, .20), rgba(0, 0, 0, .08)) !important; box-shadow: 0 8px 18px rgba(41, 128, 185, .32); }
+        #cart-sticky-bar #main-checkout-btn:active { transform: translateY(1px); box-shadow: 0 3px 8px rgba(41, 128, 185, .3); }
+        /* short screens (laptops, 768-820 px high): tighter spacing so the cart, the total and Confirm all stay on screen */
+        @media (min-width: 901px) and (max-height: 860px) {
+            #sales-tab.tab-content { padding-top: 10px; padding-bottom: 12px; }
+            #sales-tab .pos-grid > .panel, #sales-tab #sales-cart-slot > .panel { padding: 12px 14px; }
+            #sales-tab .pos-grid > .panel > h3, #sales-tab #sales-cart-slot > .panel > h3 { font-size: 15px; margin-bottom: 8px; padding-bottom: 7px; }
+            .pos-checkout > .pos-cart-scroll { min-height: 70px; }
+            .pos-checkout .order-type-toggle button { padding-top: 6px; padding-bottom: 6px; }
+            .pos-checkout > #sales-location-group select { height: 34px; padding-top: 4px; padding-bottom: 4px; }
+            .pos-checkout .pos-cart-scroll table td { padding-top: 5px; padding-bottom: 5px; }
+            #cart-sticky-bar { gap: 6px; padding-top: 8px; padding-bottom: 8px; }
+            #cart-sticky-bar .grand-total { font-size: 21px; padding: 6px 12px; }
+            #cart-sticky-bar .payment-toggle button { padding-top: 8px; padding-bottom: 8px; }
+            #cart-sticky-bar #main-checkout-btn { min-height: 44px; font-size: 16px; }
+        }
         @media (max-width: 900px) {
             .scroll-to-top-btn, .mobile-cart-fab, #floating-kb-toggle { bottom: calc(var(--cartbar-h, 0px) + 14px) !important; }
             #sales-tab input, #sales-tab select { font-size: 16px; }
