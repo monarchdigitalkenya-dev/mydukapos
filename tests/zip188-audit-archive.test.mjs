@@ -90,11 +90,11 @@ test('D5: owner tool: dry run changes nothing; --run archives, verifies the file
   assert.ok(parseArgs(['--days', '0']).errors.length && parseArgs(['--nope']).errors.length && parseArgs(['--db', 'x;drop']).errors.length);
 });
 
-test('D6: router cron calls auditMaintenance; toml has the R2 block commented; cmd + docs mention the monthly flow', () => {
+test('D6: router cron calls auditMaintenance; toml binds the R2 archive; cmd + docs mention the monthly flow', () => {
   const w = fs.readFileSync('wildcard-router/worker.js', 'utf8');
-  assert.match(w, /auditMaintenance\(env\)/);
+  assert.match(w, /auditMaintenance\(env\b/);
   const t = fs.readFileSync('wildcard-router/wrangler.toml', 'utf8');
-  assert.match(t, /^# binding = "AUDIT_ARCHIVE"/m); assert.doesNotMatch(t, /^binding = "AUDIT_ARCHIVE"/m);
+  assert.match(t, /^binding = "AUDIT_ARCHIVE"/m, 'zip 198: the R2 archive bucket is bound now');
   assert.ok(fs.existsSync('tools/audit-monthly.cmd'));
 });
 

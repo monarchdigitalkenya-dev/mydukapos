@@ -2,6 +2,30 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 201
+- **Stock scenarios tested end to end** (refresh after a sale / restock, offline then online, two devices at once, repeated syncs, manual edits): stock never reverts to old values and never adds itself. 7 new scenarios in `tests/zip201-stock-scenarios.test.mjs`.
+- Deleted **expenses, trade credits and saved barcodes** now stay deleted on every device (tombstones sent, and other tills drop them on their next sync).
+- **Expired pharmacy batches** are sold last (only when nothing in date is left), never first.
+- **Variants of kg / litre items** keep decimal stock (it was cut to whole numbers).
+- **Customers:** 0712..., +254712... and 254712... are one customer (no duplicate by phone format).
+- Hotel "My Sales": a staff member now sees everyone's totals (it showed only the first server's).
+- Hospital guide lists its Dashboard tab; CSS viewport units are zoom-compensated in the branch switcher, category tiles, phone till and stock report.
+- Tests brought up to date: phone till (Collect step), sales-for-everyone, owner wording, pairing-free QR ordering, R2 binding, legacy bill repair timing.
+- Still deferred (needs a design decision): two devices restocking the same pharmacy item with different expiries (quantity stays correct; the second expiry lands on a "Stock adjustment" batch); duplicate customers created offline on two devices with different spellings of the number are not merged automatically.
+
+## Zip 200
+- **Phone payment in three short screens (phones only):** Collect > only the payment methods the shop switched on, as big buttons > just the boxes that method needs (cash tendered is optional in Hotel) > Confirm. Computers and tablets are unchanged. A shop with one method skips the method screen; pay-on-delivery skips both.
+- Audit fixes: variant restock now updates cost and price; restocking a parent that has variants no longer logs a phantom expense; Pharmacy void/return puts units back into a batch; a bill instalment cannot be voided as a plain sale; a held delivery sale resumes as delivery; delivery fee is included in X/Z and Reports totals; adding an item with a code that already belongs to another item now asks before replacing it.
+- Not fixed (deferred, risky): concurrent Pharmacy restock batch-expiry merge, deleted expenses/trade credits coming back, duplicate customers created offline, variant kg decimals truncated, expired batch sold first.
+
+## Zip 199
+- **Global branch switcher** (owner only, every app): a "🏪 Branch ▾" pill in the header lists the branch group. Choosing another branch confirms it by name, saves what the device still has to send, then opens that branch on the same screen (same tab). "All branches" is the existing read-only combined view; "Back to this branch" returns. Staff and single-shop owners never see it. Each branch stays its own shop (own address, stock, sales, staff), so a restock, stock take or sale cannot land in another branch. New block `src/shared/blocks/branch-switcher.html`; tests `tests/zip199-branch-switcher.test.mjs`.
+
+## Zip 198
+- Complete package: both `wrangler.toml` files carry the R2 (AUDIT_ARCHIVE, DB_BACKUPS) and owner/audit D1 bindings.
+- Stock sync while a device is "stuck": the server's already-processed movements are stamped so they are never counted twice (found by the multi-device stress test, now passing).
+- New tests `tests/zip195-sync.test.mjs`; updated the old pairing-era connectivity and sales-journal tests.
+
 ## Zip 196
 - **Deploy fix**: `npm run deploy:fast` / `deploy` now publish from a clean temporary copy (`tools/deploy-pages.mjs`) that leaves out `native/windows/dist` (installers), `node_modules`, `.git`, zips and any file over 24 MiB. Fixes "Pages only supports files up to 25 MiB" after building the exe.
 - wrangler updated to v4 (root and wildcard-router package.json).

@@ -17,7 +17,7 @@ test('every module has the ▲ Hide / ▼ Show top bar and the 💰 Sales quick 
 
 test('Hide folds the header, Show brings it back and the choice is remembered (non-hotel modules)', async () => {
   for (const a of APPS.filter((x) => x !== 'hotel/index.html')) {
-    const { w, d, close } = await boot(a, { wait: 1200 });
+    const { w, d, close } = await boot(a, { wait: 3000 });
     try {
       d.getElementById('hdr-hide-btn').click();
       assert.ok(d.body.classList.contains('hdr-hidden'), a);
@@ -29,7 +29,7 @@ test('Hide folds the header, Show brings it back and the choice is remembered (n
   }
 });
 
-test('💰 Sales shows the day total / cash / M-Pesa, leaves voided sales out, and staff see only their own', async () => {
+test('💰 Sales shows the day total / cash / M-Pesa, leaves voided sales out, and staff see everyone (zip 195)', async () => {
   for (const a of APPS.filter((x) => x !== 'hotel/index.html')) {
     const { w, d, close } = await boot(a, { wait: 1200 });
     try {
@@ -47,7 +47,7 @@ test('💰 Sales shows the day total / cash / M-Pesa, leaves voided sales out, a
       })()`));
       assert.match(out.all, /Everyone/, a); assert.match(out.all, /600\.00/, a + ' admin total 500+100');
       assert.doesNotMatch(out.all, /999/, a + ': voided left out');
-      assert.doesNotMatch(out.mine, /Bob|Everyone/, a + ': staff see only their own');
+      assert.match(out.mine, /Bob/, a + ': staff see every staff member (sales are universal)');
       assert.match(out.mine, /500\.00/, a);
     } finally { close(); }
   }

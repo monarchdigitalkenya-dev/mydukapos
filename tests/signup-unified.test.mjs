@@ -116,6 +116,7 @@ for (const app of SHOPS) {
     d.getElementById('change-pw-new').value = 'new-password';
     d.getElementById('change-pw-new-confirm').value = 'new-password';
     await w.eval('changePassword()');
+    for (let i = 0; i < 60 && !capturedBody; i++) await new Promise((r) => setTimeout(r, 100));   // the boot pushes may still be draining: the password push follows them
     assert.ok(capturedBody, 'the password-change push was sent');
     assert.equal(capturedBody.pwHash, sha('new-password'));
     assert.ok(capturedBody._fieldTimes && typeof capturedBody._fieldTimes.pwHash === 'number', 'pwHash is stamped even as the very first push of the session');

@@ -46,6 +46,7 @@ test('first tap counts even when the screen redraws under the finger — and nev
     for (const redraw of ['none', 'pointerdown', 'mousedown', 'price-box']) {
       const { ctx, page } = await open(browser, base);
       await page.evaluate(() => addToCart('A1')); await page.waitForTimeout(200);
+      if (await page.locator('.ptl-bar.on').count()) { await page.locator('.ptl-bar.on').first().tap(); await page.waitForTimeout(300); }   // phone: the cart is a sheet - open it first, as a person does
       if (redraw === 'price-box') {                                                   // typing a price, then tapping + (the box's blur redraws the cart)
         await page.evaluate(() => { window.selectCartPriceOption(Object.keys(currentCart)[0], 'custom'); });   // zip 180: the price menu's Custom entry opens the box
         await page.locator('input[id^="cart-custom-price-input-"]').first().tap(); await page.waitForTimeout(150);

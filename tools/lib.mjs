@@ -112,6 +112,8 @@ export const SHARED_BLOCKS = {
   'form-controls': { startMarker: '<!-- FORM CONTROLS', owner: true },   // zip 186: ONE bigger, modern look for every text box / select / textarea; its <style> is the last thing before </body> so it wins the cascade
   'print-white': { startMarker: '<!-- PRINT WHITE' },   // zip 192: receipts and tickets print black on white in every theme (the Windows app prints backgrounds)
   'phone-till': { startMarker: '<!-- PHONE TILL' },
+  'branch-switcher': { startMarker: '<!-- BRANCH SWITCHER' },   // zip 199: the owner's global branch switcher in the header (opens the other branch on the same screen; All branches = read-only)
+  'phone-pay-steps': { startMarker: '<!-- PHONE PAY STEPS' },   // zip 200: phone only - Collect, then the shop's payment methods, then that method's boxes, then Confirm
   'category-tiles': { startMarker: '<!-- CATEGORY TILES' },
   'stock-report-edit': { startMarker: '<!-- STOCK REPORT EDIT' },
   // Orders tab (purchase orders) sits next to Restock. Water's Restocking tab is a different design

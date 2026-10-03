@@ -89,14 +89,13 @@ test('rate limit: one code cannot flood the kitchen', async () => {
   assert.equal(last.status, 429);
 });
 
-test('staff actions need a paired device when the shop requires it; customers still order', async () => {
+test('device pairing is no longer required (zip 194): a stored "paired" mode is ignored, staff actions and customers both work', async () => {
   const { kv: kv0, t12, env: env0 } = await shop();
-  const kv = makeKV(); for (const [k, v] of kv0.data) kv.data.set(k, v);      // a fresh store (the pairing setting is cached per store)
+  const kv = makeKV(); for (const [k, v] of kv0.data) kv.data.set(k, v);
   kv.data.set('device-auth:C1', { value: JSON.stringify({ mode: 'paired', devices: {} }) });
   const env = { mydukapos_kv: kv, LEDGER_DB: env0.LEDGER_DB };
-  assert.equal((await call(env, 'C1', { action: 'list' })).status, 401);
-  assert.equal((await call(env, 'C1', { action: 'create', kind: 'table', label: 'Table 99' })).status, 401);
-  assert.equal((await call(env, 'C1', { action: 'publishMenu', menu: { items: [{ code: 'X', name: 'Free', price: 0 }] } })).status, 401, 'nobody can rewrite prices from outside');
+  assert.notEqual((await call(env, 'C1', { action: 'list' })).status, 401);
+  assert.notEqual((await call(env, 'C1', { action: 'create', kind: 'table', label: 'Table 99' })).status, 401);
   assert.equal((await call(env, 'C1', { action: 'order', t: t12, key: 'k-paired-0001', items: [{ code: 'TSK', qty: 1 }] })).status, 200);
 });
 

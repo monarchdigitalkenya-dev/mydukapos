@@ -1,0 +1,143 @@
+<!-- PHONE PAY STEPS ------------------------------------------------------------------------------------------------------------------------
+         zip 200. Taking payment on a PHONE (max-width 700 px) in three short screens, with no scrolling to find the payment buttons. A computer / tablet is
+         drawn exactly as before.
+           1. CART      - the cart sheet as it was, but the pinned button says "Collect ›" and the payment buttons / boxes are out of the way.
+           2. METHOD    - tapping Collect shows ONLY the payment methods this shop has switched on, as big buttons, under the amount to collect. One tap picks it.
+                          (A shop with one method skips this screen; a Pay-on-Delivery order skips both.)
+           3. DETAILS   - only what that method needs: Cash -> amount handed over (change is shown; optional where the app allows it, e.g. Hotel), M-Pesa ->
+                          phone / code, Card -> reference, Split -> the amounts, Bill -> the bill fields. The total and Confirm stay pinned at the bottom.
+         Nothing about the sale changes: the real payment buttons, boxes and the real Confirm button are used (they are only restyled / moved on screen), so every
+         rule, validation, receipt and sync works exactly as before. If anything here fails it switches itself off and the normal cart sheet is shown. -->
+<style id="phone-pay-steps-css">
+    #pps-head { display: none; }
+    @media (max-width: 700px) {
+        /* ---- step 1: payment boxes wait; the pinned button reads "Collect" ---- */
+        html.ptl-sheet-open.pps-s1 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #payment-toggle,
+        html.ptl-sheet-open.pps-s1 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > .pos-pay-details { display: none !important; }
+        html.ptl-sheet-open.pps-s1 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #main-checkout-btn { font-size: 0 !important; }
+        html.ptl-sheet-open.pps-s1 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #main-checkout-btn::before { content: 'Collect  \203A'; font-size: 18px; font-weight: 800; letter-spacing: .01em; }
+
+        /* ---- steps 2 and 3: only the payment screen is on the sheet ---- */
+        html.ptl-sheet-open.pps-s2 #sales-tab .ptl-cart.ptl-open > *:not(#cart-sticky-bar),
+        html.ptl-sheet-open.pps-s3 #sales-tab .ptl-cart.ptl-open > *:not(#cart-sticky-bar) { display: none !important; }
+        html.ptl-sheet-open.pps-s2 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > *:not(#pps-head):not(#payment-toggle),
+        html.ptl-sheet-open.pps-s3 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > *:not(#pps-head):not(.pos-pay-details):not(#cart-grand-total):not(#main-checkout-btn) { display: none !important; }
+        html.ptl-sheet-open.pps-s2 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #cart-grand-total,
+        html.ptl-sheet-open.pps-s2 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #main-checkout-btn { display: none !important; }
+        html.pps-s2 #pps-head, html.pps-s3 #pps-head { display: block; order: 1 !important; flex: 0 0 100% !important; position: sticky; top: 0; z-index: 30; margin: 0 -12px; padding: 10px 12px 12px;
+            background: var(--bg-surface, #fff); border-bottom: 1px solid var(--border-color, #dfe6e9); }
+        #pps-head .pps-row { display: flex; align-items: center; gap: 10px; }
+        #pps-head .pps-back { flex: 0 0 auto; min-height: 44px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--bg-surface-alt, #f1f3f5); color: inherit; font-size: 15px; font-weight: 700; }
+        #pps-head .pps-edit { flex: 0 0 auto; min-height: 44px; padding: 0 12px; border: 0; background: transparent; color: var(--accent, #3498db); font-size: 14px; font-weight: 700; text-decoration: underline; }
+        #pps-head .pps-title { flex: 1 1 auto; min-width: 0; font-size: 16px; font-weight: 700; line-height: 1.25; }
+        #pps-head .pps-sub { display: block; font-size: 12px; font-weight: 500; opacity: .65; }
+        #pps-head .pps-amount { margin-top: 8px; padding: 12px; border-radius: 14px; background: var(--tint-info-bg, #eaf4fb); text-align: center; font-size: 28px; font-weight: 900; letter-spacing: .01em; }
+        #pps-head .pps-amount small { display: block; font-size: 12px; font-weight: 600; opacity: .65; letter-spacing: .04em; text-transform: uppercase; }
+        /* the method buttons: big, one per row */
+        html.ptl-sheet-open.pps-s2 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #payment-toggle { order: 5; display: flex !important; flex-direction: column; flex-wrap: nowrap; gap: 12px; margin: 16px 0 24px; }
+        html.ptl-sheet-open.pps-s2 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #payment-toggle button { flex: 0 0 auto; width: 100%; min-height: 68px; padding: 14px 18px; border-radius: 16px; font-size: 20px; font-weight: 800; text-align: left; }
+        /* details: the chosen method's boxes, roomy */
+        html.ptl-sheet-open.pps-s3 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > .pos-pay-details { order: 5; margin: 14px 0 20px; }
+        html.ptl-sheet-open.pps-s3 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > .pos-pay-details input { min-height: 52px; font-size: 20px; }
+        html.ptl-sheet-open.pps-s3 #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > .pos-pay-details .settings-hint { display: block; }
+    }
+</style>
+<script>
+(function () {
+    'use strict';
+    var MQ = '(max-width: 700px)', html = document.documentElement, step = 0, head = null, lastSheet = false;
+    function $(id) { return document.getElementById(id); }
+    function phone() { return !!(window.matchMedia && window.matchMedia(MQ).matches); }
+    function ready() { return !!($('payment-toggle') && $('main-checkout-btn') && $('cart-sticky-bar')); }
+    // "available" is read from the app's own switches (inline display / hidden / disabled), never from what this block's own CSS is doing right now
+    function available(el) { return !!el && el.style.display !== 'none' && !el.hidden && !el.disabled; }
+    function methods() {
+        var t = $('payment-toggle'); if (!t || !available(t)) return [];
+        return Array.prototype.filter.call(t.querySelectorAll('button'), available);
+    }
+    function methodOf(btn) { var m = /^pay-([a-z]+)-btn$/.exec(btn && btn.id || ''); return m ? m[1] : ''; }
+    function activeMethod() { return methods().filter(function (b) { return b.classList.contains('active'); })[0] || null; }
+    function totalText() {
+        var el = $('cart-grand-total'), m = el && /KES\s*([\d,]+(?:\.\d+)?)/i.exec(el.textContent || '');
+        if (m) return 'KES ' + m[1];
+        try { var t = Number(cartTotal()); if (isFinite(t)) return 'KES ' + t.toFixed(2); } catch (e) { /* not shown */ }
+        return '';
+    }
+    function label(btn) { return btn ? String(btn.textContent || '').replace(/\s+/g, ' ').trim() : ''; }
+
+    function headEl() {
+        if (head && head.parentNode) return head;
+        var bar = $('cart-sticky-bar'); if (!bar) return null;
+        head = document.createElement('div'); head.id = 'pps-head';
+        head.innerHTML = '<div class="pps-row"><button type="button" class="pps-back" aria-label="Back">‹ Back</button><div class="pps-title"></div><button type="button" class="pps-edit" aria-label="Edit order">Edit order</button></div><div class="pps-amount"><small>Amount to collect</small><span class="pps-amt"></span></div>';
+        head.querySelector('.pps-back').addEventListener('click', back);
+        head.querySelector('.pps-edit').addEventListener('click', function () { setStep(1); });
+        bar.insertBefore(head, bar.firstChild);
+        return head;
+    }
+    function paintHead() {
+        var h = headEl(); if (!h) return;
+        var title = h.querySelector('.pps-title'), amt = h.querySelector('.pps-amt');
+        if (amt) amt.textContent = totalText();
+        if (!title) return;
+        if (step === 2) title.innerHTML = 'How is the customer paying?<span class="pps-sub">Tap one</span>';
+        else if (step === 3) title.innerHTML = esc(label(activeMethod()) || 'Payment') + '<span class="pps-sub">Fill in, then Confirm</span>';
+    }
+    function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+    function setStep(n) {
+        step = n;
+        html.classList.remove('pps-s1', 'pps-s2', 'pps-s3');
+        if (n) html.classList.add('pps-s' + n);
+        if (n >= 2) { paintHead(); try { var p = document.querySelector('#sales-tab .ptl-cart.ptl-open'); if (p) p.scrollTop = 0; } catch (e) { /* cosmetic */ } }
+    }
+    function off() { setStep(0); }
+    function choose(btn) {
+        var m = methodOf(btn);
+        try { if (m && typeof setPaymentMethod === 'function') setPaymentMethod(m); } catch (e) { /* the button's own handler already ran */ }
+        setStep(3);
+    }
+    function goPay() {
+        var ms = methods();
+        if (ms.length === 0) { setStep(0); return false; }              // pay-on-delivery / nothing to choose: the real Confirm runs straight away on the normal sheet
+        if (ms.length === 1) { choose(ms[0]); return true; }
+        setStep(2); return true;
+    }
+    function back() {
+        if (step === 3 && methods().length > 1) setStep(2); else setStep(1);
+    }
+
+    // the sheet opens -> step 1; it closes (sale done, Back, empty cart) -> everything returns to normal
+    function watch() {
+        var open = html.classList.contains('ptl-sheet-open');
+        if (open === lastSheet) return;
+        lastSheet = open;
+        if (open && phone() && ready()) setStep(1); else off();
+    }
+    try { new MutationObserver(watch).observe(html, { attributes: true, attributeFilter: ['class'] }); } catch (e) { /* the poll below does it */ }
+    setInterval(function () { try { watch(); if (step && !phone()) off(); if (step === 2 || step === 3) paintHead(); } catch (e) { off(); } }, 700);
+
+    // Collect (step 1): the pinned button moves on to the methods instead of confirming. Step 3: the same button is the real Confirm.
+    document.addEventListener('click', function (e) {
+        try {
+            var b = e.target && e.target.closest && e.target.closest('#main-checkout-btn');
+            if (!b || step !== 1) return;
+            e.preventDefault(); e.stopImmediatePropagation();
+            if (typeof cartTotal === 'function' && !(Number(cartTotal()) > 0) && !(typeof currentCart !== 'undefined' && currentCart && Object.keys(currentCart).length)) return;
+            if (!goPay()) {
+                try { b.click(); } catch (e2) { off(); }
+                setTimeout(function () { try { if (html.classList.contains('ptl-sheet-open') && phone() && ready() && !step) setStep(1); } catch (e3) { off(); } }, 400);   // a refused sale (a missing field) leaves the normal sheet, then Collect is back
+            }
+        } catch (err) { off(); }
+    }, true);
+    // a method button (step 2): its own handler selects the method first, then this moves to the details
+    document.addEventListener('click', function (e) {
+        try {
+            if (step !== 2) return;
+            var b = e.target && e.target.closest && e.target.closest('#payment-toggle button');
+            if (b) choose(b);
+        } catch (err) { off(); }
+    }, false);
+    window.phonePaySteps = { step: function () { return step; }, off: off };
+})();
+</script>

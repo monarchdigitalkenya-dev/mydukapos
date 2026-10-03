@@ -73,11 +73,14 @@ const CASES = [
   ['a delivery zone', 'deliveryZones', "removeDeliveryZone('X1')", 'X1'],
   ['a recurring expense', 'recurringExpenses', "removeRecurringExpense('X1')", 'X1'],
   ['an offer', 'offers', "deleteOffer('X1')", 'X1'],
+  ['an expense (zip 201)', 'expenses', "deleteExpense('X1')", 'X1'],
+  ['a trade credit (zip 201)', 'tradeCredits', "deleteTradeCredit('X1')", 'X1'],
+  ['a saved barcode (zip 201)', 'savedBarcodes', "deleteBarcode('X1')", 'X1'],
 ];
-const seedRecords = { bills: { id: 'X1', customerName: 'Ann', items: [{ code: '00001', name: 'Widget', qty: 1, price: 100 }], amountPaid: 0, timestamp: new Date().toISOString(), updatedAt: 1 }, debts: { id: 'X1', name: 'Debtor', amount: 5, payments: [], updatedAt: 1 }, suppliers: { id: 'X1', name: 'Sup', updatedAt: 1 }, inventory: { code: 'X1', type: 'item', name: 'Doomed', price: 5, qty: 3, unit: 'pcs', vatCategory: 'A', updatedAt: 1 }, deliveryZones: { id: 'X1', name: 'Zone', fee: 10, updatedAt: 1 }, recurringExpenses: { id: 'X1', name: 'Rent', amount: 5, updatedAt: 1 }, offers: { id: 'X1', name: 'Off', type: 'percent', value: 5, active: true, updatedAt: 1 } };
+const seedRecords = { bills: { id: 'X1', customerName: 'Ann', items: [{ code: '00001', name: 'Widget', qty: 1, price: 100 }], amountPaid: 0, timestamp: new Date().toISOString(), updatedAt: 1 }, debts: { id: 'X1', name: 'Debtor', amount: 5, payments: [], updatedAt: 1 }, suppliers: { id: 'X1', name: 'Sup', updatedAt: 1 }, inventory: { code: 'X1', type: 'item', name: 'Doomed', price: 5, qty: 3, unit: 'pcs', vatCategory: 'A', updatedAt: 1 }, deliveryZones: { id: 'X1', name: 'Zone', fee: 10, updatedAt: 1 }, recurringExpenses: { id: 'X1', name: 'Rent', amount: 5, updatedAt: 1 }, offers: { id: 'X1', name: 'Off', type: 'percent', value: 5, active: true, updatedAt: 1 }, expenses: { id: 'X1', category: 'Rent', amount: 5, date: '2026-10-03', note: '', updatedAt: 1 }, tradeCredits: { id: 'X1', amount: 5, status: 'open', updatedAt: 1 }, savedBarcodes: { id: 'X1', code: '999', name: 'b', updatedAt: 1 } };
 const keyField = (col) => (col === 'inventory' ? 'code' : 'id');
 const has = (dev, col) => dev.w.eval(`typeof ${col} !== 'undefined' && ${col}.some(x => String(x.${keyField(col)}) === 'X1')`);
-const LS_KEY = { inventory: 'pos_inventory', recurringExpenses: 'pos_recurring_expenses', deliveryZones: 'pos_delivery_zones' };
+const LS_KEY = { inventory: 'pos_inventory', recurringExpenses: 'pos_recurring_expenses', deliveryZones: 'pos_delivery_zones', savedBarcodes: 'pos_barcodes' };
 const lsKey = (col) => LS_KEY[col] || 'pos_' + col.replace(/[A-Z]/g, (m) => '_' + m.toLowerCase());
 
 for (const [label, col, del] of CASES) {

@@ -119,7 +119,7 @@ test('TESTS 7, 8, 10, 12: POS server unreachable but internet fine -> "server un
   const t = await app(ctl);
   assert.ok(await until(() => t.state() === 'backend_unavailable'));
   await sleep(3200);
-  assert.notEqual(t.dot().state, 'offline', 'the dot does not claim "no internet"');
+  assert.notEqual(t.dot().net, 'offline', 'the dot does not claim "no internet"');   // zip 195: the dot is calm grey; its title says what happens
   assert.match(t.dot().title, /Saving on this device/);
   assert.doesNotMatch(t.dot().title, /not answering/i, 'never claims the server is not answering');
   ctl.health = 503;                                                     // the server answers, but failing
@@ -139,7 +139,7 @@ test('TEST 11 (zip 194): a 401 (an old server\'s device_not_paired) is IGNORED â
   t.w.eval("PosNet.reportHttp(401, 'device_not_paired'); PosNet.report('auth', 'device_not_paired')");
   assert.notEqual(t.state(), 'auth_required');
   ctl.sync = 403; ctl.syncCode = '';
-  await t.w.eval('pullStateOnce()');
+  t.w.eval("PosNet.reportHttp(403, '')");                               // what a 403 answer to a sync request reports (the live licence re-check is not part of this fake)
   assert.equal(t.state(), 'auth_required', 'a refused licence is still shown');
   assert.doesNotMatch(t.w.eval('PosNet.message()'), /paired/i);
   ctl.sync = 0;                                                         // licence fixed: the next sync attempt clears it

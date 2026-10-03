@@ -1,0 +1,170 @@
+<!-- BRANCH SWITCHER ------------------------------------------------------------------------------------------------------------------------
+         zip 199. ONE global branch switcher in the header, for the OWNER only (the admin serving, in a shop that belongs to a branch group). It shows the
+         branch you are in ("🏪 Westlands ▾") and lists the group's other branches plus "All branches (combined, view only)".
+           * Every branch is a separate shop with its own address, stock, sales and staff. Choosing another branch confirms it by name ("Switch to Thika?"),
+             saves what this device still has to send, and then opens that branch in THIS tab on the SAME screen. Nothing of the two branches is ever mixed
+             in one page, so a restock, a stock take or a sale can only ever land in the branch whose name is on the screen.
+           * "All branches" is the existing read-only combined view (it cannot restock, count or sell): the Sales, Inventory, Stock report, Bills and Profit
+             tabs show the whole group and are locked for editing. "Back to this branch" returns.
+           * Staff never see it (they work in their own branch), and nothing here talks to a server except the branch list the Branches panel already uses.
+           * If the shop is opened from a plain address with no branch sub-domain (a test address), switching says so instead of guessing a link. -->
+<style>
+    #branch-pill { display: none; align-items: center; gap: 6px; max-width: 190px; margin-right: 8px; padding: 7px 12px; border: 0; border-radius: 999px; cursor: pointer;
+        background: rgba(255,255,255,0.18); color: #fff; font-weight: 600; font-size: 13px; line-height: 1.2; font-family: inherit; -webkit-tap-highlight-color: transparent; }
+    #branch-pill.on { display: inline-flex; }
+    #branch-pill .bp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #branch-pill.viewing { background: #e67e22; }
+    #branch-pill:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    #branch-menu { position: fixed; z-index: 100000; display: none; min-width: 250px; max-width: min(calc(92vw / var(--pos-z,1)), 340px); max-height: calc(70vh / var(--pos-z,1)); overflow: auto; padding: 8px;
+        background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border: 1px solid var(--border-color, #e1e6ea); border-radius: 14px; box-shadow: 0 12px 34px rgba(0,0,0,0.28); }
+    #branch-menu.open { display: block; }
+    #branch-menu h4 { margin: 4px 8px 8px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; opacity: .65; }
+    #branch-menu button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 12px; border: 0; border-radius: 10px; background: transparent; color: inherit;
+        font-weight: 600; font-size: 15px; line-height: 1.25; font-family: inherit; text-align: left; cursor: pointer; }
+    #branch-menu button:hover, #branch-menu button:focus-visible { background: var(--bg-surface-alt, #f4f6f7); outline: none; }
+    #branch-menu .bm-tick { width: 18px; color: var(--success, #2ecc71); font-weight: 800; }
+    #branch-menu .bm-sub { display: block; font-size: 11px; font-weight: 500; opacity: .6; }
+    #branch-menu hr { border: 0; border-top: 1px solid var(--border-color, #e1e6ea); margin: 6px 4px; }
+    #branch-confirm { position: fixed; inset: 0; z-index: 100001; display: none; align-items: center; justify-content: center; padding: 16px; background: var(--overlay-bg, rgba(44,62,80,.85)); }
+    #branch-confirm.open { display: flex; }
+    #branch-confirm .bc-card { width: min(calc(94vw / var(--pos-z,1)), 420px); padding: 22px; border-radius: 16px; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); box-shadow: 0 18px 50px rgba(0,0,0,.4); }
+    #branch-confirm h3 { margin: 0 0 6px; font-size: 20px; }
+    #branch-confirm .bc-to { margin: 12px 0; padding: 14px; border-radius: 12px; background: var(--tint-info-bg, #eaf4fb); font-size: 18px; font-weight: 800; text-align: center; }
+    #branch-confirm .bc-note { margin: 0 0 16px; font-size: 13px; line-height: 1.45; opacity: .85; }
+    #branch-confirm .bc-warn { margin: 0 0 14px; padding: 10px 12px; border-radius: 10px; background: var(--tint-warning-bg, #fff3cd); color: var(--tint-warning-text, #7a5b00); font-size: 13px; }
+    #branch-confirm .bc-row { display: flex; gap: 10px; }
+    #branch-confirm .bc-row button { flex: 1; padding: 14px; border: 0; border-radius: 12px; font-weight: 700; font-size: 15px; line-height: 1.2; font-family: inherit; cursor: pointer; }
+    #branch-confirm .bc-cancel { background: var(--bg-surface-alt, #f4f6f7); color: inherit; }
+    #branch-confirm .bc-go { background: var(--accent, #3498db); color: #fff; }
+    #branch-confirm .bc-go[disabled] { opacity: .6; }
+    @media (max-width: 640px) {
+        #branch-pill { max-width: 128px; padding: 6px 10px; font-size: 12px; margin-right: 4px; }
+        #branch-menu { left: 8px !important; right: 8px !important; top: auto !important; bottom: 8px; max-width: none; max-height: calc(75vh / var(--pos-z,1)); }
+    }
+</style>
+<script>
+(function () {
+    'use strict';
+    var pill = null, menu = null, confirmEl = null, lastKey = '', fetching = false;
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function allowed() { try { return typeof branchSwitchingAllowed === 'function' && branchSwitchingAllowed(); } catch (e) { return false; } }
+    function summary() { try { return branchesSummaryCache || null; } catch (e) { return null; } }
+    function branches() { var s = summary(); return (s && Array.isArray(s.branches)) ? s.branches : []; }
+    function self() { return branches().filter(function (b) { return b.isSelf; })[0] || null; }
+    function viewing() { try { return viewedBranchId; } catch (e) { return 'self'; } }
+    function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
+
+    // the address of another branch: the same address with its branch name in front (slug.rootdomain), same page, same screen
+    function targetUrl(b, loc) {
+        loc = loc || location;
+        var host = String(loc.hostname || ''), parts = host.split('.');
+        if (!b || !b.slug || parts.length < 3 || /^(localhost|127\.|\d+\.\d+\.\d+\.\d+)/.test(host) || /\.pages\.dev$/i.test(host)) return '';
+        return loc.protocol + '//' + b.slug + '.' + parts.slice(1).join('.') + (loc.port ? ':' + loc.port : '') + loc.pathname + (loc.hash || '');
+    }
+    window.branchSwitcherUrl = targetUrl;
+
+    function ensurePill() {
+        if (pill && document.body.contains(pill)) return pill;
+        var anchor = document.querySelector('.server-wrapper') || document.getElementById('server-btn');
+        if (!anchor || !anchor.parentNode) return null;
+        pill = document.createElement('button');
+        pill.type = 'button'; pill.id = 'branch-pill'; pill.setAttribute('aria-haspopup', 'listbox'); pill.setAttribute('aria-expanded', 'false');
+        pill.addEventListener('click', function (e) { e.stopPropagation(); toggleMenu(); });
+        anchor.parentNode.insertBefore(pill, anchor);
+        menu = document.createElement('div'); menu.id = 'branch-menu'; menu.setAttribute('role', 'listbox'); document.body.appendChild(menu);
+        confirmEl = document.createElement('div'); confirmEl.id = 'branch-confirm'; confirmEl.setAttribute('role', 'dialog'); confirmEl.setAttribute('aria-modal', 'true'); document.body.appendChild(confirmEl);
+        document.addEventListener('click', function (e) { if (menu && menu.classList.contains('open') && !menu.contains(e.target) && e.target !== pill) closeMenu(); });
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { closeMenu(); closeConfirm(); } });
+        return pill;
+    }
+
+    function paint() {
+        var ok = allowed(), list = branches();
+        if (!ok || list.length < 2) { if (pill) { pill.classList.remove('on'); } closeMenu(); return; }
+        if (!ensurePill()) return;
+        var me = self(), v = viewing(), label;
+        if (v === 'all') label = 'All branches';
+        else if (v !== 'self') { var o = list.filter(function (b) { return b.id === v; })[0]; label = (o && o.label) || 'Another branch'; }
+        else label = (me && me.label) || 'This branch';
+        var key = ok + '|' + label + '|' + v + '|' + list.map(function (b) { return b.id + b.label; }).join(',');
+        if (key === lastKey) return;
+        lastKey = key;
+        pill.classList.add('on'); pill.classList.toggle('viewing', v !== 'self');
+        pill.innerHTML = '<span aria-hidden="true">' + (v === 'self' ? '🏪' : '👁') + '</span><span class="bp-name">' + esc(label) + (v === 'self' ? '' : ' · view only') + '</span><span aria-hidden="true">▾</span>';
+        pill.title = v === 'self' ? 'You are working in: ' + label + '. Tap to switch branch.' : 'Viewing ' + label + ' (read only). Tap to go back or switch.';
+        pill.setAttribute('aria-label', pill.title);
+    }
+
+    function renderMenu() {
+        var list = branches(), me = self(), v = viewing(), h = '<h4>Select branch</h4>';
+        list.forEach(function (b) {
+            var here = b.isSelf && v === 'self';
+            h += '<button type="button" role="option" aria-selected="' + here + '" data-bid="' + esc(b.id) + '"><span class="bm-tick">' + (here ? '✓' : '') + '</span><span>' + esc(b.label || b.slug || 'Branch') +
+                (b.isMainBranch ? '<span class="bm-sub">Main branch</span>' : '') + (here ? '<span class="bm-sub">You are working here</span>' : '') + '</span></button>';
+        });
+        h += '<hr>';
+        h += '<button type="button" data-bid="__all"><span class="bm-tick">' + (v === 'all' ? '✓' : '') + '</span><span>🏢 All branches<span class="bm-sub">Combined totals · view only, no changes</span></span></button>';
+        if (v !== 'self') h += '<button type="button" data-bid="__back"><span class="bm-tick"></span><span>↩ Back to ' + esc((me && me.label) || 'this branch') + '</span></button>';
+        menu.innerHTML = h;
+        Array.prototype.forEach.call(menu.querySelectorAll('button'), function (btn) {
+            btn.addEventListener('click', function () { pick(btn.getAttribute('data-bid')); });
+        });
+    }
+    function placeMenu() {
+        if (!pill) return; var r = pill.getBoundingClientRect();
+        menu.style.top = (r.bottom + 6) + 'px'; menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 270)) + 'px'; menu.style.right = 'auto';
+    }
+    function toggleMenu() { if (menu.classList.contains('open')) closeMenu(); else openMenu(); }
+    function openMenu() {
+        renderMenu(); placeMenu(); menu.classList.add('open'); pill.setAttribute('aria-expanded', 'true');
+        try { if (typeof fetchBranchesSummary === 'function') fetchBranchesSummary(true).then(function () { lastKey = ''; paint(); if (menu.classList.contains('open')) renderMenu(); }); } catch (e) { /* the list we have is shown */ }
+    }
+    function closeMenu() { if (menu) menu.classList.remove('open'); if (pill) pill.setAttribute('aria-expanded', 'false'); }
+
+    function pick(id) {
+        closeMenu();
+        if (id === '__all') { setView('all'); return; }
+        if (id === '__back') { setView('self'); return; }
+        var b = branches().filter(function (x) { return x.id === id; })[0];
+        if (!b) return;
+        if (b.isSelf) { if (viewing() !== 'self') setView('self'); return; }
+        askSwitch(b);
+    }
+    function setView(v) { try { if (typeof switchViewedBranch === 'function') switchViewedBranch(v); } catch (e) { /* stays where it is */ } lastKey = ''; setTimeout(paint, 60); }
+
+    function closeConfirm() { if (confirmEl) { confirmEl.classList.remove('open'); confirmEl.innerHTML = ''; } }
+    function askSwitch(b) {
+        var url = targetUrl(b), me = self(), unsent = false;
+        try { unsent = typeof hasUnsyncedWork === 'function' && hasUnsyncedWork(); } catch (e) { /* unknown */ }
+        var h = '<div class="bc-card"><h3>Switch branch?</h3><p class="bc-note">You are leaving <b>' + esc((me && me.label) || 'this branch') + '</b>. Nothing is copied between branches: each keeps its own stock, sales and staff.</p>' +
+            '<div class="bc-to">🏪 ' + esc(b.label || b.slug) + '</div>';
+        if (!url) h += '<div class="bc-warn">This shop was opened from an address that has no branch address. Open it from its own link (for example name.mydukapos.store) to switch.</div>';
+        else {
+            h += '<p class="bc-note">Anything this device still has to send is saved first. The same screen opens in <b>' + esc(b.label || b.slug) + '</b>, so every restock, stock take and sale you make there belongs to that branch only. If it asks for the password, enter that branch\'s password.</p>';
+            if (unsent) h += '<div class="bc-warn">Some changes are still being sent. They stay safe on this device and finish sending when you come back.</div>';
+        }
+        h += '<div class="bc-row"><button type="button" class="bc-cancel">Cancel</button>' + (url ? '<button type="button" class="bc-go">Switch to ' + esc(b.label || b.slug) + '</button>' : '') + '</div></div>';
+        confirmEl.innerHTML = h; confirmEl.classList.add('open');
+        confirmEl.querySelector('.bc-cancel').addEventListener('click', closeConfirm);
+        var go = confirmEl.querySelector('.bc-go');
+        if (go) go.addEventListener('click', function () { go.disabled = true; go.textContent = 'Saving…'; leave(url); });
+    }
+    function leave(url) {
+        var done = false, go = function () { if (done) return; done = true; location.href = url; };
+        try {
+            var p = typeof pushNow === 'function' ? pushNow() : null;
+            if (p && typeof p.then === 'function') p.then(go, go); else go();
+        } catch (e) { go(); }
+        setTimeout(go, 4000);    // never trap the owner on this screen: what is unsent is kept on the device and sent later
+    }
+
+    function tick() {
+        var ok = allowed();
+        if (ok && !summary() && !fetching && typeof fetchBranchesSummary === 'function') { fetching = true; fetchBranchesSummary().then(function () { fetching = false; paint(); }, function () { fetching = false; }); }
+        paint();
+    }
+    window.branchSwitcherRefresh = function () { lastKey = ''; tick(); };
+    function boot() { tick(); setInterval(tick, 3000); window.addEventListener('resize', function () { if (menu && menu.classList.contains('open')) placeMenu(); }); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

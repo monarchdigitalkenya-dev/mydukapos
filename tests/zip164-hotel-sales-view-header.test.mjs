@@ -19,7 +19,7 @@ test('static: Sales button sits next to Bills; header has Hide and a Show bar', 
   close();
 });
 
-test('admin sees everyone (day totals, voided and other days left out); staff see only their own', async () => {
+test('everyone sees everyone (zip 195: sales are universal): day totals, voided and other days left out', async () => {
   const { w, d, errors, close } = await app();
   w.eval('toggleMySalesPanel()');
   assert.equal(d.getElementById('my-sales-panel').style.display, '');
@@ -27,10 +27,10 @@ test('admin sees everyone (day totals, voided and other days left out); staff se
   assert.deepEqual(all.slice(0, 4), ['Total=KES 1150.00', 'Cash=KES 700.00', 'M-Pesa=KES 400.00', 'Card=KES 50.00'], all.join(' | '));
   assert.ok(/Sam/.test(d.getElementById('my-sales-list').textContent) && /Joy/.test(d.getElementById('my-sales-list').textContent));
   w.eval("staff.push({ id: 'st1', name: 'Sam', roles: ['cashier'] }); currentServer = { id: 'st1', name: 'Sam' }; refreshMySalesPanel()");
-  assert.deepEqual(vals(d), ['Total=KES 800.00', 'Cash=KES 500.00', 'M-Pesa=KES 300.00']);
-  assert.ok(!/Joy/.test(d.getElementById('my-sales-list').textContent), 'a staff member never sees another server');
+  assert.deepEqual(vals(d).slice(0, 4), ['Total=KES 1150.00', 'Cash=KES 700.00', 'M-Pesa=KES 400.00', 'Card=KES 50.00'], 'staff see every device and staff member (zip 195)');
+  assert.ok(/Joy/.test(d.getElementById('my-sales-list').textContent), 'a staff member sees the other servers too');
   w.eval("currentServer = { id: 'st2', name: 'Joy' }; refreshMySalesPanel()");
-  assert.deepEqual(vals(d), ['Total=KES 350.00', 'Cash=KES 200.00', 'M-Pesa=KES 100.00', 'Card=KES 50.00']);
+  assert.deepEqual(vals(d).slice(0, 4), ['Total=KES 1150.00', 'Cash=KES 700.00', 'M-Pesa=KES 400.00', 'Card=KES 50.00']);
   // another day
   const day3 = w.eval("bizDayKey(new Date(Date.now() - 3 * 86400000))");
   w.eval("currentServer = { id: 'st1', name: 'Sam' }; mySalesPickDay('" + day3 + "')");

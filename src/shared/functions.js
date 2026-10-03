@@ -2894,7 +2894,8 @@ function restockReturnedItem(product, qty, sel, reason) {
                 product.pieceQty = stockRound3((product.pieceQty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, reason, 'pieceQty');
             } else {
-                product.qty = stockRound3((product.qty || 0) + qty);
+                try { if (Array.isArray(product.batches) && typeof stockAlignBatches === 'function') stockAlignBatches(product); } catch (e) { /* used as they are */ }
+                if (!batchesPutBack(product, qty)) product.qty = stockRound3((product.qty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, reason, 'qty');
             }
             return saved();
@@ -5817,7 +5818,11 @@ function preparePulledPayload(data) {
                     if (!Array.isArray(mine) || !Array.isArray(theirs) || mine.length === 0) return;
                     const have = new Set();
                     theirs.forEach((r) => { const k = keyOf(r); if (k != null) have.add(k); });
-                    const extra = mine.filter((r) => { const k = keyOf(r); return k != null && !have.has(k); });
+                    // zip 201: an expense / trade credit this device already shared with the server (its key was agreed at the last sync) and the server no longer
+                    // lists was DELETED on another device (the server keeps a tombstone and never hands it out): drop it here too instead of keeping it as "only mine".
+                    // Sales and stock movements are never dropped this way - they are a permanent record.
+                    const dropGone = (f === 'expenses' || f === 'tradeCredits') && !data._hotFrom && window.__keyAck && window.__keyAck[f] && !(typeof hasUnsyncedWork === 'function' && hasUnsyncedWork());
+                    const extra = mine.filter((r) => { const k = keyOf(r); return k != null && !have.has(k) && !(dropGone && window.__keyAck[f].has(k)); });
                     if (extra.length === 0) return;
                     const merged = theirs.concat(extra);
                     const dated = merged.filter((r) => isFinite(timeOf(r))).sort((a, b) => timeOf(a) - timeOf(b));
@@ -7334,13 +7339,33 @@ function restockRowLineTotal(row) {
             return qty * cost;
         }
 
+//@fn batchesPutBack
+// zip 200 - units that come BACK to a batch-tracked item (a voided sale, a returned item) go back INTO a batch. They used to raise only product.qty, so the
+// batches summed to less than the quantity until the next sync, where the server made up a "Stock adjustment" batch that never expires (and a later restock
+// of that item lost stock). First-Expired-First-Out took the units from the soonest-expiring batch(es), so they return to the soonest-expiring batch that is
+// left; when every batch was used up a "Returned stock" batch is made with the item's last expiry. Returns true when it handled the item.
+function batchesPutBack(product, qty) {
+            if (!product || !Array.isArray(product.batches) || !(qty > 0)) return false;
+            const r3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+            if (product.batches.length > 0) {
+                const first = [...product.batches].sort((a, b) => String(a.expiryDate || '9999').localeCompare(String(b.expiryDate || '9999')))[0];
+                first.qty = r3((Number(first.qty) || 0) + qty);
+            } else {
+                product.batches.push({ id: genSaleId(), batchNumber: 'Returned stock', expiryDate: product.expiryDate || '9999-12-31', qty: r3(qty) });
+            }
+            product.qty = r3(product.batches.reduce((sum, b) => sum + (Number(b && b.qty) || 0), 0));
+            product.expiryDate = product.batches.reduce((mn, b) => (String(b.expiryDate || '9999') < String(mn) ? (b.expiryDate || '9999') : mn), product.batches[0].expiryDate || '9999');
+            return true;
+        }
+
 //@fn restoreStockForSaleUnit
 function restoreStockForSaleUnit(product, qty, saleMode) {
             if (product.dualUnit && saleMode === 'piece') {
                 product.pieceQty = stockRound3((product.pieceQty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, 'Sale void', 'pieceQty');
             } else {
-                product.qty = stockRound3((product.qty || 0) + qty);
+                try { if (Array.isArray(product.batches) && typeof stockAlignBatches === 'function') stockAlignBatches(product); } catch (e) { /* used as they are */ }
+                if (!batchesPutBack(product, qty)) product.qty = stockRound3((product.qty || 0) + qty);
                 logStockMovement(product.code, product.name, qty, 'Sale void', 'qty');
             }
         }
@@ -8015,7 +8040,7 @@ function saveVariantsModal() {
                 if (!vName) { errEl.textContent = 'Every variant needs a name.'; return; }
                 const vPrice = parseFloat(v.price);
                 if (isNaN(vPrice) || vPrice < 0) { errEl.textContent = `Enter a valid price for "${vName}".`; return; }
-                const vQty = parseInt(v.qty, 10);
+                const vQty = isDecimalUnit(product.unit) ? parseFloat(v.qty) : parseInt(v.qty, 10);
                 if (isNaN(vQty) || vQty < 0) { errEl.textContent = `Enter a valid quantity for "${vName}".`; return; }
                 const vCode = String(v.code).trim() || `${product.code}-${v.id.split('-').pop()}`.toUpperCase();
 
@@ -9124,7 +9149,7 @@ function slimPayloadForPush(payload) {
             // DELETIONS. The server merges by union, so "missing from the push" means nothing. A record that was in one of these lists when this
             // device last agreed with the server and is gone now was DELETED here (a bill settled and removed, a supplier, an item...): send an
             // explicit tombstone so it stays deleted on every device and a stale copy can't bring it back.
-            const TRACKED = ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions', 'rawMaterials'];
+            const TRACKED = ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'expenses', 'tradeCredits', 'savedBarcodes', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions', 'rawMaterials'];
             if (!window.__keyAck) window.__keyAck = loadKeyAck();
             const keysNow = {}, gone = {};
             TRACKED.forEach((col) => {
@@ -9812,7 +9837,7 @@ function ackLocalFields() {
                 Object.keys(p).forEach((f) => { if (f !== 'updatedAt' && p[f] !== undefined && !(pending && window.__fieldAck.has(f))) window.__fieldAck.set(f, pushSigOf(p[f])); });
                 // ...and which records of the deletable lists exist now (a record missing later = the person deleted it; see slimPayloadForPush)
                 if (!window.__keyAck) window.__keyAck = loadKeyAck();
-                ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions', 'rawMaterials'].forEach((col) => {
+                ['inventory', 'products', 'customers', 'suppliers', 'deliveryZones', 'deliveryAgents', 'offers', 'bills', 'debts', 'recurringExpenses', 'contracts', 'pendingInvites', 'expenses', 'tradeCredits', 'savedBarcodes', 'patients', 'patientNotes', 'labResults', 'appointments', 'queue', 'institutions', 'rawMaterials'].forEach((col) => {
                     if (!Array.isArray(p[col])) return;
                     const set = new Set();
                     p[col].forEach((r) => { const k = pushKeyOf(r); if (k != null) set.add(k); });
@@ -10249,9 +10274,12 @@ function restockVariantByCode(code) {
         }
 
 //@fn restockApplyVariant
-function restockApplyVariant(hit, qty, reason) {
+function restockApplyVariant(hit, qty, reason, cost, sellPrice) {
             const v = hit.variant, it = hit.item;
             v.qty = stockRound3((Number(v.qty) || 0) + qty);
+            // the delivery's real cost and (when typed) the new sell price belong to THIS variant - profit / COGS read them
+            if (typeof cost === 'number' && isFinite(cost) && cost >= 0) v.wholesalePrice = cost;
+            if (typeof sellPrice === 'number' && isFinite(sellPrice) && sellPrice > 0) v.price = sellPrice;
             it.qty = stockRound3(it.variants.reduce((a, x) => a + (Number(x && x.qty) || 0), 0));
             logStockMovement(v.code, `${it.name} (${v.name})`, qty, reason, 'qty');
         }
@@ -10280,6 +10308,14 @@ function stockMergeWhileStuck(data) {
                 const srv = new Map();
                 data.inventory.forEach((r) => { if (r && typeof r === 'object' && r.code != null) srv.set(String(r.code), r); });
                 let changed = 0;
+                // the movements the server already processed are inside its figures: stamp them like a normal pull does (their `_srv`), or the
+                // safety net (reconcileLocalStockChanges) would count them a second time on top of the server's quantity
+                let stamped = 0;
+                (Array.isArray(data.stockMovementLog) ? data.stockMovementLog : []).forEach((sm) => {
+                    if (!sm || sm.id == null || !sm._srv || typeof sm._srv !== 'object' || typeof stockMovementLog === 'undefined' || !Array.isArray(stockMovementLog)) return;
+                    const lm = stockMovementLog.find((x) => x && String(x.id) === String(sm.id));
+                    if (lm && !lm._srv) { lm._srv = sm._srv; stamped++; }
+                });
                 const take = (loc, s) => {
                     [['qty', '_sq'], ['pieceQty', '_sp']].forEach(([unit, base]) => {
                         if (typeof s[unit] !== 'number' || !isFinite(s[unit])) return;
@@ -10302,6 +10338,7 @@ function stockMergeWhileStuck(data) {
                     }
                     take(it, s);
                 });
+                if (stamped) { try { safeSetItem(typeof appStoreKey === 'function' ? appStoreKey('pos_stock_movement_log') : 'pos_stock_movement_log', JSON.stringify(stockMovementLog)); } catch (e) { /* in memory */ } }
                 if (changed) {
                     try { safeSetItem(typeof appStoreKey === 'function' ? appStoreKey('pos_inventory') : 'pos_inventory', JSON.stringify(inventory)); } catch (e) { /* in memory; the next save writes it */ }
                     try { if (typeof renderAllViews === 'function') renderAllViews(); } catch (e) { /* the next draw shows it */ }
@@ -15440,12 +15477,16 @@ function holdCurrentSale() {
                 method: typeof currentPaymentMethod !== 'undefined' ? currentPaymentMethod : null,
                 lines: JSON.parse(JSON.stringify(currentCart)),
                 fields,
+                // zip 200: a held DELIVERY sale keeps its order type (and Pay-on-Delivery); the next customer starts as a walk-in
+                orderType: (typeof orderType !== 'undefined' && orderType === 'delivery') ? 'delivery' : 'walkin',
+                podMode: (typeof deliveryPaymentMode !== 'undefined' && deliveryPaymentMode === 'pod') ? 'pod' : 'now',
             };
             try { localStorage.setItem(heldSaleKey(), JSON.stringify(held)); }
             catch (e) { showToast('Could not put the sale on hold (storage is full).', true); return false; }
             currentCart = {};
             // the next customer starts clean: typed amounts / names of the held sale are cleared (they come back with it)
             heldSaleFields().forEach((el) => { if (/^(text|number|tel|email|date|time)$/.test(el.type) || el.tagName === 'TEXTAREA') el.value = ''; });
+            if (held.orderType === 'delivery' && typeof setOrderType === 'function') { try { setOrderType('walkin'); } catch (e) { /* the next sale is still usable */ } }
             if (typeof updateChangeDue === 'function') { try { updateChangeDue(); } catch (e) { /* cosmetic */ } }
             renderCart();
             renderHeldSaleBar();
@@ -15459,11 +15500,13 @@ function resumeHeldSale() {
             if (!held) { showToast('Nothing is on hold.', true); renderHeldSaleBar(); return false; }
             if (Object.keys(currentCart).length > 0) { showToast('Finish (or clear) the sale you are on first, then tap "Held".', true); return false; }
             currentCart = JSON.parse(JSON.stringify(held.lines));
+            if (held.orderType === 'delivery' && typeof setOrderType === 'function') { try { setOrderType('delivery'); } catch (e) { /* the lines still come back */ } }   // zip 200: before the fields, so the delivery boxes exist and the fee counts again
             heldSaleFields().forEach((el) => {
                 const f = held.fields && held.fields[el.id];
                 if (!f) return;
                 if ('c' in f) el.checked = f.c; else if ('v' in f) el.value = f.v;
             });
+            if (held.podMode === 'pod' && typeof setDeliveryPaymentMode === 'function') { try { setDeliveryPaymentMode('pod'); } catch (e) { /* paid-now stays */ } }
             if (held.method && typeof setPaymentMethod === 'function') { try { setPaymentMethod(held.method); } catch (e) { /* the method is not available in this app any more */ } }
             try { localStorage.removeItem(heldSaleKey()); } catch (e) { /* nothing */ }
             // Stock may have moved while the customer was thinking: say so, but never block.
@@ -16716,7 +16759,10 @@ function reportSales(range) {
 
 //@fn reportSaleTotal
 function reportSaleTotal(s) {
-            return (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => sum + (Number(it.price) || 0) * (Number(it.qty) || 0), 0);
+            // zip 200: a delivery sale's fee is money the customer paid (Daily Sales counts it); the X / Z report and the Reports tab left it out, so the
+            // same day gave two different totals. Apps without delivery have no saleDeliveryFee: nothing changes there.
+            const fee = (typeof saleDeliveryFee === 'function') ? (Number(saleDeliveryFee(s)) || 0) : 0;
+            return (Array.isArray(s.items) ? s.items : []).reduce((sum, it) => sum + (Number(it.price) || 0) * (Number(it.qty) || 0), 0) + fee;
         }
 
 //@fn reportSaleCost

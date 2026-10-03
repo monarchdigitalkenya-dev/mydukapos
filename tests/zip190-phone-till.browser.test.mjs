@@ -100,7 +100,9 @@ const flip = (page, id) => page.evaluate((i) => { const l = document.getElementB
 const toSales = async (page) => { await page.evaluate(() => { const b = document.querySelector('.tab-link[data-tab="sales-tab"]'); if (b) b.click(); }); await page.waitForTimeout(400); await clearBanners(page); };
 // opens the cart sheet with two items in it (a hidden box is only meaningful to check where it would be drawn)
 const sheetUp = async (page, app) => { await toSales(page); if (!(await page.evaluate(() => Object.keys(currentCart).length))) await addTwo(page, app); await page.click('#mobile-cart-fab'); await page.waitForTimeout(350); };
-const sheetDown = async (page) => { await page.click('.ptl-back'); await page.waitForTimeout(250); };
+// zip 200: the pay boxes (customer phone, cash tendered) are on the payment screen: tap Collect, pick cash
+const toPay = async (page) => { await page.tap('#main-checkout-btn'); await page.waitForTimeout(250); if (await page.evaluate(() => document.documentElement.classList.contains('pps-s2'))) { await page.tap('#pay-cash-btn'); await page.waitForTimeout(250); } };
+const sheetDown = async (page) => { if (await page.evaluate(() => /pps-s[23]/.test(document.documentElement.className))) { await page.click('#pps-head .pps-edit'); await page.waitForTimeout(200); } await page.click('.ptl-back'); await page.waitForTimeout(250); };
 
 for (const app of APPS) {
   test(`${app.key}: phone cart lines fit, the cart opens as a sheet, a cash sale completes once and closes it`, { skip, timeout: 120000 }, async () => {
@@ -158,6 +160,9 @@ for (const app of APPS) {
       await page.click('#ptl-bar'); await page.waitForTimeout(250);
       // complete a cash sale from the sheet: exactly one sale, the sheet closes by itself, the cart is empty
       const before = await salesCount(page);
+      // zip 200: the pinned button is "Collect"; the shop's payment methods come next, then the method's boxes, then Confirm
+      await page.tap('#main-checkout-btn'); await page.waitForTimeout(250);
+      if (await page.evaluate(() => document.documentElement.classList.contains('pps-s2'))) { await page.tap('#pay-cash-btn'); await page.waitForTimeout(250); }
       await page.evaluate(() => { const t = document.getElementById('cash-tendered-input'); if (t) { t.value = '1000'; t.dispatchEvent(new Event('input', { bubbles: true })); } });
       await page.tap('#main-checkout-btn');
       await page.waitForFunction((b) => (typeof salesLog !== 'undefined' ? salesLog.length : -1) > b, before, { timeout: 15000 });
@@ -220,13 +225,13 @@ for (const app of APPS) {
       await page.evaluate(() => { setOrderType('delivery'); });
       assert.equal(await page.evaluate(() => orderType), 'walkin', 'it can never end up on delivery while the choice is hidden');
       // (b) customer phone: type one, hide the box -> hidden, emptied
-      await sheetUp(page, app);
+      await sheetUp(page, app); await toPay(page);
       assert.equal(await vis(page, '#' + app.phone), true, 'the phone box shows while the switch is on');
       await page.evaluate((id) => { document.getElementById(id).value = '0712345678'; }, app.phone);
       await sheetDown(page);
       await openSettingsCard(page);
       await flip(page, 'ptl-sw-phone'); await page.waitForTimeout(300);
-      await sheetUp(page, app);
+      await sheetUp(page, app); await toPay(page);
       assert.equal(await vis(page, '#' + app.phone), false, 'the phone box is hidden');
       assert.equal(await page.evaluate((id) => document.getElementById(id).value, app.phone), '', 'a number typed earlier is dropped');
       // the settings are shop settings: they are in the sync payload (the same hook the payment methods use)
@@ -256,6 +261,7 @@ for (const app of APPS) {
       await flip(again.page, 'ptl-sw-delivery'); await flip(again.page, 'ptl-sw-phone'); await again.page.waitForTimeout(300);
       await sheetUp(again.page, app);
       assert.equal(await vis(again.page, '#order-type-toggle'), true, 'the Walk-In / Delivery choice is back');
+      await toPay(again.page);
       assert.equal(await vis(again.page, '#' + app.phone), true, 'the phone box is back');
       assert.deepEqual(errors, []); assert.deepEqual(again.errors, []);
       await ctx.close();
@@ -334,6 +340,7 @@ test('hotel: the Table / Room picker can be hidden even with Tab payments on; th
     assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ptl-no-loc')), true);
     assert.equal(await vis(page, '#sales-location-select'), false, 'the Table / Room picker is hidden although Tab payments are accepted');
     assert.equal(await page.evaluate(() => { const b = [...document.querySelectorAll('.ptl-loc-group button')].find((x) => /Tabs/.test(x.textContent)); return !!b && b.offsetParent !== null; }), true, 'the Tabs button stays');
+    await page.tap('#main-checkout-btn'); await page.waitForTimeout(250);   // zip 200: Collect shows the payment methods
     assert.equal(await vis(page, '#pay-tab-btn'), true, 'Tab payment is still offered');
     // a Tab order with no table picked goes to an auto-numbered guest tab
     await page.evaluate(() => { setPaymentMethod('tab'); });
@@ -440,6 +447,7 @@ test('the pay-later bill still gets its phone number while the phone box is swit
     await page.evaluate(() => { const s = window.__phoneTillApi.shop(); localStorage.setItem('pos_ptl_shop', JSON.stringify({ phone: 0, delivery: 1, tables: 1 })); window.__phoneTillApi.apply(); });
     await addTwo(page, app);
     await page.click('#mobile-cart-fab'); await page.waitForTimeout(300);
+    await toPay(page);                                                       // zip 200: the phone box lives on the payment screen
     assert.equal(await vis(page, '#sms-checkout-phone-input'), false);
     await page.evaluate(() => setPaymentMethod('bill')); await page.waitForTimeout(200);
     assert.equal(await vis(page, '#sms-checkout-phone-input'), true, 'Bill keeps the box: the bill is saved against that number');
