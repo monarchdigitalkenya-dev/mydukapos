@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('MyDukaNative', {
   info: () => ipcRenderer.sendSync('native:info'),
   printers: () => ipcRenderer.invoke('native:printers'),
   print: (opts) => ipcRenderer.invoke('native:print', opts),
+  printHtml: (opts) => ipcRenderer.invoke('native:printHtml', opts),
   netPrint: (host, port, base64) => ipcRenderer.invoke('native:netPrint', host, port, base64),
   forgetShop: () => ipcRenderer.invoke('native:forgetShop'),
 });

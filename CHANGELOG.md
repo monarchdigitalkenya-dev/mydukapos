@@ -2,6 +2,21 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 192
+- **Windows exe printed an EMPTY receipt (web was fine).** The exe now prints a *snapshot* of the receipt / order ticket from its own hidden window (`native:printHtml`), with the paper size passed to Windows, instead of printing the live page; the live-page method also waits for the layout to settle and sends the paper size. Settings ▸ Install App ▸ printers has "Print method 1 / 2 / 3" (3 = the Windows print window). Needs the exe rebuilt (`native/windows/main.js`, `preload.js`); the web side works with the old exe too (it falls back to method 2).
+- **Hotel: Settings ▸ Receipt Settings ▸ Order Ticket Size** - paper (same as receipt / 58 / 80 / custom), letter size, automatic shrink so no line wraps, live sample, test print, saved on the till.
+- Test: `tests/zip192-print.browser.test.mjs`.
+
+## Zip 191 — hide the Table / Room picker in the Hotel till
+- Settings ▸ Phone & till layout ▸ "Show Table / Room picker" now works even while Tab payments are on: the picker is hidden, the 🧾 Tabs button stays, and a Tab order goes to a guest name or the auto-numbered "Guest 1".
+
+## Zip 190 — phone till: less scrolling, bigger products, full-screen cart
+- **Phone layout** (screens under 700 px only): every cart line fits (name, qty, price, total, remove); the cart button and a bottom bar open a full-screen cart where you confirm and finish the sale; bigger 2-column product tiles; one scrolling row of category chips; search as a bar or a 🔍 icon (Settings ▸ Phone & till layout, per device).
+- **Hide switches** (Settings ▸ Phone & till layout): customer phone box, Walk-In/Delivery choice (hiding Delivery forces Walk-In and removes the toggle), Table/Room + Tabs row (shop-wide, synced); which tabs show on this phone (per device).
+- **Category images** (Settings ▸ Category Images, off by default): add a picture per category; the Sales Counter then shows category tiles that open the sub-categories or items.
+- **Edit stock report**: admin-only button on the Stock Report tab, management password required; edit opening/added/removed/sold/closing for the period with a mandatory reason. Corrections change only what the report shows (never stock or sales), are marked "corrected", audited, and can be restored. CSV export added.
+- New shared blocks: `phone-till`, `category-tiles`, `stock-report-edit`. Migration 0008 (drop CRM) now defers foreign keys (it failed on real data in zip 188).
+
 ## Zip 188 — dashboards for every app, monthly audit archive, owner database
 - **Dashboards**: the zip 186 "command center" dashboard now also runs in Pharmacy, Production and Services (one shared engine, `tools/inject-dashboard.mjs`), and
   Water and Hotel have their own adapters (litres/tanks/sites; departments/tabs/waiters). Hospital gets a new Dashboard tab (counts and money only, never patient

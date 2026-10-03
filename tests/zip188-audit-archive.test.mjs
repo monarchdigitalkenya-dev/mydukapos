@@ -97,3 +97,18 @@ test('D6: router cron calls auditMaintenance; toml has the R2 block commented; c
   assert.match(t, /^# binding = "AUDIT_ARCHIVE"/m); assert.doesNotMatch(t, /^binding = "AUDIT_ARCHIVE"/m);
   assert.ok(fs.existsSync('tools/audit-monthly.cmd'));
 });
+
+test('E1: migration 0008 (drop CRM) succeeds on a database whose crm_* tables hold linked rows (FK order bug found on the live D1)', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(':memory:'); db.exec('PRAGMA foreign_keys=ON');
+  for (const f of ['0002_crm.sql', '0004_crm_speed.sql']) db.exec(fs.readFileSync('migrations/' + f, 'utf8'));
+  db.exec('PRAGMA foreign_keys=OFF');
+  db.exec("insert into crm_campaigns (id,name,platform,created_at,updated_at) values ('c1','n','meta',1,1)");
+  db.exec("insert into crm_adsets (id,campaign_id,name,created_at,updated_at) values ('s1','c1','n',1,1)");
+  db.exec("insert into crm_ads (id,adset_id,campaign_id,name,created_at,updated_at) values ('a1','s1','c1','n',1,1)");
+  const cols = db.prepare('pragma table_info(crm_attribution_events)').all().filter((c) => c.notnull && c.dflt_value == null && !c.pk && c.name !== 'kind').map((c) => c.name);
+  db.exec('insert into crm_attribution_events (id,kind,ad_id,' + cols.join(',') + ") values ('e1','k','a1'," + cols.map(() => '1').join(',') + ')');
+  db.exec('PRAGMA foreign_keys=ON');
+  db.exec('BEGIN'); db.exec(fs.readFileSync('migrations/0008_drop_crm.sql', 'utf8')); db.exec('COMMIT');
+  assert.equal(db.prepare("select count(*) n from sqlite_master where type='table' and name like 'crm_%'").get().n, 0);
+});

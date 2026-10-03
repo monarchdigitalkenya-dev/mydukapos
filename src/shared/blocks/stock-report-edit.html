@@ -1,0 +1,574 @@
+<!-- STOCK REPORT EDIT -----------------------------------------------------------------------------------------------
+     "✏️ Edit stock report" (zip 190). The Stock Report tab shows, per item and period: Opening, Added, Removed, Sold, Closing. Those figures are
+     DERIVED (closing = live qty rolled back through the movement log and the sales; opening = closing - added + removed + sold), so a bug in
+     earlier code left some historical rows wrong. This block lets the ADMIN correct what the REPORT shows, without touching the books.
+
+     WHAT IT DOES (and does not do)
+       * One button on the report toolbar, admin only (the true owner / admin session: isAdminServing()). Staff and Managers never see it: no app
+         gives anyone but the admin report-edit rights. Not shown while another branch is being viewed.
+       * Pressing it asks for the MANAGEMENT PASSWORD through the app's own popup (requireManagementApproval -> 'generic-callback' purpose, which is
+         NOT Manager-PIN eligible; it also supports the "no management password yet: create one" path and works offline). Wrong password: nothing
+         becomes editable. There is no second, weaker check anywhere in this block.
+       * Edit mode is for the period currently on screen (daily / weekly / monthly / custom). Opening, Added, Removed ("other movements": returns,
+         damages, stock-take write-offs), Sold and Closing become number boxes (16px font, big tap targets, usable in the phone card layout), with a
+         live check "opening + added - removed - sold = closing". A row that does not add up gets a clear warning; Save still works after a confirm.
+         A reason for the batch is mandatory. Switching period / leaving the tab closes edit mode (typed values are dropped, never half-saved).
+       * Corrections change what this REPORT shows. They never change current stock (use Stock Take for that) and they never delete or rewrite
+         stockMovementLog, salesLog or inventory: those stay byte-identical. A corrected figure is a fixed number: later sales or restocks in the same
+         period do not move it (restore the original to see live figures again).
+       * The report (rows, the totals row, the value totals, the printed report and the new "Export CSV" button) shows the corrected figures, marked
+         "✎ corrected"; tapping a ✎ shows original value, who, when and why. "Show original figures" hides the corrections again; "Corrections history"
+         lists every correction and restore, newest first. "Restore original" (per row, in the ✎ popover, or in the history) asks the password again
+         and is recorded as its own event.
+
+     DATA MODEL (append-only EVENTS, merged by id, nothing is ever edited or deleted)
+       { id, kind:'set'|'restore', code, name, unit, periodKey:'<from>..<to>', from, to, preset, label,
+         fields:{ opening|added|removed|sold|closing : { orig, corr } }  (only the figures that changed; for 'restore' = the figures undone),
+         reason, by, byId, at (ms), target (id of the event it supersedes) }
+       The ACTIVE correction of an item+period is the newest event for that key; if that is a 'restore' there is none.
+       Every event is stored (1) in this device's own list (localStorage appStoreKey('pos_stock_report_corrections')) and (2) as an entry of the shop's
+       admin activity log (adminActivityLog, { id, timestamp, userId, userName, sectionId:'stock-report-correction', sectionLabel, srCorr:event }).
+       (2) is the audit trail AND the sync channel: that log is already synced per record by id (server MERGE_BY_ID_FIELDS, delta pushes, offline
+       merge: two devices' events are unioned, neither side is lost) so no server or sync code needed changing. A dedicated registerSyncedField list
+       would also need a payload key, a pull branch and a server merge entry (all outside this block), so the existing log is reused. Events found in
+       the synced log are merged into the local list on every render, so a second till sees them after its next pull.
+       Known limit: the server's optional "archive old history" moves log entries older than the chosen cut-off out of the live log; the events stay on
+       every device that already has them (local list) but a brand-new device would no longer receive an archived one.
+
+     HOW IT HOOKS IN (renderStockReport / printStockReport are per-app code and not edited)
+       * window.buildStockReportRows (same in all 7 apps) is wrapped: the corrected rows come back with openingValue/closingValue/openingRetail/
+         closingRetail recomputed, so the on-screen table, the totals row, srv-total-* value totals, Pharmacy's own totals and the print all agree.
+       * window.renderStockReport is wrapped: original first, then this block marks / edits the rendered rows. The rows carry NO code in the DOM, so
+         rows are matched by position to the list the report just built (same search filter, same order) and verified against the Name cell; if
+         they do not match, nothing is decorated and edit mode closes (never edits the wrong item).
+       * window.printStockReport is wrapped: footnote + "✎" marks are added to the printed sheet and to the thermal text.
+       * Everything is wrapped in try/catch; if the DOM differs the button simply does not appear. Idempotent: window.__stockRepEdit. -->
+    <style>
+        #sre-bar { display: none; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; font-size: 13px; }
+        #sre-bar .sre-note-corr { font-weight: 600; color: var(--tint-warning-text, #7a5b00); background: var(--tint-warning-bg, #fff3cd); border-radius: 6px; padding: 4px 10px; }
+        #sre-bar label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 600; cursor: pointer; min-height: 40px; }
+        #sre-bar input[type=checkbox] { width: 20px; height: 20px; }
+        .sre-btn { padding: 12px 20px; border: 0; border-radius: 8px; color: #fff; cursor: pointer; font-size: 14px; min-height: 44px; }
+        .sre-btn.sre-edit { background: var(--primary, #2C3E50); }
+        .sre-btn.sre-csv { background: var(--secondary, #34495E); }
+        .sre-btn.sre-ghost { background: transparent; color: var(--accent, #3498DB); border: 1px solid var(--accent, #3498DB); padding: 8px 14px; }
+        .sre-btn.sre-ok { background: var(--success, #2ECC71); color: #0d1114; font-weight: 700; }
+        .sre-btn.sre-no { background: var(--light, #ECF0F1); color: var(--dark, #2C3E50); }
+        .sre-btn[disabled] { opacity: .5; cursor: not-allowed; }
+        #sre-panel { display: none; background: var(--tint-info-bg, #EAF4FB); border: 1px solid var(--accent, #3498DB); border-radius: 10px; padding: 12px 14px; margin: 0 0 12px; color: var(--dark, #2C3E50); }
+        #sre-panel .sre-note { font-size: 13px; margin: 6px 0 10px; line-height: 1.45; }
+        #sre-panel label { display: block; font-weight: 600; font-size: 13px; margin: 0 0 4px; }
+        #sre-panel input[type=text] { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px 12px; min-height: 44px; }
+        #sre-panel .sre-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        #sre-sum { font-size: 13px; margin-top: 8px; font-weight: 600; }
+        #sre-sum.sre-bad { color: var(--danger, #E74C3C); }
+        #stock-report-table .sre-in { width: 110px; max-width: 100%; box-sizing: border-box; font-size: 16px; padding: 8px 10px; min-height: 44px; }
+        #stock-report-table .sre-cell { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; min-width: 0; }
+        #stock-report-table .sre-was { font-size: 11px; color: #95a5a6; }
+        #stock-report-table .sre-warn { font-size: 12px; color: var(--danger, #E74C3C); font-weight: 600; max-width: 220px; }
+        #stock-report-table tr.sre-bad-row { outline: 2px solid var(--danger, #E74C3C); outline-offset: -2px; }
+        #stock-report-table tr.sre-corr > td:nth-child(2) { border-left: 3px solid #f39c12; }
+        .sre-badge { display: inline-block; font-size: 11px; font-weight: 700; color: var(--tint-warning-text, #7a5b00); background: var(--tint-warning-bg, #fff3cd); border-radius: 10px; padding: 1px 8px; margin-left: 6px; white-space: nowrap; }
+        .sre-mark { background: none; border: 0; color: #f39c12; cursor: pointer; font-size: 16px; padding: 4px 6px; min-width: 32px; min-height: 32px; line-height: 1; }
+        .sre-rowtools { margin-top: 4px; }
+        .sre-rowtools button { font-size: 12px; padding: 6px 10px; min-height: 36px; }
+        #sre-pop { display: none; position: fixed; z-index: 100000; width: min(340px, calc(100vw - 16px)); box-sizing: border-box; background: var(--bg-surface, #fff); color: var(--dark, #2C3E50); border: 1px solid var(--border-color, #e1e6ea); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.25); padding: 12px 14px; font-size: 13px; line-height: 1.45; }
+        #sre-pop h4 { margin: 0 0 6px; font-size: 14px; padding-right: 30px; }
+        #sre-pop .sre-x { position: absolute; top: 4px; right: 6px; background: none; border: 0; font-size: 20px; cursor: pointer; color: inherit; min-width: 36px; min-height: 36px; }
+        #sre-history { display: none; margin: 0 0 12px; border: 1px solid var(--border-color, #e1e6ea); border-radius: 10px; padding: 8px 12px; background: var(--bg-surface, #fff); max-height: 420px; overflow: auto; }
+        #sre-history .sre-ev { border-bottom: 1px solid var(--border-color, #e1e6ea); padding: 8px 0; font-size: 13px; }
+        #sre-history .sre-ev:last-child { border-bottom: 0; }
+        #sre-history .sre-muted { color: #95a5a6; font-size: 12px; }
+        #sre-history .sre-tag { font-size: 11px; font-weight: 700; border-radius: 10px; padding: 1px 8px; margin-left: 4px; background: var(--tint-warning-bg, #fff3cd); color: var(--tint-warning-text, #7a5b00); }
+        #sre-history .sre-tag.sre-t-restore { background: var(--tint-info-bg, #EAF4FB); color: var(--accent, #3498DB); }
+        #sre-history .sre-tag.sre-t-active { background: var(--tint-success-bg, #eafaf1); color: var(--tint-success-text, #1e8449); }
+        #sre-history button { margin-top: 6px; font-size: 12px; padding: 6px 12px; min-height: 40px; }
+        @media (max-width: 700px) {
+            #stock-report-table .sre-in { width: 100%; }
+            #stock-report-table .sre-warn { max-width: none; }
+            #sre-pop { left: 8px !important; right: 8px !important; top: auto !important; bottom: 8px; width: auto; }
+            #sre-panel .sre-actions .sre-btn { flex: 1 1 140px; }
+        }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__stockRepEdit) return;
+        try {
+            var FIELDS = ['opening', 'added', 'removed', 'sold', 'closing'];
+            var LABEL = { opening: 'Opening', added: 'Added', removed: 'Removed', sold: 'Sold', closing: 'Closing' };
+            var SEP = '\u0001';
+            var S = { editing: false, showOrig: false, raw: null, shown: null, draft: {}, editKey: '', evc: null, installed: false, inPost: false };
+
+            function $(id) { return document.getElementById(id); }
+            function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+            function num(n) { n = Number(n); return isFinite(n) ? Math.round(n * 1000) / 1000 : 0; }
+            function toast(m, err) { try { if (typeof showToast === 'function') showToast(m, !!err); } catch (e) { /* cosmetic */ } }
+            function admin() { try { if (typeof isAdminServing === 'function') return !!isAdminServing(); return typeof currentServer === 'undefined' || !currentServer; } catch (e) { return false; } }
+            function ownShop() { try { return typeof viewedBranchId === 'undefined' || viewedBranchId === 'self'; } catch (e) { return true; } }
+            function periodRange() { try { return typeof stockReportPeriodRange === 'function' ? stockReportPeriodRange() : null; } catch (e) { return null; } }
+            function pk(range) { return range.from + '..' + range.to; }
+            function labelOf(range) { try { return typeof stockReportPeriodLabel === 'function' ? stockReportPeriodLabel(range) : range.from + ' - ' + range.to; } catch (e) { return range.from + ' - ' + range.to; } }
+            function when(at) { try { return new Date(at).toLocaleString('en-GB'); } catch (e) { return ''; } }
+            function newId() { try { if (typeof genSaleId === 'function') return String(genSaleId()); } catch (e) { /* fall through */ } return 'src-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+            function byName() { try { return typeof activeServerName === 'function' ? activeServerName() : 'Admin'; } catch (e) { return 'Admin'; } }
+            function byId() { try { return (typeof currentServer !== 'undefined' && currentServer) ? currentServer.id : '__owner__'; } catch (e) { return '__owner__'; } }
+
+            // ---- storage: this device's own list + the shop's synced admin activity log -----------------------------------------------------
+            function lkey() { try { return typeof appStoreKey === 'function' ? appStoreKey('pos_stock_report_corrections') : 'pos_stock_report_corrections'; } catch (e) { return 'pos_stock_report_corrections'; } }
+            function logKey() { try { return (window.__LOG_KEYS && window.__LOG_KEYS.adminActivityLog) || 'pos_admin_activity_log'; } catch (e) { return 'pos_admin_activity_log'; } }
+            function loadLocal() { try { var a = JSON.parse(localStorage.getItem(lkey()) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+            function saveLocal(a) { try { var v = JSON.stringify(a); if (typeof safeSetItem === 'function') safeSetItem(lkey(), v); else localStorage.setItem(lkey(), v); } catch (e) { /* kept in the log */ } }
+            function cmp(a, b) { return (Number(a.at) || 0) - (Number(b.at) || 0) || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0); }
+            function events() {
+                if (S.evc) return S.evc;
+                var seen = {}, out = [], added = false;
+                function add(e) {
+                    if (!e || typeof e !== 'object' || !e.id || seen[e.id]) return false;
+                    if ((e.kind !== 'set' && e.kind !== 'restore') || !e.code || !e.from || !e.to) return false;
+                    seen[e.id] = 1; out.push(e); return true;
+                }
+                loadLocal().forEach(function (e) { add(e); });
+                try {
+                    var log = (typeof adminActivityLog !== 'undefined' && Array.isArray(adminActivityLog)) ? adminActivityLog : [];
+                    log.forEach(function (x) { if (x && x.srCorr && add(x.srCorr)) added = true; });
+                } catch (e) { /* local list only */ }
+                if (added) saveLocal(out);
+                out.sort(cmp);
+                S.evc = out; setTimeout(function () { S.evc = null; }, 0);
+                return out;
+            }
+            function active() {
+                var m = new Map();
+                events().forEach(function (e) { m.set(e.code + SEP + e.from + '..' + e.to, e.kind === 'set' ? e : null); });
+                var r = new Map(); m.forEach(function (v, k) { if (v) r.set(k, v); });
+                return r;
+            }
+            function commit(evs) {
+                var loc = loadLocal(); evs.forEach(function (e) { loc.push(e); }); saveLocal(loc);
+                try {
+                    if (typeof adminActivityLog !== 'undefined' && Array.isArray(adminActivityLog)) {
+                        evs.forEach(function (e) {
+                            var ch = FIELDS.filter(function (f) { return e.fields && e.fields[f]; }).map(function (f) { return LABEL[f] + ' ' + num(e.fields[f].orig) + ' -> ' + num(e.fields[f].corr); }).join(', ');
+                            adminActivityLog.push({ id: e.id, timestamp: new Date(e.at).toISOString(), userId: e.byId, userName: e.by, sectionId: 'stock-report-correction',
+                                sectionLabel: '📦 Stock report ' + (e.kind === 'restore' ? 'original restored: ' : 'corrected: ') + e.name + ' (' + e.label + ') ' + ch + ' - ' + e.reason, srCorr: e });
+                        });
+                        var v = JSON.stringify(adminActivityLog);
+                        if (typeof safeSetItem === 'function') safeSetItem(logKey(), v); else localStorage.setItem(logKey(), v);
+                    }
+                } catch (e) { /* the local list still has it */ }
+                try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* offline: it goes with the next push */ }
+                S.evc = null;
+            }
+            function mkEvent(kind, raw, range, fields, reason, target) {
+                return { id: newId(), kind: kind, code: raw.code, name: raw.name, unit: raw.unit || '', periodKey: pk(range), from: range.from, to: range.to, preset: range.preset || '',
+                    label: labelOf(range), fields: fields, reason: reason, by: byName(), byId: byId(), at: Math.max(Date.now(), (target && target.at ? Number(target.at) + 1 : 0)), target: target ? target.id : '' };
+            }
+
+            // ---- the corrected rows (wrapper of buildStockReportRows) -----------------------------------------------------------------------
+            function applyCorr(r, c) {
+                var n = Object.assign({}, r), f = c.fields || {}, o = {};
+                FIELDS.forEach(function (k) { o[k] = r[k]; if (f[k] && isFinite(Number(f[k].corr))) n[k] = Number(f[k].corr); });
+                n.openingValue = n.opening * (n.costPrice || 0); n.closingValue = n.closing * (n.costPrice || 0);
+                n.openingRetail = n.opening * (n.retailPrice || 0); n.closingRetail = n.closing * (n.retailPrice || 0);
+                n._corr = c; n._orig = o;
+                return n;
+            }
+            function wrapBuild() {
+                var orig = window.buildStockReportRows;
+                if (typeof orig !== 'function' || orig.__sre) return typeof orig === 'function';
+                var w = function (range) {
+                    var rows = orig.apply(this, arguments);
+                    try {
+                        S.raw = rows; S.shown = rows;
+                        if (!Array.isArray(rows) || !range || S.showOrig || !ownShop()) return rows;
+                        var act = active(); if (!act.size) return rows;
+                        var key = pk(range), hit = false;
+                        var out = rows.map(function (r) { var c = act.get(r.code + SEP + key); if (c) { hit = true; return applyCorr(r, c); } return r; });
+                        if (!hit) return rows;
+                        S.shown = out; return out;
+                    } catch (e) { return rows; }
+                };
+                w.__sre = true; window.buildStockReportRows = w; return true;
+            }
+
+            // ---- DOM helpers -----------------------------------------------------------------------------------------------------------------
+            function colIndex() {
+                var ths = document.querySelectorAll('#stock-report-table thead th'), c = {};
+                for (var i = 0; i < ths.length; i++) {
+                    var t = (ths[i].textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                    if (t === 'name') c.name = i;
+                    FIELDS.forEach(function (f) { if (t === f) c[f] = i; });
+                }
+                return (c.name != null && c.opening != null && c.closing != null) ? c : null;
+            }
+            function dataRows(tb) { return Array.prototype.filter.call(tb.children, function (tr) { return tr.tagName === 'TR' && !tr.classList.contains('report-more-row') && tr.children.length >= 7; }); }
+            function shownList() {
+                var q = ''; try { q = (($('stock-report-search-input') || {}).value || '').trim().toLowerCase(); } catch (e) { /* none */ }
+                var l = S.shown || [];
+                return q ? l.filter(function (r) { return String(r.name).toLowerCase().includes(q); }) : l;
+            }
+            function tipText(c, f) {
+                var x = c.fields[f];
+                return LABEL[f] + ' corrected from ' + num(x.orig) + ' to ' + num(x.corr) + ' by ' + c.by + ', ' + when(c.at) + '. Reason: ' + c.reason;
+            }
+            function rowVals(tr) {
+                var v = {}, r = (S.shown || []).find(function (x) { return x.code === tr.dataset.code; });
+                FIELDS.forEach(function (f) {
+                    var el = tr.querySelector('.sre-in[data-f="' + f + '"]');
+                    v[f] = el ? (el.value.trim() === '' ? NaN : Number(el.value)) : (r ? Number(r[f]) : 0);
+                });
+                return v;
+            }
+            function mismatch(v) { return isFinite(v.opening + v.added + v.removed + v.sold + v.closing) && Math.abs(v.opening + v.added - v.removed - v.sold - v.closing) > 0.0005; }
+            function warnText(v) { return '⚠ ' + num(v.opening) + ' + ' + num(v.added) + ' - ' + num(v.removed) + ' - ' + num(v.sold) + ' = ' + num(v.opening + v.added - v.removed - v.sold) + ', but Closing says ' + num(v.closing); }
+            function checkRow(tr, cols) {
+                var v = rowVals(tr), bad = mismatch(v), td = tr.children[cols.closing], w = td && td.querySelector('.sre-warn');
+                tr.classList.toggle('sre-bad-row', bad);
+                if (w) w.textContent = bad ? warnText(v) : '';
+            }
+
+            function decorate(tb, list, cols) {
+                var trs = dataRows(tb), act = S.showOrig ? active() : null, key = null;
+                if (act) { var rg = periodRange(); key = rg ? pk(rg) : null; }
+                for (var i = 0; i < trs.length; i++) {
+                    var tr = trs[i], r = list[i], nameTd = tr.children[cols.name];
+                    tr.dataset.code = r.code;
+                    var c = r._corr || (act && key ? act.get(r.code + SEP + key) : null);
+                    if (S.editing) {
+                        var d = S.draft[r.code] || {};
+                        FIELDS.forEach(function (f) {
+                            if (cols[f] == null) return;
+                            var td = tr.children[cols[f]], val = d[f] !== undefined ? d[f] : num(r[f]);
+                            var was = r._orig && num(r._orig[f]) !== num(r[f]) ? '<span class="sre-was">was ' + num(r._orig[f]) + '</span>' : '';
+                            td.innerHTML = '<div class="sre-cell"><input type="number" step="any" inputmode="decimal" class="sre-in" data-f="' + f + '" data-code="' + esc(r.code) + '" aria-label="' + esc(r.name + ' ' + LABEL[f]) + '" value="' + esc(val) + '">' + was + (f === 'closing' ? '<span class="sre-warn"></span>' : '') + '</div>';
+                        });
+                        if (r._corr) {
+                            nameTd.insertAdjacentHTML('beforeend', ' <span class="sre-badge">✎ corrected</span><div class="sre-rowtools"><button type="button" class="sre-btn sre-ghost" data-sre-rowrestore="' + esc(r.code) + '">↩ Restore original</button></div>');
+                            tr.classList.add('sre-corr');
+                        }
+                        checkRow(tr, cols);
+                    } else if (c) {
+                        tr.classList.add('sre-corr');
+                        if (r._corr) {
+                            nameTd.insertAdjacentHTML('beforeend', ' <span class="sre-badge" title="Corrected by ' + esc(c.by) + ', ' + esc(when(c.at)) + '. Reason: ' + esc(c.reason) + '">✎ corrected</span>');
+                            FIELDS.forEach(function (f) {
+                                if (cols[f] == null || !c.fields[f]) return;
+                                tr.children[cols[f]].insertAdjacentHTML('beforeend', ' <button type="button" class="sre-mark" data-f="' + f + '" data-code="' + esc(r.code) + '" title="' + esc(tipText(c, f)) + '" aria-label="' + esc(tipText(c, f)) + '">✎</button>');
+                            });
+                        } else {
+                            nameTd.insertAdjacentHTML('beforeend', ' <span class="sre-badge" title="This item has a correction that is hidden while original figures are shown">✎ has correction (hidden)</span>');
+                        }
+                    }
+                }
+            }
+
+            // ---- UI scaffolding --------------------------------------------------------------------------------------------------------------
+            function ui() {
+                if (!$('stock-report-tab') || !$('stock-report-table') || !$('stock-report-period-controls')) return false;
+                if ($('sre-bar')) return true;
+                var ctl = $('stock-report-period-controls');
+                ctl.insertAdjacentHTML('beforeend', '<button type="button" id="sre-edit-btn" class="sre-btn sre-edit" style="display:none">✏️ Edit stock report</button><button type="button" id="sre-csv-btn" class="sre-btn sre-csv">⬇ Export CSV</button>');
+                var anchor = $('stock-report-period-label') || ctl;
+                anchor.insertAdjacentHTML('afterend',
+                    '<div id="sre-bar"><span class="sre-note-corr" id="sre-bar-txt"></span><label id="sre-orig-lbl"><input type="checkbox" id="sre-orig"> Show original figures</label><button type="button" id="sre-hist-btn" class="sre-btn sre-ghost"></button></div>'
+                    + '<div id="sre-panel"><strong id="sre-ptitle">✏️ Editing the stock report</strong>'
+                    + '<p class="sre-note">Corrections change what this report shows; they don\'t change current stock — use Stock Take for that. Nothing is deleted: the original history stays as it was, and every correction is recorded with your name, the time and the reason. A corrected figure stays fixed even if more sales or restocks are recorded for this period later.</p>'
+                    + '<label for="sre-reason">Reason for these corrections (required)</label><input type="text" id="sre-reason" maxlength="300" placeholder="e.g. Closing was wrong because of a restock bug on 12 Sep" autocomplete="off">'
+                    + '<div id="sre-sum"></div><div class="sre-actions"><button type="button" id="sre-save" class="sre-btn sre-ok">💾 Save corrections</button><button type="button" id="sre-cancel" class="sre-btn sre-no">Cancel</button></div></div>'
+                    + '<div id="sre-history"></div>');
+                var pop = document.createElement('div'); pop.id = 'sre-pop'; pop.setAttribute('role', 'dialog'); document.body.appendChild(pop);
+                return true;
+            }
+            function refreshBar() {
+                if (!ui()) return;
+                var own = ownShop(), adm = admin(), range = periodRange(), act = active(), n = 0, key = range ? pk(range) : '';
+                act.forEach(function (c) { if (c.from + '..' + c.to === key) n++; });
+                var eb = $('sre-edit-btn'); if (eb) eb.style.display = (adm && own && !S.editing) ? '' : 'none';
+                var all = events().length, txt = $('sre-bar-txt'), bar = $('sre-bar');
+                txt.textContent = n ? '✎ ' + n + ' item' + (n === 1 ? '' : 's') + ' in this period ' + (n === 1 ? 'has' : 'have') + ' corrected figures' : '';
+                txt.style.display = n ? '' : 'none';
+                $('sre-orig-lbl').style.display = n ? '' : 'none'; $('sre-orig').checked = !!S.showOrig;
+                var hb = $('sre-hist-btn'); hb.style.display = all ? '' : 'none'; hb.textContent = '🕘 Corrections history (' + all + ')';
+                bar.style.display = (n || all) ? 'flex' : 'none';
+                $('sre-panel').style.display = S.editing ? 'block' : 'none';
+                if (S.editing) $('sre-ptitle').textContent = '✏️ Editing the stock report — ' + (range ? labelOf(range) : '');
+                if (!all) $('sre-history').style.display = 'none';
+                if ($('sre-history').style.display === 'block') renderHistory();
+            }
+
+            // ---- edit mode ---------------------------------------------------------------------------------------------------------------------
+            // Water's popup runs the callback without closing itself first (the shops' popups close before it), so close it here: harmless elsewhere.
+            function closePwModal() { try { if (typeof closeAdminPwModal === 'function') closeAdminPwModal(); else { var m = $('admin-pw-modal'); if (m) m.style.display = 'none'; } } catch (e) { /* cosmetic */ } }
+            function askPw(msg, fn) {
+                if (typeof requireManagementApproval === 'function') requireManagementApproval(msg, function () { closePwModal(); fn.apply(this, arguments); });
+                else toast('The management password prompt is not available here.', true);
+            }
+            function renderNow() { try { if (typeof renderStockReport === 'function') renderStockReport(); } catch (e) { /* never throw */ } }
+            function startEdit() {
+                if (!admin() || !ownShop()) { toast('Only the admin can edit the stock report.', true); return; }
+                var range = periodRange(); if (!range) return;
+                askPw('Enter the management password to edit the Stock Report figures for ' + labelOf(range) + '.', function () {
+                    if (!admin()) return;
+                    var rg = periodRange(); if (!rg) return;
+                    S.editing = true; S.showOrig = false; S.draft = {}; S.editKey = pk(rg);
+                    try { $('sre-reason').value = ''; } catch (e) { /* ui missing */ }
+                    renderNow();
+                    try { var p = $('sre-panel'); if (p && p.scrollIntoView) p.scrollIntoView({ block: 'nearest' }); } catch (e) { /* cosmetic */ }
+                });
+            }
+            function exitEdit(msg, noRender) {
+                S.editing = false; S.draft = {}; S.editKey = '';
+                if (msg) toast(msg);
+                if (!noRender) renderNow();
+            }
+            function updateSummary() {
+                var el = $('sre-sum'), sv = $('sre-save'); if (!el) return;
+                var ch = collect(), bad = ch.items.filter(function (c) { return c.mismatch; }).length;
+                el.className = bad || ch.error ? 'sre-bad' : '';
+                el.textContent = ch.items.length + ' row' + (ch.items.length === 1 ? '' : 's') + ' changed' + (bad ? ' · ' + bad + ' do' + (bad === 1 ? 'es' : '') + ' not add up (opening + added − removed − sold ≠ closing)' : '') + (ch.error ? ' · ' + ch.error : '');
+                if (sv) sv.disabled = !ch.items.length || !!ch.error;
+            }
+            // Turns the typed drafts into correction records (relative to the ORIGINAL figures), or a restore when a row is typed back to its original.
+            function collect() {
+                var out = { items: [], error: '' }, rawBy = {}, curBy = {};
+                (S.raw || []).forEach(function (r) { rawBy[r.code] = r; });
+                (S.shown || []).forEach(function (r) { curBy[r.code] = r; });
+                Object.keys(S.draft).forEach(function (code) {
+                    var raw = rawBy[code], cur = curBy[code], d = S.draft[code];
+                    if (!raw || !cur) return;
+                    var v = {}, bad = '';
+                    FIELDS.forEach(function (f) {
+                        var typed = d[f];
+                        if (typed === undefined) { v[f] = Number(cur[f]); return; }
+                        var s = String(typed).trim(), x = Number(s);
+                        if (s === '' || !isFinite(x)) { bad = raw.name + ': ' + LABEL[f] + ' needs a number'; return; }
+                        if ((f === 'added' || f === 'removed' || f === 'sold') && x < 0) { bad = raw.name + ': ' + LABEL[f] + ' cannot be negative'; return; }
+                        v[f] = x;
+                    });
+                    if (bad) { if (!out.error) out.error = bad; return; }
+                    var fields = {}, any = false;
+                    FIELDS.forEach(function (f) { if (Math.abs(num(v[f]) - num(raw[f])) > 0.0004) { fields[f] = { orig: num(raw[f]), corr: num(v[f]) }; any = true; } });
+                    var changedVsCur = FIELDS.some(function (f) { return Math.abs(num(v[f]) - num(cur[f])) > 0.0004; });
+                    if (!changedVsCur) return;
+                    out.items.push({ code: code, raw: raw, cur: cur, fields: fields, restore: !any, mismatch: mismatch(v) });
+                });
+                return out;
+            }
+            function save() {
+                try {
+                    if (!S.editing) return;
+                    if (!admin() || !ownShop()) { toast('Only the admin can save corrections.', true); return; }
+                    var rg = periodRange(); if (!rg || pk(rg) !== S.editKey) { exitEdit('The period changed, so edit mode was closed. Nothing was saved.'); return; }
+                    var reasonEl = $('sre-reason'), reason = ((reasonEl && reasonEl.value) || '').trim();
+                    var ch = collect();
+                    if (ch.error) { toast(ch.error, true); return; }
+                    if (!ch.items.length) { toast('Nothing has changed yet.', true); return; }
+                    if (reason.length < 3) { toast('Type the reason for these corrections first.', true); try { reasonEl.focus(); } catch (e) { /* cosmetic */ } return; }
+                    var bad = ch.items.filter(function (c) { return c.mismatch; });
+                    if (bad.length && !confirm(bad.length + ' row' + (bad.length === 1 ? '' : 's') + ' do' + (bad.length === 1 ? 'es' : '') + ' not add up (opening + added − removed − sold ≠ closing), for example "' + bad[0].raw.name + '".\n\nSave these figures anyway?')) return;
+                    var act = active(), key = pk(rg), evs = [];
+                    ch.items.forEach(function (c) {
+                        var prev = act.get(c.code + SEP + key);
+                        if (c.restore) { if (prev) evs.push(mkEvent('restore', c.raw, rg, prev.fields, reason, prev)); return; }
+                        evs.push(mkEvent('set', c.raw, rg, c.fields, reason, prev || null));
+                    });
+                    if (!evs.length) { exitEdit('Nothing to save.'); return; }
+                    commit(evs);
+                    exitEdit(null, true);
+                    renderNow();
+                    toast('Saved ' + evs.length + ' stock report correction' + (evs.length === 1 ? '' : 's') + '. Current stock was not changed.');
+                } catch (e) { toast('Could not save the corrections.', true); }
+            }
+            function requestRestore(code, from, to) {
+                if (!admin() || !ownShop()) { toast('Only the admin can restore original figures.', true); return; }
+                var c = active().get(code + SEP + from + '..' + to);
+                if (!c) { toast('There is no correction to restore for that item.', true); return; }
+                askPw('Enter the management password to restore the original figures of "' + c.name + '" (' + c.label + ').', function () { doRestore(c.id); });
+            }
+            function doRestore(setId) {
+                try {
+                    if (!admin() || !ownShop()) return;
+                    var set = events().find(function (e) { return e.id === setId; });
+                    var cur = set && active().get(set.code + SEP + set.from + '..' + set.to);
+                    if (!set || !cur || cur.id !== set.id) { toast('That correction is no longer active.', true); return; }
+                    var why = ''; try { why = (($('sre-reason') || {}).value || '').trim(); } catch (e) { /* none */ }
+                    if (!S.editing || why.length < 3) {
+                        var p = prompt('Reason for restoring the original figures of "' + set.name + '" (required):', '');
+                        if (p === null) return;
+                        why = String(p).trim();
+                    }
+                    if (why.length < 3) { toast('A reason is required to restore the original figures.', true); return; }
+                    var rg = { from: set.from, to: set.to, preset: set.preset };
+                    commit([mkEvent('restore', set, rg, set.fields, why, set)]);
+                    delete S.draft[set.code];
+                    closePop(); renderNow();
+                    toast('Original figures restored for "' + set.name + '".');
+                } catch (e) { toast('Could not restore the original figures.', true); }
+            }
+
+            // ---- popover + history -------------------------------------------------------------------------------------------------------------
+            function closePop() { var p = $('sre-pop'); if (p) p.style.display = 'none'; }
+            function showPop(btn) {
+                var code = btn.getAttribute('data-code'), f = btn.getAttribute('data-f');
+                var r = (S.shown || []).find(function (x) { return x.code === code; }), c = r && r._corr, p = $('sre-pop');
+                if (!c || !p) return;
+                var rows = FIELDS.filter(function (k) { return c.fields[k]; }).map(function (k) { return '<div' + (k === f ? ' style="font-weight:700"' : '') + '>' + LABEL[k] + ': ' + num(c.fields[k].orig) + ' → <strong>' + num(c.fields[k].corr) + '</strong></div>'; }).join('');
+                p.innerHTML = '<button type="button" class="sre-x" data-sre-close="1" aria-label="Close">×</button><h4>✎ Corrected figures — ' + esc(c.name) + '</h4>' + rows
+                    + '<div style="margin-top:6px"><strong>By:</strong> ' + esc(c.by) + '<br><strong>When:</strong> ' + esc(when(c.at)) + '<br><strong>Why:</strong> ' + esc(c.reason) + '</div>'
+                    + (admin() && ownShop() ? '<button type="button" class="sre-btn sre-ghost" style="margin-top:8px" data-sre-rowrestore="' + esc(code) + '">↩ Restore original</button>' : '');
+                p.style.display = 'block';
+                if (window.innerWidth > 700) {
+                    var b = btn.getBoundingClientRect(), w = p.offsetWidth, h = p.offsetHeight;
+                    var left = Math.min(Math.max(8, b.left), window.innerWidth - w - 8), top = b.bottom + 6; if (top + h > window.innerHeight - 8) top = Math.max(8, b.top - h - 6);
+                    p.style.left = left + 'px'; p.style.top = top + 'px'; p.style.right = 'auto'; p.style.bottom = 'auto';
+                }
+            }
+            function renderHistory() {
+                var el = $('sre-history'); if (!el) return;
+                var evs = events().slice().reverse(), act = active();
+                if (!evs.length) { el.innerHTML = '<div class="sre-muted">No corrections yet.</div>'; return; }
+                var adm = admin() && ownShop();
+                el.innerHTML = '<div class="sre-muted" style="margin:4px 0">Every correction and restore, newest first. Restoring never deletes anything — it adds a new entry.</div>' + evs.map(function (e) {
+                    var a = act.get(e.code + SEP + e.from + '..' + e.to), isActive = e.kind === 'set' && a && a.id === e.id;
+                    var ch = FIELDS.filter(function (f) { return e.fields && e.fields[f]; }).map(function (f) { return LABEL[f] + ' ' + num(e.fields[f].orig) + ' → ' + num(e.fields[f].corr); }).join(' · ');
+                    return '<div class="sre-ev"><div><strong>' + esc(e.name) + '</strong> · ' + esc(e.label) + ' <span class="sre-tag ' + (e.kind === 'restore' ? 'sre-t-restore' : '') + '">' + (e.kind === 'restore' ? 'Original restored' : 'Correction') + '</span>' + (isActive ? ' <span class="sre-tag sre-t-active">Active</span>' : '') + '</div>'
+                        + '<div>' + (e.kind === 'restore' ? 'Undid: ' : '') + esc(ch) + '</div><div class="sre-muted">By ' + esc(e.by) + ' · ' + esc(when(e.at)) + ' · Reason: ' + esc(e.reason) + '</div>'
+                        + (isActive && adm ? '<button type="button" class="sre-btn sre-ghost" data-sre-histrestore="' + esc(e.id) + '">↩ Restore original</button>' : '') + '</div>';
+                }).join('');
+            }
+
+            // ---- CSV + print -------------------------------------------------------------------------------------------------------------------
+            function csvCell(v) { try { if (typeof csvEscape === 'function') return csvEscape(v); } catch (e) { /* local */ } var s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+            function exportCsv() {
+                try {
+                    var range = periodRange(); if (!range) return;
+                    var rows = window.buildStockReportRows(range);
+                    var q = (($('stock-report-search-input') || {}).value || '').trim().toLowerCase();
+                    if (q) rows = rows.filter(function (r) { return String(r.name).toLowerCase().includes(q); });
+                    var head = ['No.', 'Code', 'Name', 'Unit', 'Opening', 'Added', 'Removed', 'Sold', 'Closing', 'Opening Value (Cost)', 'Closing Value (Cost)', 'Opening Value (Retail)', 'Closing Value (Retail)',
+                        'Corrected', 'Original Opening', 'Original Added', 'Original Removed', 'Original Sold', 'Original Closing', 'Corrected by', 'Corrected at', 'Reason'];
+                    var lines = [['Stock Report', labelOf(range)].map(csvCell).join(','), head.map(csvCell).join(',')];
+                    rows.forEach(function (r, i) {
+                        var c = r._corr, o = r._orig || r;
+                        lines.push([i + 1, r.code, r.name, r.unit || '', num(r.opening), num(r.added), num(r.removed), num(r.sold), num(r.closing), (r.openingValue || 0).toFixed(2), (r.closingValue || 0).toFixed(2), (r.openingRetail || 0).toFixed(2), (r.closingRetail || 0).toFixed(2),
+                            c ? 'Yes' : 'No', num(o.opening), num(o.added), num(o.removed), num(o.sold), num(o.closing), c ? c.by : '', c ? new Date(c.at).toISOString() : '', c ? c.reason : ''].map(csvCell).join(','));
+                    });
+                    var blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), name = 'stock-report-' + range.from + (range.to !== range.from ? '_to_' + range.to : '') + '.csv';
+                    if (typeof downloadBlob === 'function') downloadBlob(blob, name);
+                    else { var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
+                } catch (e) { toast('Could not export the CSV.', true); }
+            }
+            function wrapPrint() {
+                var orig = window.printStockReport;
+                if (typeof orig !== 'function' || orig.__sre) return;
+                var w = function () {
+                    var r = orig.apply(this, arguments);
+                    try {
+                        var rows = S.shown || [], hit = rows.filter(function (x) { return x._corr; });
+                        var body = $('sales-report-body');
+                        if (body && (hit.length || S.showOrig)) {
+                            var trs = body.querySelectorAll('table tbody tr');
+                            rows.forEach(function (x, i) { if (x._corr && trs[i] && trs[i].children[1]) trs[i].children[1].insertAdjacentHTML('beforeend', ' ✎'); });
+                            body.insertAdjacentHTML('beforeend', S.showOrig ? '<p style="font-size:12px;margin-top:8px;">Original figures shown: stock report corrections are hidden on this sheet.</p>'
+                                : '<p style="font-size:12px;margin-top:8px;">✎ ' + hit.length + ' item' + (hit.length === 1 ? '' : 's') + ' with corrected figures (corrected by the admin; the original history is unchanged): ' + hit.map(function (x) { return esc(x.name); }).join(', ') + '.</p>');
+                        }
+                        if (hit.length && typeof lastReportText === 'string') lastReportText += '\n' + '* ' + hit.length + ' item(s) with corrected figures: ' + hit.map(function (x) { return x.name; }).join(', ');
+                    } catch (e) { /* the plain report still prints */ }
+                    return r;
+                };
+                w.__sre = true; window.printStockReport = w;
+            }
+
+            // ---- post-render hook --------------------------------------------------------------------------------------------------------------
+            function post() {
+                if (S.inPost) return; S.inPost = true;
+                try {
+                    if (!ui()) return;
+                    var tb = document.querySelector('#stock-report-table tbody'), own = ownShop();
+                    if (S.editing) {
+                        var rg = periodRange();
+                        if (!admin() || !own) exitEdit('Edit mode was closed.', true);
+                        else if (!rg || pk(rg) !== S.editKey) exitEdit('The period changed, so edit mode was closed. Nothing was saved.', true);
+                    }
+                    var list = shownList(), cols = colIndex();
+                    if (tb && cols && S.shown) {
+                        var trs = dataRows(tb), okMap = trs.length <= list.length;
+                        for (var i = 0; okMap && i < trs.length; i++) okMap = String((trs[i].children[cols.name] || {}).textContent || '').trim() === String(list[i].name == null ? '' : list[i].name).trim();
+                        var act = S.showOrig ? active() : null, needs = S.editing || list.some(function (r) { return r._corr; }) || (act && act.size);
+                        if (okMap) { if (needs) decorate(tb, list, cols); }
+                        else if (S.editing) exitEdit('The report layout is not what this edit expects, so edit mode was closed. Nothing was saved.', true);
+                    } else if (S.editing) exitEdit('Edit mode is not available on this screen.', true);
+                    refreshBar();
+                    if (S.editing) updateSummary();
+                    closePop();
+                } catch (e) { /* the plain report stays */ } finally { S.inPost = false; }
+            }
+            function wrapRender() {
+                var orig = window.renderStockReport;
+                if (typeof orig !== 'function') return false;
+                if (orig.__sre) return true;
+                var w = function () {
+                    S.shown = null;
+                    var r = orig.apply(this, arguments);
+                    post();
+                    return r;
+                };
+                w.__sre = true; window.renderStockReport = w; return true;
+            }
+
+            // ---- events (document-level, so they survive the report re-rendering) -----------------------------------------------------------------
+            document.addEventListener('click', function (ev) {
+                try {
+                    var t = ev.target; if (!t || !t.closest) return;
+                    var b;
+                    if ((b = t.closest('#sre-edit-btn'))) { startEdit(); return; }
+                    if ((b = t.closest('#sre-csv-btn'))) { exportCsv(); return; }
+                    if ((b = t.closest('#sre-save'))) { save(); return; }
+                    if ((b = t.closest('#sre-cancel'))) { exitEdit('Edit mode closed. Nothing was changed.'); return; }
+                    if ((b = t.closest('#sre-hist-btn'))) { var h = $('sre-history'); if (h) { var open = h.style.display !== 'block'; h.style.display = open ? 'block' : 'none'; if (open) renderHistory(); } return; }
+                    if ((b = t.closest('.sre-mark'))) { showPop(b); ev.stopPropagation(); return; }
+                    if ((b = t.closest('[data-sre-rowrestore]'))) { var rg = periodRange(); if (rg) requestRestore(b.getAttribute('data-sre-rowrestore'), rg.from, rg.to); return; }
+                    if ((b = t.closest('[data-sre-histrestore]'))) { var e0 = events().find(function (x) { return x.id === b.getAttribute('data-sre-histrestore'); }); if (e0) requestRestore(e0.code, e0.from, e0.to); return; }
+                    if (t.closest('[data-sre-close]')) { closePop(); return; }
+                    var tl = t.closest('.tab-link');
+                    if (S.editing && tl && tl.getAttribute('data-tab') !== 'stock-report-tab') { exitEdit('Edit mode closed. Nothing was changed.', true); return; }
+                    var pop = $('sre-pop'); if (pop && pop.style.display === 'block' && !t.closest('#sre-pop')) closePop();
+                } catch (e) { /* never throw from a click */ }
+            }, true);
+            document.addEventListener('change', function (ev) {
+                try { if (ev.target && ev.target.id === 'sre-orig') { S.showOrig = !!ev.target.checked; renderNow(); } } catch (e) { /* ignore */ }
+            });
+            document.addEventListener('input', function (ev) {
+                try {
+                    var el = ev.target; if (!el || !el.classList || !el.classList.contains('sre-in')) return;
+                    var code = el.getAttribute('data-code'), f = el.getAttribute('data-f'), cur = (S.shown || []).find(function (x) { return x.code === code; });
+                    if (!cur) return;
+                    var d = S.draft[code] || (S.draft[code] = {});
+                    if (el.value.trim() !== '' && Math.abs(Number(el.value) - Number(cur[f])) < 0.0004) delete d[f]; else d[f] = el.value;
+                    if (!Object.keys(d).length) delete S.draft[code];
+                    var cols = colIndex(), tr = el.closest('tr'); if (tr && cols) checkRow(tr, cols);
+                    updateSummary();
+                } catch (e) { /* ignore */ }
+            });
+            document.addEventListener('keydown', function (ev) { try { if (ev.key === 'Escape') closePop(); } catch (e) { /* ignore */ } });
+
+            // ---- install (retried: the app script may define its functions after this block on some pages) -----------------------------------------
+            function install() {
+                if (S.installed) return true;
+                if (typeof window.buildStockReportRows !== 'function' || typeof window.renderStockReport !== 'function') return false;
+                if (!$('stock-report-table') || !$('stock-report-period-controls')) return false;
+                wrapBuild(); wrapPrint(); wrapRender(); S.installed = true;
+                try { ui(); refreshBar(); if (active().size) setTimeout(renderNow, 0); } catch (e) { /* the report works without it */ }
+                return true;
+            }
+            window.__stockRepEdit = {
+                events: function () { return events().slice(); }, active: function () { return Array.from(active().values()); },
+                isEditing: function () { return S.editing; }, install: install, exportCsv: exportCsv
+            };
+            if (!install()) {
+                var tries = 0, tm = setInterval(function () { tries++; try { if (install() || tries > 20) clearInterval(tm); } catch (e) { clearInterval(tm); } }, 250);
+            }
+        } catch (e) { /* the Stock Report simply stays as it was */ }
+    })();
+    </script>

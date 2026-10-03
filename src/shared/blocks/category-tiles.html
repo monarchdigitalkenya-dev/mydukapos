@@ -1,0 +1,508 @@
+<!-- CATEGORY TILES ------------------------------------------------------------
+         Category pictures for the Sales Counter. The owner (Settings, "Category images") gives each category a small picture and switches on "Show category
+         image tiles on the Sales Counter". The counter then opens on a grid of big picture tiles (name + item count under each); tapping a tile opens that
+         category - its sub-categories first where the app has them (Hotel), otherwise the product grid, filtered to that category. "All categories" brings
+         the tiles back. Typing in the search box shows normal results exactly as before; clearing it returns to the tiles. The switch is OFF until the owner
+         turns it on, so nothing changes by itself.
+         HOW IT WORKS WITH THE APP: this block never filters or sells anything itself. The product grid is the app's own renderItemImageGrid: in Hotel the tile tap
+         sets the very same state the category chips set (hospCatSelSet / the sub-category key) before the grid is drawn; in the other apps (no category state of
+         their own) the first inventory.filter / forEach of that one render is limited to the chosen category, then removed again. Every render of the grid
+         (a cart tap draws it again) re-draws the tiles from the remembered position, so adding an item never bounces the cashier back to the root. The old chip
+         row stays in the page (the app keeps drawing it), it is only hidden while the tiles are on.
+         DATA: localStorage pos_category_images = {"Category" or "Category > Sub": small JPEG data-URL} (max 60, each scaled to 240 px / ~20 KB) and
+         pos_cat_tiles = "true"/"false". Both travel with the shop's settings (collectSyncPayload adds categoryImages + catTilesOn only once THIS device has
+         its own copy; applyRemotePayload applies them). slimPayloadForPush leaves the pictures out of a push when the server already has the same set
+         (once per change per session, not on every sale). Classes: ctl-*. Water has no product grid: this block does nothing there. -->
+    <style>
+        .ctl-host { display: none; margin: 4px 0 12px; }
+        body.ctl-on .ctl-host.ctl-has { display: block; }
+        html body.ctl-on #sales-tab #sc-cat-bar, html body.ctl-on #sales-tab #sc-cat-bar-sub { display: none !important; }
+        html body.ctl-hide #sales-tab #item-image-grid { display: none !important; }
+        .ctl-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        @media (min-width: 600px) { .ctl-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; } }
+        @media (min-width: 1100px) { .ctl-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); } }
+        .ctl-tile { position: relative; display: flex; flex-direction: column; align-items: stretch; padding: 0; margin: 0; min-width: 0; min-height: 44px; font: inherit; text-align: center; cursor: pointer; overflow: hidden;
+            border: 1px solid var(--border-color, #e1e6ea); border-radius: 14px; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); box-shadow: 0 1px 3px rgba(0, 0, 0, .10); -webkit-tap-highlight-color: transparent; }
+        .ctl-tile:active { transform: scale(.98); }
+        .ctl-tile:focus-visible, .ctl-back:focus-visible, .ctl-crumb-btn:focus-visible { outline: 3px solid var(--accent, #3498db); outline-offset: 2px; }
+        .ctl-img { display: block; position: relative; width: 100%; background: var(--bg-surface-alt, #f4f6f7); }
+        .ctl-img::before { content: ""; display: block; padding-top: 100%; }
+        .ctl-img img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+        .ctl-ph { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; font-size: clamp(28px, 9vw, 44px); font-weight: 800; letter-spacing: 1px; color: #fff; background: hsl(var(--h, 210), 45%, 38%); }
+        .ctl-name { display: block; padding: 8px 8px 10px; font-weight: 700; font-size: 15px; line-height: 1.2; overflow-wrap: anywhere; }
+        .ctl-badge { position: absolute; top: 8px; right: 8px; min-width: 26px; padding: 2px 8px; border-radius: 999px; background: rgba(0, 0, 0, .74); color: #fff; font-size: 12px; font-weight: 800; line-height: 1.4; }
+        .ctl-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 4px 0 10px; }
+        .ctl-back, .ctl-crumb-btn { min-height: 44px; padding: 0 14px; font: inherit; font-weight: 700; font-size: 15px; cursor: pointer; border-radius: 22px; border: 1px solid var(--border-color, #ccd1d6); background: var(--bg-surface-alt, #f4f6f7); color: var(--dark, #2c3e50); }
+        .ctl-crumb { font-weight: 800; font-size: 16px; min-width: 0; overflow-wrap: anywhere; color: var(--dark, #2c3e50); }
+        html[data-theme="dark"] .ctl-tile { box-shadow: none; }
+        /* Settings > Category images */
+        .ctl-sw { display: flex; align-items: center; gap: 10px; min-height: 48px; font-size: 16px; font-weight: 700; margin: 8px 0 4px; }
+        .ctl-sw input[type=checkbox] { width: 26px !important; height: 26px; min-height: 0; margin: 0; flex: 0 0 auto; }
+        .ctl-note { font-size: 13px; color: #7f8c8d; margin: 0 0 8px; }
+        .ctl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 0; border-top: 1px solid var(--border-color, #e1e6ea); }
+        .ctl-row.ctl-subrow { margin-left: 22px; border-left: 3px solid var(--border-color, #e1e6ea); padding-left: 10px; }
+        .ctl-thumb { position: relative; flex: 0 0 56px; width: 56px; height: 56px; border-radius: 10px; overflow: hidden; background: var(--bg-surface-alt, #f4f6f7); }
+        .ctl-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .ctl-thumb .ctl-ph { font-size: 20px; }
+        .ctl-rname { flex: 1 1 130px; min-width: 0; overflow-wrap: anywhere; }
+        .ctl-rname small { display: block; color: #7f8c8d; font-size: 12px; }
+        .ctl-racts { display: flex; flex-wrap: wrap; gap: 8px; }
+        .ctl-racts button { min-height: 44px; }
+        .ctl-hidden-file { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+        .ctl-msg { min-height: 20px; margin: 8px 0 0; font-size: 14px; }
+        .ctl-msg.bad { color: var(--danger, #e74c3c); }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__catTiles) return;
+        window.__catTiles = {};
+        var LS_IMG = 'pos_category_images', LS_ON = 'pos_cat_tiles', SS_ORIG = 'ctl_orig_v1';
+        var MAX_IMAGES = 60, MAX_PX = 240, QUALITY = [0.72, 0.62, 0.52, 0.42], MAX_CHARS = 28000, ALL_KEY = '__all', SEP = ' › ';
+        var S = { cat: null, sub: null };           // the opened category (a {key,label,id,norm,all} from categories()) and sub-category id ('all' | id | 'none') once chosen
+        var imgCache = { raw: null, map: {} };
+        var origSel;                                // Hotel: the chip selection before the tiles took over (undefined = tiles have not touched it)
+        var origSub = {};
+        var srcInfo = null;
+
+        /* ---------- tiny helpers ---------- */
+        function $(id) { return document.getElementById(id); }
+        function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+        function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+        function lsRaw(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
+        function lsSet(k, v) {
+            try { if (typeof safeSetItem === 'function') safeSetItem(k, v); else localStorage.setItem(k, v); } catch (e) { /* checked below */ }
+            return lsGet(k) === v;
+        }
+        function toast(msg, bad) { try { if (typeof showToast === 'function') showToast(msg, !!bad); } catch (e) { /* cosmetic */ } }
+        function pushSoon() { try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the next change sends it */ } }
+        function g(name) { try { return window[name]; } catch (e) { return undefined; } }
+        function sig(map) { var s = JSON.stringify(Object.keys(map || {}).sort().map(function (k) { return [k, map[k]]; })), h = 5381; for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return s.length + ':' + h; }
+
+        /* ---------- settings: the picture map + the master switch ---------- */
+        function cleanMap(o) {
+            var out = {}, n = 0;
+            if (!o || typeof o !== 'object' || Array.isArray(o)) return out;
+            Object.keys(o).forEach(function (k) {
+                var v = o[k];
+                if (n >= MAX_IMAGES || typeof v !== 'string' || v.length > 60000 || !/^data:image\/(jpeg|png|webp);base64,/.test(v)) return;
+                out[String(k).slice(0, 200)] = v; n++;
+            });
+            return out;
+        }
+        function images() {
+            var raw = lsGet(LS_IMG);
+            if (raw === imgCache.raw) return imgCache.map;
+            var m = {}; try { m = cleanMap(JSON.parse(raw || '{}')); } catch (e) { m = {}; }
+            imgCache = { raw: raw, map: m };
+            return m;
+        }
+        function saveImages(map) {
+            var raw = JSON.stringify(map);
+            var ok = lsSet(LS_IMG, raw);
+            if (ok) imgCache = { raw: raw, map: map };
+            return ok;
+        }
+        function enabled() { return lsGet(LS_ON) === 'true'; }
+        function readOnlyBranch() { try { return typeof viewedBranchId !== 'undefined' && viewedBranchId !== 'self'; } catch (e) { return false; } }
+
+        /* ---------- which categories does this app have? ---------- */
+        function hotelMode() {
+            try { return typeof hospScreenChips === 'function' && typeof hospScreenItems === 'function' && typeof hospCatSelSet === 'function' && typeof HOSP_CAT_ALL !== 'undefined'; } catch (e) { return false; }
+        }
+        function gridSource() {
+            if (srcInfo) return srcInfo;
+            var src = '';
+            try { src = String((window.__ctlRenderOrig || window.renderItemImageGrid) || ''); } catch (e) { src = ''; }
+            srcInfo = { noService: /type\s*!==\s*'service'/.test(src), noVariantParent: /!p\.hasVariants/.test(src), variantTiles: /variantItems/.test(src) };
+            return srcInfo;
+        }
+        function normCat(c) { return String(c == null ? '' : c).trim().toLowerCase(); }
+        function genericCategories() {
+            var inv; try { inv = typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : []; } catch (e) { inv = []; }
+            var si = gridSource(), map = {}, order = [];
+            inv.forEach(function (p) {
+                if (!p) return;
+                try { if (typeof isSellableProduct === 'function' && !isSellableProduct(p)) return; } catch (e) { return; }
+                if (p.dualUnit || (si.noService && p.type === 'service')) return;
+                var n = 1;
+                if (p.hasVariants) {
+                    if (si.variantTiles && Array.isArray(p.variants) && p.type !== 'service') n = p.variants.length; else if (si.noVariantParent) return;
+                }
+                if (!n) return;
+                var label = String(p.category == null ? '' : p.category).trim() || 'Uncategorised', nk = normCat(label);
+                if (!map[nk]) { map[nk] = { key: label, label: label, norm: nk === 'uncategorised' ? '' : nk, n: 0, id: nk }; order.push(nk); }
+                map[nk].n += n;
+            });
+            // an item whose category is literally "Uncategorised" and one with none belong together: match on the empty string
+            order.sort(function (a, b) { if (a === 'uncategorised') return 1; if (b === 'uncategorised') return -1; return map[a].label.localeCompare(map[b].label, undefined, { sensitivity: 'base' }); });
+            return order.map(function (k) { return map[k]; });
+        }
+        function hotelCategories() {
+            var out = [];
+            try {
+                hospScreenChips('sales').forEach(function (c) { if (c.id === HOSP_CAT_ALL) return; out.push({ key: c.label, label: c.label, id: c.id, n: c.n, norm: '' }); });
+            } catch (e) { /* none */ }
+            return out;
+        }
+        function categories() { return hotelMode() ? hotelCategories() : genericCategories(); }
+        function hotelSubs(cat) {
+            try { if (!cat || cat.all || typeof hospSubList !== 'function') return []; var l = hospSubList(cat.id); return Array.isArray(l) ? l : []; } catch (e) { return []; }
+        }
+        function allItemsCount(cats) { var n = 0; cats.forEach(function (c) { n += c.n; }); return n; }
+
+        /* ---------- the app's own filter state ---------- */
+        function selKey() { return 'pos_hosp_catsel_sales'; }
+        function subKey(id) { return 'pos_hosp_subsel_sales_' + id; }
+        function loadOrig() {
+            try { var o = JSON.parse(sessionStorage.getItem(SS_ORIG) || 'null'); if (o && typeof o === 'object') { origSel = o.sel === undefined ? null : o.sel; origSub = o.sub || {}; } } catch (e) { /* none */ }
+        }
+        function saveOrig() { try { if (origSel === undefined) sessionStorage.removeItem(SS_ORIG); else sessionStorage.setItem(SS_ORIG, JSON.stringify({ sel: origSel, sub: origSub })); } catch (e) { /* only to survive a reload */ } }
+        // Hotel: make the app's chips say what the tiles say (or give them back what they said before)
+        function hotelPrime(active) {
+            if (!hotelMode()) return;
+            if (active) {
+                if (origSel === undefined) { origSel = lsGet(selKey()); origSub = {}; }
+                var id = active.all ? HOSP_CAT_ALL : active.id;
+                if (!active.all && origSub[id] === undefined) origSub[id] = lsGet(subKey(id));
+                lsRaw(selKey(), id);
+                if (!active.all) lsRaw(subKey(id), active.sub || 'all');
+                saveOrig();
+            } else if (origSel !== undefined) {
+                lsRaw(selKey(), origSel);
+                Object.keys(origSub).forEach(function (id) { lsRaw(subKey(id), origSub[id]); });
+                origSel = undefined; origSub = {}; saveOrig();
+            }
+        }
+        // Other apps: for ONE render, the first inventory.filter / forEach (the grid's own list) only sees the chosen category; the rest of the render sees everything
+        function genericLimit(cat) {
+            var inv; try { inv = typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : null; } catch (e) { inv = null; }
+            if (!inv || !cat || cat.all) return null;
+            var pf = Array.prototype.filter, pe = Array.prototype.forEach;
+            var inCat = function (p) { var c = p && p.category != null ? normCat(p.category) : ''; if (c === 'uncategorised') c = ''; return c === cat.norm; };
+            var def = function (name, impl) { try { Object.defineProperty(inv, name, { configurable: true, writable: true, enumerable: false, value: impl }); } catch (e) { /* frozen: the full grid shows */ } };
+            def('filter', function (fn, t) { try { delete inv.filter; } catch (e) { /* none */ } return pf.call(inv, function (p, i, a) { return inCat(p) && fn.call(t, p, i, a); }); });
+            def('forEach', function (fn, t) { try { delete inv.forEach; } catch (e) { /* none */ } return pe.call(inv, function (p, i, a) { if (inCat(p)) fn.call(t, p, i, a); }); });
+            return function () { try { delete inv.filter; } catch (e) { /* none */ } try { delete inv.forEach; } catch (e) { /* none */ } };
+        }
+
+        /* ---------- mode ---------- */
+        function searchRaw() { var el = $('sales-search'); return el ? String(el.value || '') : ''; }
+        function gridWanted(cats) {
+            try { if (typeof showItemImageGrid !== 'undefined' && !showItemImageGrid) return false; } catch (e) { /* default on */ }
+            return !!$('item-image-grid') && cats.length > 0;
+        }
+        function normalize(cats) {
+            if (S.cat && !S.cat.all && !cats.some(function (c) { return c.key === S.cat.key; })) { S.cat = null; S.sub = null; }
+            if (S.cat && !S.cat.all) { var f = cats.filter(function (c) { return c.key === S.cat.key; })[0]; if (f) S.cat = f; }
+        }
+        function mode(cats) {
+            if (!enabled() || !gridWanted(cats)) return 'off';
+            if (searchRaw().trim()) return 'search';
+            if (!S.cat) return 'root';
+            if (S.sub === null && hotelMode() && hotelSubs(S.cat).length) return 'sub';
+            return 'grid';
+        }
+
+        /* ---------- drawing the tiles ---------- */
+        var hasUni = true; try { new RegExp('[\\p{L}\\p{N}]', 'u'); } catch (e) { hasUni = false; }
+        function initials(name) {
+            name = String(name || '').trim(); if (!name) return '?';
+            var first = Array.from(name)[0];
+            if (!(hasUni ? new RegExp('[\\p{L}\\p{N}]', 'u') : /[A-Za-z0-9]/).test(first)) return first;     // an emoji / symbol the owner typed is the picture
+            var w = name.split(/[\s\/&\-–·,]+/).filter(Boolean);
+            var s = w.length > 1 ? Array.from(w[0])[0] + Array.from(w[1])[0] : Array.from(w[0]).slice(0, 2).join('');
+            return s.toUpperCase();
+        }
+        function hue(name) { var h = 7; for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
+        function tileHtml(kind, key, label, n, imgKey, phText) {
+            var im = imgKey ? images()[imgKey] : '';
+            var pic = im ? '<img src="' + esc(im) + '" alt="" loading="lazy" decoding="async">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(phText || initials(label)) + '</span>';
+            return '<button type="button" class="ctl-tile" data-ctl="' + kind + '" data-k="' + esc(encodeURIComponent(key)) + '" aria-label="' + esc(label + ', ' + n + (n === 1 ? ' item' : ' items')) + '">'
+                + '<span class="ctl-img">' + pic + '</span><span class="ctl-badge">' + n + '</span><span class="ctl-name">' + esc(label) + '</span></button>';
+        }
+        function hostEl() {
+            var grid = $('item-image-grid'); if (!grid || !grid.parentNode) return null;
+            var h = $('ctl-host');
+            if (!h) {
+                h = document.createElement('div'); h.id = 'ctl-host'; h.className = 'ctl-host';
+                h.addEventListener('click', onHostClick);
+            }
+            if (h.parentNode !== grid.parentNode || h.nextElementSibling !== grid) grid.parentNode.insertBefore(h, grid);
+            return h;
+        }
+        function setHost(h, html) { if (h.__h !== html) { h.__h = html; h.innerHTML = html; } h.classList.toggle('ctl-has', !!html); }
+        function head(parts) { return '<div class="ctl-head">' + parts + '</div>'; }
+        function sync(cats) {
+            try {
+                cats = cats || categories(); normalize(cats);
+                var m = mode(cats), b = document.body, h = hostEl();
+                b.classList.toggle('ctl-on', m !== 'off'); b.classList.toggle('ctl-hide', m === 'root' || m === 'sub');
+                if (!h) return;
+                if (m === 'off' || m === 'search') { setHost(h, ''); return; }
+                var html = '';
+                if (m === 'root') {
+                    html = '<div class="ctl-grid" role="group" aria-label="Categories">' + cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).join('')
+                        + tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️') + '</div>';
+                } else if (m === 'sub') {
+                    var subs = hotelSubs(S.cat), counts = {}, tot = 0, none = 0;
+                    try { var r = hospScreenItems('sales', ''); counts = r.subCounts || {}; } catch (e) { counts = {}; }
+                    subs.forEach(function (x) { tot += counts[x.id] || 0; }); none = counts.none || 0; tot += none;
+                    html = head('<button type="button" class="ctl-back" data-ctl="root">← All categories</button><span class="ctl-crumb">· ' + esc(S.cat.label) + '</span>')
+                        + '<div class="ctl-grid" role="group" aria-label="Sub-categories of ' + esc(S.cat.label) + '">'
+                        + tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)
+                        + subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); }).join('')
+                        + (none > 0 ? tileHtml('sub', 'none', 'Other', none, '') : '') + '</div>';
+                } else {
+                    var parts = '<button type="button" class="ctl-back" data-ctl="root">← All categories</button>';
+                    if (S.cat.all) parts += '<span class="ctl-crumb">· All items</span>';
+                    else if (hotelMode() && S.sub !== null && hotelSubs(S.cat).length) {
+                        var sn = S.sub === 'all' ? 'All ' + S.cat.label : S.sub === 'none' ? 'Other' : ((hotelSubs(S.cat).filter(function (x) { return x.id === S.sub; })[0] || {}).name || '');
+                        parts += '<button type="button" class="ctl-crumb-btn" data-ctl="up">‹ ' + esc(S.cat.label) + '</button><span class="ctl-crumb">· ' + esc(sn) + '</span>';
+                    } else parts += '<span class="ctl-crumb">· ' + esc(S.cat.label) + '</span>';
+                    html = head(parts);
+                }
+                setHost(h, html);
+            } catch (e) { /* the app's own grid stays usable */ }
+        }
+
+        /* ---------- navigation (always through the app's own render, so the grid and the tiles agree) ---------- */
+        function refresh() {
+            try { if (typeof window.renderItemImageGrid === 'function') window.renderItemImageGrid(searchRaw()); else sync(); } catch (e) { /* the next render draws it */ }
+        }
+        function keepInView() {
+            try { var h = $('ctl-host'); if (h) { var r = h.getBoundingClientRect(); if (r.top < 0 || r.top > window.innerHeight * 0.6) window.scrollTo(0, Math.max(0, window.pageYOffset + r.top - 8)); } } catch (e) { /* cosmetic */ }
+        }
+        function focusFirst(sel) { try { var h = $('ctl-host'), el = h && h.querySelector(sel); if (el && el.focus) el.focus({ preventScroll: true }); } catch (e) { /* cosmetic */ } }
+        function openCat(key) {
+            var cats = categories(), c;
+            if (key === ALL_KEY) c = { key: ALL_KEY, label: 'All items', all: true, n: allItemsCount(cats) }; else c = cats.filter(function (x) { return x.key === key; })[0];
+            if (!c) return false;
+            S.cat = c; S.sub = null; refresh(); keepInView(); focusFirst('.ctl-back'); return true;
+        }
+        function openSub(id) { if (!S.cat) return false; S.sub = id; refresh(); keepInView(); focusFirst('.ctl-back'); return true; }
+        function back() {
+            var k = S.cat && S.cat.key;
+            S.cat = null; S.sub = null; refresh();
+            try { var h = $('ctl-host'), t = h && Array.prototype.filter.call(h.querySelectorAll('.ctl-tile'), function (x) { return decodeURIComponent(x.getAttribute('data-k')) === k; })[0]; if (t) t.focus({ preventScroll: true }); } catch (e) { /* cosmetic */ }
+        }
+        function up() { if (S.cat && hotelMode() && hotelSubs(S.cat).length) { S.sub = null; refresh(); keepInView(); focusFirst('.ctl-back'); } else back(); }
+        function onHostClick(ev) {
+            var t = ev.target && ev.target.closest ? ev.target.closest('[data-ctl]') : null; if (!t) return;
+            var a = t.getAttribute('data-ctl'), k = t.getAttribute('data-k'); try { k = k == null ? '' : decodeURIComponent(k); } catch (e) { k = ''; }
+            if (a === 'cat') openCat(k); else if (a === 'sub') openSub(k); else if (a === 'root') back(); else if (a === 'up') up();
+        }
+
+        /* ---------- hook the app's grid render ---------- */
+        function installRender() {
+            var orig = window.renderItemImageGrid;
+            if (typeof orig !== 'function' || orig.__ctl) return false;
+            window.__ctlRenderOrig = orig;
+            var wrapped = function () {
+                var cats = null, restore = null, res;
+                try {
+                    cats = categories(); normalize(cats);
+                    var m = mode(cats);
+                    if (hotelMode()) hotelPrime(m === 'grid' || m === 'sub' ? { id: S.cat.id, all: !!S.cat.all, sub: m === 'sub' ? 'all' : (S.sub || 'all') } : null);
+                    else if (m === 'grid') restore = genericLimit(S.cat);
+                } catch (e) { cats = null; restore = null; }
+                try { res = orig.apply(this, arguments); } finally { if (restore) restore(); }
+                try { sync(cats); } catch (e) { /* cosmetic */ }
+                return res;
+            };
+            wrapped.__ctl = true;
+            window.renderItemImageGrid = wrapped;
+            return true;
+        }
+        // typing in the search box shows ordinary results at once (the app's own redraw follows); clearing it brings the tiles back
+        function onSearchInput(ev) { if (ev && ev.target && ev.target.id === 'sales-search') { try { sync(); } catch (e) { /* cosmetic */ } } }
+
+        /* ---------- the settings sync ---------- */
+        function collect() {
+            var o = {};
+            if (lsGet(LS_IMG) !== null) o.categoryImages = images();          // only a device that has its own copy sends one: a fresh phone must never blank the shop's pictures
+            var on = lsGet(LS_ON); if (on !== null) o.catTilesOn = on === 'true';
+            return o;
+        }
+        function applyRemote(data) {
+            if (!data || typeof data !== 'object') return;
+            var changed = false;
+            if (data.categoryImages && typeof data.categoryImages === 'object' && !Array.isArray(data.categoryImages)) {
+                var clean = cleanMap(data.categoryImages);
+                if (sig(clean) !== sig(images())) { saveImages(clean); changed = true; }
+                window.__ctlAck = sig(clean);                                   // the server has exactly this set
+            }
+            if (typeof data.catTilesOn === 'boolean' && data.catTilesOn !== enabled()) { lsSet(LS_ON, data.catTilesOn ? 'true' : 'false'); changed = true; }
+            if (changed) { try { renderPanel(); } catch (e) { /* the page may not be open */ } refresh(); }
+        }
+        function installSync() {
+            var cs = window.collectSyncPayload;
+            if (typeof cs === 'function' && !cs.__ctl) {
+                var wc = function () { var p = cs.apply(this, arguments); try { if (p && typeof p === 'object') { var e = collect(); Object.keys(e).forEach(function (k) { p[k] = e[k]; }); } } catch (e2) { /* the pictures are an extra */ } return p; };
+                wc.__ctl = true; window.collectSyncPayload = wc;
+            }
+            var ap = window.applyRemotePayload;
+            if (typeof ap === 'function' && !ap.__ctl) {
+                var wa = function (data) { try { applyRemote(data); } catch (e) { /* the pictures are an extra */ } return ap.apply(this, arguments); };
+                wa.__ctl = true; window.applyRemotePayload = wa;
+            }
+            var sp = window.slimPayloadForPush;
+            if (typeof sp === 'function' && !sp.__ctl) {
+                var ws = function () {
+                    var r = sp.apply(this, arguments);
+                    try {
+                        if (r && r.body && r.body.categoryImages !== undefined) {
+                            var sg = sig(r.body.categoryImages);
+                            if (window.__ctlAck === sg) {                          // the server already has this exact set: do not carry up to 1 MB on every sale
+                                delete r.body.categoryImages;
+                                if (r.body._fieldTimes) { delete r.body._fieldTimes.categoryImages; if (!Object.keys(r.body._fieldTimes).length) delete r.body._fieldTimes; }
+                            } else if (typeof r.commit === 'function') {
+                                var c = r.commit; r.commit = function () { var x = c.apply(this, arguments); window.__ctlAck = sg; return x; };
+                            }
+                        }
+                    } catch (e) { /* the push goes out as built */ }
+                    return r;
+                };
+                ws.__ctl = true; window.slimPayloadForPush = ws;
+            }
+        }
+
+        /* ---------- picking a picture: scaled on the phone (<= 240 px, JPEG, about 20 KB) ---------- */
+        function scaleFile(file) {
+            return new Promise(function (resolve, reject) {
+                if (!file) { reject(new Error('No picture chosen.')); return; }
+                if (!/^image\//.test(file.type || '')) { reject(new Error('That file is not a picture.')); return; }
+                var rd = new FileReader();
+                rd.onerror = function () { reject(new Error('Could not read that picture.')); };
+                rd.onload = function () {
+                    var im = new Image();
+                    im.onerror = function () { reject(new Error('Could not open that picture. Try a JPG or PNG.')); };
+                    im.onload = function () {
+                        try {
+                            var sc = Math.min(1, MAX_PX / Math.max(im.width || 1, im.height || 1)), out = '';
+                            for (var shrink = 0; shrink < 4 && !out; shrink++) {
+                                var k = sc * Math.pow(0.8, shrink), w = Math.max(1, Math.round(im.width * k)), h = Math.max(1, Math.round(im.height * k));
+                                var cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+                                var cx = cv.getContext('2d'); cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, w, h); cx.drawImage(im, 0, 0, w, h);
+                                for (var qi = 0; qi < QUALITY.length; qi++) { var u = cv.toDataURL('image/jpeg', QUALITY[qi]); if (u.length <= MAX_CHARS || (shrink === 3 && qi === QUALITY.length - 1)) { out = u; break; } }
+                            }
+                            resolve(out);
+                        } catch (e) { reject(new Error('Could not shrink that picture.')); }
+                    };
+                    im.src = rd.result;
+                };
+                rd.readAsDataURL(file);
+            });
+        }
+        function setImage(key, dataUrl) {
+            key = String(key || '').slice(0, 200);
+            var map = Object.assign({}, images());
+            if (!key) return { ok: false, error: 'No category.' };
+            if (map[key] === undefined && Object.keys(map).length >= MAX_IMAGES) return { ok: false, error: 'You can keep up to ' + MAX_IMAGES + ' category pictures. Remove one first.' };
+            map[key] = dataUrl;
+            var prev = images();
+            if (!saveImages(cleanMap(map))) { saveImages(prev); return { ok: false, error: 'This phone has no room left for the picture. Free some space and try again.' }; }
+            pushSoon(); renderPanel(); refresh();
+            return { ok: true };
+        }
+        function removeImage(key) {
+            var map = Object.assign({}, images()); if (map[key] === undefined) return false;
+            delete map[key]; saveImages(map); pushSoon(); renderPanel(); refresh(); return true;
+        }
+        function setEnabled(on) {
+            lsSet(LS_ON, on ? 'true' : 'false');
+            if (!on) { S.cat = null; S.sub = null; }
+            pushSoon(); renderPanel(); refresh();
+            return enabled();
+        }
+
+        /* ---------- Settings > Category images ---------- */
+        var pendingKey = '';
+        function msg(t, bad) { var m = $('ctl-msg'); if (m) { m.textContent = t || ''; m.className = 'ctl-msg' + (bad ? ' bad' : ''); } }
+        function thumb(label, key) {
+            var im = images()[key];
+            return '<span class="ctl-thumb">' + (im ? '<img src="' + esc(im) + '" alt="" loading="lazy">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(initials(label)) + '</span>') + '</span>';
+        }
+        function rowHtml(label, key, sub, count, ro) {
+            var has = images()[key] !== undefined, k = esc(encodeURIComponent(key));
+            return '<div class="ctl-row' + (sub ? ' ctl-subrow' : '') + '">' + thumb(label, key)
+                + '<span class="ctl-rname"><b>' + esc(label) + '</b>' + (count != null ? '<small>' + count + (count === 1 ? ' item' : ' items') + '</small>' : '') + '</span>'
+                + '<span class="ctl-racts"><button type="button" class="settings-small-btn" data-ctl-act="pick" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>📷 ' + (has ? 'Change image' : 'Add image') + '</button>'
+                + (has ? '<button type="button" class="settings-small-btn" data-ctl-act="rm" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>Remove</button>' : '') + '</span></div>';
+        }
+        function renderPanel() {
+            var el = $('ctl-panel'); if (!el) return;
+            var cats = categories(), ro = readOnlyBranch(), imgs = images(), used = Object.keys(imgs).length, listed = {}, rows = '';
+            cats.forEach(function (c) {
+                listed[c.key] = 1; rows += rowHtml(c.label, c.key, false, c.n, ro);
+                hotelSubs(c).forEach(function (x) { var k = c.key + SEP + x.name; listed[k] = 1; rows += rowHtml(x.name, k, true, null, ro); });
+            });
+            var orphan = Object.keys(imgs).filter(function (k) { return !listed[k]; });
+            if (orphan.length) rows += '<div class="ctl-row"><b>Pictures for categories that have no items now</b></div>' + orphan.map(function (k) { return rowHtml(k, k, false, null, ro); }).join('');
+            el.innerHTML = '<h3 style="margin-top:0;">🖼️ Category images</h3>'
+                + '<p class="ctl-note">Give each category a picture. With the switch below on, the Sales Counter opens on big picture tiles: tap a tile to see the items (or sub-categories) in it. Searching still works as always. Every till and phone follows these settings.</p>'
+                + '<label class="ctl-sw"><input type="checkbox" id="ctl-switch"' + (enabled() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Show category image tiles on the Sales Counter</label>'
+                + '<p class="ctl-note">' + used + ' of ' + MAX_IMAGES + ' pictures used. Pictures are made small automatically.' + (ro ? ' Another branch is open: pictures can only be changed in your own branch.' : '') + '</p>'
+                + (rows || '<p class="ctl-note">No categories yet. Give items a category in Inventory, then come back.</p>')
+                + '<input type="file" id="ctl-file" class="ctl-hidden-file" accept="image/*" tabindex="-1" aria-hidden="true">'
+                + '<p class="ctl-msg" id="ctl-msg" role="status"></p>';
+        }
+        function onPanelClick(ev) {
+            var t = ev.target && ev.target.closest ? ev.target.closest('[data-ctl-act]') : null; if (!t || t.disabled) return;
+            var act = t.getAttribute('data-ctl-act'), k = ''; try { k = decodeURIComponent(t.getAttribute('data-k') || ''); } catch (e) { k = ''; }
+            if (act === 'pick') { pendingKey = k; var f = $('ctl-file'); if (f) { f.value = ''; f.click(); } }
+            else if (act === 'rm') { removeImage(k); msg('Picture removed.'); }
+        }
+        function onPanelChange(ev) {
+            var t = ev.target; if (!t) return;
+            if (t.id === 'ctl-switch') { setEnabled(!!t.checked); msg(t.checked ? 'Category tiles are ON for the Sales Counter.' : 'Category tiles are OFF. The Sales Counter is back to the usual list.'); return; }
+            if (t.id === 'ctl-file') {
+                var file = t.files && t.files[0], key = pendingKey; if (!file || !key) return;
+                msg('Preparing the picture…');
+                scaleFile(file).then(function (u) {
+                    var r = setImage(key, u);
+                    if (r.ok) { msg('Picture saved for "' + key + '".'); toast('Category picture saved.'); } else { msg(r.error, true); toast(r.error, true); }
+                }, function (e) { var m = (e && e.message) || 'Could not use that picture.'; msg(m, true); toast(m, true); });
+            }
+        }
+        function installPanel() {
+            if ($('ctl-panel')) return true;
+            var nav = $('settings-subnav'), gen = $('settings-section-general'), pay = $('pos-paymethods-panel');
+            var panel = document.createElement('div'); panel.id = 'ctl-panel';
+            if (nav && gen && gen.parentNode) {
+                var sec = document.createElement('div'); sec.className = 'settings-section-content'; sec.id = 'settings-section-catimages';
+                sec.appendChild(panel); gen.parentNode.appendChild(sec);
+                var b = document.createElement('button'); b.type = 'button'; b.className = 'settings-subtab-btn'; b.setAttribute('data-section', 'settings-section-catimages');
+                b.textContent = '🖼️ Category Images'; b.setAttribute('onclick', "showSettingsSection('settings-section-catimages', this)");
+                b.addEventListener('click', function () { renderPanel(); });
+                var after = nav.querySelector('[data-section="settings-section-paymethods"]') || nav.querySelector('[data-section="settings-section-receipts"]');
+                if (after && after.parentNode) after.parentNode.insertBefore(b, after.nextSibling); else nav.appendChild(b);
+            } else if (pay && pay.parentNode) {
+                panel.className = 'panel'; panel.style.marginBottom = '15px'; pay.parentNode.insertBefore(panel, pay.nextSibling);
+            } else return false;
+            panel.addEventListener('click', onPanelClick); panel.addEventListener('change', onPanelChange);
+            renderPanel();
+            return true;
+        }
+
+        /* ---------- start ---------- */
+        function start() {
+            try {
+                if (!$('item-image-grid') || typeof window.renderItemImageGrid !== 'function') return;   // Water has no product grid: nothing to do
+                loadOrig();
+                installRender(); installSync();
+                document.addEventListener('input', onSearchInput, true);
+                if (!installPanel()) { [600, 2500].forEach(function (ms) { setTimeout(function () { try { installPanel(); } catch (e) { /* later */ } }, ms); }); }
+                else [1200].forEach(function (ms) { setTimeout(function () { try { renderPanel(); } catch (e) { /* later */ } }, ms); });
+                if (enabled()) refresh();
+            } catch (e) { /* the Sales Counter works without this block */ }
+        }
+        Object.assign(window.__catTiles, {
+            version: 1, MAX_IMAGES: MAX_IMAGES, MAX_PX: MAX_PX,
+            enabled: enabled, setEnabled: setEnabled, images: images, setImage: setImage, removeImage: removeImage, scaleFile: scaleFile,
+            categories: categories, state: function () { return { cat: S.cat && S.cat.key, sub: S.sub, mode: mode(categories()) }; },
+            open: openCat, openSub: openSub, back: back, refresh: refresh, sync: function () { sync(); }, collect: collect, apply: applyRemote, renderPanel: renderPanel
+        });
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    })();
+    </script>

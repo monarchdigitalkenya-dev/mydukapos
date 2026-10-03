@@ -180,10 +180,37 @@ ipcMain.handle('native:printers', async (e) => {
 ipcMain.handle('native:print', async (e, opts) => {
   if (!fromOurs(e)) return { ok: false, error: 'Not allowed.' };
   const o = opts || {};
+  // zip 192: let the print layout settle (two frames) before Windows gets the page - printing the instant the print CSS was switched on gave empty pages
+  await new Promise((r) => setTimeout(r, 350));
+  const po = { silent: !!o.deviceName, deviceName: o.deviceName || undefined, printBackground: true, margins: { marginType: 'none' } };
+  const w = Number(o.widthMm), h = Number(o.heightMm);
+  if (w >= 30 && w <= 320 && h >= 30 && h <= 3000) po.pageSize = { width: Math.round(w * 1000), height: Math.round(h * 1000) };
   return await new Promise((resolve) => {
-    e.sender.print({ silent: !!o.deviceName, deviceName: o.deviceName || undefined, printBackground: true, margins: { marginType: 'none' } },
-      (success, failureReason) => resolve(success ? { ok: true } : { ok: false, error: failureReason || 'The print failed.' }));
+    e.sender.print(po, (success, failureReason) => resolve(success ? { ok: true } : { ok: false, error: failureReason || 'The print failed.' }));
   });
+});
+
+// zip 192: prints a SNAPSHOT (the receipt / kitchen ticket markup + the page's styles) from its own hidden window, so the print never depends on what
+// the live window shows (viewport size, hidden modal, theme) - the cause of "prints, but the paper is empty".
+ipcMain.handle('native:printHtml', async (e, opts) => {
+  if (!fromOurs(e)) return { ok: false, error: 'Not allowed.' };
+  const o = opts || {};
+  const html = String(o.html || '');
+  if (!html || html.length > 8 * 1024 * 1024) return { ok: false, error: 'Nothing to print.' };
+  const w = Number(o.widthMm), h = Number(o.heightMm);
+  const win = new BrowserWindow({ show: false, width: Math.max(300, Math.round((w || 80) * 3.78)), height: 900, webPreferences: { sandbox: true, contextIsolation: true, javascript: false } });
+  const tmp = require('path').join(require('os').tmpdir(), 'mydukapos-print-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.html');   // a file, not a data: URL (a logo makes the page large)
+  const done = (r) => { try { win.destroy(); } catch (x) { /* gone */ } try { require('fs').unlinkSync(tmp); } catch (x) { /* gone */ } return r; };
+  try {
+    require('fs').writeFileSync(tmp, html, 'utf8');
+    await win.loadFile(tmp);
+    await new Promise((r) => setTimeout(r, 400));
+    const po = { silent: !!o.deviceName, deviceName: o.deviceName || undefined, printBackground: true, margins: { marginType: 'none' } };
+    if (w >= 30 && w <= 320 && h >= 30 && h <= 3000) po.pageSize = { width: Math.round(w * 1000), height: Math.round(h * 1000) };
+    return await new Promise((resolve) => {
+      win.webContents.print(po, (success, why) => resolve(done(success ? { ok: true } : { ok: false, error: why || 'The print failed.' })));
+    });
+  } catch (err) { return done({ ok: false, error: err.message }); }
 });
 
 // Raw ESC/POS bytes to a network thermal printer (port 9100 by default). ok only after the bytes were sent and the printer closed.

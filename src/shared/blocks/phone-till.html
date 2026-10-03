@@ -1,0 +1,543 @@
+<!-- PHONE TILL ----------------------------------------------------------------
+         zip 190. The Sales Counter on a PHONE (Chrome, ~390 px wide) without the scrolling. Everything below is phone-only (max-width 700 px) except the new
+         Settings card; a tablet / computer is drawn exactly as before.
+           1. CART LINES    - every line of the cart is one tidy card: the item name on its own line, then  [- qty +]  unit price  line total  [x]  - nothing is cut
+                              off, nothing scrolls sideways (320 px wide works too). The cart's own buttons / boxes / onclick handlers are untouched: only CSS.
+           2. CART SHEET    - the floating cart button (and a new "N items - KES total - View cart" bar at the bottom of the Sales Counter) opens the whole cart
+                              panel as a full-screen sheet: order type, table / room, items, customer phone, payment buttons, total and Confirm. Total + Confirm
+                              stay pinned at the bottom of the sheet. The sheet closes by itself when the sale is done / the cart is empty / another tab opens.
+           3. HIDE OPTIONS  - Settings > Payment Methods > "Phone & till layout": show the customer phone box, show the Walk-In / Delivery choice, show the Table / Room
+                              + Tabs row (shop settings: they travel with the payment methods through the same settings sync) and, on THIS phone only, which main tabs
+                              show (the others wait in "More") and the search style.
+           4. SEARCH STYLE  - "bar" (default): the search box is the panel header (no "Product Search" title; Bills / Sales shrink to icons beside it).
+                              "icon": a compact magnifier in the header row opens the search box over it.
+           5. PRODUCT AREA  - category chips are ONE sideways-scrolling row, the hint line is gone, 2 big photo tiles per row.
+         Hooks (all wrapped, none replaced): scrollToCart, updateMobileCartFab, setOrderType, collapseTabsIfNeeded, posApplyPayMethods, extraSettingsCollect/Apply.
+         Nothing here is needed for a sale: every entry point is guarded, a missing element only means that one feature is skipped (water has no product search box,
+         production's cart card has another id, ...). Classes use the ptl- prefix. -->
+    <style id="phone-till-css">
+        /* ---- settings that apply on EVERY screen (a hidden box is hidden on a computer too) ---- */
+        html.ptl-no-phone .ptl-phone-group { display: none !important; }
+        html.ptl-no-phone:has(#pay-bill-btn.active) .ptl-phone-group { display: block !important; }   /* Pay Later saves the bill against this phone number: keep it while Bill is chosen */
+        html.ptl-no-delivery #order-type-toggle, html.ptl-no-delivery #delivery-details-group { display: none !important; }
+        /* zip 191: hiding the Table / Room picker keeps a 🧾 Tabs button (open / settle tabs) if the row has one; a row with no button goes entirely */
+        html.ptl-no-loc .ptl-loc-group > label, html.ptl-no-loc .ptl-loc-group select { display: none !important; }
+        html.ptl-no-loc .ptl-loc-group:not(:has(button)) { display: none !important; }
+        /* new things that only exist on a phone */
+        .ptl-bar, .ptl-back, .ptl-search-btn, .ptl-search-x { display: none; }
+
+        /* ---- the new Settings card (same look as the payment methods card) ---- */
+        #pos-phonetill-panel .ptl-sub { font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #7f8c8d; margin: 14px 0 2px; }
+        #pos-phonetill-panel .ptl-note { font-size: 12.5px; color: #7f8c8d; margin: 0 0 6px; line-height: 1.4; }
+        #pos-phonetill-panel .ptl-sw { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 4px 0; font-size: 15px; cursor: pointer; border-bottom: 1px solid var(--border-color, #eef0f2); }
+        #pos-phonetill-panel .ptl-sw > span { flex: 1 1 auto; min-width: 0; line-height: 1.3; }
+        #pos-phonetill-panel .ptl-sw small { display: block; font-size: 12px; color: #7f8c8d; }
+        #pos-phonetill-panel .ptl-sw input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+        #pos-phonetill-panel .ptl-sw i { position: relative; flex: 0 0 auto; width: 48px; height: 28px; border-radius: 999px; background: #b9c2ca; transition: background .15s; }
+        #pos-phonetill-panel .ptl-sw i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .15s; }
+        #pos-phonetill-panel .ptl-sw input:checked + i { background: var(--success, #27ae60); }
+        #pos-phonetill-panel .ptl-sw input:checked + i::after { transform: translateX(20px); }
+        #pos-phonetill-panel .ptl-sw input:focus-visible + i { outline: 3px solid rgba(52, 152, 219, .5); outline-offset: 2px; }
+        #pos-phonetill-panel .ptl-sw input:disabled + i { opacity: .55; }
+        #pos-phonetill-panel .ptl-seg { display: flex; gap: 8px; margin: 6px 0 4px; flex-wrap: wrap; }
+        #pos-phonetill-panel .ptl-seg label { flex: 1 1 140px; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 12px; border: 1.5px solid var(--border-color, #dfe4ea); border-radius: 12px; cursor: pointer; font-size: 15px; background: var(--bg-surface, #fff); }
+        #pos-phonetill-panel .ptl-seg input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent, #2980b9); }
+        #pos-phonetill-panel .ptl-seg label:has(input:checked) { border-color: var(--accent, #2980b9); background: var(--bg-surface-alt, #eef4fa); font-weight: 700; }
+        #pos-phonetill-panel .ptl-tabs { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0 12px; }
+        #pos-phonetill-panel .ptl-tabs label { display: flex; align-items: center; gap: 10px; min-height: 46px; font-size: 14.5px; cursor: pointer; }
+        #pos-phonetill-panel .ptl-tabs input { width: 22px; height: 22px; margin: 0; flex: 0 0 auto; accent-color: var(--accent, #2980b9); }
+        #pos-phonetill-panel .ptl-tabs label.ptl-locked { opacity: .6; cursor: default; }
+
+        @media (max-width: 700px) {
+            /* ================= 1. CART LINES: one card per line, nothing clipped ================= */
+            .ptl-cart .table-scroll { overflow: visible !important; }
+            #cart-table, #cart-table tbody { display: block !important; width: 100% !important; min-width: 0 !important; max-width: 100% !important; border: 0 !important; }
+            #cart-table thead { display: none !important; }
+            #cart-table tbody tr { display: flex !important; flex-wrap: wrap; align-items: center; gap: 6px 8px; width: 100% !important; box-sizing: border-box; margin: 0 !important; padding: 10px 2px !important; border: 0 !important; border-bottom: 1px solid var(--border-color, #e5e8eb) !important; background: transparent; }
+            #cart-table tbody tr:hover { background: transparent; }
+            #cart-table tbody tr td { display: block !important; min-width: 0; width: auto !important; max-width: 100%; box-sizing: border-box; padding: 0 !important; border: 0 !important; text-align: left; white-space: normal; }
+            /* line 1: the name (wraps) and the remove button at the right edge; line 2: [- qty +]  unit price  line total (the pieces wrap onto a third line on a very narrow screen instead of being cut off) */
+            #cart-table tbody tr td:nth-child(1) { order: 1; flex: 1 1 calc(100% - 50px); max-width: calc(100% - 50px); font-size: 15.5px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; padding-top: 2px !important; }
+            #cart-table tbody tr td:nth-child(5) { order: 2; flex: 0 0 auto; }
+            #cart-table tbody tr td:nth-child(2) { order: 3; flex: 0 0 auto; }
+            #cart-table tbody tr td:nth-child(3) { order: 4; flex: 1 1 auto; text-align: center; min-width: 0; }
+            #cart-table tbody tr td:nth-child(4) { order: 5; flex: 0 0 auto; margin-left: auto; text-align: right; font-weight: 800; font-size: 14.5px; white-space: nowrap; }
+            /* a row that is one wide message (empty cart, water's materials strip) */
+            #cart-table tbody tr:has(> td[colspan]) { display: block !important; }
+            #cart-table tbody tr > td[colspan] { display: block !important; width: 100% !important; text-align: center; }
+            #cart-table tbody tr.cart-materials-row > td[colspan] { text-align: left; font-size: 12px; }
+            #cart-table .qty-controls { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; }
+            #cart-table .qty-controls button { flex: 0 0 auto; min-width: 38px !important; min-height: 44px; padding: 0 !important; font-size: 20px; line-height: 1; }
+            html body:not(#z186) #cart-table .qty-controls input.price-input, html body:not(#z186) #cart-table .qty-controls input[type=number] { width: 52px !important; min-width: 0 !important; flex: 0 0 52px; min-height: 44px !important; padding-left: 4px !important; padding-right: 4px !important; text-align: center; }
+            #cart-table .qty-controls > span { display: none; }
+            #cart-table .cart-price-chip { min-width: 0 !important; max-width: 100%; width: auto; padding: 2px 8px; }
+            #cart-table .cart-price-chip .cpc-amt { font-size: 13px; }
+            #cart-table .cart-price-chip .cpc-amt small { font-size: 10px; }
+            #cart-table td:nth-child(3) input { max-width: 96px; }
+            #cart-table .remove-btn { font-size: 0 !important; width: 40px; min-width: 40px; height: 44px; min-height: 44px; padding: 0 !important; border-radius: 10px; }
+            #cart-table .remove-btn::before { content: '\2715'; font-size: 17px; font-weight: 700; line-height: 1; }
+            #cart-table .offer-badge { font-size: 11.5px; margin-top: 3px; }
+            #cart-table .offer-line-discounted-total { font-size: 12px; }
+
+            /* ================= 2. THE CART SHEET ================= */
+            /* closed: the cart card is not on the page at all (the bar below and the round cart button open it) */
+            #sales-tab .ptl-cart:not(.ptl-open) { display: none !important; }
+            html.ptl-sheet-open, html.ptl-sheet-open body { overflow: hidden !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open { display: flex !important; flex-flow: row wrap; align-content: flex-start; position: fixed !important; inset: 0 !important; top: 0 !important; --ptl-dock-h: calc(66px + env(safe-area-inset-bottom, 0px)); width: auto !important; height: auto !important; max-height: none !important; margin: 0 !important; z-index: 9000; box-sizing: border-box; padding: 0 12px 0 !important; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: var(--bg-surface, #fff); color: var(--dark, inherit); border-radius: 0 !important; box-shadow: none !important; border: 0 !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > * { flex: 0 0 100%; order: 10; max-width: 100%; min-width: 0; box-sizing: border-box; }
+            /* header: Back + count (+ the Hold sale button the app puts there) */
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 { order: 0; position: sticky; top: 0; z-index: 20; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin: 0 -12px 8px !important; padding: 8px 12px calc(8px) !important; font-size: 0 !important; line-height: 1; background: var(--bg-surface, #fff); border-bottom: 1px solid var(--border-color, #e5e8eb) !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3::before { display: none !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 > * { font-size: 14px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 .ptl-back { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px; border: 0; border-radius: 12px; background: var(--primary, #2c3e50); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 #pos-ck-count { display: none; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 .ptl-back .ptl-bk-n { font-weight: 600; opacity: .85; font-size: 13px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 .pos-hold-mini { margin: 0 !important; order: 4; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 #held-sale-bar { margin: 0 !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 #held-sale-bar .settings-small-btn { min-height: 40px; }
+            /* the pay bar dissolves: its parts become part of the sheet. Items first, then the method buttons and fields; total + Confirm pin to the bottom */
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar { display: contents !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > * { flex: 0 0 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-offers-summary { order: 15; margin: 6px 0 0; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #payment-toggle { order: 20; margin: 12px 0 8px; max-width: none; flex-wrap: wrap; gap: 6px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #payment-toggle button { flex: 1 1 28%; min-height: 46px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > .pos-pay-details { order: 30; max-height: none !important; overflow: visible !important; margin: 0 0 12px; padding: 0; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #add-order-to-tab-btn { order: 40; width: 100%; min-height: 46px; margin: 0 0 10px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #cart-grand-total { order: 90; flex: 0 0 auto !important; width: calc(43% + 12px) !important; max-width: none; position: sticky; top: calc(100% - var(--ptl-dock-h)); bottom: 0; z-index: 15; height: var(--ptl-dock-h); box-sizing: border-box; display: flex; align-items: center; margin: 0 0 0 -12px !important; padding: 8px 6px 8px 12px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); font-size: 16px; font-weight: 800; line-height: 1.2; background: var(--bg-surface, #fff); border: 0; border-top: 1px solid var(--border-color, #dfe6e9); box-shadow: 0 -6px 14px rgba(0,0,0,.10); border-radius: 0; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #cart-grand-total .cart-total-savings, html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #cart-grand-total span span { display: none; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #main-checkout-btn { order: 91; flex: 0 0 auto !important; width: calc(57% + 12px) !important; max-width: none; position: sticky; top: calc(100% - var(--ptl-dock-h)); bottom: 0; z-index: 15; box-sizing: border-box; height: var(--ptl-dock-h); margin: 0 -12px 0 0 !important; padding: 0 12px; font-size: 17px; font-weight: 800; border: 0; border-radius: 0; border-top: 8px solid var(--bg-surface, #fff); border-bottom: calc(8px + env(safe-area-inset-bottom, 0px)) solid var(--bg-surface, #fff); border-right: 12px solid var(--bg-surface, #fff); border-left: 6px solid var(--bg-surface, #fff); background-clip: padding-box; box-shadow: none; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open .order-type-toggle { margin-bottom: 10px; }
+            html.ptl-sheet-open #mobile-cart-fab, html.ptl-sheet-open #floating-kb-toggle, html.ptl-sheet-open #scroll-to-top-btn { display: none !important; }
+            /* the bottom bar: N items - total - View cart */
+            .ptl-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9100; align-items: center; gap: 10px; box-sizing: border-box; height: calc(62px + env(safe-area-inset-bottom, 0px)); padding: 0 66px env(safe-area-inset-bottom, 0px) 14px; border: 0; border-top: 1px solid rgba(255,255,255,.18); border-radius: 0; background: var(--primary, #2c3e50); color: #fff; font: inherit; font-size: 15px; text-align: left; cursor: pointer; box-shadow: 0 -4px 16px rgba(0,0,0,.25); }
+            .ptl-bar.on { display: flex; }
+            .ptl-bar .ptl-bar-n { font-weight: 700; white-space: nowrap; }
+            .ptl-bar .ptl-bar-t { flex: 1 1 auto; min-width: 0; font-weight: 800; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .ptl-bar .ptl-bar-go { flex: 0 0 auto; font-weight: 700; opacity: .92; white-space: nowrap; }
+            .ptl-bar .ptl-bar-n::after { content: ' \00B7'; opacity: .6; }
+            @media (max-width: 340px) { .ptl-bar .ptl-bar-go { display: none; } }
+            /* the round cart button: sits on the right end of the bar; the keyboard / scroll-up buttons sit above the bar on the left, smaller */
+            html body #mobile-cart-fab { right: 8px !important; bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important; width: 46px; height: 46px; font-size: 21px; z-index: 10050; }
+            html body #mobile-cart-fab .cart-fab-badge { top: -6px; right: -4px; }
+            html body #floating-kb-toggle { left: 8px !important; bottom: calc(8px + env(safe-area-inset-bottom, 0px)) !important; width: 40px; height: 40px; font-size: 18px; opacity: .88; }
+            html body #scroll-to-top-btn { left: 8px !important; bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important; width: 40px; height: 40px; font-size: 17px; opacity: .88; }
+            /* while the bar is up they sit INSIDE it (keyboard at its left end, scroll-up beside the cart button) so they never cover a product or a line */
+            html.ptl-bar-on body #floating-kb-toggle { bottom: calc(11px + env(safe-area-inset-bottom, 0px)) !important; opacity: .95; }
+            html.ptl-bar-on body #scroll-to-top-btn { left: auto !important; right: 62px !important; bottom: calc(11px + env(safe-area-inset-bottom, 0px)) !important; opacity: .95; }
+            html.ptl-bar-on .ptl-bar { padding-left: 56px; }
+            html.ptl-bar-on:has(#scroll-to-top-btn.show) .ptl-bar { padding-right: 112px; }
+            html.ptl-bar-on:has(#scroll-to-top-btn.show) .ptl-bar .ptl-bar-go { display: none; }
+            html.ptl-bar-on body:has(#sales-tab.active) { padding-bottom: calc(var(--ptl-bar-h, 0px) + 70px) !important; }
+
+            /* ================= 4 + 5. PRODUCT PANEL: search box as the header, ONE chip row, big 2-column tiles ================= */
+            #sales-tab.tab-content { padding: 8px 8px 0 !important; }
+            #sales-tab .pos-grid { gap: 8px; }
+            #sales-tab .ptl-prod { display: grid !important; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; padding: 8px !important; position: relative; }
+            #sales-tab .ptl-prod > * { grid-column: 1 / -1; min-width: 0; }
+            #sales-tab .ptl-prod > h3 { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 6px; margin: 0 !important; padding: 0 !important; border: 0 !important; font-size: 0 !important; line-height: 1; }
+            #sales-tab .ptl-prod > h3::before { display: none !important; }
+            #sales-tab .ptl-prod > h3 .pos-head-actions { display: flex !important; gap: 6px; margin: 0 !important; padding: 0 !important; float: none !important; position: static !important; width: auto; }
+            #sales-tab .ptl-prod > h3 button { font-size: 0 !important; width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 0 !important; margin: 0 !important; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; }
+            #sales-tab .ptl-prod > h3 button::before { content: attr(data-ptl-ic); font-size: 20px; line-height: 1; }
+            #sales-tab .ptl-prod > h3 .ptl-search-btn { display: none; }
+            #sales-tab .ptl-prod > .search-container { grid-column: 1; grid-row: 1; margin: 0 !important; position: relative; }
+            #sales-tab .ptl-prod > .search-container > div:first-child { display: flex; gap: 6px; align-items: center; }
+            #sales-tab .ptl-prod > .search-container input#sales-search { min-width: 0; }
+            #sales-tab .ptl-prod > .search-container .settings-small-btn { min-width: 46px; min-height: 46px; padding: 0 !important; }
+            #sales-tab .ptl-prod #search-results { left: 0; width: calc(100% + var(--ptl-act-w, 0px)) !important; max-height: 52vh !important; margin-top: 3px; border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,.22); z-index: 120; }
+            #sales-tab .ptl-prod #search-results .search-item { min-height: 46px; align-items: center; padding: 8px 12px; }
+            #sales-tab .ptl-prod > #bar-serve-panel:empty { display: none; }
+            /* icon mode: the header row is a magnifier + the Bills / Sales buttons (with their words); the box opens over it */
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 { grid-column: 1 / -1; justify-content: flex-end; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 .ptl-search-btn { display: inline-flex; margin-right: auto; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 button { font-size: 14px !important; width: auto; padding: 0 14px !important; font-weight: 700; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 button::before { content: none; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 .ptl-search-btn { width: 52px; padding: 0 !important; font-size: 0 !important; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 .ptl-search-btn::before { content: '\1F50D'; font-size: 21px; }
+            html.ptl-search-icon:not(.ptl-search-open) #sales-tab .ptl-prod > .search-container { display: none !important; }
+            html.ptl-search-icon.ptl-search-open #sales-tab .ptl-prod > .search-container { grid-column: 1 / -1; grid-row: 1; }
+            html.ptl-search-icon.ptl-search-open #sales-tab .ptl-prod > h3 { display: none !important; }
+            html.ptl-search-icon.ptl-search-open #sales-tab .ptl-prod > .search-container .ptl-search-x { display: inline-flex; align-items: center; justify-content: center; }
+            html.ptl-search-icon #sales-tab .ptl-prod #search-results { width: 100% !important; }
+            /* category chips: ONE row that scrolls sideways */
+            #sales-tab .ptl-prod > .hcat-bar, #sales-tab #item-filter-bar { display: flex !important; flex-wrap: nowrap !important; overflow-x: auto; overflow-y: hidden; gap: 6px; margin: 8px 0 2px !important; padding: 2px 0 4px !important; -webkit-overflow-scrolling: touch; scrollbar-width: none; scroll-snap-type: x proximity; background: transparent; }
+            #sales-tab .ptl-prod > .hcat-bar::-webkit-scrollbar, #sales-tab #item-filter-bar::-webkit-scrollbar { display: none; }
+            #sales-tab .ptl-prod > .hcat-bar .hcat-chip, #sales-tab #item-filter-bar .item-filter-btn { flex: 0 0 auto !important; white-space: nowrap; min-height: 44px; scroll-snap-align: start; }
+            /* the hint line is gone; the Sell Unlisted Item button stays */
+            #sales-tab .ptl-prod > p, #sales-tab .ptl-prod .pos-left-foot > p { display: none !important; }
+            #sales-tab .ptl-prod .pos-left-foot { margin-top: 6px; }
+            /* tiles */
+            #sales-tab #item-image-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; max-height: none !important; overflow: visible !important; margin-top: 8px !important; padding-top: 0 !important; border-top: 0 !important; }
+            #sales-tab .ptl-prod > .hcat-bar + #item-image-grid { margin-top: 4px !important; }
+            #sales-tab #item-image-grid .item-grid-cell { border-radius: 12px; }
+            #sales-tab #item-image-grid .item-grid-cell img, #sales-tab #item-image-grid .item-grid-cell .igc-noimg { aspect-ratio: 1 / 1; width: 100%; height: auto; font-size: 42px; }
+            #sales-tab #item-image-grid .item-grid-cell .igc-name { font-size: 14px; line-height: 1.25; padding: 7px 8px 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+            #sales-tab #item-image-grid .item-grid-cell .igc-price { font-size: 14px; font-weight: 700; padding: 2px 8px 8px; }
+            #sales-tab #item-image-grid .item-grid-cell .igc-stock { font-size: 11px; }
+            /* tabs the owner hid on this phone wait in "More" (the buttons stay in the page, so roles and the app's own hiding are never touched) */
+            nav.tabs > .tab-link.ptl-tab-off:not(.active) { display: none !important; }
+        }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__phoneTill) return;
+        window.__phoneTill = true;
+
+        var MQ = '(max-width: 700px)';
+        var K_SHOP = 'pos_ptl_shop', K_SEARCH = 'pos_ptl_search', K_TABS = 'pos_ptl_tabs_off';
+        var NEVER_HIDE = { 'sales-tab': 1, 'settings-tab': 1 };
+        var PH_BAR = '🔍 Search products…', PH_ICON = '🔍 Search product by name or code…';
+
+        function $(id) { return document.getElementById(id); }
+        function safe(fn) { try { return fn(); } catch (e) { return undefined; } }
+        function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+        function lsSet(k, v) { try { if (typeof safeSetItem === 'function') safeSetItem(k, v); else localStorage.setItem(k, v); } catch (e) { /* kept for this session only */ } }
+        function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* nothing to remove */ } }
+        function toast(m, bad) { safe(function () { if (typeof rxToast === 'function') rxToast(m, !!bad); else if (typeof showToast === 'function') showToast(m, !!bad); }); }
+        function push() { safe(function () { if (typeof rxPush === 'function') rxPush(); else if (typeof queuePush === 'function') queuePush(); }); }
+        function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+        function isPhone() { return !!(window.matchMedia && window.matchMedia(MQ).matches); }
+        var html = document.documentElement;
+
+        /* ---------------- settings ---------------- */
+        function normShop(o) { o = o && typeof o === 'object' ? o : {}; return { phone: o.phone !== false && o.phone !== 0, delivery: o.delivery !== false && o.delivery !== 0, tables: o.tables !== false && o.tables !== 0 }; }
+        function shop() { var o = null; try { o = JSON.parse(lsGet(K_SHOP) || 'null'); } catch (e) { o = null; } return normShop(o); }
+        function searchStyle() { return lsGet(K_SEARCH) === 'icon' ? 'icon' : 'bar'; }
+        function tabsOff() { var a = []; try { a = JSON.parse(lsGet(K_TABS) || '[]'); } catch (e) { a = []; } return (Array.isArray(a) ? a : []).filter(function (id) { return typeof id === 'string' && !NEVER_HIDE[id]; }); }
+        function shopSave(o, fromSync) {
+            o = normShop(o);
+            lsSet(K_SHOP, JSON.stringify({ phone: o.phone ? 1 : 0, delivery: o.delivery ? 1 : 0, tables: o.tables ? 1 : 0 }));
+            apply(); renderPanel();
+            if (!fromSync) push();
+        }
+        function tabAccepted() {
+            var b = $('pay-tab-btn'); if (!b) return false;
+            var a = safe(function () { return typeof posPayAccepted === 'function' ? posPayAccepted() : null; });
+            return !a || a.indexOf('tab') !== -1;
+        }
+        /* the Table / Room picker: zip 191 - it can be hidden even while Tab payments are on (a Tab order then goes to a guest name, or the auto-numbered "Guest 1", exactly as when no table is picked) */
+        function locHidden() { return !shop().tables; }
+
+        /* ---------------- finding the pieces (every app differs a little) ---------------- */
+        function cartPanel() { var bar = $('cart-sticky-bar'); return (bar && bar.closest && bar.closest('.panel')) || $('active-checkout-cart-panel') || null; }
+        function prodPanel() { var s = $('sales-search'); return (s && s.closest && s.closest('.panel')) || null; }
+        function phoneInput() { return $('sms-checkout-phone-input') || $('sale-customer-phone-input') || null; }
+        function salesActive() { var t = $('sales-tab'); return !!(t && t.classList.contains('active')); }
+        function cartInSales() { var p = cartPanel(), t = $('sales-tab'); return !!(p && t && t.contains(p)); }
+
+        /* ---------------- apply the settings to the page (idempotent: safe to run as often as you like) ---------------- */
+        function markGroups() {
+            var ph = phoneInput();
+            if (ph) { var g = ph.closest('.form-group') || ph.parentNode; if (g && g !== document.body) g.classList.add('ptl-phone-group'); }
+            var sel = $('sales-location-select');
+            if (sel) { var l = sel.closest('.form-group') || (sel.parentNode && sel.parentNode.parentNode); if (l && l !== document.body) l.classList.add('ptl-loc-group'); }
+            var c = cartPanel(); if (c && !c.classList.contains('ptl-cart')) c.classList.add('ptl-cart');
+            var p = prodPanel(); if (p && !p.classList.contains('ptl-prod')) p.classList.add('ptl-prod');
+        }
+        var lastShop = null;
+        function apply() {
+            safe(function () {
+                markGroups();
+                var s = shop();
+                html.classList.toggle('ptl-no-phone', !s.phone);
+                if (!s.phone && !document.querySelector('#pay-bill-btn.active')) { var ph = phoneInput(); if (ph && ph.value) { ph.value = ''; } }                  /* a number typed earlier must not go out with a sale nobody can see it on */
+                html.classList.toggle('ptl-no-delivery', !s.delivery && !!$('order-type-toggle'));
+                if (!s.delivery) {
+                    var ot; try { ot = typeof orderType !== 'undefined' ? orderType : 'walkin'; } catch (e) { ot = 'walkin'; }
+                    if ((ot === 'delivery' || (lastShop && lastShop.delivery)) && typeof setOrderType === 'function') safe(function () { setOrderType('walkin'); });
+                    var dd = $('delivery-details-group'); if (dd) dd.style.display = 'none';
+                }
+                var lh = locHidden();
+                html.classList.toggle('ptl-no-loc', lh);
+                if (lh) { var sel = $('sales-location-select'); if (sel && sel.value) { sel.value = ''; safe(function () { sel.dispatchEvent(new Event('change', { bubbles: true })); }); } }
+                html.classList.toggle('ptl-search-icon', searchStyle() === 'icon' && !!$('sales-search'));
+                if (searchStyle() !== 'icon') html.classList.remove('ptl-search-open');
+                tabsApply();
+                prodInstall();
+                cartInstall();
+                lastShop = s;
+            });
+        }
+
+        /* ---------------- tabs the owner hid on this phone ---------------- */
+        function tabButtons() {
+            var out = [], seen = {};
+            Array.prototype.forEach.call(document.querySelectorAll('.tabs .tab-link[data-tab], #tabs-more-menu .tab-link[data-tab]'), function (b) { var id = b.getAttribute('data-tab'); if (id && !seen[id]) { seen[id] = 1; out.push(b); } });
+            return out;
+        }
+        function tabsApply() {
+            var off = tabsOff();
+            tabButtons().forEach(function (b) { b.classList.toggle('ptl-tab-off', off.indexOf(b.getAttribute('data-tab')) !== -1); });
+            tabsToMore();
+        }
+        /* hidden tabs are taken out of the bar and put in the "More" list, where they stay reachable (a tab the roles hide has an inline display:none: it stays hidden there too) */
+        function tabsToMore() {
+            safe(function () {
+                var nav = document.querySelector('nav.tabs'), more = $('tabs-more-btn'), menu = $('tabs-more-menu');
+                if (!nav || !more || !menu || !isPhone()) return;
+                var moved = 0;
+                Array.prototype.slice.call(nav.children).forEach(function (b) {
+                    if (!b.classList || !b.classList.contains('ptl-tab-off') || b.classList.contains('active')) return;
+                    menu.appendChild(b);
+                });
+                Array.prototype.forEach.call(menu.querySelectorAll('.tab-link[data-tab]'), function (b) { if (b.style.display !== 'none') moved++; });
+                if (moved) more.style.display = 'inline-flex';
+            });
+        }
+        function wrapCollapse() {
+            var o = window.collapseTabsIfNeeded;
+            if (typeof o !== 'function' || o.__ptl) return;
+            var w = function () { var r = o.apply(this, arguments); safe(tabsApply); return r; };
+            w.__ptl = true; window.collapseTabsIfNeeded = w;
+        }
+
+        /* ---------------- the cart sheet ---------------- */
+        var sheetOpen = false;
+        function cartCount() {
+            var n = 0;
+            var ok = safe(function () { if (typeof currentCart !== 'undefined' && currentCart) { Object.keys(currentCart).forEach(function (k) { n += Number(currentCart[k] && currentCart[k].qty) || 0; }); return true; } return false; });
+            if (!ok) { var rows = document.querySelectorAll('#cart-table tbody tr'); Array.prototype.forEach.call(rows, function (r) { if (!r.querySelector('.empty-state') && !r.classList.contains('cart-empty-row') && !r.classList.contains('cart-materials-row')) n++; }); }
+            return Math.round(n * 100) / 100;
+        }
+        function cartTotalText() {
+            var el = $('cart-grand-total'), m = el && /KES\s*([\d,]+(?:\.\d+)?)/i.exec(el.textContent || '');
+            if (m) return 'KES ' + m[1];
+            var t = safe(function () { return typeof cartTotal === 'function' ? Number(cartTotal()) : NaN; });
+            return isFinite(t) ? 'KES ' + t.toFixed(2) : '';
+        }
+        function heldSale() { return !!safe(function () { return typeof heldSaleGet === 'function' ? heldSaleGet() : null; }); }
+        function openSheet() {
+            if (!isPhone() || !cartInSales() || !salesActive()) return false;
+            if (cartCount() <= 0) return false;
+            var p = cartPanel(); if (!p) return false;
+            markGroups(); cartInstall();
+            p.classList.add('ptl-open'); html.classList.add('ptl-sheet-open'); sheetOpen = true;
+            try { p.scrollTop = 0; } catch (e) { /* cosmetic */ }
+            safe(function () { document.activeElement && document.activeElement.blur && document.activeElement.blur(); });
+            sync();
+            return true;
+        }
+        function closeSheet() {
+            var p = cartPanel(); if (p) p.classList.remove('ptl-open');
+            html.classList.remove('ptl-sheet-open'); sheetOpen = false;
+            sync();
+        }
+        function barEl() {
+            var b = $('ptl-bar'); if (b) return b;
+            if (!document.body) return null;
+            b = document.createElement('button'); b.type = 'button'; b.id = 'ptl-bar'; b.className = 'ptl-bar'; b.setAttribute('aria-label', 'View cart');
+            b.innerHTML = '<span class="ptl-bar-n"></span><span class="ptl-bar-t"></span><span class="ptl-bar-go">View cart ›</span>';
+            b.addEventListener('click', function () {
+                if (cartCount() > 0) { openSheet(); return; }
+                if (heldSale() && typeof resumeHeldSale === 'function') { safe(function () { resumeHeldSale(); }); setTimeout(sync, 60); }
+            });
+            document.body.appendChild(b);
+            return b;
+        }
+        var syncRaf = 0, lastN = -1;
+        function sync() {
+            safe(function () {
+                var phone = isPhone(), n = cartCount(), active = salesActive() && cartInSales();
+                /* an item picked from the search results (the app empties the box) puts the icon-mode search box away again */
+                if (n !== lastN && lastN >= 0 && html.classList.contains('ptl-search-open')) { var si = $('sales-search'); if (si && !si.value) searchOpen(false); }
+                lastN = n;
+                if (sheetOpen && (!phone || !active || n <= 0)) { var p = cartPanel(); if (p) p.classList.remove('ptl-open'); html.classList.remove('ptl-sheet-open'); sheetOpen = false; }
+                var b = barEl(); if (!b) return;
+                var held = n <= 0 && heldSale();
+                var on = phone && active && !sheetOpen && (n > 0 || held);
+                b.classList.toggle('on', on);
+                html.classList.toggle('ptl-bar-on', on);
+                if (on) {
+                    b.querySelector('.ptl-bar-n').textContent = held ? '⏸️ 1 sale on hold' : '🛒 ' + n + (n === 1 ? ' item' : ' items');
+                    b.querySelector('.ptl-bar-t').textContent = held ? '' : cartTotalText();
+                    b.querySelector('.ptl-bar-go').textContent = held ? 'Resume ›' : 'View cart ›';
+                    html.style.setProperty('--ptl-bar-h', (b.offsetHeight || 62) + 'px');
+                } else html.style.setProperty('--ptl-bar-h', '0px');
+                Array.prototype.forEach.call(document.querySelectorAll('.ptl-bk-n'), function (c) { c.textContent = '\u00B7 ' + n + (n === 1 ? ' item' : ' items'); });
+            });
+        }
+        function syncSoon() { if (syncRaf) return; var raf = window.requestAnimationFrame || function (f) { return setTimeout(f, 16); }; syncRaf = raf(function () { syncRaf = 0; sync(); }); }
+        /* the Back button + count chip in the sheet header (added once; harmless when the sheet is not used) */
+        function cartInstall() {
+            safe(function () {
+                var p = cartPanel(); if (!p) return;
+                var h3 = p.querySelector(':scope > h3'); if (!h3 || h3.querySelector('.ptl-back')) return;
+                var bk = document.createElement('button'); bk.type = 'button'; bk.className = 'ptl-back'; bk.innerHTML = '← Back to products <span class="ptl-bk-n"></span>';
+                bk.addEventListener('click', function (e) { e.preventDefault(); closeSheet(); });
+                h3.insertBefore(bk, h3.firstChild);
+            });
+        }
+        function wrapHooks() {
+            safe(function () {
+                var s = window.scrollToCart;
+                if (typeof s === 'function' && !s.__ptl) { var w = function () { if (isPhone() && openSheet()) return; return s.apply(this, arguments); }; w.__ptl = true; window.scrollToCart = w; }
+                var u = window.updateMobileCartFab;
+                if (typeof u === 'function' && !u.__ptl) { var w2 = function () { var r = u.apply(this, arguments); syncSoon(); return r; }; w2.__ptl = true; window.updateMobileCartFab = w2; }
+                var o = window.setOrderType;
+                if (typeof o === 'function' && !o.__ptl) { var w3 = function (t) { if (t === 'delivery' && !shop().delivery && $('order-type-toggle')) t = 'walkin'; return o.call(this, t); }; w3.__ptl = true; window.setOrderType = w3; }
+                var pa = window.posApplyPayMethods;
+                if (typeof pa === 'function' && !pa.__ptl) { var w4 = function () { var r = pa.apply(this, arguments); safe(function () { apply(); renderPanel(); }); return r; }; w4.__ptl = true; window.posApplyPayMethods = w4; }
+                var ec = window.extraSettingsCollect;
+                if (typeof ec === 'function' && !ec.__ptl) { var w5 = function () { var r = ec.apply(this, arguments) || {}; if (lsGet(K_SHOP) !== null) { var q = shop(); r.phoneTill = { phone: q.phone, delivery: q.delivery, tables: q.tables }; } return r; }; w5.__ptl = true; window.extraSettingsCollect = w5; }
+                var ea = window.extraSettingsApply;
+                if (typeof ea === 'function' && !ea.__ptl) { var w6 = function (data) { var r = ea.apply(this, arguments); safe(function () { if (data && data.phoneTill && typeof data.phoneTill === 'object') { var n = normShop(data.phoneTill); if (JSON.stringify(n) !== JSON.stringify(shop())) shopSave(n, true); } }); return r; }; w6.__ptl = true; window.extraSettingsApply = w6; }
+                wrapCollapse();
+            });
+        }
+
+        /* ---------------- the product panel: search style ---------------- */
+        function prodInstall() {
+            safe(function () {
+                var p = prodPanel(); if (!p) return;
+                var h3 = p.querySelector(':scope > h3'), inp = $('sales-search'), box = inp && inp.closest('.search-container');
+                if (!h3 || !inp || !box) return;
+                /* each button in the header gets its picture (the words are hidden on a phone in bar mode) */
+                Array.prototype.forEach.call(h3.querySelectorAll('button'), function (b) {
+                    if (b.classList.contains('ptl-search-btn')) return;
+                    var t = (b.textContent || '').replace(/\s+/g, ' ').trim();
+                    if (!b.getAttribute('data-ptl-ic')) b.setAttribute('data-ptl-ic', t.split(' ')[0] || '•');
+                    if (t && !b.getAttribute('aria-label')) b.setAttribute('aria-label', t.replace(/^\S+\s*/, '') || t);
+                });
+                if (!h3.querySelector('.ptl-search-btn')) {
+                    var sb = document.createElement('button'); sb.type = 'button'; sb.id = 'ptl-search-btn'; sb.className = 'settings-small-btn ptl-search-btn'; sb.setAttribute('aria-label', 'Search products'); sb.setAttribute('data-ptl-ic', '🔍'); sb.textContent = '🔍';
+                    sb.addEventListener('click', function (e) { e.preventDefault(); searchOpen(true); });
+                    h3.insertBefore(sb, h3.firstChild);
+                }
+                if (!box.querySelector('.ptl-search-x')) {
+                    var row = box.querySelector('div'); if (row) {
+                        var x = document.createElement('button'); x.type = 'button'; x.className = 'settings-small-btn ptl-search-x'; x.setAttribute('aria-label', 'Close search'); x.textContent = '✕';
+                        x.addEventListener('click', function (e) { e.preventDefault(); searchOpen(false, true); });
+                        row.appendChild(x);
+                    }
+                }
+                if (!inp.__ptl) {
+                    inp.__ptl = true;
+                    inp.addEventListener('keydown', function (e) { if (e.key === 'Escape' && html.classList.contains('ptl-search-open')) searchOpen(false, true); });
+                    inp.addEventListener('blur', function () { setTimeout(function () { if (html.classList.contains('ptl-search-open') && !inp.value && document.activeElement !== inp && !(document.activeElement && document.activeElement.closest && document.activeElement.closest('.search-container'))) searchOpen(false); }, 250); });
+                }
+                var act = h3.querySelector('.pos-head-actions'); var w = 0;
+                if (act) w = act.offsetWidth; else Array.prototype.forEach.call(h3.querySelectorAll('button:not(.ptl-search-btn)'), function (b) { w += b.offsetWidth + 6; });
+                html.style.setProperty('--ptl-act-w', (w ? w + 6 : 0) + 'px');
+                placeholders();
+            });
+        }
+        function placeholders() {
+            var inp = $('sales-search'); if (!inp) return;
+            if (inp.getAttribute('data-ptl-ph') === null) inp.setAttribute('data-ptl-ph', inp.getAttribute('placeholder') || '');
+            if (isPhone()) inp.setAttribute('placeholder', html.classList.contains('ptl-search-icon') ? PH_ICON : PH_BAR);
+            else inp.setAttribute('placeholder', inp.getAttribute('data-ptl-ph'));
+        }
+        function searchOpen(on, clear) {
+            safe(function () {
+                var inp = $('sales-search');
+                if (on) {
+                    html.classList.add('ptl-search-open');
+                    if (inp) setTimeout(function () { try { inp.focus(); } catch (e) { /* cosmetic */ } }, 30);
+                } else {
+                    if (clear && inp && inp.value) { inp.value = ''; safe(function () { inp.dispatchEvent(new Event('input', { bubbles: true })); }); safe(function () { if (typeof liveSearch === 'function') liveSearch(''); }); }
+                    var r = $('search-results'); if (r && !(inp && inp.value)) { r.style.display = 'none'; }
+                    html.classList.remove('ptl-search-open');
+                }
+            });
+        }
+
+        /* ---------------- Settings card ---------------- */
+        function swRow(id, label, hint, on, disabled) {
+            return '<label class="ptl-sw"><span>' + esc(label) + (hint ? '<small>' + esc(hint) + '</small>' : '') + '</span><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + (disabled ? ' disabled' : '') + '><i></i></label>';
+        }
+        function renderPanel() {
+            safe(function () {
+                var el = $('pos-phonetill-panel'); if (!el) return;
+                var s = shop(), out = '<h3 style="margin-top:0;">📱 Phone &amp; till layout</h3><div class="ptl-note">Hide what this shop never uses, so the Sales Counter needs less scrolling. Each switch saves at once.</div>';
+                var haveRows = false;
+                out += '<div class="ptl-sub">Shop settings — every till and phone follows these</div>';
+                if (phoneInput()) { out += swRow('ptl-sw-phone', 'Show customer phone box', 'The optional number for a thank-you SMS (Pay Later still asks for it).', s.phone); haveRows = true; }
+                if ($('order-type-toggle')) { out += swRow('ptl-sw-delivery', 'Show Walk-In / Delivery choice', 'Off = every sale is a walk-in sale and the Delivery form is hidden.', s.delivery); haveRows = true; }
+                var locSel = $('sales-location-select'), locGrp = locSel && (locSel.closest('.form-group') || null);
+                if (locSel && (!s.tables || !locGrp || locGrp.style.display !== 'none')) {
+                    var locLab = locGrp && locGrp.querySelector('label'), locName = locLab ? (locLab.textContent || '').replace(/\(.*$/, '').replace(/\s+/g, ' ').trim() : '';
+                    out += swRow('ptl-sw-tables', $('pay-tab-btn') || !locName ? 'Show Table / Room picker' : 'Show the ' + locName + ' picker', $('pay-tab-btn') ? 'Off = no table / room is picked on the till. The 🧾 Tabs button stays, and a Tab payment goes to a guest name (or “Guest 1”, “Guest 2”…).' : 'For shops that do not serve tables or rooms.', s.tables);
+                    haveRows = true;
+                }
+                if (!haveRows) out += '<div class="ptl-note">Nothing to switch in this app.</div>';
+                out += '<div class="ptl-sub">This phone only</div>';
+                if ($('sales-search')) {
+                    var st = searchStyle();
+                    out += '<div class="ptl-note" style="margin-top:6px;">Product search on the phone</div><div class="ptl-seg"><label><input type="radio" name="ptl-search" value="bar"' + (st === 'bar' ? ' checked' : '') + '> Search bar</label><label><input type="radio" name="ptl-search" value="icon"' + (st === 'icon' ? ' checked' : '') + '> 🔍 Icon</label></div>';
+                }
+                var off = tabsOff(), list = tabButtons().filter(function (b) { var id = b.getAttribute('data-tab'); return !NEVER_HIDE[id] && (b.style.display !== 'none' || off.indexOf(id) !== -1); });
+                if (list.length) {
+                    out += '<div class="ptl-note" style="margin-top:8px;">Tabs shown on this phone (the rest wait under “More”). Sales Counter and Settings always show.</div><div class="ptl-tabs">';
+                    list.forEach(function (b) { var id = b.getAttribute('data-tab'), label = (b.textContent || '').replace(/\s+/g, ' ').trim(); out += '<label><input type="checkbox" class="ptl-tab-cb" value="' + esc(id) + '"' + (off.indexOf(id) === -1 ? ' checked' : '') + '> ' + esc(label) + '</label>'; });
+                    out += '</div>';
+                }
+                el.innerHTML = out;
+            });
+        }
+        function onPanelChange(e) {
+            var t = e.target; if (!t || !t.closest || !t.closest('#pos-phonetill-panel')) return;
+            safe(function () {
+                var el = $('pos-phonetill-panel');
+                if (t.id === 'ptl-sw-phone' || t.id === 'ptl-sw-delivery' || t.id === 'ptl-sw-tables') {
+                    var s = shop();
+                    if (t.id === 'ptl-sw-phone') s.phone = t.checked; else if (t.id === 'ptl-sw-delivery') s.delivery = t.checked; else s.tables = t.checked;
+                    shopSave(s, false); toast('Saved.');
+                } else if (t.name === 'ptl-search') {
+                    if (t.value === 'icon') lsSet(K_SEARCH, 'icon'); else lsDel(K_SEARCH);
+                    apply(); toast('Saved.');
+                } else if (t.classList.contains('ptl-tab-cb')) {
+                    var offNow = Array.prototype.filter.call(el.querySelectorAll('.ptl-tab-cb'), function (c) { return !c.checked; }).map(function (c) { return c.value; });
+                    var keepOthers = tabsOff().filter(function (id) { return !el.querySelector('.ptl-tab-cb[value="' + id + '"]'); });   /* tabs not listed (role-hidden) keep their old state */
+                    var all = offNow.concat(keepOthers);
+                    if (all.length) lsSet(K_TABS, JSON.stringify(all)); else lsDel(K_TABS);
+                    tabsApply(); safe(function () { if (typeof collapseTabsIfNeeded === 'function') collapseTabsIfNeeded(); });
+                    toast('Saved.');
+                }
+            });
+        }
+        /* the card sits right under "Payment methods I accept", in the same Settings section (that card is moved into its own section a moment after start-up) */
+        var panelTries = 0;
+        function panelInstall() {
+            safe(function () {
+                if ($('pos-phonetill-panel')) return true;
+                var pm = $('pos-paymethods-panel'); if (!pm || !pm.parentNode) return false;
+                var settled = !!$('settings-section-paymethods') || !$('settings-subnav') || panelTries > 40;
+                if (!settled) return false;
+                var host = document.createElement('div'); host.className = 'panel'; host.id = 'pos-phonetill-panel';
+                host.style.marginTop = pm.parentNode.id === 'settings-section-paymethods' ? '15px' : '0'; host.style.marginBottom = '15px';
+                pm.parentNode.insertBefore(host, pm.nextSibling);
+                host.addEventListener('change', onPanelChange);
+                renderPanel();
+                return true;
+            });
+            return !!$('pos-phonetill-panel');
+        }
+
+        /* ---------------- start ---------------- */
+        function boot() {
+            safe(function () {
+                wrapHooks();
+                markGroups(); apply(); cartInstall(); prodInstall(); sync();
+                var t = $('sales-tab');
+                if (t && window.MutationObserver) {
+                    new MutationObserver(function () { syncSoon(); }).observe(t, { attributes: true, attributeFilter: ['class'] });
+                    var tb = $('cart-table'); if (tb) new MutationObserver(syncSoon).observe(tb, { childList: true, subtree: true });
+                }
+                var st = $('settings-tab');
+                if (st && window.MutationObserver) new MutationObserver(function () { if (st.classList.contains('active')) renderPanel(); }).observe(st, { attributes: true, attributeFilter: ['class'] });
+                var g = $('cart-grand-total'); if (g && window.MutationObserver) new MutationObserver(syncSoon).observe(g, { childList: true, subtree: true, characterData: true });
+                if (window.matchMedia) { var mq = window.matchMedia(MQ), ch = function () { sync(); placeholders(); prodInstall(); safe(function () { if (typeof collapseTabsIfNeeded === 'function') collapseTabsIfNeeded(); }); }; if (mq.addEventListener) mq.addEventListener('change', ch); else if (mq.addListener) mq.addListener(ch); }
+                document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && sheetOpen && !e.defaultPrevented) { var m = document.querySelector('#receipt-modal'); if (m && m.offsetParent !== null && getComputedStyle(m).display !== 'none') return; closeSheet(); } });
+                document.addEventListener('click', function (e) { var t = e.target; if (t && t.closest && t.closest('.tab-link, #hdr-hide-btn, #hdr-show-btn')) setTimeout(function () { tabsApply(); prodInstall(); sync(); }, 80); }, true);
+            });
+        }
+        window.__phoneTillApi = { open: openSheet, close: closeSheet, apply: apply, sync: sync, shop: shop, isOpen: function () { return sheetOpen; } };
+        var go = function () {
+            boot();
+            /* things that appear a little later (the settings card's section, tab buttons rebuilt by the roles code, the Sales / Bills buttons moved into the header) */
+            var n = 0, timer = setInterval(function () { n++; wrapHooks(); apply(); sync(); panelTries++; panelInstall(); if (n > 24 || ($('pos-phonetill-panel') && n > 12)) clearInterval(timer); }, 500);
+        };
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(go, 350); }); else setTimeout(go, 350);
+    })();
+    </script>

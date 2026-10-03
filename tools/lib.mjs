@@ -110,6 +110,9 @@ export const SHARED_BLOCKS = {
   'storage-compress': { startMarker: '<!-- STORAGE COMPRESSION', owner: true },   // must come first in <head>: everything below reads localStorage through it
   'error-reporting': { startMarker: '<!-- ERROR REPORTING', owner: true },   // also goes into the owner console
   'form-controls': { startMarker: '<!-- FORM CONTROLS', owner: true },   // zip 186: ONE bigger, modern look for every text box / select / textarea; its <style> is the last thing before </body> so it wins the cascade
+  'phone-till': { startMarker: '<!-- PHONE TILL' },
+  'category-tiles': { startMarker: '<!-- CATEGORY TILES' },
+  'stock-report-edit': { startMarker: '<!-- STOCK REPORT EDIT' },
   // Orders tab (purchase orders) sits next to Restock. Water's Restocking tab is a different design
   // (materials vs items), so it does not get this block.
   'orders-tab': { startMarker: '<!-- ORDERS TAB', skip: ['water/index.html'] },

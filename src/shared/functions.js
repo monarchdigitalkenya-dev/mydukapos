@@ -16244,9 +16244,11 @@ function setKitchenPrintPage() {
             // The order ticket printed through the system dialog never set its own paper size, so a receipt printer got a full page's length of
             // paper for a few lines. Same width as the receipt and "auto" length: the slip is only as long as its lines.
             const pageStyle = document.getElementById('print-page-style');
-            const w = receiptPaperMm();
-            if (pageStyle) pageStyle.textContent = receiptPageRule(w, document.getElementById('kitchen-ticket-paper'));
+            // zip 192: the Hotel's Settings > Order Ticket Size can give the ticket its own paper width and letter size (ticketPaperMm / ticketFitPx exist only there)
+            const w = typeof ticketPaperMm === 'function' ? ticketPaperMm() : receiptPaperMm();
             document.body.style.setProperty('--receipt-print-width', `${w}mm`);
+            if (typeof ticketFitPx === 'function') document.body.style.setProperty('--ticket-font', ticketFitPx(w) + 'px');
+            if (pageStyle) pageStyle.textContent = receiptPageRule(w, document.getElementById('kitchen-ticket-paper'));   // measured after the letters were set
         }
 
 //@fn pruneClosedBills

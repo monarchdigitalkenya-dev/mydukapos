@@ -14034,9 +14034,11 @@ async function serverDayCheck(from, to, site) {
             // The order ticket printed through the system dialog never set its own paper size, so a receipt printer got a full page's length of
             // paper for a few lines. Same width as the receipt and "auto" length: the slip is only as long as its lines.
             const pageStyle = document.getElementById('print-page-style');
-            const w = receiptPaperMm();
-            if (pageStyle) pageStyle.textContent = receiptPageRule(w, document.getElementById('kitchen-ticket-paper'));
+            // zip 192: the Hotel's Settings > Order Ticket Size can give the ticket its own paper width and letter size (ticketPaperMm / ticketFitPx exist only there)
+            const w = typeof ticketPaperMm === 'function' ? ticketPaperMm() : receiptPaperMm();
             document.body.style.setProperty('--receipt-print-width', `${w}mm`);
+            if (typeof ticketFitPx === 'function') document.body.style.setProperty('--ticket-font', ticketFitPx(w) + 'px');
+            if (pageStyle) pageStyle.textContent = receiptPageRule(w, document.getElementById('kitchen-ticket-paper'));   // measured after the letters were set
         }
 
         function setOfferScope(scope) {
@@ -35102,7 +35104,7 @@ async function zReportPreflight() {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-188';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-192';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -37758,10 +37760,31 @@ async function zReportPreflight() {
         // Windows: a Windows printer (with its driver) prints WITHOUT the dialog; the page's 'afterprint' comes after Windows' answer
         if (info.platform === 'windows' && N && N.print) {
             var origPrint = window.print ? window.print.bind(window) : null;
+            // zip 192: what is being printed, and on what paper, is read from the page itself
+            function pageMm() {
+                try { var st = document.getElementById('print-page-style'); var m = st && /size:\s*([\d.]+)mm\s+([\d.]+)mm/.exec(st.textContent || ''); if (m) return { widthMm: Number(m[1]), heightMm: Number(m[2]) }; } catch (e) { /* none */ }
+                return {};
+            }
+            function snapshotHtml() {
+                var cls = document.body.className || '', id = /printing-receipt/.test(cls) ? 'receipt-modal' : /printing-kitchen-ticket/.test(cls) ? 'kitchen-ticket-modal' : '';
+                var el = id && document.getElementById(id);
+                if (!el) return '';
+                var css = Array.prototype.map.call(document.querySelectorAll('style'), function (x) { return x.textContent; }).join('\n');
+                var rootStyle = document.documentElement.getAttribute('style') || '', bodyStyle = document.body.getAttribute('style') || '';
+                return '<!doctype html><html data-theme="' + (document.documentElement.getAttribute('data-theme') || 'light') + '" style="' + rootStyle.replace(/"/g, '&quot;') + '"><head><meta charset="utf-8"><style>' + css + '</style></head><body class="' + cls.replace(/"/g, '') + '" style="' + bodyStyle.replace(/"/g, '&quot;') + '">' + el.outerHTML + '</body></html>';
+            }
+            window.nativeSnapshotHtml = snapshotHtml;
+            function settle() { return new Promise(function (res) { requestAnimationFrame(function () { requestAnimationFrame(function () { setTimeout(res, 250); }); }); }); }
+            window.nativePrintMethod = function (v) { if (v) LS('pos_native_print_method', v); return LS('pos_native_print_method') || 'snapshot'; };
             window.print = function () {
                 var p = saved();
                 if (!p || p.kind !== 'windows-driver') { if (origPrint) origPrint(); return; }
-                N.print({ deviceName: p.deviceName }).then(function (r) {
+                var method = window.nativePrintMethod();
+                if (method === 'dialog') { if (origPrint) origPrint(); return; }
+                settle().then(function () {
+                    var mm = pageMm(), html = (method === 'snapshot' && N.printHtml) ? snapshotHtml() : '';
+                    return html ? N.printHtml({ deviceName: p.deviceName, html: html, widthMm: mm.widthMm, heightMm: mm.heightMm }) : N.print({ deviceName: p.deviceName, widthMm: mm.widthMm, heightMm: mm.heightMm });
+                }).then(function (r) {
                     if (!r || !r.ok) { try { showToast('Printing on ' + p.deviceName + ' failed: ' + ((r && r.error) || 'no answer') + '.', true); } catch (e) {} }
                     window.dispatchEvent(new Event('afterprint'));
                 });
@@ -37868,6 +37891,7 @@ async function zReportPreflight() {
                 + '<div id="native-printer-list" style="display:grid; gap:6px; margin-top:6px;"></div>'
                 + '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">'
                 + (info.platform === 'android' ? '<button type="button" class="btn-main settings-small-btn" onclick="nativePrinterScan()">🔎 Choose a Bluetooth printer</button>' : '<button type="button" class="btn-main settings-small-btn" onclick="nativePrinterScan()">🖨️ Choose a Windows printer</button><button type="button" class="settings-small-btn" onclick="nativeNetPrinterAsk()">🌐 Network thermal printer (IP)</button>')
+                + (p && p.kind === 'windows-driver' ? '<div style="margin-top:10px; font-size:13px;">If the paper comes out empty: <select id="native-print-method" class="settings-small-btn" onchange="nativePrintMethod(this.value)"><option value="snapshot"' + (window.nativePrintMethod && window.nativePrintMethod() === 'snapshot' ? ' selected' : '') + '>Print method 1 (recommended)</option><option value="page"' + (window.nativePrintMethod && window.nativePrintMethod() === 'page' ? ' selected' : '') + '>Print method 2 (the page as shown)</option><option value="dialog"' + (window.nativePrintMethod && window.nativePrintMethod() === 'dialog' ? ' selected' : '') + '>Print method 3 (Windows print window)</option></select></div>' : '')
                 + (p ? '<button type="button" class="settings-small-btn" onclick="nativePrinterTest()">🧾 Test print</button><button type="button" class="settings-small-btn" onclick="nativePrinterForget()">Remove</button>' : '')
                 + '</div>'
                 + (info.platform === 'android' ? '<div style="font-size:12px; color:#7f8c8d; margin-top:6px;">Pair a new printer once in Android Settings ▸ Bluetooth (PIN usually 0000 or 1234), then choose it here.</div>' : '');
@@ -38807,6 +38831,1640 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
 
 </script>
 <!-- zip187-dashboard-water:end -->
+<!-- @shared-block:phone-till:begin -->
+<!-- PHONE TILL ----------------------------------------------------------------
+         zip 190. The Sales Counter on a PHONE (Chrome, ~390 px wide) without the scrolling. Everything below is phone-only (max-width 700 px) except the new
+         Settings card; a tablet / computer is drawn exactly as before.
+           1. CART LINES    - every line of the cart is one tidy card: the item name on its own line, then  [- qty +]  unit price  line total  [x]  - nothing is cut
+                              off, nothing scrolls sideways (320 px wide works too). The cart's own buttons / boxes / onclick handlers are untouched: only CSS.
+           2. CART SHEET    - the floating cart button (and a new "N items - KES total - View cart" bar at the bottom of the Sales Counter) opens the whole cart
+                              panel as a full-screen sheet: order type, table / room, items, customer phone, payment buttons, total and Confirm. Total + Confirm
+                              stay pinned at the bottom of the sheet. The sheet closes by itself when the sale is done / the cart is empty / another tab opens.
+           3. HIDE OPTIONS  - Settings > Payment Methods > "Phone & till layout": show the customer phone box, show the Walk-In / Delivery choice, show the Table / Room
+                              + Tabs row (shop settings: they travel with the payment methods through the same settings sync) and, on THIS phone only, which main tabs
+                              show (the others wait in "More") and the search style.
+           4. SEARCH STYLE  - "bar" (default): the search box is the panel header (no "Product Search" title; Bills / Sales shrink to icons beside it).
+                              "icon": a compact magnifier in the header row opens the search box over it.
+           5. PRODUCT AREA  - category chips are ONE sideways-scrolling row, the hint line is gone, 2 big photo tiles per row.
+         Hooks (all wrapped, none replaced): scrollToCart, updateMobileCartFab, setOrderType, collapseTabsIfNeeded, posApplyPayMethods, extraSettingsCollect/Apply.
+         Nothing here is needed for a sale: every entry point is guarded, a missing element only means that one feature is skipped (water has no product search box,
+         production's cart card has another id, ...). Classes use the ptl- prefix. -->
+    <style id="phone-till-css">
+        /* ---- settings that apply on EVERY screen (a hidden box is hidden on a computer too) ---- */
+        html.ptl-no-phone .ptl-phone-group { display: none !important; }
+        html.ptl-no-phone:has(#pay-bill-btn.active) .ptl-phone-group { display: block !important; }   /* Pay Later saves the bill against this phone number: keep it while Bill is chosen */
+        html.ptl-no-delivery #order-type-toggle, html.ptl-no-delivery #delivery-details-group { display: none !important; }
+        /* zip 191: hiding the Table / Room picker keeps a 🧾 Tabs button (open / settle tabs) if the row has one; a row with no button goes entirely */
+        html.ptl-no-loc .ptl-loc-group > label, html.ptl-no-loc .ptl-loc-group select { display: none !important; }
+        html.ptl-no-loc .ptl-loc-group:not(:has(button)) { display: none !important; }
+        /* new things that only exist on a phone */
+        .ptl-bar, .ptl-back, .ptl-search-btn, .ptl-search-x { display: none; }
+
+        /* ---- the new Settings card (same look as the payment methods card) ---- */
+        #pos-phonetill-panel .ptl-sub { font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: #7f8c8d; margin: 14px 0 2px; }
+        #pos-phonetill-panel .ptl-note { font-size: 12.5px; color: #7f8c8d; margin: 0 0 6px; line-height: 1.4; }
+        #pos-phonetill-panel .ptl-sw { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 4px 0; font-size: 15px; cursor: pointer; border-bottom: 1px solid var(--border-color, #eef0f2); }
+        #pos-phonetill-panel .ptl-sw > span { flex: 1 1 auto; min-width: 0; line-height: 1.3; }
+        #pos-phonetill-panel .ptl-sw small { display: block; font-size: 12px; color: #7f8c8d; }
+        #pos-phonetill-panel .ptl-sw input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+        #pos-phonetill-panel .ptl-sw i { position: relative; flex: 0 0 auto; width: 48px; height: 28px; border-radius: 999px; background: #b9c2ca; transition: background .15s; }
+        #pos-phonetill-panel .ptl-sw i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); transition: transform .15s; }
+        #pos-phonetill-panel .ptl-sw input:checked + i { background: var(--success, #27ae60); }
+        #pos-phonetill-panel .ptl-sw input:checked + i::after { transform: translateX(20px); }
+        #pos-phonetill-panel .ptl-sw input:focus-visible + i { outline: 3px solid rgba(52, 152, 219, .5); outline-offset: 2px; }
+        #pos-phonetill-panel .ptl-sw input:disabled + i { opacity: .55; }
+        #pos-phonetill-panel .ptl-seg { display: flex; gap: 8px; margin: 6px 0 4px; flex-wrap: wrap; }
+        #pos-phonetill-panel .ptl-seg label { flex: 1 1 140px; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 12px; border: 1.5px solid var(--border-color, #dfe4ea); border-radius: 12px; cursor: pointer; font-size: 15px; background: var(--bg-surface, #fff); }
+        #pos-phonetill-panel .ptl-seg input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent, #2980b9); }
+        #pos-phonetill-panel .ptl-seg label:has(input:checked) { border-color: var(--accent, #2980b9); background: var(--bg-surface-alt, #eef4fa); font-weight: 700; }
+        #pos-phonetill-panel .ptl-tabs { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0 12px; }
+        #pos-phonetill-panel .ptl-tabs label { display: flex; align-items: center; gap: 10px; min-height: 46px; font-size: 14.5px; cursor: pointer; }
+        #pos-phonetill-panel .ptl-tabs input { width: 22px; height: 22px; margin: 0; flex: 0 0 auto; accent-color: var(--accent, #2980b9); }
+        #pos-phonetill-panel .ptl-tabs label.ptl-locked { opacity: .6; cursor: default; }
+
+        @media (max-width: 700px) {
+            /* ================= 1. CART LINES: one card per line, nothing clipped ================= */
+            .ptl-cart .table-scroll { overflow: visible !important; }
+            #cart-table, #cart-table tbody { display: block !important; width: 100% !important; min-width: 0 !important; max-width: 100% !important; border: 0 !important; }
+            #cart-table thead { display: none !important; }
+            #cart-table tbody tr { display: flex !important; flex-wrap: wrap; align-items: center; gap: 6px 8px; width: 100% !important; box-sizing: border-box; margin: 0 !important; padding: 10px 2px !important; border: 0 !important; border-bottom: 1px solid var(--border-color, #e5e8eb) !important; background: transparent; }
+            #cart-table tbody tr:hover { background: transparent; }
+            #cart-table tbody tr td { display: block !important; min-width: 0; width: auto !important; max-width: 100%; box-sizing: border-box; padding: 0 !important; border: 0 !important; text-align: left; white-space: normal; }
+            /* line 1: the name (wraps) and the remove button at the right edge; line 2: [- qty +]  unit price  line total (the pieces wrap onto a third line on a very narrow screen instead of being cut off) */
+            #cart-table tbody tr td:nth-child(1) { order: 1; flex: 1 1 calc(100% - 50px); max-width: calc(100% - 50px); font-size: 15.5px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; padding-top: 2px !important; }
+            #cart-table tbody tr td:nth-child(5) { order: 2; flex: 0 0 auto; }
+            #cart-table tbody tr td:nth-child(2) { order: 3; flex: 0 0 auto; }
+            #cart-table tbody tr td:nth-child(3) { order: 4; flex: 1 1 auto; text-align: center; min-width: 0; }
+            #cart-table tbody tr td:nth-child(4) { order: 5; flex: 0 0 auto; margin-left: auto; text-align: right; font-weight: 800; font-size: 14.5px; white-space: nowrap; }
+            /* a row that is one wide message (empty cart, water's materials strip) */
+            #cart-table tbody tr:has(> td[colspan]) { display: block !important; }
+            #cart-table tbody tr > td[colspan] { display: block !important; width: 100% !important; text-align: center; }
+            #cart-table tbody tr.cart-materials-row > td[colspan] { text-align: left; font-size: 12px; }
+            #cart-table .qty-controls { display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; }
+            #cart-table .qty-controls button { flex: 0 0 auto; min-width: 38px !important; min-height: 44px; padding: 0 !important; font-size: 20px; line-height: 1; }
+            html body:not(#z186) #cart-table .qty-controls input.price-input, html body:not(#z186) #cart-table .qty-controls input[type=number] { width: 52px !important; min-width: 0 !important; flex: 0 0 52px; min-height: 44px !important; padding-left: 4px !important; padding-right: 4px !important; text-align: center; }
+            #cart-table .qty-controls > span { display: none; }
+            #cart-table .cart-price-chip { min-width: 0 !important; max-width: 100%; width: auto; padding: 2px 8px; }
+            #cart-table .cart-price-chip .cpc-amt { font-size: 13px; }
+            #cart-table .cart-price-chip .cpc-amt small { font-size: 10px; }
+            #cart-table td:nth-child(3) input { max-width: 96px; }
+            #cart-table .remove-btn { font-size: 0 !important; width: 40px; min-width: 40px; height: 44px; min-height: 44px; padding: 0 !important; border-radius: 10px; }
+            #cart-table .remove-btn::before { content: '\2715'; font-size: 17px; font-weight: 700; line-height: 1; }
+            #cart-table .offer-badge { font-size: 11.5px; margin-top: 3px; }
+            #cart-table .offer-line-discounted-total { font-size: 12px; }
+
+            /* ================= 2. THE CART SHEET ================= */
+            /* closed: the cart card is not on the page at all (the bar below and the round cart button open it) */
+            #sales-tab .ptl-cart:not(.ptl-open) { display: none !important; }
+            html.ptl-sheet-open, html.ptl-sheet-open body { overflow: hidden !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open { display: flex !important; flex-flow: row wrap; align-content: flex-start; position: fixed !important; inset: 0 !important; top: 0 !important; --ptl-dock-h: calc(66px + env(safe-area-inset-bottom, 0px)); width: auto !important; height: auto !important; max-height: none !important; margin: 0 !important; z-index: 9000; box-sizing: border-box; padding: 0 12px 0 !important; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: var(--bg-surface, #fff); color: var(--dark, inherit); border-radius: 0 !important; box-shadow: none !important; border: 0 !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > * { flex: 0 0 100%; order: 10; max-width: 100%; min-width: 0; box-sizing: border-box; }
+            /* header: Back + count (+ the Hold sale button the app puts there) */
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 { order: 0; position: sticky; top: 0; z-index: 20; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin: 0 -12px 8px !important; padding: 8px 12px calc(8px) !important; font-size: 0 !important; line-height: 1; background: var(--bg-surface, #fff); border-bottom: 1px solid var(--border-color, #e5e8eb) !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3::before { display: none !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 > * { font-size: 14px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 .ptl-back { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px; border: 0; border-radius: 12px; background: var(--primary, #2c3e50); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 #pos-ck-count { display: none; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 .ptl-back .ptl-bk-n { font-weight: 600; opacity: .85; font-size: 13px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 .pos-hold-mini { margin: 0 !important; order: 4; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 #held-sale-bar { margin: 0 !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open > h3 #held-sale-bar .settings-small-btn { min-height: 40px; }
+            /* the pay bar dissolves: its parts become part of the sheet. Items first, then the method buttons and fields; total + Confirm pin to the bottom */
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar { display: contents !important; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > * { flex: 0 0 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-offers-summary { order: 15; margin: 6px 0 0; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #payment-toggle { order: 20; margin: 12px 0 8px; max-width: none; flex-wrap: wrap; gap: 6px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #payment-toggle button { flex: 1 1 28%; min-height: 46px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > .pos-pay-details { order: 30; max-height: none !important; overflow: visible !important; margin: 0 0 12px; padding: 0; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #add-order-to-tab-btn { order: 40; width: 100%; min-height: 46px; margin: 0 0 10px; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #cart-grand-total { order: 90; flex: 0 0 auto !important; width: calc(43% + 12px) !important; max-width: none; position: sticky; top: calc(100% - var(--ptl-dock-h)); bottom: 0; z-index: 15; height: var(--ptl-dock-h); box-sizing: border-box; display: flex; align-items: center; margin: 0 0 0 -12px !important; padding: 8px 6px 8px 12px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); font-size: 16px; font-weight: 800; line-height: 1.2; background: var(--bg-surface, #fff); border: 0; border-top: 1px solid var(--border-color, #dfe6e9); box-shadow: 0 -6px 14px rgba(0,0,0,.10); border-radius: 0; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #cart-grand-total .cart-total-savings, html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #cart-grand-total span span { display: none; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open #cart-sticky-bar > #main-checkout-btn { order: 91; flex: 0 0 auto !important; width: calc(57% + 12px) !important; max-width: none; position: sticky; top: calc(100% - var(--ptl-dock-h)); bottom: 0; z-index: 15; box-sizing: border-box; height: var(--ptl-dock-h); margin: 0 -12px 0 0 !important; padding: 0 12px; font-size: 17px; font-weight: 800; border: 0; border-radius: 0; border-top: 8px solid var(--bg-surface, #fff); border-bottom: calc(8px + env(safe-area-inset-bottom, 0px)) solid var(--bg-surface, #fff); border-right: 12px solid var(--bg-surface, #fff); border-left: 6px solid var(--bg-surface, #fff); background-clip: padding-box; box-shadow: none; }
+            html.ptl-sheet-open #sales-tab .ptl-cart.ptl-open .order-type-toggle { margin-bottom: 10px; }
+            html.ptl-sheet-open #mobile-cart-fab, html.ptl-sheet-open #floating-kb-toggle, html.ptl-sheet-open #scroll-to-top-btn { display: none !important; }
+            /* the bottom bar: N items - total - View cart */
+            .ptl-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 9100; align-items: center; gap: 10px; box-sizing: border-box; height: calc(62px + env(safe-area-inset-bottom, 0px)); padding: 0 66px env(safe-area-inset-bottom, 0px) 14px; border: 0; border-top: 1px solid rgba(255,255,255,.18); border-radius: 0; background: var(--primary, #2c3e50); color: #fff; font: inherit; font-size: 15px; text-align: left; cursor: pointer; box-shadow: 0 -4px 16px rgba(0,0,0,.25); }
+            .ptl-bar.on { display: flex; }
+            .ptl-bar .ptl-bar-n { font-weight: 700; white-space: nowrap; }
+            .ptl-bar .ptl-bar-t { flex: 1 1 auto; min-width: 0; font-weight: 800; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .ptl-bar .ptl-bar-go { flex: 0 0 auto; font-weight: 700; opacity: .92; white-space: nowrap; }
+            .ptl-bar .ptl-bar-n::after { content: ' \00B7'; opacity: .6; }
+            @media (max-width: 340px) { .ptl-bar .ptl-bar-go { display: none; } }
+            /* the round cart button: sits on the right end of the bar; the keyboard / scroll-up buttons sit above the bar on the left, smaller */
+            html body #mobile-cart-fab { right: 8px !important; bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important; width: 46px; height: 46px; font-size: 21px; z-index: 10050; }
+            html body #mobile-cart-fab .cart-fab-badge { top: -6px; right: -4px; }
+            html body #floating-kb-toggle { left: 8px !important; bottom: calc(8px + env(safe-area-inset-bottom, 0px)) !important; width: 40px; height: 40px; font-size: 18px; opacity: .88; }
+            html body #scroll-to-top-btn { left: 8px !important; bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important; width: 40px; height: 40px; font-size: 17px; opacity: .88; }
+            /* while the bar is up they sit INSIDE it (keyboard at its left end, scroll-up beside the cart button) so they never cover a product or a line */
+            html.ptl-bar-on body #floating-kb-toggle { bottom: calc(11px + env(safe-area-inset-bottom, 0px)) !important; opacity: .95; }
+            html.ptl-bar-on body #scroll-to-top-btn { left: auto !important; right: 62px !important; bottom: calc(11px + env(safe-area-inset-bottom, 0px)) !important; opacity: .95; }
+            html.ptl-bar-on .ptl-bar { padding-left: 56px; }
+            html.ptl-bar-on:has(#scroll-to-top-btn.show) .ptl-bar { padding-right: 112px; }
+            html.ptl-bar-on:has(#scroll-to-top-btn.show) .ptl-bar .ptl-bar-go { display: none; }
+            html.ptl-bar-on body:has(#sales-tab.active) { padding-bottom: calc(var(--ptl-bar-h, 0px) + 70px) !important; }
+
+            /* ================= 4 + 5. PRODUCT PANEL: search box as the header, ONE chip row, big 2-column tiles ================= */
+            #sales-tab.tab-content { padding: 8px 8px 0 !important; }
+            #sales-tab .pos-grid { gap: 8px; }
+            #sales-tab .ptl-prod { display: grid !important; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 6px; padding: 8px !important; position: relative; }
+            #sales-tab .ptl-prod > * { grid-column: 1 / -1; min-width: 0; }
+            #sales-tab .ptl-prod > h3 { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 6px; margin: 0 !important; padding: 0 !important; border: 0 !important; font-size: 0 !important; line-height: 1; }
+            #sales-tab .ptl-prod > h3::before { display: none !important; }
+            #sales-tab .ptl-prod > h3 .pos-head-actions { display: flex !important; gap: 6px; margin: 0 !important; padding: 0 !important; float: none !important; position: static !important; width: auto; }
+            #sales-tab .ptl-prod > h3 button { font-size: 0 !important; width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 0 !important; margin: 0 !important; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; }
+            #sales-tab .ptl-prod > h3 button::before { content: attr(data-ptl-ic); font-size: 20px; line-height: 1; }
+            #sales-tab .ptl-prod > h3 .ptl-search-btn { display: none; }
+            #sales-tab .ptl-prod > .search-container { grid-column: 1; grid-row: 1; margin: 0 !important; position: relative; }
+            #sales-tab .ptl-prod > .search-container > div:first-child { display: flex; gap: 6px; align-items: center; }
+            #sales-tab .ptl-prod > .search-container input#sales-search { min-width: 0; }
+            #sales-tab .ptl-prod > .search-container .settings-small-btn { min-width: 46px; min-height: 46px; padding: 0 !important; }
+            #sales-tab .ptl-prod #search-results { left: 0; width: calc(100% + var(--ptl-act-w, 0px)) !important; max-height: 52vh !important; margin-top: 3px; border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,.22); z-index: 120; }
+            #sales-tab .ptl-prod #search-results .search-item { min-height: 46px; align-items: center; padding: 8px 12px; }
+            #sales-tab .ptl-prod > #bar-serve-panel:empty { display: none; }
+            /* icon mode: the header row is a magnifier + the Bills / Sales buttons (with their words); the box opens over it */
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 { grid-column: 1 / -1; justify-content: flex-end; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 .ptl-search-btn { display: inline-flex; margin-right: auto; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 button { font-size: 14px !important; width: auto; padding: 0 14px !important; font-weight: 700; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 button::before { content: none; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 .ptl-search-btn { width: 52px; padding: 0 !important; font-size: 0 !important; }
+            html.ptl-search-icon #sales-tab .ptl-prod > h3 .ptl-search-btn::before { content: '\1F50D'; font-size: 21px; }
+            html.ptl-search-icon:not(.ptl-search-open) #sales-tab .ptl-prod > .search-container { display: none !important; }
+            html.ptl-search-icon.ptl-search-open #sales-tab .ptl-prod > .search-container { grid-column: 1 / -1; grid-row: 1; }
+            html.ptl-search-icon.ptl-search-open #sales-tab .ptl-prod > h3 { display: none !important; }
+            html.ptl-search-icon.ptl-search-open #sales-tab .ptl-prod > .search-container .ptl-search-x { display: inline-flex; align-items: center; justify-content: center; }
+            html.ptl-search-icon #sales-tab .ptl-prod #search-results { width: 100% !important; }
+            /* category chips: ONE row that scrolls sideways */
+            #sales-tab .ptl-prod > .hcat-bar, #sales-tab #item-filter-bar { display: flex !important; flex-wrap: nowrap !important; overflow-x: auto; overflow-y: hidden; gap: 6px; margin: 8px 0 2px !important; padding: 2px 0 4px !important; -webkit-overflow-scrolling: touch; scrollbar-width: none; scroll-snap-type: x proximity; background: transparent; }
+            #sales-tab .ptl-prod > .hcat-bar::-webkit-scrollbar, #sales-tab #item-filter-bar::-webkit-scrollbar { display: none; }
+            #sales-tab .ptl-prod > .hcat-bar .hcat-chip, #sales-tab #item-filter-bar .item-filter-btn { flex: 0 0 auto !important; white-space: nowrap; min-height: 44px; scroll-snap-align: start; }
+            /* the hint line is gone; the Sell Unlisted Item button stays */
+            #sales-tab .ptl-prod > p, #sales-tab .ptl-prod .pos-left-foot > p { display: none !important; }
+            #sales-tab .ptl-prod .pos-left-foot { margin-top: 6px; }
+            /* tiles */
+            #sales-tab #item-image-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; max-height: none !important; overflow: visible !important; margin-top: 8px !important; padding-top: 0 !important; border-top: 0 !important; }
+            #sales-tab .ptl-prod > .hcat-bar + #item-image-grid { margin-top: 4px !important; }
+            #sales-tab #item-image-grid .item-grid-cell { border-radius: 12px; }
+            #sales-tab #item-image-grid .item-grid-cell img, #sales-tab #item-image-grid .item-grid-cell .igc-noimg { aspect-ratio: 1 / 1; width: 100%; height: auto; font-size: 42px; }
+            #sales-tab #item-image-grid .item-grid-cell .igc-name { font-size: 14px; line-height: 1.25; padding: 7px 8px 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+            #sales-tab #item-image-grid .item-grid-cell .igc-price { font-size: 14px; font-weight: 700; padding: 2px 8px 8px; }
+            #sales-tab #item-image-grid .item-grid-cell .igc-stock { font-size: 11px; }
+            /* tabs the owner hid on this phone wait in "More" (the buttons stay in the page, so roles and the app's own hiding are never touched) */
+            nav.tabs > .tab-link.ptl-tab-off:not(.active) { display: none !important; }
+        }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__phoneTill) return;
+        window.__phoneTill = true;
+
+        var MQ = '(max-width: 700px)';
+        var K_SHOP = 'pos_ptl_shop', K_SEARCH = 'pos_ptl_search', K_TABS = 'pos_ptl_tabs_off';
+        var NEVER_HIDE = { 'sales-tab': 1, 'settings-tab': 1 };
+        var PH_BAR = '🔍 Search products…', PH_ICON = '🔍 Search product by name or code…';
+
+        function $(id) { return document.getElementById(id); }
+        function safe(fn) { try { return fn(); } catch (e) { return undefined; } }
+        function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+        function lsSet(k, v) { try { if (typeof safeSetItem === 'function') safeSetItem(k, v); else localStorage.setItem(k, v); } catch (e) { /* kept for this session only */ } }
+        function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* nothing to remove */ } }
+        function toast(m, bad) { safe(function () { if (typeof rxToast === 'function') rxToast(m, !!bad); else if (typeof showToast === 'function') showToast(m, !!bad); }); }
+        function push() { safe(function () { if (typeof rxPush === 'function') rxPush(); else if (typeof queuePush === 'function') queuePush(); }); }
+        function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+        function isPhone() { return !!(window.matchMedia && window.matchMedia(MQ).matches); }
+        var html = document.documentElement;
+
+        /* ---------------- settings ---------------- */
+        function normShop(o) { o = o && typeof o === 'object' ? o : {}; return { phone: o.phone !== false && o.phone !== 0, delivery: o.delivery !== false && o.delivery !== 0, tables: o.tables !== false && o.tables !== 0 }; }
+        function shop() { var o = null; try { o = JSON.parse(lsGet(K_SHOP) || 'null'); } catch (e) { o = null; } return normShop(o); }
+        function searchStyle() { return lsGet(K_SEARCH) === 'icon' ? 'icon' : 'bar'; }
+        function tabsOff() { var a = []; try { a = JSON.parse(lsGet(K_TABS) || '[]'); } catch (e) { a = []; } return (Array.isArray(a) ? a : []).filter(function (id) { return typeof id === 'string' && !NEVER_HIDE[id]; }); }
+        function shopSave(o, fromSync) {
+            o = normShop(o);
+            lsSet(K_SHOP, JSON.stringify({ phone: o.phone ? 1 : 0, delivery: o.delivery ? 1 : 0, tables: o.tables ? 1 : 0 }));
+            apply(); renderPanel();
+            if (!fromSync) push();
+        }
+        function tabAccepted() {
+            var b = $('pay-tab-btn'); if (!b) return false;
+            var a = safe(function () { return typeof posPayAccepted === 'function' ? posPayAccepted() : null; });
+            return !a || a.indexOf('tab') !== -1;
+        }
+        /* the Table / Room picker: zip 191 - it can be hidden even while Tab payments are on (a Tab order then goes to a guest name, or the auto-numbered "Guest 1", exactly as when no table is picked) */
+        function locHidden() { return !shop().tables; }
+
+        /* ---------------- finding the pieces (every app differs a little) ---------------- */
+        function cartPanel() { var bar = $('cart-sticky-bar'); return (bar && bar.closest && bar.closest('.panel')) || $('active-checkout-cart-panel') || null; }
+        function prodPanel() { var s = $('sales-search'); return (s && s.closest && s.closest('.panel')) || null; }
+        function phoneInput() { return $('sms-checkout-phone-input') || $('sale-customer-phone-input') || null; }
+        function salesActive() { var t = $('sales-tab'); return !!(t && t.classList.contains('active')); }
+        function cartInSales() { var p = cartPanel(), t = $('sales-tab'); return !!(p && t && t.contains(p)); }
+
+        /* ---------------- apply the settings to the page (idempotent: safe to run as often as you like) ---------------- */
+        function markGroups() {
+            var ph = phoneInput();
+            if (ph) { var g = ph.closest('.form-group') || ph.parentNode; if (g && g !== document.body) g.classList.add('ptl-phone-group'); }
+            var sel = $('sales-location-select');
+            if (sel) { var l = sel.closest('.form-group') || (sel.parentNode && sel.parentNode.parentNode); if (l && l !== document.body) l.classList.add('ptl-loc-group'); }
+            var c = cartPanel(); if (c && !c.classList.contains('ptl-cart')) c.classList.add('ptl-cart');
+            var p = prodPanel(); if (p && !p.classList.contains('ptl-prod')) p.classList.add('ptl-prod');
+        }
+        var lastShop = null;
+        function apply() {
+            safe(function () {
+                markGroups();
+                var s = shop();
+                html.classList.toggle('ptl-no-phone', !s.phone);
+                if (!s.phone && !document.querySelector('#pay-bill-btn.active')) { var ph = phoneInput(); if (ph && ph.value) { ph.value = ''; } }                  /* a number typed earlier must not go out with a sale nobody can see it on */
+                html.classList.toggle('ptl-no-delivery', !s.delivery && !!$('order-type-toggle'));
+                if (!s.delivery) {
+                    var ot; try { ot = typeof orderType !== 'undefined' ? orderType : 'walkin'; } catch (e) { ot = 'walkin'; }
+                    if ((ot === 'delivery' || (lastShop && lastShop.delivery)) && typeof setOrderType === 'function') safe(function () { setOrderType('walkin'); });
+                    var dd = $('delivery-details-group'); if (dd) dd.style.display = 'none';
+                }
+                var lh = locHidden();
+                html.classList.toggle('ptl-no-loc', lh);
+                if (lh) { var sel = $('sales-location-select'); if (sel && sel.value) { sel.value = ''; safe(function () { sel.dispatchEvent(new Event('change', { bubbles: true })); }); } }
+                html.classList.toggle('ptl-search-icon', searchStyle() === 'icon' && !!$('sales-search'));
+                if (searchStyle() !== 'icon') html.classList.remove('ptl-search-open');
+                tabsApply();
+                prodInstall();
+                cartInstall();
+                lastShop = s;
+            });
+        }
+
+        /* ---------------- tabs the owner hid on this phone ---------------- */
+        function tabButtons() {
+            var out = [], seen = {};
+            Array.prototype.forEach.call(document.querySelectorAll('.tabs .tab-link[data-tab], #tabs-more-menu .tab-link[data-tab]'), function (b) { var id = b.getAttribute('data-tab'); if (id && !seen[id]) { seen[id] = 1; out.push(b); } });
+            return out;
+        }
+        function tabsApply() {
+            var off = tabsOff();
+            tabButtons().forEach(function (b) { b.classList.toggle('ptl-tab-off', off.indexOf(b.getAttribute('data-tab')) !== -1); });
+            tabsToMore();
+        }
+        /* hidden tabs are taken out of the bar and put in the "More" list, where they stay reachable (a tab the roles hide has an inline display:none: it stays hidden there too) */
+        function tabsToMore() {
+            safe(function () {
+                var nav = document.querySelector('nav.tabs'), more = $('tabs-more-btn'), menu = $('tabs-more-menu');
+                if (!nav || !more || !menu || !isPhone()) return;
+                var moved = 0;
+                Array.prototype.slice.call(nav.children).forEach(function (b) {
+                    if (!b.classList || !b.classList.contains('ptl-tab-off') || b.classList.contains('active')) return;
+                    menu.appendChild(b);
+                });
+                Array.prototype.forEach.call(menu.querySelectorAll('.tab-link[data-tab]'), function (b) { if (b.style.display !== 'none') moved++; });
+                if (moved) more.style.display = 'inline-flex';
+            });
+        }
+        function wrapCollapse() {
+            var o = window.collapseTabsIfNeeded;
+            if (typeof o !== 'function' || o.__ptl) return;
+            var w = function () { var r = o.apply(this, arguments); safe(tabsApply); return r; };
+            w.__ptl = true; window.collapseTabsIfNeeded = w;
+        }
+
+        /* ---------------- the cart sheet ---------------- */
+        var sheetOpen = false;
+        function cartCount() {
+            var n = 0;
+            var ok = safe(function () { if (typeof currentCart !== 'undefined' && currentCart) { Object.keys(currentCart).forEach(function (k) { n += Number(currentCart[k] && currentCart[k].qty) || 0; }); return true; } return false; });
+            if (!ok) { var rows = document.querySelectorAll('#cart-table tbody tr'); Array.prototype.forEach.call(rows, function (r) { if (!r.querySelector('.empty-state') && !r.classList.contains('cart-empty-row') && !r.classList.contains('cart-materials-row')) n++; }); }
+            return Math.round(n * 100) / 100;
+        }
+        function cartTotalText() {
+            var el = $('cart-grand-total'), m = el && /KES\s*([\d,]+(?:\.\d+)?)/i.exec(el.textContent || '');
+            if (m) return 'KES ' + m[1];
+            var t = safe(function () { return typeof cartTotal === 'function' ? Number(cartTotal()) : NaN; });
+            return isFinite(t) ? 'KES ' + t.toFixed(2) : '';
+        }
+        function heldSale() { return !!safe(function () { return typeof heldSaleGet === 'function' ? heldSaleGet() : null; }); }
+        function openSheet() {
+            if (!isPhone() || !cartInSales() || !salesActive()) return false;
+            if (cartCount() <= 0) return false;
+            var p = cartPanel(); if (!p) return false;
+            markGroups(); cartInstall();
+            p.classList.add('ptl-open'); html.classList.add('ptl-sheet-open'); sheetOpen = true;
+            try { p.scrollTop = 0; } catch (e) { /* cosmetic */ }
+            safe(function () { document.activeElement && document.activeElement.blur && document.activeElement.blur(); });
+            sync();
+            return true;
+        }
+        function closeSheet() {
+            var p = cartPanel(); if (p) p.classList.remove('ptl-open');
+            html.classList.remove('ptl-sheet-open'); sheetOpen = false;
+            sync();
+        }
+        function barEl() {
+            var b = $('ptl-bar'); if (b) return b;
+            if (!document.body) return null;
+            b = document.createElement('button'); b.type = 'button'; b.id = 'ptl-bar'; b.className = 'ptl-bar'; b.setAttribute('aria-label', 'View cart');
+            b.innerHTML = '<span class="ptl-bar-n"></span><span class="ptl-bar-t"></span><span class="ptl-bar-go">View cart ›</span>';
+            b.addEventListener('click', function () {
+                if (cartCount() > 0) { openSheet(); return; }
+                if (heldSale() && typeof resumeHeldSale === 'function') { safe(function () { resumeHeldSale(); }); setTimeout(sync, 60); }
+            });
+            document.body.appendChild(b);
+            return b;
+        }
+        var syncRaf = 0, lastN = -1;
+        function sync() {
+            safe(function () {
+                var phone = isPhone(), n = cartCount(), active = salesActive() && cartInSales();
+                /* an item picked from the search results (the app empties the box) puts the icon-mode search box away again */
+                if (n !== lastN && lastN >= 0 && html.classList.contains('ptl-search-open')) { var si = $('sales-search'); if (si && !si.value) searchOpen(false); }
+                lastN = n;
+                if (sheetOpen && (!phone || !active || n <= 0)) { var p = cartPanel(); if (p) p.classList.remove('ptl-open'); html.classList.remove('ptl-sheet-open'); sheetOpen = false; }
+                var b = barEl(); if (!b) return;
+                var held = n <= 0 && heldSale();
+                var on = phone && active && !sheetOpen && (n > 0 || held);
+                b.classList.toggle('on', on);
+                html.classList.toggle('ptl-bar-on', on);
+                if (on) {
+                    b.querySelector('.ptl-bar-n').textContent = held ? '⏸️ 1 sale on hold' : '🛒 ' + n + (n === 1 ? ' item' : ' items');
+                    b.querySelector('.ptl-bar-t').textContent = held ? '' : cartTotalText();
+                    b.querySelector('.ptl-bar-go').textContent = held ? 'Resume ›' : 'View cart ›';
+                    html.style.setProperty('--ptl-bar-h', (b.offsetHeight || 62) + 'px');
+                } else html.style.setProperty('--ptl-bar-h', '0px');
+                Array.prototype.forEach.call(document.querySelectorAll('.ptl-bk-n'), function (c) { c.textContent = '\u00B7 ' + n + (n === 1 ? ' item' : ' items'); });
+            });
+        }
+        function syncSoon() { if (syncRaf) return; var raf = window.requestAnimationFrame || function (f) { return setTimeout(f, 16); }; syncRaf = raf(function () { syncRaf = 0; sync(); }); }
+        /* the Back button + count chip in the sheet header (added once; harmless when the sheet is not used) */
+        function cartInstall() {
+            safe(function () {
+                var p = cartPanel(); if (!p) return;
+                var h3 = p.querySelector(':scope > h3'); if (!h3 || h3.querySelector('.ptl-back')) return;
+                var bk = document.createElement('button'); bk.type = 'button'; bk.className = 'ptl-back'; bk.innerHTML = '← Back to products <span class="ptl-bk-n"></span>';
+                bk.addEventListener('click', function (e) { e.preventDefault(); closeSheet(); });
+                h3.insertBefore(bk, h3.firstChild);
+            });
+        }
+        function wrapHooks() {
+            safe(function () {
+                var s = window.scrollToCart;
+                if (typeof s === 'function' && !s.__ptl) { var w = function () { if (isPhone() && openSheet()) return; return s.apply(this, arguments); }; w.__ptl = true; window.scrollToCart = w; }
+                var u = window.updateMobileCartFab;
+                if (typeof u === 'function' && !u.__ptl) { var w2 = function () { var r = u.apply(this, arguments); syncSoon(); return r; }; w2.__ptl = true; window.updateMobileCartFab = w2; }
+                var o = window.setOrderType;
+                if (typeof o === 'function' && !o.__ptl) { var w3 = function (t) { if (t === 'delivery' && !shop().delivery && $('order-type-toggle')) t = 'walkin'; return o.call(this, t); }; w3.__ptl = true; window.setOrderType = w3; }
+                var pa = window.posApplyPayMethods;
+                if (typeof pa === 'function' && !pa.__ptl) { var w4 = function () { var r = pa.apply(this, arguments); safe(function () { apply(); renderPanel(); }); return r; }; w4.__ptl = true; window.posApplyPayMethods = w4; }
+                var ec = window.extraSettingsCollect;
+                if (typeof ec === 'function' && !ec.__ptl) { var w5 = function () { var r = ec.apply(this, arguments) || {}; if (lsGet(K_SHOP) !== null) { var q = shop(); r.phoneTill = { phone: q.phone, delivery: q.delivery, tables: q.tables }; } return r; }; w5.__ptl = true; window.extraSettingsCollect = w5; }
+                var ea = window.extraSettingsApply;
+                if (typeof ea === 'function' && !ea.__ptl) { var w6 = function (data) { var r = ea.apply(this, arguments); safe(function () { if (data && data.phoneTill && typeof data.phoneTill === 'object') { var n = normShop(data.phoneTill); if (JSON.stringify(n) !== JSON.stringify(shop())) shopSave(n, true); } }); return r; }; w6.__ptl = true; window.extraSettingsApply = w6; }
+                wrapCollapse();
+            });
+        }
+
+        /* ---------------- the product panel: search style ---------------- */
+        function prodInstall() {
+            safe(function () {
+                var p = prodPanel(); if (!p) return;
+                var h3 = p.querySelector(':scope > h3'), inp = $('sales-search'), box = inp && inp.closest('.search-container');
+                if (!h3 || !inp || !box) return;
+                /* each button in the header gets its picture (the words are hidden on a phone in bar mode) */
+                Array.prototype.forEach.call(h3.querySelectorAll('button'), function (b) {
+                    if (b.classList.contains('ptl-search-btn')) return;
+                    var t = (b.textContent || '').replace(/\s+/g, ' ').trim();
+                    if (!b.getAttribute('data-ptl-ic')) b.setAttribute('data-ptl-ic', t.split(' ')[0] || '•');
+                    if (t && !b.getAttribute('aria-label')) b.setAttribute('aria-label', t.replace(/^\S+\s*/, '') || t);
+                });
+                if (!h3.querySelector('.ptl-search-btn')) {
+                    var sb = document.createElement('button'); sb.type = 'button'; sb.id = 'ptl-search-btn'; sb.className = 'settings-small-btn ptl-search-btn'; sb.setAttribute('aria-label', 'Search products'); sb.setAttribute('data-ptl-ic', '🔍'); sb.textContent = '🔍';
+                    sb.addEventListener('click', function (e) { e.preventDefault(); searchOpen(true); });
+                    h3.insertBefore(sb, h3.firstChild);
+                }
+                if (!box.querySelector('.ptl-search-x')) {
+                    var row = box.querySelector('div'); if (row) {
+                        var x = document.createElement('button'); x.type = 'button'; x.className = 'settings-small-btn ptl-search-x'; x.setAttribute('aria-label', 'Close search'); x.textContent = '✕';
+                        x.addEventListener('click', function (e) { e.preventDefault(); searchOpen(false, true); });
+                        row.appendChild(x);
+                    }
+                }
+                if (!inp.__ptl) {
+                    inp.__ptl = true;
+                    inp.addEventListener('keydown', function (e) { if (e.key === 'Escape' && html.classList.contains('ptl-search-open')) searchOpen(false, true); });
+                    inp.addEventListener('blur', function () { setTimeout(function () { if (html.classList.contains('ptl-search-open') && !inp.value && document.activeElement !== inp && !(document.activeElement && document.activeElement.closest && document.activeElement.closest('.search-container'))) searchOpen(false); }, 250); });
+                }
+                var act = h3.querySelector('.pos-head-actions'); var w = 0;
+                if (act) w = act.offsetWidth; else Array.prototype.forEach.call(h3.querySelectorAll('button:not(.ptl-search-btn)'), function (b) { w += b.offsetWidth + 6; });
+                html.style.setProperty('--ptl-act-w', (w ? w + 6 : 0) + 'px');
+                placeholders();
+            });
+        }
+        function placeholders() {
+            var inp = $('sales-search'); if (!inp) return;
+            if (inp.getAttribute('data-ptl-ph') === null) inp.setAttribute('data-ptl-ph', inp.getAttribute('placeholder') || '');
+            if (isPhone()) inp.setAttribute('placeholder', html.classList.contains('ptl-search-icon') ? PH_ICON : PH_BAR);
+            else inp.setAttribute('placeholder', inp.getAttribute('data-ptl-ph'));
+        }
+        function searchOpen(on, clear) {
+            safe(function () {
+                var inp = $('sales-search');
+                if (on) {
+                    html.classList.add('ptl-search-open');
+                    if (inp) setTimeout(function () { try { inp.focus(); } catch (e) { /* cosmetic */ } }, 30);
+                } else {
+                    if (clear && inp && inp.value) { inp.value = ''; safe(function () { inp.dispatchEvent(new Event('input', { bubbles: true })); }); safe(function () { if (typeof liveSearch === 'function') liveSearch(''); }); }
+                    var r = $('search-results'); if (r && !(inp && inp.value)) { r.style.display = 'none'; }
+                    html.classList.remove('ptl-search-open');
+                }
+            });
+        }
+
+        /* ---------------- Settings card ---------------- */
+        function swRow(id, label, hint, on, disabled) {
+            return '<label class="ptl-sw"><span>' + esc(label) + (hint ? '<small>' + esc(hint) + '</small>' : '') + '</span><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + (disabled ? ' disabled' : '') + '><i></i></label>';
+        }
+        function renderPanel() {
+            safe(function () {
+                var el = $('pos-phonetill-panel'); if (!el) return;
+                var s = shop(), out = '<h3 style="margin-top:0;">📱 Phone &amp; till layout</h3><div class="ptl-note">Hide what this shop never uses, so the Sales Counter needs less scrolling. Each switch saves at once.</div>';
+                var haveRows = false;
+                out += '<div class="ptl-sub">Shop settings — every till and phone follows these</div>';
+                if (phoneInput()) { out += swRow('ptl-sw-phone', 'Show customer phone box', 'The optional number for a thank-you SMS (Pay Later still asks for it).', s.phone); haveRows = true; }
+                if ($('order-type-toggle')) { out += swRow('ptl-sw-delivery', 'Show Walk-In / Delivery choice', 'Off = every sale is a walk-in sale and the Delivery form is hidden.', s.delivery); haveRows = true; }
+                var locSel = $('sales-location-select'), locGrp = locSel && (locSel.closest('.form-group') || null);
+                if (locSel && (!s.tables || !locGrp || locGrp.style.display !== 'none')) {
+                    var locLab = locGrp && locGrp.querySelector('label'), locName = locLab ? (locLab.textContent || '').replace(/\(.*$/, '').replace(/\s+/g, ' ').trim() : '';
+                    out += swRow('ptl-sw-tables', $('pay-tab-btn') || !locName ? 'Show Table / Room picker' : 'Show the ' + locName + ' picker', $('pay-tab-btn') ? 'Off = no table / room is picked on the till. The 🧾 Tabs button stays, and a Tab payment goes to a guest name (or “Guest 1”, “Guest 2”…).' : 'For shops that do not serve tables or rooms.', s.tables);
+                    haveRows = true;
+                }
+                if (!haveRows) out += '<div class="ptl-note">Nothing to switch in this app.</div>';
+                out += '<div class="ptl-sub">This phone only</div>';
+                if ($('sales-search')) {
+                    var st = searchStyle();
+                    out += '<div class="ptl-note" style="margin-top:6px;">Product search on the phone</div><div class="ptl-seg"><label><input type="radio" name="ptl-search" value="bar"' + (st === 'bar' ? ' checked' : '') + '> Search bar</label><label><input type="radio" name="ptl-search" value="icon"' + (st === 'icon' ? ' checked' : '') + '> 🔍 Icon</label></div>';
+                }
+                var off = tabsOff(), list = tabButtons().filter(function (b) { var id = b.getAttribute('data-tab'); return !NEVER_HIDE[id] && (b.style.display !== 'none' || off.indexOf(id) !== -1); });
+                if (list.length) {
+                    out += '<div class="ptl-note" style="margin-top:8px;">Tabs shown on this phone (the rest wait under “More”). Sales Counter and Settings always show.</div><div class="ptl-tabs">';
+                    list.forEach(function (b) { var id = b.getAttribute('data-tab'), label = (b.textContent || '').replace(/\s+/g, ' ').trim(); out += '<label><input type="checkbox" class="ptl-tab-cb" value="' + esc(id) + '"' + (off.indexOf(id) === -1 ? ' checked' : '') + '> ' + esc(label) + '</label>'; });
+                    out += '</div>';
+                }
+                el.innerHTML = out;
+            });
+        }
+        function onPanelChange(e) {
+            var t = e.target; if (!t || !t.closest || !t.closest('#pos-phonetill-panel')) return;
+            safe(function () {
+                var el = $('pos-phonetill-panel');
+                if (t.id === 'ptl-sw-phone' || t.id === 'ptl-sw-delivery' || t.id === 'ptl-sw-tables') {
+                    var s = shop();
+                    if (t.id === 'ptl-sw-phone') s.phone = t.checked; else if (t.id === 'ptl-sw-delivery') s.delivery = t.checked; else s.tables = t.checked;
+                    shopSave(s, false); toast('Saved.');
+                } else if (t.name === 'ptl-search') {
+                    if (t.value === 'icon') lsSet(K_SEARCH, 'icon'); else lsDel(K_SEARCH);
+                    apply(); toast('Saved.');
+                } else if (t.classList.contains('ptl-tab-cb')) {
+                    var offNow = Array.prototype.filter.call(el.querySelectorAll('.ptl-tab-cb'), function (c) { return !c.checked; }).map(function (c) { return c.value; });
+                    var keepOthers = tabsOff().filter(function (id) { return !el.querySelector('.ptl-tab-cb[value="' + id + '"]'); });   /* tabs not listed (role-hidden) keep their old state */
+                    var all = offNow.concat(keepOthers);
+                    if (all.length) lsSet(K_TABS, JSON.stringify(all)); else lsDel(K_TABS);
+                    tabsApply(); safe(function () { if (typeof collapseTabsIfNeeded === 'function') collapseTabsIfNeeded(); });
+                    toast('Saved.');
+                }
+            });
+        }
+        /* the card sits right under "Payment methods I accept", in the same Settings section (that card is moved into its own section a moment after start-up) */
+        var panelTries = 0;
+        function panelInstall() {
+            safe(function () {
+                if ($('pos-phonetill-panel')) return true;
+                var pm = $('pos-paymethods-panel'); if (!pm || !pm.parentNode) return false;
+                var settled = !!$('settings-section-paymethods') || !$('settings-subnav') || panelTries > 40;
+                if (!settled) return false;
+                var host = document.createElement('div'); host.className = 'panel'; host.id = 'pos-phonetill-panel';
+                host.style.marginTop = pm.parentNode.id === 'settings-section-paymethods' ? '15px' : '0'; host.style.marginBottom = '15px';
+                pm.parentNode.insertBefore(host, pm.nextSibling);
+                host.addEventListener('change', onPanelChange);
+                renderPanel();
+                return true;
+            });
+            return !!$('pos-phonetill-panel');
+        }
+
+        /* ---------------- start ---------------- */
+        function boot() {
+            safe(function () {
+                wrapHooks();
+                markGroups(); apply(); cartInstall(); prodInstall(); sync();
+                var t = $('sales-tab');
+                if (t && window.MutationObserver) {
+                    new MutationObserver(function () { syncSoon(); }).observe(t, { attributes: true, attributeFilter: ['class'] });
+                    var tb = $('cart-table'); if (tb) new MutationObserver(syncSoon).observe(tb, { childList: true, subtree: true });
+                }
+                var st = $('settings-tab');
+                if (st && window.MutationObserver) new MutationObserver(function () { if (st.classList.contains('active')) renderPanel(); }).observe(st, { attributes: true, attributeFilter: ['class'] });
+                var g = $('cart-grand-total'); if (g && window.MutationObserver) new MutationObserver(syncSoon).observe(g, { childList: true, subtree: true, characterData: true });
+                if (window.matchMedia) { var mq = window.matchMedia(MQ), ch = function () { sync(); placeholders(); prodInstall(); safe(function () { if (typeof collapseTabsIfNeeded === 'function') collapseTabsIfNeeded(); }); }; if (mq.addEventListener) mq.addEventListener('change', ch); else if (mq.addListener) mq.addListener(ch); }
+                document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && sheetOpen && !e.defaultPrevented) { var m = document.querySelector('#receipt-modal'); if (m && m.offsetParent !== null && getComputedStyle(m).display !== 'none') return; closeSheet(); } });
+                document.addEventListener('click', function (e) { var t = e.target; if (t && t.closest && t.closest('.tab-link, #hdr-hide-btn, #hdr-show-btn')) setTimeout(function () { tabsApply(); prodInstall(); sync(); }, 80); }, true);
+            });
+        }
+        window.__phoneTillApi = { open: openSheet, close: closeSheet, apply: apply, sync: sync, shop: shop, isOpen: function () { return sheetOpen; } };
+        var go = function () {
+            boot();
+            /* things that appear a little later (the settings card's section, tab buttons rebuilt by the roles code, the Sales / Bills buttons moved into the header) */
+            var n = 0, timer = setInterval(function () { n++; wrapHooks(); apply(); sync(); panelTries++; panelInstall(); if (n > 24 || ($('pos-phonetill-panel') && n > 12)) clearInterval(timer); }, 500);
+        };
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(go, 350); }); else setTimeout(go, 350);
+    })();
+    </script>
+<!-- @shared-block:phone-till:end -->
+
+<!-- @shared-block:category-tiles:begin -->
+<!-- CATEGORY TILES ------------------------------------------------------------
+         Category pictures for the Sales Counter. The owner (Settings, "Category images") gives each category a small picture and switches on "Show category
+         image tiles on the Sales Counter". The counter then opens on a grid of big picture tiles (name + item count under each); tapping a tile opens that
+         category - its sub-categories first where the app has them (Hotel), otherwise the product grid, filtered to that category. "All categories" brings
+         the tiles back. Typing in the search box shows normal results exactly as before; clearing it returns to the tiles. The switch is OFF until the owner
+         turns it on, so nothing changes by itself.
+         HOW IT WORKS WITH THE APP: this block never filters or sells anything itself. The product grid is the app's own renderItemImageGrid: in Hotel the tile tap
+         sets the very same state the category chips set (hospCatSelSet / the sub-category key) before the grid is drawn; in the other apps (no category state of
+         their own) the first inventory.filter / forEach of that one render is limited to the chosen category, then removed again. Every render of the grid
+         (a cart tap draws it again) re-draws the tiles from the remembered position, so adding an item never bounces the cashier back to the root. The old chip
+         row stays in the page (the app keeps drawing it), it is only hidden while the tiles are on.
+         DATA: localStorage pos_category_images = {"Category" or "Category > Sub": small JPEG data-URL} (max 60, each scaled to 240 px / ~20 KB) and
+         pos_cat_tiles = "true"/"false". Both travel with the shop's settings (collectSyncPayload adds categoryImages + catTilesOn only once THIS device has
+         its own copy; applyRemotePayload applies them). slimPayloadForPush leaves the pictures out of a push when the server already has the same set
+         (once per change per session, not on every sale). Classes: ctl-*. Water has no product grid: this block does nothing there. -->
+    <style>
+        .ctl-host { display: none; margin: 4px 0 12px; }
+        body.ctl-on .ctl-host.ctl-has { display: block; }
+        html body.ctl-on #sales-tab #sc-cat-bar, html body.ctl-on #sales-tab #sc-cat-bar-sub { display: none !important; }
+        html body.ctl-hide #sales-tab #item-image-grid { display: none !important; }
+        .ctl-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        @media (min-width: 600px) { .ctl-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; } }
+        @media (min-width: 1100px) { .ctl-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); } }
+        .ctl-tile { position: relative; display: flex; flex-direction: column; align-items: stretch; padding: 0; margin: 0; min-width: 0; min-height: 44px; font: inherit; text-align: center; cursor: pointer; overflow: hidden;
+            border: 1px solid var(--border-color, #e1e6ea); border-radius: 14px; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); box-shadow: 0 1px 3px rgba(0, 0, 0, .10); -webkit-tap-highlight-color: transparent; }
+        .ctl-tile:active { transform: scale(.98); }
+        .ctl-tile:focus-visible, .ctl-back:focus-visible, .ctl-crumb-btn:focus-visible { outline: 3px solid var(--accent, #3498db); outline-offset: 2px; }
+        .ctl-img { display: block; position: relative; width: 100%; background: var(--bg-surface-alt, #f4f6f7); }
+        .ctl-img::before { content: ""; display: block; padding-top: 100%; }
+        .ctl-img img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+        .ctl-ph { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; font-size: clamp(28px, 9vw, 44px); font-weight: 800; letter-spacing: 1px; color: #fff; background: hsl(var(--h, 210), 45%, 38%); }
+        .ctl-name { display: block; padding: 8px 8px 10px; font-weight: 700; font-size: 15px; line-height: 1.2; overflow-wrap: anywhere; }
+        .ctl-badge { position: absolute; top: 8px; right: 8px; min-width: 26px; padding: 2px 8px; border-radius: 999px; background: rgba(0, 0, 0, .74); color: #fff; font-size: 12px; font-weight: 800; line-height: 1.4; }
+        .ctl-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 4px 0 10px; }
+        .ctl-back, .ctl-crumb-btn { min-height: 44px; padding: 0 14px; font: inherit; font-weight: 700; font-size: 15px; cursor: pointer; border-radius: 22px; border: 1px solid var(--border-color, #ccd1d6); background: var(--bg-surface-alt, #f4f6f7); color: var(--dark, #2c3e50); }
+        .ctl-crumb { font-weight: 800; font-size: 16px; min-width: 0; overflow-wrap: anywhere; color: var(--dark, #2c3e50); }
+        html[data-theme="dark"] .ctl-tile { box-shadow: none; }
+        /* Settings > Category images */
+        .ctl-sw { display: flex; align-items: center; gap: 10px; min-height: 48px; font-size: 16px; font-weight: 700; margin: 8px 0 4px; }
+        .ctl-sw input[type=checkbox] { width: 26px !important; height: 26px; min-height: 0; margin: 0; flex: 0 0 auto; }
+        .ctl-note { font-size: 13px; color: #7f8c8d; margin: 0 0 8px; }
+        .ctl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 0; border-top: 1px solid var(--border-color, #e1e6ea); }
+        .ctl-row.ctl-subrow { margin-left: 22px; border-left: 3px solid var(--border-color, #e1e6ea); padding-left: 10px; }
+        .ctl-thumb { position: relative; flex: 0 0 56px; width: 56px; height: 56px; border-radius: 10px; overflow: hidden; background: var(--bg-surface-alt, #f4f6f7); }
+        .ctl-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .ctl-thumb .ctl-ph { font-size: 20px; }
+        .ctl-rname { flex: 1 1 130px; min-width: 0; overflow-wrap: anywhere; }
+        .ctl-rname small { display: block; color: #7f8c8d; font-size: 12px; }
+        .ctl-racts { display: flex; flex-wrap: wrap; gap: 8px; }
+        .ctl-racts button { min-height: 44px; }
+        .ctl-hidden-file { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+        .ctl-msg { min-height: 20px; margin: 8px 0 0; font-size: 14px; }
+        .ctl-msg.bad { color: var(--danger, #e74c3c); }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__catTiles) return;
+        window.__catTiles = {};
+        var LS_IMG = 'pos_category_images', LS_ON = 'pos_cat_tiles', SS_ORIG = 'ctl_orig_v1';
+        var MAX_IMAGES = 60, MAX_PX = 240, QUALITY = [0.72, 0.62, 0.52, 0.42], MAX_CHARS = 28000, ALL_KEY = '__all', SEP = ' › ';
+        var S = { cat: null, sub: null };           // the opened category (a {key,label,id,norm,all} from categories()) and sub-category id ('all' | id | 'none') once chosen
+        var imgCache = { raw: null, map: {} };
+        var origSel;                                // Hotel: the chip selection before the tiles took over (undefined = tiles have not touched it)
+        var origSub = {};
+        var srcInfo = null;
+
+        /* ---------- tiny helpers ---------- */
+        function $(id) { return document.getElementById(id); }
+        function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+        function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+        function lsRaw(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
+        function lsSet(k, v) {
+            try { if (typeof safeSetItem === 'function') safeSetItem(k, v); else localStorage.setItem(k, v); } catch (e) { /* checked below */ }
+            return lsGet(k) === v;
+        }
+        function toast(msg, bad) { try { if (typeof showToast === 'function') showToast(msg, !!bad); } catch (e) { /* cosmetic */ } }
+        function pushSoon() { try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the next change sends it */ } }
+        function g(name) { try { return window[name]; } catch (e) { return undefined; } }
+        function sig(map) { var s = JSON.stringify(Object.keys(map || {}).sort().map(function (k) { return [k, map[k]]; })), h = 5381; for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return s.length + ':' + h; }
+
+        /* ---------- settings: the picture map + the master switch ---------- */
+        function cleanMap(o) {
+            var out = {}, n = 0;
+            if (!o || typeof o !== 'object' || Array.isArray(o)) return out;
+            Object.keys(o).forEach(function (k) {
+                var v = o[k];
+                if (n >= MAX_IMAGES || typeof v !== 'string' || v.length > 60000 || !/^data:image\/(jpeg|png|webp);base64,/.test(v)) return;
+                out[String(k).slice(0, 200)] = v; n++;
+            });
+            return out;
+        }
+        function images() {
+            var raw = lsGet(LS_IMG);
+            if (raw === imgCache.raw) return imgCache.map;
+            var m = {}; try { m = cleanMap(JSON.parse(raw || '{}')); } catch (e) { m = {}; }
+            imgCache = { raw: raw, map: m };
+            return m;
+        }
+        function saveImages(map) {
+            var raw = JSON.stringify(map);
+            var ok = lsSet(LS_IMG, raw);
+            if (ok) imgCache = { raw: raw, map: map };
+            return ok;
+        }
+        function enabled() { return lsGet(LS_ON) === 'true'; }
+        function readOnlyBranch() { try { return typeof viewedBranchId !== 'undefined' && viewedBranchId !== 'self'; } catch (e) { return false; } }
+
+        /* ---------- which categories does this app have? ---------- */
+        function hotelMode() {
+            try { return typeof hospScreenChips === 'function' && typeof hospScreenItems === 'function' && typeof hospCatSelSet === 'function' && typeof HOSP_CAT_ALL !== 'undefined'; } catch (e) { return false; }
+        }
+        function gridSource() {
+            if (srcInfo) return srcInfo;
+            var src = '';
+            try { src = String((window.__ctlRenderOrig || window.renderItemImageGrid) || ''); } catch (e) { src = ''; }
+            srcInfo = { noService: /type\s*!==\s*'service'/.test(src), noVariantParent: /!p\.hasVariants/.test(src), variantTiles: /variantItems/.test(src) };
+            return srcInfo;
+        }
+        function normCat(c) { return String(c == null ? '' : c).trim().toLowerCase(); }
+        function genericCategories() {
+            var inv; try { inv = typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : []; } catch (e) { inv = []; }
+            var si = gridSource(), map = {}, order = [];
+            inv.forEach(function (p) {
+                if (!p) return;
+                try { if (typeof isSellableProduct === 'function' && !isSellableProduct(p)) return; } catch (e) { return; }
+                if (p.dualUnit || (si.noService && p.type === 'service')) return;
+                var n = 1;
+                if (p.hasVariants) {
+                    if (si.variantTiles && Array.isArray(p.variants) && p.type !== 'service') n = p.variants.length; else if (si.noVariantParent) return;
+                }
+                if (!n) return;
+                var label = String(p.category == null ? '' : p.category).trim() || 'Uncategorised', nk = normCat(label);
+                if (!map[nk]) { map[nk] = { key: label, label: label, norm: nk === 'uncategorised' ? '' : nk, n: 0, id: nk }; order.push(nk); }
+                map[nk].n += n;
+            });
+            // an item whose category is literally "Uncategorised" and one with none belong together: match on the empty string
+            order.sort(function (a, b) { if (a === 'uncategorised') return 1; if (b === 'uncategorised') return -1; return map[a].label.localeCompare(map[b].label, undefined, { sensitivity: 'base' }); });
+            return order.map(function (k) { return map[k]; });
+        }
+        function hotelCategories() {
+            var out = [];
+            try {
+                hospScreenChips('sales').forEach(function (c) { if (c.id === HOSP_CAT_ALL) return; out.push({ key: c.label, label: c.label, id: c.id, n: c.n, norm: '' }); });
+            } catch (e) { /* none */ }
+            return out;
+        }
+        function categories() { return hotelMode() ? hotelCategories() : genericCategories(); }
+        function hotelSubs(cat) {
+            try { if (!cat || cat.all || typeof hospSubList !== 'function') return []; var l = hospSubList(cat.id); return Array.isArray(l) ? l : []; } catch (e) { return []; }
+        }
+        function allItemsCount(cats) { var n = 0; cats.forEach(function (c) { n += c.n; }); return n; }
+
+        /* ---------- the app's own filter state ---------- */
+        function selKey() { return 'pos_hosp_catsel_sales'; }
+        function subKey(id) { return 'pos_hosp_subsel_sales_' + id; }
+        function loadOrig() {
+            try { var o = JSON.parse(sessionStorage.getItem(SS_ORIG) || 'null'); if (o && typeof o === 'object') { origSel = o.sel === undefined ? null : o.sel; origSub = o.sub || {}; } } catch (e) { /* none */ }
+        }
+        function saveOrig() { try { if (origSel === undefined) sessionStorage.removeItem(SS_ORIG); else sessionStorage.setItem(SS_ORIG, JSON.stringify({ sel: origSel, sub: origSub })); } catch (e) { /* only to survive a reload */ } }
+        // Hotel: make the app's chips say what the tiles say (or give them back what they said before)
+        function hotelPrime(active) {
+            if (!hotelMode()) return;
+            if (active) {
+                if (origSel === undefined) { origSel = lsGet(selKey()); origSub = {}; }
+                var id = active.all ? HOSP_CAT_ALL : active.id;
+                if (!active.all && origSub[id] === undefined) origSub[id] = lsGet(subKey(id));
+                lsRaw(selKey(), id);
+                if (!active.all) lsRaw(subKey(id), active.sub || 'all');
+                saveOrig();
+            } else if (origSel !== undefined) {
+                lsRaw(selKey(), origSel);
+                Object.keys(origSub).forEach(function (id) { lsRaw(subKey(id), origSub[id]); });
+                origSel = undefined; origSub = {}; saveOrig();
+            }
+        }
+        // Other apps: for ONE render, the first inventory.filter / forEach (the grid's own list) only sees the chosen category; the rest of the render sees everything
+        function genericLimit(cat) {
+            var inv; try { inv = typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : null; } catch (e) { inv = null; }
+            if (!inv || !cat || cat.all) return null;
+            var pf = Array.prototype.filter, pe = Array.prototype.forEach;
+            var inCat = function (p) { var c = p && p.category != null ? normCat(p.category) : ''; if (c === 'uncategorised') c = ''; return c === cat.norm; };
+            var def = function (name, impl) { try { Object.defineProperty(inv, name, { configurable: true, writable: true, enumerable: false, value: impl }); } catch (e) { /* frozen: the full grid shows */ } };
+            def('filter', function (fn, t) { try { delete inv.filter; } catch (e) { /* none */ } return pf.call(inv, function (p, i, a) { return inCat(p) && fn.call(t, p, i, a); }); });
+            def('forEach', function (fn, t) { try { delete inv.forEach; } catch (e) { /* none */ } return pe.call(inv, function (p, i, a) { if (inCat(p)) fn.call(t, p, i, a); }); });
+            return function () { try { delete inv.filter; } catch (e) { /* none */ } try { delete inv.forEach; } catch (e) { /* none */ } };
+        }
+
+        /* ---------- mode ---------- */
+        function searchRaw() { var el = $('sales-search'); return el ? String(el.value || '') : ''; }
+        function gridWanted(cats) {
+            try { if (typeof showItemImageGrid !== 'undefined' && !showItemImageGrid) return false; } catch (e) { /* default on */ }
+            return !!$('item-image-grid') && cats.length > 0;
+        }
+        function normalize(cats) {
+            if (S.cat && !S.cat.all && !cats.some(function (c) { return c.key === S.cat.key; })) { S.cat = null; S.sub = null; }
+            if (S.cat && !S.cat.all) { var f = cats.filter(function (c) { return c.key === S.cat.key; })[0]; if (f) S.cat = f; }
+        }
+        function mode(cats) {
+            if (!enabled() || !gridWanted(cats)) return 'off';
+            if (searchRaw().trim()) return 'search';
+            if (!S.cat) return 'root';
+            if (S.sub === null && hotelMode() && hotelSubs(S.cat).length) return 'sub';
+            return 'grid';
+        }
+
+        /* ---------- drawing the tiles ---------- */
+        var hasUni = true; try { new RegExp('[\\p{L}\\p{N}]', 'u'); } catch (e) { hasUni = false; }
+        function initials(name) {
+            name = String(name || '').trim(); if (!name) return '?';
+            var first = Array.from(name)[0];
+            if (!(hasUni ? new RegExp('[\\p{L}\\p{N}]', 'u') : /[A-Za-z0-9]/).test(first)) return first;     // an emoji / symbol the owner typed is the picture
+            var w = name.split(/[\s\/&\-–·,]+/).filter(Boolean);
+            var s = w.length > 1 ? Array.from(w[0])[0] + Array.from(w[1])[0] : Array.from(w[0]).slice(0, 2).join('');
+            return s.toUpperCase();
+        }
+        function hue(name) { var h = 7; for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
+        function tileHtml(kind, key, label, n, imgKey, phText) {
+            var im = imgKey ? images()[imgKey] : '';
+            var pic = im ? '<img src="' + esc(im) + '" alt="" loading="lazy" decoding="async">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(phText || initials(label)) + '</span>';
+            return '<button type="button" class="ctl-tile" data-ctl="' + kind + '" data-k="' + esc(encodeURIComponent(key)) + '" aria-label="' + esc(label + ', ' + n + (n === 1 ? ' item' : ' items')) + '">'
+                + '<span class="ctl-img">' + pic + '</span><span class="ctl-badge">' + n + '</span><span class="ctl-name">' + esc(label) + '</span></button>';
+        }
+        function hostEl() {
+            var grid = $('item-image-grid'); if (!grid || !grid.parentNode) return null;
+            var h = $('ctl-host');
+            if (!h) {
+                h = document.createElement('div'); h.id = 'ctl-host'; h.className = 'ctl-host';
+                h.addEventListener('click', onHostClick);
+            }
+            if (h.parentNode !== grid.parentNode || h.nextElementSibling !== grid) grid.parentNode.insertBefore(h, grid);
+            return h;
+        }
+        function setHost(h, html) { if (h.__h !== html) { h.__h = html; h.innerHTML = html; } h.classList.toggle('ctl-has', !!html); }
+        function head(parts) { return '<div class="ctl-head">' + parts + '</div>'; }
+        function sync(cats) {
+            try {
+                cats = cats || categories(); normalize(cats);
+                var m = mode(cats), b = document.body, h = hostEl();
+                b.classList.toggle('ctl-on', m !== 'off'); b.classList.toggle('ctl-hide', m === 'root' || m === 'sub');
+                if (!h) return;
+                if (m === 'off' || m === 'search') { setHost(h, ''); return; }
+                var html = '';
+                if (m === 'root') {
+                    html = '<div class="ctl-grid" role="group" aria-label="Categories">' + cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).join('')
+                        + tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️') + '</div>';
+                } else if (m === 'sub') {
+                    var subs = hotelSubs(S.cat), counts = {}, tot = 0, none = 0;
+                    try { var r = hospScreenItems('sales', ''); counts = r.subCounts || {}; } catch (e) { counts = {}; }
+                    subs.forEach(function (x) { tot += counts[x.id] || 0; }); none = counts.none || 0; tot += none;
+                    html = head('<button type="button" class="ctl-back" data-ctl="root">← All categories</button><span class="ctl-crumb">· ' + esc(S.cat.label) + '</span>')
+                        + '<div class="ctl-grid" role="group" aria-label="Sub-categories of ' + esc(S.cat.label) + '">'
+                        + tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)
+                        + subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); }).join('')
+                        + (none > 0 ? tileHtml('sub', 'none', 'Other', none, '') : '') + '</div>';
+                } else {
+                    var parts = '<button type="button" class="ctl-back" data-ctl="root">← All categories</button>';
+                    if (S.cat.all) parts += '<span class="ctl-crumb">· All items</span>';
+                    else if (hotelMode() && S.sub !== null && hotelSubs(S.cat).length) {
+                        var sn = S.sub === 'all' ? 'All ' + S.cat.label : S.sub === 'none' ? 'Other' : ((hotelSubs(S.cat).filter(function (x) { return x.id === S.sub; })[0] || {}).name || '');
+                        parts += '<button type="button" class="ctl-crumb-btn" data-ctl="up">‹ ' + esc(S.cat.label) + '</button><span class="ctl-crumb">· ' + esc(sn) + '</span>';
+                    } else parts += '<span class="ctl-crumb">· ' + esc(S.cat.label) + '</span>';
+                    html = head(parts);
+                }
+                setHost(h, html);
+            } catch (e) { /* the app's own grid stays usable */ }
+        }
+
+        /* ---------- navigation (always through the app's own render, so the grid and the tiles agree) ---------- */
+        function refresh() {
+            try { if (typeof window.renderItemImageGrid === 'function') window.renderItemImageGrid(searchRaw()); else sync(); } catch (e) { /* the next render draws it */ }
+        }
+        function keepInView() {
+            try { var h = $('ctl-host'); if (h) { var r = h.getBoundingClientRect(); if (r.top < 0 || r.top > window.innerHeight * 0.6) window.scrollTo(0, Math.max(0, window.pageYOffset + r.top - 8)); } } catch (e) { /* cosmetic */ }
+        }
+        function focusFirst(sel) { try { var h = $('ctl-host'), el = h && h.querySelector(sel); if (el && el.focus) el.focus({ preventScroll: true }); } catch (e) { /* cosmetic */ } }
+        function openCat(key) {
+            var cats = categories(), c;
+            if (key === ALL_KEY) c = { key: ALL_KEY, label: 'All items', all: true, n: allItemsCount(cats) }; else c = cats.filter(function (x) { return x.key === key; })[0];
+            if (!c) return false;
+            S.cat = c; S.sub = null; refresh(); keepInView(); focusFirst('.ctl-back'); return true;
+        }
+        function openSub(id) { if (!S.cat) return false; S.sub = id; refresh(); keepInView(); focusFirst('.ctl-back'); return true; }
+        function back() {
+            var k = S.cat && S.cat.key;
+            S.cat = null; S.sub = null; refresh();
+            try { var h = $('ctl-host'), t = h && Array.prototype.filter.call(h.querySelectorAll('.ctl-tile'), function (x) { return decodeURIComponent(x.getAttribute('data-k')) === k; })[0]; if (t) t.focus({ preventScroll: true }); } catch (e) { /* cosmetic */ }
+        }
+        function up() { if (S.cat && hotelMode() && hotelSubs(S.cat).length) { S.sub = null; refresh(); keepInView(); focusFirst('.ctl-back'); } else back(); }
+        function onHostClick(ev) {
+            var t = ev.target && ev.target.closest ? ev.target.closest('[data-ctl]') : null; if (!t) return;
+            var a = t.getAttribute('data-ctl'), k = t.getAttribute('data-k'); try { k = k == null ? '' : decodeURIComponent(k); } catch (e) { k = ''; }
+            if (a === 'cat') openCat(k); else if (a === 'sub') openSub(k); else if (a === 'root') back(); else if (a === 'up') up();
+        }
+
+        /* ---------- hook the app's grid render ---------- */
+        function installRender() {
+            var orig = window.renderItemImageGrid;
+            if (typeof orig !== 'function' || orig.__ctl) return false;
+            window.__ctlRenderOrig = orig;
+            var wrapped = function () {
+                var cats = null, restore = null, res;
+                try {
+                    cats = categories(); normalize(cats);
+                    var m = mode(cats);
+                    if (hotelMode()) hotelPrime(m === 'grid' || m === 'sub' ? { id: S.cat.id, all: !!S.cat.all, sub: m === 'sub' ? 'all' : (S.sub || 'all') } : null);
+                    else if (m === 'grid') restore = genericLimit(S.cat);
+                } catch (e) { cats = null; restore = null; }
+                try { res = orig.apply(this, arguments); } finally { if (restore) restore(); }
+                try { sync(cats); } catch (e) { /* cosmetic */ }
+                return res;
+            };
+            wrapped.__ctl = true;
+            window.renderItemImageGrid = wrapped;
+            return true;
+        }
+        // typing in the search box shows ordinary results at once (the app's own redraw follows); clearing it brings the tiles back
+        function onSearchInput(ev) { if (ev && ev.target && ev.target.id === 'sales-search') { try { sync(); } catch (e) { /* cosmetic */ } } }
+
+        /* ---------- the settings sync ---------- */
+        function collect() {
+            var o = {};
+            if (lsGet(LS_IMG) !== null) o.categoryImages = images();          // only a device that has its own copy sends one: a fresh phone must never blank the shop's pictures
+            var on = lsGet(LS_ON); if (on !== null) o.catTilesOn = on === 'true';
+            return o;
+        }
+        function applyRemote(data) {
+            if (!data || typeof data !== 'object') return;
+            var changed = false;
+            if (data.categoryImages && typeof data.categoryImages === 'object' && !Array.isArray(data.categoryImages)) {
+                var clean = cleanMap(data.categoryImages);
+                if (sig(clean) !== sig(images())) { saveImages(clean); changed = true; }
+                window.__ctlAck = sig(clean);                                   // the server has exactly this set
+            }
+            if (typeof data.catTilesOn === 'boolean' && data.catTilesOn !== enabled()) { lsSet(LS_ON, data.catTilesOn ? 'true' : 'false'); changed = true; }
+            if (changed) { try { renderPanel(); } catch (e) { /* the page may not be open */ } refresh(); }
+        }
+        function installSync() {
+            var cs = window.collectSyncPayload;
+            if (typeof cs === 'function' && !cs.__ctl) {
+                var wc = function () { var p = cs.apply(this, arguments); try { if (p && typeof p === 'object') { var e = collect(); Object.keys(e).forEach(function (k) { p[k] = e[k]; }); } } catch (e2) { /* the pictures are an extra */ } return p; };
+                wc.__ctl = true; window.collectSyncPayload = wc;
+            }
+            var ap = window.applyRemotePayload;
+            if (typeof ap === 'function' && !ap.__ctl) {
+                var wa = function (data) { try { applyRemote(data); } catch (e) { /* the pictures are an extra */ } return ap.apply(this, arguments); };
+                wa.__ctl = true; window.applyRemotePayload = wa;
+            }
+            var sp = window.slimPayloadForPush;
+            if (typeof sp === 'function' && !sp.__ctl) {
+                var ws = function () {
+                    var r = sp.apply(this, arguments);
+                    try {
+                        if (r && r.body && r.body.categoryImages !== undefined) {
+                            var sg = sig(r.body.categoryImages);
+                            if (window.__ctlAck === sg) {                          // the server already has this exact set: do not carry up to 1 MB on every sale
+                                delete r.body.categoryImages;
+                                if (r.body._fieldTimes) { delete r.body._fieldTimes.categoryImages; if (!Object.keys(r.body._fieldTimes).length) delete r.body._fieldTimes; }
+                            } else if (typeof r.commit === 'function') {
+                                var c = r.commit; r.commit = function () { var x = c.apply(this, arguments); window.__ctlAck = sg; return x; };
+                            }
+                        }
+                    } catch (e) { /* the push goes out as built */ }
+                    return r;
+                };
+                ws.__ctl = true; window.slimPayloadForPush = ws;
+            }
+        }
+
+        /* ---------- picking a picture: scaled on the phone (<= 240 px, JPEG, about 20 KB) ---------- */
+        function scaleFile(file) {
+            return new Promise(function (resolve, reject) {
+                if (!file) { reject(new Error('No picture chosen.')); return; }
+                if (!/^image\//.test(file.type || '')) { reject(new Error('That file is not a picture.')); return; }
+                var rd = new FileReader();
+                rd.onerror = function () { reject(new Error('Could not read that picture.')); };
+                rd.onload = function () {
+                    var im = new Image();
+                    im.onerror = function () { reject(new Error('Could not open that picture. Try a JPG or PNG.')); };
+                    im.onload = function () {
+                        try {
+                            var sc = Math.min(1, MAX_PX / Math.max(im.width || 1, im.height || 1)), out = '';
+                            for (var shrink = 0; shrink < 4 && !out; shrink++) {
+                                var k = sc * Math.pow(0.8, shrink), w = Math.max(1, Math.round(im.width * k)), h = Math.max(1, Math.round(im.height * k));
+                                var cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+                                var cx = cv.getContext('2d'); cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, w, h); cx.drawImage(im, 0, 0, w, h);
+                                for (var qi = 0; qi < QUALITY.length; qi++) { var u = cv.toDataURL('image/jpeg', QUALITY[qi]); if (u.length <= MAX_CHARS || (shrink === 3 && qi === QUALITY.length - 1)) { out = u; break; } }
+                            }
+                            resolve(out);
+                        } catch (e) { reject(new Error('Could not shrink that picture.')); }
+                    };
+                    im.src = rd.result;
+                };
+                rd.readAsDataURL(file);
+            });
+        }
+        function setImage(key, dataUrl) {
+            key = String(key || '').slice(0, 200);
+            var map = Object.assign({}, images());
+            if (!key) return { ok: false, error: 'No category.' };
+            if (map[key] === undefined && Object.keys(map).length >= MAX_IMAGES) return { ok: false, error: 'You can keep up to ' + MAX_IMAGES + ' category pictures. Remove one first.' };
+            map[key] = dataUrl;
+            var prev = images();
+            if (!saveImages(cleanMap(map))) { saveImages(prev); return { ok: false, error: 'This phone has no room left for the picture. Free some space and try again.' }; }
+            pushSoon(); renderPanel(); refresh();
+            return { ok: true };
+        }
+        function removeImage(key) {
+            var map = Object.assign({}, images()); if (map[key] === undefined) return false;
+            delete map[key]; saveImages(map); pushSoon(); renderPanel(); refresh(); return true;
+        }
+        function setEnabled(on) {
+            lsSet(LS_ON, on ? 'true' : 'false');
+            if (!on) { S.cat = null; S.sub = null; }
+            pushSoon(); renderPanel(); refresh();
+            return enabled();
+        }
+
+        /* ---------- Settings > Category images ---------- */
+        var pendingKey = '';
+        function msg(t, bad) { var m = $('ctl-msg'); if (m) { m.textContent = t || ''; m.className = 'ctl-msg' + (bad ? ' bad' : ''); } }
+        function thumb(label, key) {
+            var im = images()[key];
+            return '<span class="ctl-thumb">' + (im ? '<img src="' + esc(im) + '" alt="" loading="lazy">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(initials(label)) + '</span>') + '</span>';
+        }
+        function rowHtml(label, key, sub, count, ro) {
+            var has = images()[key] !== undefined, k = esc(encodeURIComponent(key));
+            return '<div class="ctl-row' + (sub ? ' ctl-subrow' : '') + '">' + thumb(label, key)
+                + '<span class="ctl-rname"><b>' + esc(label) + '</b>' + (count != null ? '<small>' + count + (count === 1 ? ' item' : ' items') + '</small>' : '') + '</span>'
+                + '<span class="ctl-racts"><button type="button" class="settings-small-btn" data-ctl-act="pick" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>📷 ' + (has ? 'Change image' : 'Add image') + '</button>'
+                + (has ? '<button type="button" class="settings-small-btn" data-ctl-act="rm" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>Remove</button>' : '') + '</span></div>';
+        }
+        function renderPanel() {
+            var el = $('ctl-panel'); if (!el) return;
+            var cats = categories(), ro = readOnlyBranch(), imgs = images(), used = Object.keys(imgs).length, listed = {}, rows = '';
+            cats.forEach(function (c) {
+                listed[c.key] = 1; rows += rowHtml(c.label, c.key, false, c.n, ro);
+                hotelSubs(c).forEach(function (x) { var k = c.key + SEP + x.name; listed[k] = 1; rows += rowHtml(x.name, k, true, null, ro); });
+            });
+            var orphan = Object.keys(imgs).filter(function (k) { return !listed[k]; });
+            if (orphan.length) rows += '<div class="ctl-row"><b>Pictures for categories that have no items now</b></div>' + orphan.map(function (k) { return rowHtml(k, k, false, null, ro); }).join('');
+            el.innerHTML = '<h3 style="margin-top:0;">🖼️ Category images</h3>'
+                + '<p class="ctl-note">Give each category a picture. With the switch below on, the Sales Counter opens on big picture tiles: tap a tile to see the items (or sub-categories) in it. Searching still works as always. Every till and phone follows these settings.</p>'
+                + '<label class="ctl-sw"><input type="checkbox" id="ctl-switch"' + (enabled() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Show category image tiles on the Sales Counter</label>'
+                + '<p class="ctl-note">' + used + ' of ' + MAX_IMAGES + ' pictures used. Pictures are made small automatically.' + (ro ? ' Another branch is open: pictures can only be changed in your own branch.' : '') + '</p>'
+                + (rows || '<p class="ctl-note">No categories yet. Give items a category in Inventory, then come back.</p>')
+                + '<input type="file" id="ctl-file" class="ctl-hidden-file" accept="image/*" tabindex="-1" aria-hidden="true">'
+                + '<p class="ctl-msg" id="ctl-msg" role="status"></p>';
+        }
+        function onPanelClick(ev) {
+            var t = ev.target && ev.target.closest ? ev.target.closest('[data-ctl-act]') : null; if (!t || t.disabled) return;
+            var act = t.getAttribute('data-ctl-act'), k = ''; try { k = decodeURIComponent(t.getAttribute('data-k') || ''); } catch (e) { k = ''; }
+            if (act === 'pick') { pendingKey = k; var f = $('ctl-file'); if (f) { f.value = ''; f.click(); } }
+            else if (act === 'rm') { removeImage(k); msg('Picture removed.'); }
+        }
+        function onPanelChange(ev) {
+            var t = ev.target; if (!t) return;
+            if (t.id === 'ctl-switch') { setEnabled(!!t.checked); msg(t.checked ? 'Category tiles are ON for the Sales Counter.' : 'Category tiles are OFF. The Sales Counter is back to the usual list.'); return; }
+            if (t.id === 'ctl-file') {
+                var file = t.files && t.files[0], key = pendingKey; if (!file || !key) return;
+                msg('Preparing the picture…');
+                scaleFile(file).then(function (u) {
+                    var r = setImage(key, u);
+                    if (r.ok) { msg('Picture saved for "' + key + '".'); toast('Category picture saved.'); } else { msg(r.error, true); toast(r.error, true); }
+                }, function (e) { var m = (e && e.message) || 'Could not use that picture.'; msg(m, true); toast(m, true); });
+            }
+        }
+        function installPanel() {
+            if ($('ctl-panel')) return true;
+            var nav = $('settings-subnav'), gen = $('settings-section-general'), pay = $('pos-paymethods-panel');
+            var panel = document.createElement('div'); panel.id = 'ctl-panel';
+            if (nav && gen && gen.parentNode) {
+                var sec = document.createElement('div'); sec.className = 'settings-section-content'; sec.id = 'settings-section-catimages';
+                sec.appendChild(panel); gen.parentNode.appendChild(sec);
+                var b = document.createElement('button'); b.type = 'button'; b.className = 'settings-subtab-btn'; b.setAttribute('data-section', 'settings-section-catimages');
+                b.textContent = '🖼️ Category Images'; b.setAttribute('onclick', "showSettingsSection('settings-section-catimages', this)");
+                b.addEventListener('click', function () { renderPanel(); });
+                var after = nav.querySelector('[data-section="settings-section-paymethods"]') || nav.querySelector('[data-section="settings-section-receipts"]');
+                if (after && after.parentNode) after.parentNode.insertBefore(b, after.nextSibling); else nav.appendChild(b);
+            } else if (pay && pay.parentNode) {
+                panel.className = 'panel'; panel.style.marginBottom = '15px'; pay.parentNode.insertBefore(panel, pay.nextSibling);
+            } else return false;
+            panel.addEventListener('click', onPanelClick); panel.addEventListener('change', onPanelChange);
+            renderPanel();
+            return true;
+        }
+
+        /* ---------- start ---------- */
+        function start() {
+            try {
+                if (!$('item-image-grid') || typeof window.renderItemImageGrid !== 'function') return;   // Water has no product grid: nothing to do
+                loadOrig();
+                installRender(); installSync();
+                document.addEventListener('input', onSearchInput, true);
+                if (!installPanel()) { [600, 2500].forEach(function (ms) { setTimeout(function () { try { installPanel(); } catch (e) { /* later */ } }, ms); }); }
+                else [1200].forEach(function (ms) { setTimeout(function () { try { renderPanel(); } catch (e) { /* later */ } }, ms); });
+                if (enabled()) refresh();
+            } catch (e) { /* the Sales Counter works without this block */ }
+        }
+        Object.assign(window.__catTiles, {
+            version: 1, MAX_IMAGES: MAX_IMAGES, MAX_PX: MAX_PX,
+            enabled: enabled, setEnabled: setEnabled, images: images, setImage: setImage, removeImage: removeImage, scaleFile: scaleFile,
+            categories: categories, state: function () { return { cat: S.cat && S.cat.key, sub: S.sub, mode: mode(categories()) }; },
+            open: openCat, openSub: openSub, back: back, refresh: refresh, sync: function () { sync(); }, collect: collect, apply: applyRemote, renderPanel: renderPanel
+        });
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    })();
+    </script>
+<!-- @shared-block:category-tiles:end -->
+
+<!-- @shared-block:stock-report-edit:begin -->
+<!-- STOCK REPORT EDIT -----------------------------------------------------------------------------------------------
+     "✏️ Edit stock report" (zip 190). The Stock Report tab shows, per item and period: Opening, Added, Removed, Sold, Closing. Those figures are
+     DERIVED (closing = live qty rolled back through the movement log and the sales; opening = closing - added + removed + sold), so a bug in
+     earlier code left some historical rows wrong. This block lets the ADMIN correct what the REPORT shows, without touching the books.
+
+     WHAT IT DOES (and does not do)
+       * One button on the report toolbar, admin only (the true owner / admin session: isAdminServing()). Staff and Managers never see it: no app
+         gives anyone but the admin report-edit rights. Not shown while another branch is being viewed.
+       * Pressing it asks for the MANAGEMENT PASSWORD through the app's own popup (requireManagementApproval -> 'generic-callback' purpose, which is
+         NOT Manager-PIN eligible; it also supports the "no management password yet: create one" path and works offline). Wrong password: nothing
+         becomes editable. There is no second, weaker check anywhere in this block.
+       * Edit mode is for the period currently on screen (daily / weekly / monthly / custom). Opening, Added, Removed ("other movements": returns,
+         damages, stock-take write-offs), Sold and Closing become number boxes (16px font, big tap targets, usable in the phone card layout), with a
+         live check "opening + added - removed - sold = closing". A row that does not add up gets a clear warning; Save still works after a confirm.
+         A reason for the batch is mandatory. Switching period / leaving the tab closes edit mode (typed values are dropped, never half-saved).
+       * Corrections change what this REPORT shows. They never change current stock (use Stock Take for that) and they never delete or rewrite
+         stockMovementLog, salesLog or inventory: those stay byte-identical. A corrected figure is a fixed number: later sales or restocks in the same
+         period do not move it (restore the original to see live figures again).
+       * The report (rows, the totals row, the value totals, the printed report and the new "Export CSV" button) shows the corrected figures, marked
+         "✎ corrected"; tapping a ✎ shows original value, who, when and why. "Show original figures" hides the corrections again; "Corrections history"
+         lists every correction and restore, newest first. "Restore original" (per row, in the ✎ popover, or in the history) asks the password again
+         and is recorded as its own event.
+
+     DATA MODEL (append-only EVENTS, merged by id, nothing is ever edited or deleted)
+       { id, kind:'set'|'restore', code, name, unit, periodKey:'<from>..<to>', from, to, preset, label,
+         fields:{ opening|added|removed|sold|closing : { orig, corr } }  (only the figures that changed; for 'restore' = the figures undone),
+         reason, by, byId, at (ms), target (id of the event it supersedes) }
+       The ACTIVE correction of an item+period is the newest event for that key; if that is a 'restore' there is none.
+       Every event is stored (1) in this device's own list (localStorage appStoreKey('pos_stock_report_corrections')) and (2) as an entry of the shop's
+       admin activity log (adminActivityLog, { id, timestamp, userId, userName, sectionId:'stock-report-correction', sectionLabel, srCorr:event }).
+       (2) is the audit trail AND the sync channel: that log is already synced per record by id (server MERGE_BY_ID_FIELDS, delta pushes, offline
+       merge: two devices' events are unioned, neither side is lost) so no server or sync code needed changing. A dedicated registerSyncedField list
+       would also need a payload key, a pull branch and a server merge entry (all outside this block), so the existing log is reused. Events found in
+       the synced log are merged into the local list on every render, so a second till sees them after its next pull.
+       Known limit: the server's optional "archive old history" moves log entries older than the chosen cut-off out of the live log; the events stay on
+       every device that already has them (local list) but a brand-new device would no longer receive an archived one.
+
+     HOW IT HOOKS IN (renderStockReport / printStockReport are per-app code and not edited)
+       * window.buildStockReportRows (same in all 7 apps) is wrapped: the corrected rows come back with openingValue/closingValue/openingRetail/
+         closingRetail recomputed, so the on-screen table, the totals row, srv-total-* value totals, Pharmacy's own totals and the print all agree.
+       * window.renderStockReport is wrapped: original first, then this block marks / edits the rendered rows. The rows carry NO code in the DOM, so
+         rows are matched by position to the list the report just built (same search filter, same order) and verified against the Name cell; if
+         they do not match, nothing is decorated and edit mode closes (never edits the wrong item).
+       * window.printStockReport is wrapped: footnote + "✎" marks are added to the printed sheet and to the thermal text.
+       * Everything is wrapped in try/catch; if the DOM differs the button simply does not appear. Idempotent: window.__stockRepEdit. -->
+    <style>
+        #sre-bar { display: none; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; font-size: 13px; }
+        #sre-bar .sre-note-corr { font-weight: 600; color: var(--tint-warning-text, #7a5b00); background: var(--tint-warning-bg, #fff3cd); border-radius: 6px; padding: 4px 10px; }
+        #sre-bar label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 600; cursor: pointer; min-height: 40px; }
+        #sre-bar input[type=checkbox] { width: 20px; height: 20px; }
+        .sre-btn { padding: 12px 20px; border: 0; border-radius: 8px; color: #fff; cursor: pointer; font-size: 14px; min-height: 44px; }
+        .sre-btn.sre-edit { background: var(--primary, #2C3E50); }
+        .sre-btn.sre-csv { background: var(--secondary, #34495E); }
+        .sre-btn.sre-ghost { background: transparent; color: var(--accent, #3498DB); border: 1px solid var(--accent, #3498DB); padding: 8px 14px; }
+        .sre-btn.sre-ok { background: var(--success, #2ECC71); color: #0d1114; font-weight: 700; }
+        .sre-btn.sre-no { background: var(--light, #ECF0F1); color: var(--dark, #2C3E50); }
+        .sre-btn[disabled] { opacity: .5; cursor: not-allowed; }
+        #sre-panel { display: none; background: var(--tint-info-bg, #EAF4FB); border: 1px solid var(--accent, #3498DB); border-radius: 10px; padding: 12px 14px; margin: 0 0 12px; color: var(--dark, #2C3E50); }
+        #sre-panel .sre-note { font-size: 13px; margin: 6px 0 10px; line-height: 1.45; }
+        #sre-panel label { display: block; font-weight: 600; font-size: 13px; margin: 0 0 4px; }
+        #sre-panel input[type=text] { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px 12px; min-height: 44px; }
+        #sre-panel .sre-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+        #sre-sum { font-size: 13px; margin-top: 8px; font-weight: 600; }
+        #sre-sum.sre-bad { color: var(--danger, #E74C3C); }
+        #stock-report-table .sre-in { width: 110px; max-width: 100%; box-sizing: border-box; font-size: 16px; padding: 8px 10px; min-height: 44px; }
+        #stock-report-table .sre-cell { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; min-width: 0; }
+        #stock-report-table .sre-was { font-size: 11px; color: #95a5a6; }
+        #stock-report-table .sre-warn { font-size: 12px; color: var(--danger, #E74C3C); font-weight: 600; max-width: 220px; }
+        #stock-report-table tr.sre-bad-row { outline: 2px solid var(--danger, #E74C3C); outline-offset: -2px; }
+        #stock-report-table tr.sre-corr > td:nth-child(2) { border-left: 3px solid #f39c12; }
+        .sre-badge { display: inline-block; font-size: 11px; font-weight: 700; color: var(--tint-warning-text, #7a5b00); background: var(--tint-warning-bg, #fff3cd); border-radius: 10px; padding: 1px 8px; margin-left: 6px; white-space: nowrap; }
+        .sre-mark { background: none; border: 0; color: #f39c12; cursor: pointer; font-size: 16px; padding: 4px 6px; min-width: 32px; min-height: 32px; line-height: 1; }
+        .sre-rowtools { margin-top: 4px; }
+        .sre-rowtools button { font-size: 12px; padding: 6px 10px; min-height: 36px; }
+        #sre-pop { display: none; position: fixed; z-index: 100000; width: min(340px, calc(100vw - 16px)); box-sizing: border-box; background: var(--bg-surface, #fff); color: var(--dark, #2C3E50); border: 1px solid var(--border-color, #e1e6ea); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.25); padding: 12px 14px; font-size: 13px; line-height: 1.45; }
+        #sre-pop h4 { margin: 0 0 6px; font-size: 14px; padding-right: 30px; }
+        #sre-pop .sre-x { position: absolute; top: 4px; right: 6px; background: none; border: 0; font-size: 20px; cursor: pointer; color: inherit; min-width: 36px; min-height: 36px; }
+        #sre-history { display: none; margin: 0 0 12px; border: 1px solid var(--border-color, #e1e6ea); border-radius: 10px; padding: 8px 12px; background: var(--bg-surface, #fff); max-height: 420px; overflow: auto; }
+        #sre-history .sre-ev { border-bottom: 1px solid var(--border-color, #e1e6ea); padding: 8px 0; font-size: 13px; }
+        #sre-history .sre-ev:last-child { border-bottom: 0; }
+        #sre-history .sre-muted { color: #95a5a6; font-size: 12px; }
+        #sre-history .sre-tag { font-size: 11px; font-weight: 700; border-radius: 10px; padding: 1px 8px; margin-left: 4px; background: var(--tint-warning-bg, #fff3cd); color: var(--tint-warning-text, #7a5b00); }
+        #sre-history .sre-tag.sre-t-restore { background: var(--tint-info-bg, #EAF4FB); color: var(--accent, #3498DB); }
+        #sre-history .sre-tag.sre-t-active { background: var(--tint-success-bg, #eafaf1); color: var(--tint-success-text, #1e8449); }
+        #sre-history button { margin-top: 6px; font-size: 12px; padding: 6px 12px; min-height: 40px; }
+        @media (max-width: 700px) {
+            #stock-report-table .sre-in { width: 100%; }
+            #stock-report-table .sre-warn { max-width: none; }
+            #sre-pop { left: 8px !important; right: 8px !important; top: auto !important; bottom: 8px; width: auto; }
+            #sre-panel .sre-actions .sre-btn { flex: 1 1 140px; }
+        }
+    </style>
+    <script>
+    (function () {
+        'use strict';
+        if (window.__stockRepEdit) return;
+        try {
+            var FIELDS = ['opening', 'added', 'removed', 'sold', 'closing'];
+            var LABEL = { opening: 'Opening', added: 'Added', removed: 'Removed', sold: 'Sold', closing: 'Closing' };
+            var SEP = '\u0001';
+            var S = { editing: false, showOrig: false, raw: null, shown: null, draft: {}, editKey: '', evc: null, installed: false, inPost: false };
+
+            function $(id) { return document.getElementById(id); }
+            function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+            function num(n) { n = Number(n); return isFinite(n) ? Math.round(n * 1000) / 1000 : 0; }
+            function toast(m, err) { try { if (typeof showToast === 'function') showToast(m, !!err); } catch (e) { /* cosmetic */ } }
+            function admin() { try { if (typeof isAdminServing === 'function') return !!isAdminServing(); return typeof currentServer === 'undefined' || !currentServer; } catch (e) { return false; } }
+            function ownShop() { try { return typeof viewedBranchId === 'undefined' || viewedBranchId === 'self'; } catch (e) { return true; } }
+            function periodRange() { try { return typeof stockReportPeriodRange === 'function' ? stockReportPeriodRange() : null; } catch (e) { return null; } }
+            function pk(range) { return range.from + '..' + range.to; }
+            function labelOf(range) { try { return typeof stockReportPeriodLabel === 'function' ? stockReportPeriodLabel(range) : range.from + ' - ' + range.to; } catch (e) { return range.from + ' - ' + range.to; } }
+            function when(at) { try { return new Date(at).toLocaleString('en-GB'); } catch (e) { return ''; } }
+            function newId() { try { if (typeof genSaleId === 'function') return String(genSaleId()); } catch (e) { /* fall through */ } return 'src-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+            function byName() { try { return typeof activeServerName === 'function' ? activeServerName() : 'Admin'; } catch (e) { return 'Admin'; } }
+            function byId() { try { return (typeof currentServer !== 'undefined' && currentServer) ? currentServer.id : '__owner__'; } catch (e) { return '__owner__'; } }
+
+            // ---- storage: this device's own list + the shop's synced admin activity log -----------------------------------------------------
+            function lkey() { try { return typeof appStoreKey === 'function' ? appStoreKey('pos_stock_report_corrections') : 'pos_stock_report_corrections'; } catch (e) { return 'pos_stock_report_corrections'; } }
+            function logKey() { try { return (window.__LOG_KEYS && window.__LOG_KEYS.adminActivityLog) || 'pos_admin_activity_log'; } catch (e) { return 'pos_admin_activity_log'; } }
+            function loadLocal() { try { var a = JSON.parse(localStorage.getItem(lkey()) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+            function saveLocal(a) { try { var v = JSON.stringify(a); if (typeof safeSetItem === 'function') safeSetItem(lkey(), v); else localStorage.setItem(lkey(), v); } catch (e) { /* kept in the log */ } }
+            function cmp(a, b) { return (Number(a.at) || 0) - (Number(b.at) || 0) || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0); }
+            function events() {
+                if (S.evc) return S.evc;
+                var seen = {}, out = [], added = false;
+                function add(e) {
+                    if (!e || typeof e !== 'object' || !e.id || seen[e.id]) return false;
+                    if ((e.kind !== 'set' && e.kind !== 'restore') || !e.code || !e.from || !e.to) return false;
+                    seen[e.id] = 1; out.push(e); return true;
+                }
+                loadLocal().forEach(function (e) { add(e); });
+                try {
+                    var log = (typeof adminActivityLog !== 'undefined' && Array.isArray(adminActivityLog)) ? adminActivityLog : [];
+                    log.forEach(function (x) { if (x && x.srCorr && add(x.srCorr)) added = true; });
+                } catch (e) { /* local list only */ }
+                if (added) saveLocal(out);
+                out.sort(cmp);
+                S.evc = out; setTimeout(function () { S.evc = null; }, 0);
+                return out;
+            }
+            function active() {
+                var m = new Map();
+                events().forEach(function (e) { m.set(e.code + SEP + e.from + '..' + e.to, e.kind === 'set' ? e : null); });
+                var r = new Map(); m.forEach(function (v, k) { if (v) r.set(k, v); });
+                return r;
+            }
+            function commit(evs) {
+                var loc = loadLocal(); evs.forEach(function (e) { loc.push(e); }); saveLocal(loc);
+                try {
+                    if (typeof adminActivityLog !== 'undefined' && Array.isArray(adminActivityLog)) {
+                        evs.forEach(function (e) {
+                            var ch = FIELDS.filter(function (f) { return e.fields && e.fields[f]; }).map(function (f) { return LABEL[f] + ' ' + num(e.fields[f].orig) + ' -> ' + num(e.fields[f].corr); }).join(', ');
+                            adminActivityLog.push({ id: e.id, timestamp: new Date(e.at).toISOString(), userId: e.byId, userName: e.by, sectionId: 'stock-report-correction',
+                                sectionLabel: '📦 Stock report ' + (e.kind === 'restore' ? 'original restored: ' : 'corrected: ') + e.name + ' (' + e.label + ') ' + ch + ' - ' + e.reason, srCorr: e });
+                        });
+                        var v = JSON.stringify(adminActivityLog);
+                        if (typeof safeSetItem === 'function') safeSetItem(logKey(), v); else localStorage.setItem(logKey(), v);
+                    }
+                } catch (e) { /* the local list still has it */ }
+                try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* offline: it goes with the next push */ }
+                S.evc = null;
+            }
+            function mkEvent(kind, raw, range, fields, reason, target) {
+                return { id: newId(), kind: kind, code: raw.code, name: raw.name, unit: raw.unit || '', periodKey: pk(range), from: range.from, to: range.to, preset: range.preset || '',
+                    label: labelOf(range), fields: fields, reason: reason, by: byName(), byId: byId(), at: Math.max(Date.now(), (target && target.at ? Number(target.at) + 1 : 0)), target: target ? target.id : '' };
+            }
+
+            // ---- the corrected rows (wrapper of buildStockReportRows) -----------------------------------------------------------------------
+            function applyCorr(r, c) {
+                var n = Object.assign({}, r), f = c.fields || {}, o = {};
+                FIELDS.forEach(function (k) { o[k] = r[k]; if (f[k] && isFinite(Number(f[k].corr))) n[k] = Number(f[k].corr); });
+                n.openingValue = n.opening * (n.costPrice || 0); n.closingValue = n.closing * (n.costPrice || 0);
+                n.openingRetail = n.opening * (n.retailPrice || 0); n.closingRetail = n.closing * (n.retailPrice || 0);
+                n._corr = c; n._orig = o;
+                return n;
+            }
+            function wrapBuild() {
+                var orig = window.buildStockReportRows;
+                if (typeof orig !== 'function' || orig.__sre) return typeof orig === 'function';
+                var w = function (range) {
+                    var rows = orig.apply(this, arguments);
+                    try {
+                        S.raw = rows; S.shown = rows;
+                        if (!Array.isArray(rows) || !range || S.showOrig || !ownShop()) return rows;
+                        var act = active(); if (!act.size) return rows;
+                        var key = pk(range), hit = false;
+                        var out = rows.map(function (r) { var c = act.get(r.code + SEP + key); if (c) { hit = true; return applyCorr(r, c); } return r; });
+                        if (!hit) return rows;
+                        S.shown = out; return out;
+                    } catch (e) { return rows; }
+                };
+                w.__sre = true; window.buildStockReportRows = w; return true;
+            }
+
+            // ---- DOM helpers -----------------------------------------------------------------------------------------------------------------
+            function colIndex() {
+                var ths = document.querySelectorAll('#stock-report-table thead th'), c = {};
+                for (var i = 0; i < ths.length; i++) {
+                    var t = (ths[i].textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                    if (t === 'name') c.name = i;
+                    FIELDS.forEach(function (f) { if (t === f) c[f] = i; });
+                }
+                return (c.name != null && c.opening != null && c.closing != null) ? c : null;
+            }
+            function dataRows(tb) { return Array.prototype.filter.call(tb.children, function (tr) { return tr.tagName === 'TR' && !tr.classList.contains('report-more-row') && tr.children.length >= 7; }); }
+            function shownList() {
+                var q = ''; try { q = (($('stock-report-search-input') || {}).value || '').trim().toLowerCase(); } catch (e) { /* none */ }
+                var l = S.shown || [];
+                return q ? l.filter(function (r) { return String(r.name).toLowerCase().includes(q); }) : l;
+            }
+            function tipText(c, f) {
+                var x = c.fields[f];
+                return LABEL[f] + ' corrected from ' + num(x.orig) + ' to ' + num(x.corr) + ' by ' + c.by + ', ' + when(c.at) + '. Reason: ' + c.reason;
+            }
+            function rowVals(tr) {
+                var v = {}, r = (S.shown || []).find(function (x) { return x.code === tr.dataset.code; });
+                FIELDS.forEach(function (f) {
+                    var el = tr.querySelector('.sre-in[data-f="' + f + '"]');
+                    v[f] = el ? (el.value.trim() === '' ? NaN : Number(el.value)) : (r ? Number(r[f]) : 0);
+                });
+                return v;
+            }
+            function mismatch(v) { return isFinite(v.opening + v.added + v.removed + v.sold + v.closing) && Math.abs(v.opening + v.added - v.removed - v.sold - v.closing) > 0.0005; }
+            function warnText(v) { return '⚠ ' + num(v.opening) + ' + ' + num(v.added) + ' - ' + num(v.removed) + ' - ' + num(v.sold) + ' = ' + num(v.opening + v.added - v.removed - v.sold) + ', but Closing says ' + num(v.closing); }
+            function checkRow(tr, cols) {
+                var v = rowVals(tr), bad = mismatch(v), td = tr.children[cols.closing], w = td && td.querySelector('.sre-warn');
+                tr.classList.toggle('sre-bad-row', bad);
+                if (w) w.textContent = bad ? warnText(v) : '';
+            }
+
+            function decorate(tb, list, cols) {
+                var trs = dataRows(tb), act = S.showOrig ? active() : null, key = null;
+                if (act) { var rg = periodRange(); key = rg ? pk(rg) : null; }
+                for (var i = 0; i < trs.length; i++) {
+                    var tr = trs[i], r = list[i], nameTd = tr.children[cols.name];
+                    tr.dataset.code = r.code;
+                    var c = r._corr || (act && key ? act.get(r.code + SEP + key) : null);
+                    if (S.editing) {
+                        var d = S.draft[r.code] || {};
+                        FIELDS.forEach(function (f) {
+                            if (cols[f] == null) return;
+                            var td = tr.children[cols[f]], val = d[f] !== undefined ? d[f] : num(r[f]);
+                            var was = r._orig && num(r._orig[f]) !== num(r[f]) ? '<span class="sre-was">was ' + num(r._orig[f]) + '</span>' : '';
+                            td.innerHTML = '<div class="sre-cell"><input type="number" step="any" inputmode="decimal" class="sre-in" data-f="' + f + '" data-code="' + esc(r.code) + '" aria-label="' + esc(r.name + ' ' + LABEL[f]) + '" value="' + esc(val) + '">' + was + (f === 'closing' ? '<span class="sre-warn"></span>' : '') + '</div>';
+                        });
+                        if (r._corr) {
+                            nameTd.insertAdjacentHTML('beforeend', ' <span class="sre-badge">✎ corrected</span><div class="sre-rowtools"><button type="button" class="sre-btn sre-ghost" data-sre-rowrestore="' + esc(r.code) + '">↩ Restore original</button></div>');
+                            tr.classList.add('sre-corr');
+                        }
+                        checkRow(tr, cols);
+                    } else if (c) {
+                        tr.classList.add('sre-corr');
+                        if (r._corr) {
+                            nameTd.insertAdjacentHTML('beforeend', ' <span class="sre-badge" title="Corrected by ' + esc(c.by) + ', ' + esc(when(c.at)) + '. Reason: ' + esc(c.reason) + '">✎ corrected</span>');
+                            FIELDS.forEach(function (f) {
+                                if (cols[f] == null || !c.fields[f]) return;
+                                tr.children[cols[f]].insertAdjacentHTML('beforeend', ' <button type="button" class="sre-mark" data-f="' + f + '" data-code="' + esc(r.code) + '" title="' + esc(tipText(c, f)) + '" aria-label="' + esc(tipText(c, f)) + '">✎</button>');
+                            });
+                        } else {
+                            nameTd.insertAdjacentHTML('beforeend', ' <span class="sre-badge" title="This item has a correction that is hidden while original figures are shown">✎ has correction (hidden)</span>');
+                        }
+                    }
+                }
+            }
+
+            // ---- UI scaffolding --------------------------------------------------------------------------------------------------------------
+            function ui() {
+                if (!$('stock-report-tab') || !$('stock-report-table') || !$('stock-report-period-controls')) return false;
+                if ($('sre-bar')) return true;
+                var ctl = $('stock-report-period-controls');
+                ctl.insertAdjacentHTML('beforeend', '<button type="button" id="sre-edit-btn" class="sre-btn sre-edit" style="display:none">✏️ Edit stock report</button><button type="button" id="sre-csv-btn" class="sre-btn sre-csv">⬇ Export CSV</button>');
+                var anchor = $('stock-report-period-label') || ctl;
+                anchor.insertAdjacentHTML('afterend',
+                    '<div id="sre-bar"><span class="sre-note-corr" id="sre-bar-txt"></span><label id="sre-orig-lbl"><input type="checkbox" id="sre-orig"> Show original figures</label><button type="button" id="sre-hist-btn" class="sre-btn sre-ghost"></button></div>'
+                    + '<div id="sre-panel"><strong id="sre-ptitle">✏️ Editing the stock report</strong>'
+                    + '<p class="sre-note">Corrections change what this report shows; they don\'t change current stock — use Stock Take for that. Nothing is deleted: the original history stays as it was, and every correction is recorded with your name, the time and the reason. A corrected figure stays fixed even if more sales or restocks are recorded for this period later.</p>'
+                    + '<label for="sre-reason">Reason for these corrections (required)</label><input type="text" id="sre-reason" maxlength="300" placeholder="e.g. Closing was wrong because of a restock bug on 12 Sep" autocomplete="off">'
+                    + '<div id="sre-sum"></div><div class="sre-actions"><button type="button" id="sre-save" class="sre-btn sre-ok">💾 Save corrections</button><button type="button" id="sre-cancel" class="sre-btn sre-no">Cancel</button></div></div>'
+                    + '<div id="sre-history"></div>');
+                var pop = document.createElement('div'); pop.id = 'sre-pop'; pop.setAttribute('role', 'dialog'); document.body.appendChild(pop);
+                return true;
+            }
+            function refreshBar() {
+                if (!ui()) return;
+                var own = ownShop(), adm = admin(), range = periodRange(), act = active(), n = 0, key = range ? pk(range) : '';
+                act.forEach(function (c) { if (c.from + '..' + c.to === key) n++; });
+                var eb = $('sre-edit-btn'); if (eb) eb.style.display = (adm && own && !S.editing) ? '' : 'none';
+                var all = events().length, txt = $('sre-bar-txt'), bar = $('sre-bar');
+                txt.textContent = n ? '✎ ' + n + ' item' + (n === 1 ? '' : 's') + ' in this period ' + (n === 1 ? 'has' : 'have') + ' corrected figures' : '';
+                txt.style.display = n ? '' : 'none';
+                $('sre-orig-lbl').style.display = n ? '' : 'none'; $('sre-orig').checked = !!S.showOrig;
+                var hb = $('sre-hist-btn'); hb.style.display = all ? '' : 'none'; hb.textContent = '🕘 Corrections history (' + all + ')';
+                bar.style.display = (n || all) ? 'flex' : 'none';
+                $('sre-panel').style.display = S.editing ? 'block' : 'none';
+                if (S.editing) $('sre-ptitle').textContent = '✏️ Editing the stock report — ' + (range ? labelOf(range) : '');
+                if (!all) $('sre-history').style.display = 'none';
+                if ($('sre-history').style.display === 'block') renderHistory();
+            }
+
+            // ---- edit mode ---------------------------------------------------------------------------------------------------------------------
+            // Water's popup runs the callback without closing itself first (the shops' popups close before it), so close it here: harmless elsewhere.
+            function closePwModal() { try { if (typeof closeAdminPwModal === 'function') closeAdminPwModal(); else { var m = $('admin-pw-modal'); if (m) m.style.display = 'none'; } } catch (e) { /* cosmetic */ } }
+            function askPw(msg, fn) {
+                if (typeof requireManagementApproval === 'function') requireManagementApproval(msg, function () { closePwModal(); fn.apply(this, arguments); });
+                else toast('The management password prompt is not available here.', true);
+            }
+            function renderNow() { try { if (typeof renderStockReport === 'function') renderStockReport(); } catch (e) { /* never throw */ } }
+            function startEdit() {
+                if (!admin() || !ownShop()) { toast('Only the admin can edit the stock report.', true); return; }
+                var range = periodRange(); if (!range) return;
+                askPw('Enter the management password to edit the Stock Report figures for ' + labelOf(range) + '.', function () {
+                    if (!admin()) return;
+                    var rg = periodRange(); if (!rg) return;
+                    S.editing = true; S.showOrig = false; S.draft = {}; S.editKey = pk(rg);
+                    try { $('sre-reason').value = ''; } catch (e) { /* ui missing */ }
+                    renderNow();
+                    try { var p = $('sre-panel'); if (p && p.scrollIntoView) p.scrollIntoView({ block: 'nearest' }); } catch (e) { /* cosmetic */ }
+                });
+            }
+            function exitEdit(msg, noRender) {
+                S.editing = false; S.draft = {}; S.editKey = '';
+                if (msg) toast(msg);
+                if (!noRender) renderNow();
+            }
+            function updateSummary() {
+                var el = $('sre-sum'), sv = $('sre-save'); if (!el) return;
+                var ch = collect(), bad = ch.items.filter(function (c) { return c.mismatch; }).length;
+                el.className = bad || ch.error ? 'sre-bad' : '';
+                el.textContent = ch.items.length + ' row' + (ch.items.length === 1 ? '' : 's') + ' changed' + (bad ? ' · ' + bad + ' do' + (bad === 1 ? 'es' : '') + ' not add up (opening + added − removed − sold ≠ closing)' : '') + (ch.error ? ' · ' + ch.error : '');
+                if (sv) sv.disabled = !ch.items.length || !!ch.error;
+            }
+            // Turns the typed drafts into correction records (relative to the ORIGINAL figures), or a restore when a row is typed back to its original.
+            function collect() {
+                var out = { items: [], error: '' }, rawBy = {}, curBy = {};
+                (S.raw || []).forEach(function (r) { rawBy[r.code] = r; });
+                (S.shown || []).forEach(function (r) { curBy[r.code] = r; });
+                Object.keys(S.draft).forEach(function (code) {
+                    var raw = rawBy[code], cur = curBy[code], d = S.draft[code];
+                    if (!raw || !cur) return;
+                    var v = {}, bad = '';
+                    FIELDS.forEach(function (f) {
+                        var typed = d[f];
+                        if (typed === undefined) { v[f] = Number(cur[f]); return; }
+                        var s = String(typed).trim(), x = Number(s);
+                        if (s === '' || !isFinite(x)) { bad = raw.name + ': ' + LABEL[f] + ' needs a number'; return; }
+                        if ((f === 'added' || f === 'removed' || f === 'sold') && x < 0) { bad = raw.name + ': ' + LABEL[f] + ' cannot be negative'; return; }
+                        v[f] = x;
+                    });
+                    if (bad) { if (!out.error) out.error = bad; return; }
+                    var fields = {}, any = false;
+                    FIELDS.forEach(function (f) { if (Math.abs(num(v[f]) - num(raw[f])) > 0.0004) { fields[f] = { orig: num(raw[f]), corr: num(v[f]) }; any = true; } });
+                    var changedVsCur = FIELDS.some(function (f) { return Math.abs(num(v[f]) - num(cur[f])) > 0.0004; });
+                    if (!changedVsCur) return;
+                    out.items.push({ code: code, raw: raw, cur: cur, fields: fields, restore: !any, mismatch: mismatch(v) });
+                });
+                return out;
+            }
+            function save() {
+                try {
+                    if (!S.editing) return;
+                    if (!admin() || !ownShop()) { toast('Only the admin can save corrections.', true); return; }
+                    var rg = periodRange(); if (!rg || pk(rg) !== S.editKey) { exitEdit('The period changed, so edit mode was closed. Nothing was saved.'); return; }
+                    var reasonEl = $('sre-reason'), reason = ((reasonEl && reasonEl.value) || '').trim();
+                    var ch = collect();
+                    if (ch.error) { toast(ch.error, true); return; }
+                    if (!ch.items.length) { toast('Nothing has changed yet.', true); return; }
+                    if (reason.length < 3) { toast('Type the reason for these corrections first.', true); try { reasonEl.focus(); } catch (e) { /* cosmetic */ } return; }
+                    var bad = ch.items.filter(function (c) { return c.mismatch; });
+                    if (bad.length && !confirm(bad.length + ' row' + (bad.length === 1 ? '' : 's') + ' do' + (bad.length === 1 ? 'es' : '') + ' not add up (opening + added − removed − sold ≠ closing), for example "' + bad[0].raw.name + '".\n\nSave these figures anyway?')) return;
+                    var act = active(), key = pk(rg), evs = [];
+                    ch.items.forEach(function (c) {
+                        var prev = act.get(c.code + SEP + key);
+                        if (c.restore) { if (prev) evs.push(mkEvent('restore', c.raw, rg, prev.fields, reason, prev)); return; }
+                        evs.push(mkEvent('set', c.raw, rg, c.fields, reason, prev || null));
+                    });
+                    if (!evs.length) { exitEdit('Nothing to save.'); return; }
+                    commit(evs);
+                    exitEdit(null, true);
+                    renderNow();
+                    toast('Saved ' + evs.length + ' stock report correction' + (evs.length === 1 ? '' : 's') + '. Current stock was not changed.');
+                } catch (e) { toast('Could not save the corrections.', true); }
+            }
+            function requestRestore(code, from, to) {
+                if (!admin() || !ownShop()) { toast('Only the admin can restore original figures.', true); return; }
+                var c = active().get(code + SEP + from + '..' + to);
+                if (!c) { toast('There is no correction to restore for that item.', true); return; }
+                askPw('Enter the management password to restore the original figures of "' + c.name + '" (' + c.label + ').', function () { doRestore(c.id); });
+            }
+            function doRestore(setId) {
+                try {
+                    if (!admin() || !ownShop()) return;
+                    var set = events().find(function (e) { return e.id === setId; });
+                    var cur = set && active().get(set.code + SEP + set.from + '..' + set.to);
+                    if (!set || !cur || cur.id !== set.id) { toast('That correction is no longer active.', true); return; }
+                    var why = ''; try { why = (($('sre-reason') || {}).value || '').trim(); } catch (e) { /* none */ }
+                    if (!S.editing || why.length < 3) {
+                        var p = prompt('Reason for restoring the original figures of "' + set.name + '" (required):', '');
+                        if (p === null) return;
+                        why = String(p).trim();
+                    }
+                    if (why.length < 3) { toast('A reason is required to restore the original figures.', true); return; }
+                    var rg = { from: set.from, to: set.to, preset: set.preset };
+                    commit([mkEvent('restore', set, rg, set.fields, why, set)]);
+                    delete S.draft[set.code];
+                    closePop(); renderNow();
+                    toast('Original figures restored for "' + set.name + '".');
+                } catch (e) { toast('Could not restore the original figures.', true); }
+            }
+
+            // ---- popover + history -------------------------------------------------------------------------------------------------------------
+            function closePop() { var p = $('sre-pop'); if (p) p.style.display = 'none'; }
+            function showPop(btn) {
+                var code = btn.getAttribute('data-code'), f = btn.getAttribute('data-f');
+                var r = (S.shown || []).find(function (x) { return x.code === code; }), c = r && r._corr, p = $('sre-pop');
+                if (!c || !p) return;
+                var rows = FIELDS.filter(function (k) { return c.fields[k]; }).map(function (k) { return '<div' + (k === f ? ' style="font-weight:700"' : '') + '>' + LABEL[k] + ': ' + num(c.fields[k].orig) + ' → <strong>' + num(c.fields[k].corr) + '</strong></div>'; }).join('');
+                p.innerHTML = '<button type="button" class="sre-x" data-sre-close="1" aria-label="Close">×</button><h4>✎ Corrected figures — ' + esc(c.name) + '</h4>' + rows
+                    + '<div style="margin-top:6px"><strong>By:</strong> ' + esc(c.by) + '<br><strong>When:</strong> ' + esc(when(c.at)) + '<br><strong>Why:</strong> ' + esc(c.reason) + '</div>'
+                    + (admin() && ownShop() ? '<button type="button" class="sre-btn sre-ghost" style="margin-top:8px" data-sre-rowrestore="' + esc(code) + '">↩ Restore original</button>' : '');
+                p.style.display = 'block';
+                if (window.innerWidth > 700) {
+                    var b = btn.getBoundingClientRect(), w = p.offsetWidth, h = p.offsetHeight;
+                    var left = Math.min(Math.max(8, b.left), window.innerWidth - w - 8), top = b.bottom + 6; if (top + h > window.innerHeight - 8) top = Math.max(8, b.top - h - 6);
+                    p.style.left = left + 'px'; p.style.top = top + 'px'; p.style.right = 'auto'; p.style.bottom = 'auto';
+                }
+            }
+            function renderHistory() {
+                var el = $('sre-history'); if (!el) return;
+                var evs = events().slice().reverse(), act = active();
+                if (!evs.length) { el.innerHTML = '<div class="sre-muted">No corrections yet.</div>'; return; }
+                var adm = admin() && ownShop();
+                el.innerHTML = '<div class="sre-muted" style="margin:4px 0">Every correction and restore, newest first. Restoring never deletes anything — it adds a new entry.</div>' + evs.map(function (e) {
+                    var a = act.get(e.code + SEP + e.from + '..' + e.to), isActive = e.kind === 'set' && a && a.id === e.id;
+                    var ch = FIELDS.filter(function (f) { return e.fields && e.fields[f]; }).map(function (f) { return LABEL[f] + ' ' + num(e.fields[f].orig) + ' → ' + num(e.fields[f].corr); }).join(' · ');
+                    return '<div class="sre-ev"><div><strong>' + esc(e.name) + '</strong> · ' + esc(e.label) + ' <span class="sre-tag ' + (e.kind === 'restore' ? 'sre-t-restore' : '') + '">' + (e.kind === 'restore' ? 'Original restored' : 'Correction') + '</span>' + (isActive ? ' <span class="sre-tag sre-t-active">Active</span>' : '') + '</div>'
+                        + '<div>' + (e.kind === 'restore' ? 'Undid: ' : '') + esc(ch) + '</div><div class="sre-muted">By ' + esc(e.by) + ' · ' + esc(when(e.at)) + ' · Reason: ' + esc(e.reason) + '</div>'
+                        + (isActive && adm ? '<button type="button" class="sre-btn sre-ghost" data-sre-histrestore="' + esc(e.id) + '">↩ Restore original</button>' : '') + '</div>';
+                }).join('');
+            }
+
+            // ---- CSV + print -------------------------------------------------------------------------------------------------------------------
+            function csvCell(v) { try { if (typeof csvEscape === 'function') return csvEscape(v); } catch (e) { /* local */ } var s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+            function exportCsv() {
+                try {
+                    var range = periodRange(); if (!range) return;
+                    var rows = window.buildStockReportRows(range);
+                    var q = (($('stock-report-search-input') || {}).value || '').trim().toLowerCase();
+                    if (q) rows = rows.filter(function (r) { return String(r.name).toLowerCase().includes(q); });
+                    var head = ['No.', 'Code', 'Name', 'Unit', 'Opening', 'Added', 'Removed', 'Sold', 'Closing', 'Opening Value (Cost)', 'Closing Value (Cost)', 'Opening Value (Retail)', 'Closing Value (Retail)',
+                        'Corrected', 'Original Opening', 'Original Added', 'Original Removed', 'Original Sold', 'Original Closing', 'Corrected by', 'Corrected at', 'Reason'];
+                    var lines = [['Stock Report', labelOf(range)].map(csvCell).join(','), head.map(csvCell).join(',')];
+                    rows.forEach(function (r, i) {
+                        var c = r._corr, o = r._orig || r;
+                        lines.push([i + 1, r.code, r.name, r.unit || '', num(r.opening), num(r.added), num(r.removed), num(r.sold), num(r.closing), (r.openingValue || 0).toFixed(2), (r.closingValue || 0).toFixed(2), (r.openingRetail || 0).toFixed(2), (r.closingRetail || 0).toFixed(2),
+                            c ? 'Yes' : 'No', num(o.opening), num(o.added), num(o.removed), num(o.sold), num(o.closing), c ? c.by : '', c ? new Date(c.at).toISOString() : '', c ? c.reason : ''].map(csvCell).join(','));
+                    });
+                    var blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), name = 'stock-report-' + range.from + (range.to !== range.from ? '_to_' + range.to : '') + '.csv';
+                    if (typeof downloadBlob === 'function') downloadBlob(blob, name);
+                    else { var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); }
+                } catch (e) { toast('Could not export the CSV.', true); }
+            }
+            function wrapPrint() {
+                var orig = window.printStockReport;
+                if (typeof orig !== 'function' || orig.__sre) return;
+                var w = function () {
+                    var r = orig.apply(this, arguments);
+                    try {
+                        var rows = S.shown || [], hit = rows.filter(function (x) { return x._corr; });
+                        var body = $('sales-report-body');
+                        if (body && (hit.length || S.showOrig)) {
+                            var trs = body.querySelectorAll('table tbody tr');
+                            rows.forEach(function (x, i) { if (x._corr && trs[i] && trs[i].children[1]) trs[i].children[1].insertAdjacentHTML('beforeend', ' ✎'); });
+                            body.insertAdjacentHTML('beforeend', S.showOrig ? '<p style="font-size:12px;margin-top:8px;">Original figures shown: stock report corrections are hidden on this sheet.</p>'
+                                : '<p style="font-size:12px;margin-top:8px;">✎ ' + hit.length + ' item' + (hit.length === 1 ? '' : 's') + ' with corrected figures (corrected by the admin; the original history is unchanged): ' + hit.map(function (x) { return esc(x.name); }).join(', ') + '.</p>');
+                        }
+                        if (hit.length && typeof lastReportText === 'string') lastReportText += '\n' + '* ' + hit.length + ' item(s) with corrected figures: ' + hit.map(function (x) { return x.name; }).join(', ');
+                    } catch (e) { /* the plain report still prints */ }
+                    return r;
+                };
+                w.__sre = true; window.printStockReport = w;
+            }
+
+            // ---- post-render hook --------------------------------------------------------------------------------------------------------------
+            function post() {
+                if (S.inPost) return; S.inPost = true;
+                try {
+                    if (!ui()) return;
+                    var tb = document.querySelector('#stock-report-table tbody'), own = ownShop();
+                    if (S.editing) {
+                        var rg = periodRange();
+                        if (!admin() || !own) exitEdit('Edit mode was closed.', true);
+                        else if (!rg || pk(rg) !== S.editKey) exitEdit('The period changed, so edit mode was closed. Nothing was saved.', true);
+                    }
+                    var list = shownList(), cols = colIndex();
+                    if (tb && cols && S.shown) {
+                        var trs = dataRows(tb), okMap = trs.length <= list.length;
+                        for (var i = 0; okMap && i < trs.length; i++) okMap = String((trs[i].children[cols.name] || {}).textContent || '').trim() === String(list[i].name == null ? '' : list[i].name).trim();
+                        var act = S.showOrig ? active() : null, needs = S.editing || list.some(function (r) { return r._corr; }) || (act && act.size);
+                        if (okMap) { if (needs) decorate(tb, list, cols); }
+                        else if (S.editing) exitEdit('The report layout is not what this edit expects, so edit mode was closed. Nothing was saved.', true);
+                    } else if (S.editing) exitEdit('Edit mode is not available on this screen.', true);
+                    refreshBar();
+                    if (S.editing) updateSummary();
+                    closePop();
+                } catch (e) { /* the plain report stays */ } finally { S.inPost = false; }
+            }
+            function wrapRender() {
+                var orig = window.renderStockReport;
+                if (typeof orig !== 'function') return false;
+                if (orig.__sre) return true;
+                var w = function () {
+                    S.shown = null;
+                    var r = orig.apply(this, arguments);
+                    post();
+                    return r;
+                };
+                w.__sre = true; window.renderStockReport = w; return true;
+            }
+
+            // ---- events (document-level, so they survive the report re-rendering) -----------------------------------------------------------------
+            document.addEventListener('click', function (ev) {
+                try {
+                    var t = ev.target; if (!t || !t.closest) return;
+                    var b;
+                    if ((b = t.closest('#sre-edit-btn'))) { startEdit(); return; }
+                    if ((b = t.closest('#sre-csv-btn'))) { exportCsv(); return; }
+                    if ((b = t.closest('#sre-save'))) { save(); return; }
+                    if ((b = t.closest('#sre-cancel'))) { exitEdit('Edit mode closed. Nothing was changed.'); return; }
+                    if ((b = t.closest('#sre-hist-btn'))) { var h = $('sre-history'); if (h) { var open = h.style.display !== 'block'; h.style.display = open ? 'block' : 'none'; if (open) renderHistory(); } return; }
+                    if ((b = t.closest('.sre-mark'))) { showPop(b); ev.stopPropagation(); return; }
+                    if ((b = t.closest('[data-sre-rowrestore]'))) { var rg = periodRange(); if (rg) requestRestore(b.getAttribute('data-sre-rowrestore'), rg.from, rg.to); return; }
+                    if ((b = t.closest('[data-sre-histrestore]'))) { var e0 = events().find(function (x) { return x.id === b.getAttribute('data-sre-histrestore'); }); if (e0) requestRestore(e0.code, e0.from, e0.to); return; }
+                    if (t.closest('[data-sre-close]')) { closePop(); return; }
+                    var tl = t.closest('.tab-link');
+                    if (S.editing && tl && tl.getAttribute('data-tab') !== 'stock-report-tab') { exitEdit('Edit mode closed. Nothing was changed.', true); return; }
+                    var pop = $('sre-pop'); if (pop && pop.style.display === 'block' && !t.closest('#sre-pop')) closePop();
+                } catch (e) { /* never throw from a click */ }
+            }, true);
+            document.addEventListener('change', function (ev) {
+                try { if (ev.target && ev.target.id === 'sre-orig') { S.showOrig = !!ev.target.checked; renderNow(); } } catch (e) { /* ignore */ }
+            });
+            document.addEventListener('input', function (ev) {
+                try {
+                    var el = ev.target; if (!el || !el.classList || !el.classList.contains('sre-in')) return;
+                    var code = el.getAttribute('data-code'), f = el.getAttribute('data-f'), cur = (S.shown || []).find(function (x) { return x.code === code; });
+                    if (!cur) return;
+                    var d = S.draft[code] || (S.draft[code] = {});
+                    if (el.value.trim() !== '' && Math.abs(Number(el.value) - Number(cur[f])) < 0.0004) delete d[f]; else d[f] = el.value;
+                    if (!Object.keys(d).length) delete S.draft[code];
+                    var cols = colIndex(), tr = el.closest('tr'); if (tr && cols) checkRow(tr, cols);
+                    updateSummary();
+                } catch (e) { /* ignore */ }
+            });
+            document.addEventListener('keydown', function (ev) { try { if (ev.key === 'Escape') closePop(); } catch (e) { /* ignore */ } });
+
+            // ---- install (retried: the app script may define its functions after this block on some pages) -----------------------------------------
+            function install() {
+                if (S.installed) return true;
+                if (typeof window.buildStockReportRows !== 'function' || typeof window.renderStockReport !== 'function') return false;
+                if (!$('stock-report-table') || !$('stock-report-period-controls')) return false;
+                wrapBuild(); wrapPrint(); wrapRender(); S.installed = true;
+                try { ui(); refreshBar(); if (active().size) setTimeout(renderNow, 0); } catch (e) { /* the report works without it */ }
+                return true;
+            }
+            window.__stockRepEdit = {
+                events: function () { return events().slice(); }, active: function () { return Array.from(active().values()); },
+                isEditing: function () { return S.editing; }, install: install, exportCsv: exportCsv
+            };
+            if (!install()) {
+                var tries = 0, tm = setInterval(function () { tries++; try { if (install() || tries > 20) clearInterval(tm); } catch (e) { clearInterval(tm); } }, 250);
+            }
+        } catch (e) { /* the Stock Report simply stays as it was */ }
+    })();
+    </script>
+<!-- @shared-block:stock-report-edit:end -->
+
 <!-- @shared-block:form-controls:begin -->
 <!-- FORM CONTROLS (zip 186) ------------------------------------------------------
      ONE consistent, bigger, modern look for every text box in every app: text / number / tel / email / password / search / url /

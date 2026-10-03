@@ -64,10 +64,31 @@
         // Windows: a Windows printer (with its driver) prints WITHOUT the dialog; the page's 'afterprint' comes after Windows' answer
         if (info.platform === 'windows' && N && N.print) {
             var origPrint = window.print ? window.print.bind(window) : null;
+            // zip 192: what is being printed, and on what paper, is read from the page itself
+            function pageMm() {
+                try { var st = document.getElementById('print-page-style'); var m = st && /size:\s*([\d.]+)mm\s+([\d.]+)mm/.exec(st.textContent || ''); if (m) return { widthMm: Number(m[1]), heightMm: Number(m[2]) }; } catch (e) { /* none */ }
+                return {};
+            }
+            function snapshotHtml() {
+                var cls = document.body.className || '', id = /printing-receipt/.test(cls) ? 'receipt-modal' : /printing-kitchen-ticket/.test(cls) ? 'kitchen-ticket-modal' : '';
+                var el = id && document.getElementById(id);
+                if (!el) return '';
+                var css = Array.prototype.map.call(document.querySelectorAll('style'), function (x) { return x.textContent; }).join('\n');
+                var rootStyle = document.documentElement.getAttribute('style') || '', bodyStyle = document.body.getAttribute('style') || '';
+                return '<!doctype html><html data-theme="' + (document.documentElement.getAttribute('data-theme') || 'light') + '" style="' + rootStyle.replace(/"/g, '&quot;') + '"><head><meta charset="utf-8"><style>' + css + '</style></head><body class="' + cls.replace(/"/g, '') + '" style="' + bodyStyle.replace(/"/g, '&quot;') + '">' + el.outerHTML + '</body></html>';
+            }
+            window.nativeSnapshotHtml = snapshotHtml;
+            function settle() { return new Promise(function (res) { requestAnimationFrame(function () { requestAnimationFrame(function () { setTimeout(res, 250); }); }); }); }
+            window.nativePrintMethod = function (v) { if (v) LS('pos_native_print_method', v); return LS('pos_native_print_method') || 'snapshot'; };
             window.print = function () {
                 var p = saved();
                 if (!p || p.kind !== 'windows-driver') { if (origPrint) origPrint(); return; }
-                N.print({ deviceName: p.deviceName }).then(function (r) {
+                var method = window.nativePrintMethod();
+                if (method === 'dialog') { if (origPrint) origPrint(); return; }
+                settle().then(function () {
+                    var mm = pageMm(), html = (method === 'snapshot' && N.printHtml) ? snapshotHtml() : '';
+                    return html ? N.printHtml({ deviceName: p.deviceName, html: html, widthMm: mm.widthMm, heightMm: mm.heightMm }) : N.print({ deviceName: p.deviceName, widthMm: mm.widthMm, heightMm: mm.heightMm });
+                }).then(function (r) {
                     if (!r || !r.ok) { try { showToast('Printing on ' + p.deviceName + ' failed: ' + ((r && r.error) || 'no answer') + '.', true); } catch (e) {} }
                     window.dispatchEvent(new Event('afterprint'));
                 });
@@ -174,6 +195,7 @@
                 + '<div id="native-printer-list" style="display:grid; gap:6px; margin-top:6px;"></div>'
                 + '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">'
                 + (info.platform === 'android' ? '<button type="button" class="btn-main settings-small-btn" onclick="nativePrinterScan()">🔎 Choose a Bluetooth printer</button>' : '<button type="button" class="btn-main settings-small-btn" onclick="nativePrinterScan()">🖨️ Choose a Windows printer</button><button type="button" class="settings-small-btn" onclick="nativeNetPrinterAsk()">🌐 Network thermal printer (IP)</button>')
+                + (p && p.kind === 'windows-driver' ? '<div style="margin-top:10px; font-size:13px;">If the paper comes out empty: <select id="native-print-method" class="settings-small-btn" onchange="nativePrintMethod(this.value)"><option value="snapshot"' + (window.nativePrintMethod && window.nativePrintMethod() === 'snapshot' ? ' selected' : '') + '>Print method 1 (recommended)</option><option value="page"' + (window.nativePrintMethod && window.nativePrintMethod() === 'page' ? ' selected' : '') + '>Print method 2 (the page as shown)</option><option value="dialog"' + (window.nativePrintMethod && window.nativePrintMethod() === 'dialog' ? ' selected' : '') + '>Print method 3 (Windows print window)</option></select></div>' : '')
                 + (p ? '<button type="button" class="settings-small-btn" onclick="nativePrinterTest()">🧾 Test print</button><button type="button" class="settings-small-btn" onclick="nativePrinterForget()">Remove</button>' : '')
                 + '</div>'
                 + (info.platform === 'android' ? '<div style="font-size:12px; color:#7f8c8d; margin-top:6px;">Pair a new printer once in Android Settings ▸ Bluetooth (PIN usually 0000 or 1234), then choose it here.</div>' : '');
