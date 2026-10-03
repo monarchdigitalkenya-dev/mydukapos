@@ -26,12 +26,15 @@ import { LEGAL_PAGES, APEX_PAGES, APEX_FILES, PRODUCT_PAGES, SITE_NAME, isApexRe
 // tests, the shared code, the tools, the design notes (SYNC_AUTH_DESIGN.md describes exactly which endpoints a leaked link exposes),
 // package.json and wrangler.toml to anyone who asks. None of those are needed by a browser, so they answer 404. The apps, icons,
 // manifests, service workers and the public site are untouched.
-const INTERNAL_DIRS = /^\/(tests|src|tools|wildcard-router|functions|node_modules|\.git|\.wrangler)(\/|$)/i;
+// zip 186: also the migrations (SQL), docs, and the backup / sql folders (database exports hold every shop's data): never downloadable.
+const INTERNAL_DIRS = /^\/(tests|src|tools|wildcard-router|functions|node_modules|\.git|\.github|\.wrangler|docs|migrations|migrations-optional|backup|backups|sql)(\/|$)/i;
+// ... and database / backup / script files wherever they sit (a stray export dropped into any folder), except under /api/.
+const INTERNAL_EXT = /\.(sql|bak|zip|cmd|bat|sqlite3?|db|dump|tar|gz|log)$/i;
 const INTERNAL_FILES = /^\/(?:[^/]+\.md|package(?:-lock)?\.json|wrangler(?:\.[a-z]+)?\.toml|\.gitignore|\.gitattributes|\.dev\.vars|\.env.*)$/i;
 export function isInternalPath(pathname) {
   let p = pathname;
   try { p = decodeURIComponent(pathname); } catch (e) { /* keep as is */ }
-  return INTERNAL_DIRS.test(p) || INTERNAL_FILES.test(p);
+  return INTERNAL_DIRS.test(p) || INTERNAL_FILES.test(p) || (!/^\/api\//i.test(p) && INTERNAL_EXT.test(p));
 }
 
 // zip 177 — clean URLs for the public site, and "do not index the POS".

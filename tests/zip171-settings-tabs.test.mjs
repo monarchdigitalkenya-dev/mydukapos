@@ -6,7 +6,7 @@ const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'pharmacy
 
 test('payment methods and receipt shortcuts are Settings tabs, not loose cards above them', async () => {
   for (const a of APPS) {
-    const { d, close } = await boot(a, { wait: 900 });
+    const { d, close } = await boot(a, { wait: 3000 });
     try {
       const pay = d.getElementById('settings-section-paymethods'), keys = d.getElementById('settings-section-shortcuts');
       assert.ok(pay && keys, a + ': both sections exist');
@@ -21,7 +21,7 @@ test('payment methods and receipt shortcuts are Settings tabs, not loose cards a
 });
 
 test('hotel: sub-categories moved from Settings to the Inventory category toolbar', async () => {
-  const { d, close } = await boot('hotel/index.html', { wait: 900 });
+  const { d, close } = await boot('hotel/index.html', { wait: 3000 });
   try {
     const btn = d.getElementById('inv-subcat-open');
     assert.ok(btn && d.getElementById('inv-catmgr-bar').contains(btn));

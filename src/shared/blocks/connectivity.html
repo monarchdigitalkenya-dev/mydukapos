@@ -51,11 +51,15 @@
             note('state', prev + ' -> ' + state + (detail ? ' (' + detail + ')' : ''));
             listeners.forEach(function (fn) { try { fn(state, prev); } catch (e) { /* a listener never breaks the manager */ } });
             paint();
-            if (state === 'online' && prev !== 'online') recover(prev);
+            // zip 186: the FIRST verdict of a session is the start-up one (the app's own start-up sync is running), whatever it is. It used to be
+            // "the first time it goes online": a till opened with no signal (verdict: offline) had its first return to online swallowed as if it
+            // were start-up, so nothing was sent and the socket was not reopened until the next 7 s poll happened to get through.
+            var first = !S.settled; if (state !== 'checking') S.settled = true;
+            if (state === 'online' && prev !== 'online') recover(prev, first);
         }
         // Back online: send what is waiting and fetch the shop — right away, no refresh.
-        function recover(prev) {
-            if (!S.wasOnline) { S.wasOnline = true; return; }       // the first time at start-up: the app's own start-up sync is already running
+        function recover(prev, first) {
+            if (first && prev === 'checking') return;               // the first verdict at start-up: the app's own start-up sync is already running
             try { window.__pushBackoffUntil = 0; } catch (e) { /* none */ }
             setTimeout(function () {
                 try { if (typeof window.syncRetryNow === 'function') window.syncRetryNow(); } catch (e) { /* the poll carries on */ }
@@ -97,6 +101,20 @@
             if (window.__posNetOwnProbe) return window.__posNetOwnProbe();                    // (tests)
             return timed(OWN_PROBE + '?posnet=' + Date.now(), { method: 'GET' }, ms).then(function (r) { return !!r.res; });
         }
+        // zip 186: does the POS's own SYNC endpoint answer? It is the request the app really depends on, so it is the best second opinion when
+        // the health endpoint alone fails (blocked or filtered by a firewall / content filter / proxy, or just slow). A far-future ?since= makes
+        // the answer the few-byte "unchanged". Only a 2xx JSON answer shaped like a sync reply counts (a captive portal's page does not). -> { kind: 'ok' | 'http' | 'other' | 'none' }
+        function probeSync(ms) {
+            if (window.__posNetSyncProbe) return window.__posNetSyncProbe();                  // (tests)
+            var url = '/api/pos-sync?since=99999999999999';
+            try { if (typeof window.apiUrl === 'function') url = window.apiUrl(url); } catch (e) { /* plain path */ }
+            return timed(url, { method: 'GET' }, ms).then(function (r) {
+                if (!r.res) return { kind: 'none' };
+                if (!r.res.ok) return { kind: 'http', status: r.res.status };                    // the server answered, with a refusal
+                if (!/json/i.test(String(r.res.headers.get('content-type') || ''))) return { kind: 'other', status: r.res.status };
+                return r.res.json().then(function (b) { return { kind: b && typeof b === 'object' && (b.unchanged === true || typeof b.updatedAt === 'number') ? 'ok' : 'other', status: r.res.status }; }, function () { return { kind: 'other', status: r.res.status }; });
+            });
+        }
         // Does this device have internet at all? Opaque (no-cors) requests to two independent sites: any answer = yes.
         function probeInternet(ms) {
             if (window.__posNetInternetProbe) return window.__posNetInternetProbe();          // (tests)
@@ -110,6 +128,23 @@
                     });
                 });
             });
+        }
+
+        // zip 186: ANY answer from our own /api/ is news about the connection (the app's fetch wrapper in device-security.html calls this for every
+        // API response). 2xx = the POS server is reachable and working: online again, at once, without waiting for the next check. Any other
+        // answer proves the INTERNET works (the server answered), so a device shown "offline" is at least "server not answering". Pairing /
+        // licence / security-check states are left to the code that set them.
+        function seen(status, contentType) {
+            try {
+                status = Number(status) || 0;
+                if (!status) return;
+                if (/text\/html/i.test(String(contentType || ''))) return;          // a captive portal's login page is an answer from somebody else
+                if (status >= 200 && status < 400) {
+                    if (S.state === 'offline' || S.state === 'backend_unavailable' || S.state === 'checking') { S.lastOk = Date.now(); set('online'); S.nextAt = Date.now() + 60000; }
+                } else if (S.state === 'offline') {
+                    set('backend_unavailable', 'the server answered ' + status);
+                }
+            } catch (e) { /* never breaks a request */ }
         }
 
         function schedule() {
@@ -141,21 +176,35 @@
                         set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
                     } else if (stale()) {
                         set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
-                    } else if (h.kind === 'http') {
+                    } else if (h.kind === 'http' && h.status >= 500) {
                         // the server ANSWERED: this device has internet; the POS side is failing (5xx, overloaded, maintenance)
                         set('backend_unavailable', 'the server answered ' + h.status);
                     } else {
-                        // no answer from the health check: is it this device's internet, or only the POS server? Our own site first.
-                        // zip 170: both questions at once (they used to be asked one after the other: up to 18 s of "Checking…" on a slow line, and a
-                        // phone that had just come back stayed "Offline" that much longer). Any "yes" is enough.
+                        // The health check got no answer (or a refusal such as 403 / 404 from a filter). Before deciding, ask the other questions - ALL AT ONCE
+                        // (zip 170: one after the other was up to 18 s of "Checking…" on a slow line):
+                        //  * zip 186: if the health check only RAN OUT OF TIME, once more with the same patience (a slow mobile line is not "no internet");
+                        //  * zip 186: does the POS's real sync endpoint answer? (health can be blocked or filtered while sync works);
+                        //  * is this site itself reachable / does the internet work at all? Any "yes" is enough.
+                        var h2P = h.kind === 'timeout' ? probeHealth(12000) : null;
+                        var syncP = probeSync(12000);
                         var ownP = probeOwnSite(9000), netP = probeInternet(9000);
-                        var own = await ownP;
-                        var net = own || await netP;
-                        S.diag.ownSite = own; S.diag.internet = net;
-                        if (stale()) set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
-                        else if (own) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time (the site itself did)' : 'the POS server could not be reached (the site itself answered)');
-                        else if (net) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time' : 'the POS server could not be reached');
-                        else set('offline', hinted ? 'the device reports no network' : 'no answer from the internet');
+                        var h2 = h2P ? await h2P : null;
+                        var sy = await syncP;
+                        S.diag.second = h2 ? { kind: h2.kind, status: h2.status } : null; S.diag.sync = sy;
+                        if ((h2 && h2.kind === 'ok') || sy.kind === 'ok' || stale()) {
+                            S.lastOk = Date.now();
+                            set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
+                        } else if (h.kind === 'http') {
+                            set('backend_unavailable', 'the server answered ' + h.status);
+                        } else {
+                            var own = await ownP;
+                            var net = own || await netP;
+                            S.diag.ownSite = own; S.diag.internet = net;
+                            if (stale()) set(S.authIssue ? 'auth_required' : 'online', S.authIssue);
+                            else if (own || sy.kind === 'http') set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time (the site itself did)' : 'the POS server could not be reached (the site itself answered)');
+                            else if (net) set('backend_unavailable', h.kind === 'timeout' ? 'the POS server did not answer in time' : 'the POS server could not be reached');
+                            else set('offline', hinted ? 'the device reports no network' : 'no answer from the internet');
+                        }
                     }
                     reportEpisode();
                 } catch (e) {
@@ -196,6 +245,7 @@
             if (status === 401 || status === 403) return report('auth', code || (status === 401 ? 'device_not_paired' : 'licence'));
             if (status === 413) return code === 'push_too_large' ? report('busy') : report('config', code || 'too large');
             if (code === 'shop_db_unavailable') return report('config', code);      // zip 147: not "busy" — the shop's database is down (see pos-sync)
+            if (status === 507 || code === 'storage_full') return report('config', 'storage_full');      // zip 186: the server answered: the internet works, but its storage is full (not "busy", not "offline")
             if (status === 408 || status === 425 || status === 429 || status >= 500) return report('busy', status);
             return report('config', 'http ' + status);
         }
@@ -217,6 +267,7 @@
                 return 'Online — Syncing… (tap to sync now)';
             }
             if (net === 'auth_required') return S.authIssue === 'device_not_paired' ? 'Connected — this device must be paired (Settings ▸ Devices & Security) before it can sync.' : (S.authIssue === 'licence' ? 'Connected — the shop\'s link is not active. Selling works; contact support.' : MSG.auth_required);
+            if (net === 'config_error' && S.detail === 'storage_full') return 'Connected — the server\'s storage is full, so it cannot save changes right now. Selling works and every sale is kept on this device; it is sent by itself once space is freed (support has been told).';
             if (net === 'config_error' && /^shop_db/.test(S.detail || '')) return 'Connected — the server\'s shop database is not responding, so this shop cannot sync yet. Selling works and every sale is kept on this device; it is sent by itself once the server is fixed.';
             return MSG[net] || MSG.checking;
         }
@@ -240,6 +291,61 @@
                 var el = document.getElementById('sync-status');
                 if (el) { var m = message(); el.title = m; el.setAttribute('aria-label', m); el.dataset.net = S.state; }
             } catch (e) { /* cosmetic */ }
+            retryBar();
+        }
+
+        /* ---- "Retry now" (zip 186) ----
+           While the device is shown as offline / "server not answering" for more than a few seconds, a small bar says so in plain words and
+           offers ONE button that does everything a person could want: check the connection again right now (no waiting for the timer),
+           send what is waiting and fetch the shop (syncRetryNow), reopen the live socket. It disappears by itself the moment the device is online. */
+        var retryTimer = null, retrying = false;
+        function retryBar() {
+            try {
+                var bad = S.state === 'offline' || S.state === 'backend_unavailable';
+                var el = document.getElementById('posnet-retry-bar');
+                if (!bad) { if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; } if (el && el.parentNode) el.parentNode.removeChild(el); return; }
+                if (el) { var t = el.querySelector('span'); if (t) t.textContent = retryText(); return; }
+                if (retryTimer || !document.body) return;
+                retryTimer = setTimeout(function () {
+                    retryTimer = null;
+                    if (S.state !== 'offline' && S.state !== 'backend_unavailable') return;
+                    if (document.getElementById('posnet-retry-bar')) return;
+                    var bar = document.createElement('div');
+                    bar.id = 'posnet-retry-bar'; bar.className = 'no-print'; bar.setAttribute('role', 'status');
+                    bar.style.cssText = 'position:fixed;left:50%;bottom:74px;transform:translateX(-50%);z-index:99985;background:#34495e;color:#fff;padding:8px 12px;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.3);font:13px system-ui,sans-serif;display:flex;gap:10px;align-items:center;max-width:calc(94vw / var(--pos-z,1));';
+                    var span = document.createElement('span'); span.textContent = retryText();
+                    var b = document.createElement('button');
+                    b.type = 'button'; b.id = 'posnet-retry-btn'; b.textContent = 'Retry now';
+                    b.style.cssText = 'background:#27ae60;color:#fff;border:0;border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;white-space:nowrap;';
+                    b.onclick = function () { retryNow(); };
+                    bar.appendChild(span); bar.appendChild(b);
+                    document.body.appendChild(bar);
+                }, window.__posNetRetryBarMs != null ? window.__posNetRetryBarMs : 8000);
+            } catch (e) { /* cosmetic */ }
+        }
+        function retryText() {
+            return S.state === 'offline' ? 'No connection to the server. Sales are kept and sent by themselves.' : 'The server is not answering. Sales are kept and sent by themselves.';
+        }
+        // The button (also window.PosNet.retryNow()): check at once, then send + fetch. Never throws; resolves to the state it ended in.
+        async function retryNow() {
+            if (retrying) return S.state;
+            retrying = true;
+            var b = document.getElementById('posnet-retry-btn');
+            try {
+                if (b) { b.disabled = true; b.textContent = 'Checking…'; }
+                S.checking = null; S.fails = 0; S.nextAt = 0;
+                try { window.__pushBackoffUntil = 0; } catch (e) { /* none */ }
+                await check('retry button');
+                try { if (typeof window.syncRetryNow === 'function') await window.syncRetryNow(); } catch (e) { /* the automatic retry carries on */ }
+                try { if (typeof window.connectSyncSocket === 'function') window.connectSyncSocket(); } catch (e) { /* optional */ }
+                if (S.state !== 'online') { try { if (typeof window.showToast === 'function') window.showToast(S.state === 'offline' ? "Still can't reach the server. Check the device's internet - sales are safe and will be sent by themselves." : 'Internet is working but the POS server is not answering yet. Sales are safe; trying again by itself.', true); } catch (e) { /* cosmetic */ } }
+            } catch (e) { /* never throws */ }
+            finally {
+                retrying = false;
+                var b2 = document.getElementById('posnet-retry-btn');
+                if (b2) { b2.disabled = false; b2.textContent = 'Retry now'; }
+            }
+            return S.state;
         }
         function wrapDot() {
             if (typeof window.setSyncStatus !== 'function' || window.setSyncStatus.__posNet) return;
@@ -298,6 +404,8 @@
             get detail() { return S.detail; },
             get lastOk() { return S.lastOk; },
             check: check,
+            seen: seen,
+            retryNow: function () { return retryNow(); },
             report: report,
             reportHttp: reportHttp,
             message: message,

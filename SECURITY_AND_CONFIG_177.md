@@ -19,7 +19,7 @@
 | Name | Effect |
 |---|---|
 | `VERIFICATION_REQUIRED=1` | A website account must verify email or WhatsApp before generating a demo. Default off. |
-| `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Cloud API credentials (shared with the CRM inbox). |
+| `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Cloud API credentials. |
 | `WHATSAPP_OTP_TEMPLATE`, `WHATSAPP_OTP_LANG` | Name/language of an **approved authentication template** (Meta only allows business-started messages through templates). Without it WhatsApp verification answers "not available". |
 | `CONTACT_NOTIFY_EMAIL` | Also email each contact-form message here (needs the Resend key from Owner Console ▸ Settings). |
 | `TURNSTILE_SECRET` | Turns on Cloudflare Turnstile checking in `/api/contact`. The page must then send `cfToken` (the widget is not added until a site key exists). |

@@ -16,8 +16,9 @@
 //  * Money tables refuse DELETE and log every change in an append-only audit (database triggers — see _ledger-schema.js).
 //  * Webhooks (M-Pesa, cards) that cannot be retried by the sender are parked in a KV outbox if D1 is briefly down and replayed on
 //    the next request — the provider gets its answer, the money is still recorded exactly once.
-import { LEDGER_SCHEMA, LEDGER_SCHEMA_VERSION } from './_ledger-schema.js';
-import { withRetry } from './_retry.js';
+import { LEDGER_SCHEMA, LEDGER_SCHEMA_0007, LEDGER_SCHEMA_VERSION, VOLATILE_FIELDS, sqlStripVolatile } from './_ledger-schema.js';
+import { withRetry, isStorageFull } from './_retry.js';
+import { auditDb, writeAuditRows, detachMainAuditTriggers, snapshotOf } from './_audit-db.js';
 
 export const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const str = (v, n = 120) => (v == null ? null : String(v).slice(0, n));
@@ -33,7 +34,7 @@ export async function ensureLedgerSchema(db) {
   let ok = false;
   try { const r = await db.prepare(`SELECT v FROM ledger_meta WHERE k = 'schema'`).first(); ok = !!(r && Number(r.v) >= LEDGER_SCHEMA_VERSION); } catch (e) { ok = false; }
   if (!ok) {
-    await db.batch(LEDGER_SCHEMA.map((s) => db.prepare(s)));
+    await db.batch(LEDGER_SCHEMA.concat(LEDGER_SCHEMA_0007).map((s) => db.prepare(s)));      // zip 186: 0007 = quiet audit triggers, kill switch, guarded audit delete (same list as migrations/0007)
     await db.prepare(`INSERT INTO ledger_meta (k, v) VALUES ('schema', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).bind(String(LEDGER_SCHEMA_VERSION)).run();
   }
   ready.set(db, true);
@@ -105,11 +106,28 @@ export const LEDGER_COLLECTIONS = Object.keys(COLLECTIONS).concat(['salesLog', '
 
 function idOf(r) { return r && (r.id != null ? String(r.id) : null); }
 
+// zip 186 (INCIDENT: 21.8M audit rows from a retry storm). The client stamps retry counters (`tries`) INTO a pending record, so every resend had different
+// `data`, passed the old `excluded.data <> ledger_records.data` test, UPDATEd the row and the audit trigger logged a new row each time. Now:
+//  * VOLATILE_FIELDS are removed from the record before it is stored / fingerprinted (stripVolatile), and
+//  * the test compares against the STORED data minus the same fields (so a row stored BEFORE this fix, which still carries `tries`, is not "changed" by a
+//    resend either): a resend whose only difference is a retry counter is a pure no-op: no UPDATE, no audit row.
+// (json_valid guard: a stored value that is not JSON compares as-is instead of failing the whole batch.)
 const UPSERT_RECORD = `INSERT INTO ledger_records (client_id, kind, rec_id, version, ts, business_date, amount, status, actor, source, data, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (client_id, kind, rec_id) DO UPDATE SET version = excluded.version, ts = excluded.ts, business_date = excluded.business_date, amount = excluded.amount,
   status = excluded.status, actor = excluded.actor, source = excluded.source, data = excluded.data, updated_at = excluded.updated_at
-WHERE excluded.version >= ledger_records.version AND excluded.data <> ledger_records.data`;
+WHERE excluded.version >= ledger_records.version AND excluded.data <> (CASE WHEN json_valid(ledger_records.data) THEN ${sqlStripVolatile('ledger_records.data')} ELSE ledger_records.data END)`;
+const VOLATILE = new Set(VOLATILE_FIELDS);
+// A shallow copy without the client-only retry / telemetry fields (top level only: that is where the apps stamp them). Returns the same object when there is nothing to strip.
+export function stripVolatile(r) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return r;
+  let hit = false;
+  for (const k of VOLATILE_FIELDS) if (k in r) { hit = true; break; }
+  if (!hit) return r;
+  const out = {};
+  for (const k of Object.keys(r)) if (!VOLATILE.has(k)) out[k] = r[k];
+  return out;
+}
 
 // ---------- "already written" memory (zip 159) ----------
 // A push carries the WHOLE of every list that is not a slimmed log (open tabs, bills, debts, cash shifts, purchase orders ...), every time, changed or not
@@ -142,8 +160,9 @@ export function buildGroups(db, clientId, body, opt = {}) {
   const source = str(opt.source || 'sync', 40);
   const groups = [];
   let lastCanon = '';                                                   // the canonical text of the record last passed to rec(): its fingerprint says whether a group changed
-  const rec = (kind, id, version, ts, amount, status, actor, data) => { lastCanon = canon(data); return db.prepare(UPSERT_RECORD).bind(clientId, kind, id, version, ts, bizDate(ts, off), round2(amount), str(status, 30), str(actor, 60), source, lastCanon, now, now); };
-  const tag = (g, kind, id) => { g.key = clientId + '|' + kind + '|' + id; g.sig = fingerprint(lastCanon + '|' + off + '|' + app + '|' + source); return g; };
+  let lastAudit = null;                                                 // zip 187: what the audit database logs if this record really changed
+  const rec = (kind, id, version, ts, amount, status, actor, data) => { lastCanon = canon(stripVolatile(data)); lastAudit = { kind, recId: id, version, amount: round2(amount), status: str(status, 30), actor: str(actor, 60), source, at: now, data: lastCanon }; return db.prepare(UPSERT_RECORD).bind(clientId, kind, id, version, ts, bizDate(ts, off), round2(amount), str(status, 30), str(actor, 60), source, lastCanon, now, now); };
+  const tag = (g, kind, id) => { g.audit = lastAudit; g.key = clientId + '|' + kind + '|' + id; g.kind = kind; g.rid = id; g.len = lastCanon.length; g.sig = fingerprint(lastCanon + '|' + off + '|' + app + '|' + source); return g; };
 
   // --- sales (+ lines + payments) ---
   for (const s of Array.isArray(body && body.salesLog) ? body.salesLog : []) {
@@ -276,24 +295,139 @@ async function drainOutboxThrottled(env, clientId, db) {
   return found === -1 ? 0 : found;
 }
 
-// Write a push's money records. Returns { ok:true, records } | { ok:true, skipped:'no_db' } | { ok:false, error }.
+// ---------- zip 186: guards against a retry storm (see the incident notes in docs/INCIDENT_LEDGER_AUDIT_186.md) ----------
+const flagOn = (v) => v != null && /^(1|true|on|yes)$/i.test(String(v).trim());
+// Per-isolate memory of the audit kill switch: the env var is read every request (free); the KV flag `audit:disabled` at most every 30 s.
+const killStates = new WeakMap();                                     // D1 binding -> { kvAt, kvOn, mirroredAt }
+// AUDIT KILL SWITCH. The audit rows are written by database triggers, which read ledger_meta k='audit_disabled'. This mirrors the env var AUDIT_WRITES_DISABLED
+// (or the KV flag audit:disabled) into that row, ONE WAY: it only turns the switch ON (once per 5 minutes per isolate, and only when the row is not already '1').
+// Turning it OFF again is deliberate and manual (POST /api/ledger-health {audit:'on'} or the SQL in docs/INCIDENT_LEDGER_AUDIT_186.md): an audit trail that
+// silently resumed, or flapped, would be worse. Sales and records are always saved; only the history rows are skipped.
+// zip 187: the SQL kill switch (ledger_meta audit_disabled = '1') is read by the old triggers; the server-side audit writer reads it too, at most every 30 s per isolate.
+const flagCache = new WeakMap();
+async function auditFlagOff(db) {
+  try {
+    const now = Date.now(); const c = flagCache.get(db);
+    if (c && now - c.at < 30000) return c.off;
+    const r = await db.prepare(`SELECT v FROM ledger_meta WHERE k = 'audit_disabled'`).first();
+    const off = !!(r && String(r.v) === '1');
+    flagCache.set(db, { at: now, off });
+    return off;
+  } catch (e) { return false; }
+}
+async function mirrorAuditKillSwitch(env, db) {
+  try {
+    let on = flagOn(env && env.AUDIT_WRITES_DISABLED);
+    const now = Date.now();
+    let killState = killStates.get(db); if (!killState) { killState = { kvAt: 0, kvOn: false, mirroredAt: 0 }; killStates.set(db, killState); }
+    if (!on && env && env.mydukapos_kv && typeof env.mydukapos_kv.get === 'function') {
+      if (now - killState.kvAt > 30000) { killState.kvAt = now; try { killState.kvOn = flagOn(await env.mydukapos_kv.get('audit:disabled')); } catch (e) { killState.kvOn = false; } }
+      on = killState.kvOn;
+    }
+    if (!on || now - killState.mirroredAt < 300000) return on;
+    killState.mirroredAt = now;
+    await db.prepare(`INSERT INTO ledger_meta (k, v) VALUES ('audit_disabled', '1') ON CONFLICT (k) DO UPDATE SET v = '1' WHERE v <> '1'`).run();
+    return true;
+  } catch (e) { return false; }
+}
+
+// PER-RECORD RATE GUARD. A record that really CHANGES more than AUDIT_REC_RATE_PER_MIN times (default 20; 0 = off) in a minute is a client bug, not a person:
+// further changes of that (shop, kind, id) are not written until the minute is over. Only writes that changed a row count (a re-send of the same record is
+// a no-op and is never counted or refused). Kept in this isolate's memory: no KV / D1 write per request.
+const recRates = new WeakMap();                                       // D1 binding -> Map("client|kind|id" -> { t0, n })
+const recRateMap = (db) => { let m = recRates.get(db); if (!m) { m = new Map(); recRates.set(db, m); } return m; };
+const RATE_MAX_KEYS = 20000;
+const recRateMax = (env) => { const v = env && env.AUDIT_REC_RATE_PER_MIN; if (v == null || v === '') return 20; const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : 20; };
+export function clearRecRate(db) { if (db) recRates.delete(db); }
+function recRateLeft(recRate, key, max, now) {                         // -> seconds to wait when over the limit, else 0
+  if (!max) return 0;
+  const r = recRate.get(key);
+  if (!r) return 0;
+  if (now - r.t0 >= 60000) { recRate.delete(key); return 0; }
+  return r.n >= max ? Math.max(1, Math.ceil((r.t0 + 60000 - now) / 1000)) : 0;
+}
+function recRateNote(recRate, key, now) {
+  const r = recRate.get(key);
+  if (!r || now - r.t0 >= 60000) {
+    if (recRate.size >= RATE_MAX_KEYS) for (const k of recRate.keys()) { recRate.delete(k); if (recRate.size <= RATE_MAX_KEYS * 0.8) break; }
+    recRate.set(key, { t0: now, n: 1 });
+  } else r.n++;
+}
+
+// PERMANENTLY BAD ITEMS. An item that can never be stored (an id that is not a string / number or longer than 200 characters, a record bigger than
+// MAX_REC_BYTES) will fail the same way on every resend. It is left out of the write and reported in `rejected`; if NOTHING valid is left in the push the answer
+// is a terminal 422 {ok:false, permanent:true} so the client can stop retrying (and move the item to its needs-attention list) instead of looping.
+const MAX_REC_BYTES = 512 * 1024;
+function splitBad(body) {
+  const rejected = [];
+  if (!body || typeof body !== 'object') return { body, rejected };
+  let out = null;
+  for (const field of LEDGER_COLLECTIONS) {
+    const arr = body[field];
+    if (!Array.isArray(arr)) continue;
+    const kept = [];
+    for (const r of arr) {
+      if (r && typeof r === 'object' && !Array.isArray(r) && r.id != null && (typeof r.id === 'object' || String(r.id).length > 200)) { rejected.push({ field, id: String(typeof r.id === 'object' ? '[object]' : r.id).slice(0, 40), reason: 'bad_id' }); continue; }
+      kept.push(r);
+    }
+    if (kept.length !== arr.length) { out = out || { ...body }; out[field] = kept; }
+  }
+  return { body: out || body, rejected };
+}
+
+// Write a push's money records. Returns { ok:true, records } | { ok:true, skipped:'no_db' } | { ok:false, error, code?, status?, retryAfter? }.
 // Reliability (zip 159): each batch is an atomic transaction of idempotent upserts, so a transient D1 failure (network blip, overloaded primary) is
 // retried twice with backoff + jitter before the push is refused (503, the till keeps the sale and sends it again — unchanged).
+// zip 186 additions (all ADD fields; the existing ones are unchanged): `unchanged` (records already stored as sent), `duplicate:true` (EVERY record was already stored:
+// a pure re-send), `rateLimited` / `rejected` (items left out, see above), and the terminal / pausing failures `storage_full` (507), `record_rate` (429), `bad_record` (422).
 export async function recordPush(env, clientId, body, opt = {}) {
   const db = ledgerDb(env);
   if (!db) return { ok: true, skipped: 'no_db' };
   try {
     await ensureLedgerSchema(db);
+    const killed = await mirrorAuditKillSwitch(env, db);
+    // zip 187: with the separate audit database bound, the server writes the audit rows itself (after the main batch committed) and the main ledger's
+    // audit triggers are removed. Without the binding nothing changes: the triggers keep writing.
+    const adb = auditDb(env);
+    const auditOn = !!adb && !killed && !(await auditFlagOff(db));
+    if (adb) await detachMainAuditTriggers(db);
     await drainOutboxThrottled(env, clientId, db).catch(() => {});
-    const groups = buildGroups(db, clientId, body, opt);
-    if (!groups.length) return { ok: true, records: 0 };
+    const split = splitBad(body);
+    const groups = buildGroups(db, clientId, split.body, opt);
+    let rejected = split.rejected;
+    for (let i = groups.length - 1; i >= 0; i--) {
+      if (groups[i].len > MAX_REC_BYTES) { rejected = rejected.concat({ field: groups[i].kind, id: String(groups[i].rid).slice(0, 40), reason: 'too_large' }); groups.splice(i, 1); }
+    }
+    if (!groups.length) {
+      if (rejected.length) return { ok: false, permanent: true, code: 'bad_record', status: 422, error: 'This push holds only records the server can never accept.', rejected };
+      return { ok: true, records: 0 };
+    }
     const ttl = seenMs(env), now = Date.now(), seen = ttl > 0 ? seenMap(db) : null;
-    const todo = seen ? groups.filter((g) => { const h = g.key && seen.get(g.key); return !(h && h.sig === g.sig && now - h.at < ttl); }) : groups;
-    let batches = 0;
+    const notSeen = seen ? groups.filter((g) => { const h = g.key && seen.get(g.key); return !(h && h.sig === g.sig && now - h.at < ttl); }) : groups;
+    const max = recRateMax(env), rates = recRateMap(db);
+    const limited = [];
+    let wait = 0;
+    const todo = notSeen.filter((g) => { const w = g.key ? recRateLeft(rates, g.key, max, now) : 0; if (w) { limited.push({ kind: g.kind, id: String(g.rid).slice(0, 60) }); wait = Math.max(wait, w); return false; } return true; });
+    if (limited.length && !todo.length && notSeen.length === limited.length) {
+      return { ok: false, code: 'record_rate', status: 429, retryAfter: wait, error: 'The same record is being changed too often. Wait and send it again.', limited, ...(rejected.length ? { rejected } : {}) };
+    }
+    let batches = 0, changed = 0;
     for (const batch of packBatches(todo)) {
-      await withRetry(() => db.batch(batch.flat()), { tries: 3, baseMs: 40, env });
+      const stmts = batch.flat();
+      const res = await withRetry(() => db.batch(stmts), { tries: 3, baseMs: 40, env });
       batches++;
-      if (seen) for (const g of batch) if (g.key) { seen.delete(g.key); seen.set(g.key, { sig: g.sig, at: Date.now() }); }
+      let at = 0; const t = Date.now();
+      const auditRows = [];
+      for (const g of batch) {
+        const first = res && res[at] && res[at].meta;
+        if (first && Number(first.changes) > 0) {
+          changed++; if (g.key && max) recRateNote(rates, g.key, t);
+          if (auditOn && g.audit) { const a = g.audit; auditRows.push({ clientId, kind: a.kind, recId: a.recId, action: 'WRITE', version: a.version, amount: a.amount, status: a.status, actor: a.actor, source: a.source, at: a.at, snapshot: snapshotOf(a.kind, a.data, a.status, a.amount, a.version) }); }
+        }
+        at += g.length;
+        if (seen && g.key) { seen.delete(g.key); seen.set(g.key, { sig: g.sig, at: t }); }
+      }
+      if (auditRows.length) await writeAuditRows(env, auditRows, t);      // never throws; a failure only pauses the audit, the sale is already saved
     }
     if (seen && seen.size > SEEN_MAX) for (const k of seen.keys()) { seen.delete(k); if (seen.size <= SEEN_MAX * 0.8) break; }
     // tell the till if any sale it just sent turned out to be a second settlement of a bill somebody else already settled
@@ -303,9 +437,15 @@ export async function recordPush(env, clientId, body, opt = {}) {
       const rows = ((await withRetry(() => db.prepare(`SELECT sale_id, bill_id, total FROM ledger_sales WHERE client_id = ? AND status = 'DUPLICATE' AND sale_id IN (${ids.map(() => '?').join(',')})`).bind(clientId, ...ids).all(), { tries: 2, baseMs: 40, env })).results) || [];
       if (rows.length) duplicates = rows;
     }
-    return { ok: true, records: groups.length, written: todo.length, batches, ...(duplicates ? { duplicates } : {}) };
+    const unchanged = groups.length - changed - limited.length;
+    return {
+      ok: true, records: groups.length, written: todo.length, batches, ...(duplicates ? { duplicates } : {}),
+      unchanged, ...(changed === 0 && !limited.length ? { duplicate: true } : {}), ...(limited.length ? { rateLimited: limited, retryAfter: wait } : {}), ...(rejected.length ? { rejected } : {}),
+    };
   } catch (e) {
     try { console.error('ledger write failed:', e && e.message); } catch (x) { /* logging only */ }
+    // zip 186: a full database (SQLITE 7500, the 10 GB cap) is not "busy": it will not clear by retrying. 507 + retryAfter lets the till PAUSE and tell the cashier.
+    if (isStorageFull(e)) return { ok: false, code: 'storage_full', status: 507, retryAfter: 300, error: 'The transaction database is full.' };
     return { ok: false, error: String((e && e.message) || e).slice(0, 200) };
   }
 }
@@ -389,7 +529,10 @@ export async function drainOutbox(env, clientId, db, opts) {
       if (item.type === 'payment') await db.batch(paymentStatements(db, clientId, item.ev, Date.now()));
       else if (item.type === 'gateway') await db.batch(gatewayStatements(db, clientId, item.ev, Date.now()));
       done++;
-    } catch (e) { left.push(item); }
+    } catch (e) {
+      left.push(item);
+      if (isStorageFull(e)) { const i = list.indexOf(item); left.push(...list.slice(i + 1)); break; }      // zip 186: a full database takes none of them: stop, keep the rest parked
+    }
   }
   if (left.length) await env.mydukapos_kv.put(outboxKey(clientId), JSON.stringify(left), { expirationTtl: 30 * 86400 });
   else await env.mydukapos_kv.delete(outboxKey(clientId));

@@ -133,6 +133,7 @@ test('TESTS 5, 6, 12: server unavailable — the sale stays, retries by itself, 
   assert.doesNotMatch(audit, /fail|busy|refused|retry|error/i, 'TEST 12: no failure noise in the business Audit');
   assert.match(t.w.eval("localStorage.getItem('pos_sync_journal_v1')"), /server was busy|refused/, 'the technical journal still records it');
   server.state.status = null;
+  t.w.eval('window.__pushBackoffUntil = 0');                         // zip 186: failed sends back off (2 s, 4 s, ... 5 min); here the wait has passed
   for (let i = 0; i < 4; i++) { t.w.eval('markLocalDirty()'); await t.w.eval('pushNow()'); }   // TEST 6: the same send, several times
   assert.equal(server.serverState().salesLog.filter((s) => s.id === id).length, 1, 'no duplicate on the server');
   assert.equal(t.w.eval('salesLog.length'), 1, 'no duplicate on the device');

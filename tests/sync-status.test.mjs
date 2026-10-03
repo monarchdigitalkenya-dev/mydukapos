@@ -93,6 +93,9 @@ test('a push that never gets an answer gives up (it does not sit on "Syncing…"
   dev.w.eval("paymentDetails = 'Till 3'; safeSetItem('pos_payment_details', paymentDetails)");
   const ok = await dev.w.eval('pushNow()');
   assert.equal(ok, false);
+  // a pull that was already on its way sends the unsent change first (one more try, as designed: "no answer" is not delayed); let that try give up too
+  await sleep(900);
+  await until(() => !(dev.w.eval('window.__pushInFlight') > 0) && !dev.w.eval('window.__pullInFlight'), 8000);
   assert.doesNotMatch(await dot(dev), /Syncing/);
   assert.equal(dev.w.eval('window.__pushInFlight'), 0, 'nothing is left "in flight"');
   state.hangPost = false; dev.w.eval('window.__pushBackoffUntil = 0');

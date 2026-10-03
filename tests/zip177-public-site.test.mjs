@@ -140,9 +140,9 @@ test('robots.txt, sitemap.xml and llms.txt: apex is open, a client host is close
 });
 
 test('every private app page carries a noindex meta tag and the security headers file covers them', () => {
-  for (const f of [...APPS, 'crm/index.html', 'order/index.html']) assert.match(fs.readFileSync(path.join(ROOT, f), 'utf8').slice(0, 3000), /<meta name="robots" content="noindex, nofollow">/, f);
+  for (const f of [...APPS, 'order/index.html']) assert.match(fs.readFileSync(path.join(ROOT, f), 'utf8').slice(0, 3000), /<meta name="robots" content="noindex, nofollow">/, f);
   const h = fs.readFileSync(path.join(ROOT, '_headers'), 'utf8');
-  for (const x of ['X-Content-Type-Options: nosniff', 'Referrer-Policy', 'X-Robots-Tag: noindex', '/owner/*', '/crm/*']) assert.ok(h.includes(x), x);
+  for (const x of ['X-Content-Type-Options: nosniff', 'Referrer-Policy', 'X-Robots-Tag: noindex', '/owner/*']) assert.ok(h.includes(x), x);
 });
 
 test('generated public pages match the generator (run `npm run build:public` if this fails)', async () => {

@@ -222,6 +222,7 @@ export async function onRequestPost(context) {
     // (nothing acknowledged) if D1 does not take it.
     const toLedger = async (p) => {
       const led = await recordPush(env, targetClientId, { salesLog: [p.sale], stockMovementLog: p.moves }, { source: 'cross-branch-sale' });
+      if (!led.ok && led.code === 'storage_full') return jsonResponse({ ok: false, error: 'The server storage is full \u2014 nothing was sold. Please tell support.', code: 'storage_full', retryAfter: 300 }, 507);      // zip 186
       return led.ok ? null : jsonResponse({ error: 'The transaction database did not answer \u2014 nothing was sold. Try again in a moment.', code: 'busy' }, 503);
     };
     const pushBody = (p) => ({ salesLog: [p.sale], stockMovementLog: p.moves });

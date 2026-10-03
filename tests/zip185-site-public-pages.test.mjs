@@ -8,7 +8,7 @@ import { ROOT } from './helpers.mjs';
 import { makeKV } from './kv-fake.mjs';
 
 // Zip 185 — public website: image addresses from the editable content cannot break out of an attribute, the page counter cannot be used to create
-// unlimited keys, the contact form keeps line breaks out of the e-mail subject, and the CRM error log carries no query string.
+// unlimited keys, the contact form keeps line breaks out of the e-mail subject.
 const load = (f) => import(pathToFileURL(path.join(ROOT, f)).href);
 const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 
@@ -57,19 +57,3 @@ test('contact.js: line breaks in name / contact are flattened (they go into an e
   assert.ok(!/[\r\n]/.test(rec.name) && !/[\r\n]/.test(rec.contact), JSON.stringify(rec));
 });
 
-test('CRM router: an unexpected error is logged with the path only (the query string can hold an invitation token)', async () => {
-  const router = await load('functions/api/_crm/router.js');
-  const logged = [];
-  const orig = console.error; console.error = (...a) => logged.push(a.map(String).join(' '));
-  try {
-    // a D1 that accepts the schema work but blows up (a plain Error, not an HttpError) when the invitation is looked up
-    const stmt = (sql) => { const s = { bind: () => s, run: async () => ({ meta: { changes: 0 } }), all: async () => ({ results: [] }), raw: async () => [], first: async () => { if (/crm_invitations/.test(sql)) throw new Error('d1 exploded'); return null; } }; return s; };
-    const boom = { prepare: (sql) => stmt(sql), batch: async (l) => l.map(() => ({ results: [], meta: { changes: 0 } })), exec: async () => ({}) };
-    const secret = 'f'.repeat(64);
-    const res = await router.handle({ request: new Request('https://x/api/crm/auth/invite?token=' + secret), env: { LEDGER_DB: boom }, waitUntil() {} });
-    assert.equal(res.status, 500);
-  } finally { console.error = orig; }
-  const all = logged.join('\n');
-  assert.ok(/crm error GET \/api\/crm\/auth\/invite/.test(all), 'the error was logged with its path: ' + all.slice(0, 300));
-  assert.ok(!all.includes('ffffffffffffffff') && !all.includes('token='), 'no token / query string in the logs: ' + all.slice(0, 300));
-});

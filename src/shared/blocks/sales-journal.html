@@ -407,6 +407,49 @@
         // do not come back on the next pull. One-shot: it is cleared when the push carrying the tombstones is acknowledged.
         window.markBulkDelete = function (listName) { try { (window.__bulkDelete = window.__bulkDelete || {})[String(listName)] = true; } catch (e) { /* the safety net applies */ } };
         window.salesJournalSeenRecords = function (f, records) { var o = {}; o[f] = records; window.salesJournalSeen(o); };
+        // zip 186 - OTHER TILLS' SALES REACH THIS DEVICE EVEN WHILE ITS OWN PUSH IS STUCK. A pull is never applied over unsent changes (it would put an older
+        // copy on top of them), so a device whose own push kept failing (the server refusing, "busy", too large...) skipped every pull: the owner's screen
+        // stopped showing his employees' sales for as long as ONE of his own changes was waiting. What can safely be taken in that state is NEW sales: a sale
+        // this device does not have yet is simply added (nothing it holds is replaced, so no unsent change can be lost), kept on the device and drawn.
+        window.salesJournalMergeNewSales = function (data) {
+            try {
+                var a = arrOf('salesLog');
+                if (!Array.isArray(a) || !data || !Array.isArray(data.salesLog) || !data.salesLog.length) return 0;
+                var have = new Set();
+                a.forEach(function (r) { var id = idOf(r); if (id) have.add(id); });
+                var add = data.salesLog.filter(function (r) { var id = idOf(r); return id && typeof r === 'object' && r._deleted !== true && !have.has(id); });
+                if (!add.length) return 0;
+                add.forEach(function (r) { if (!Array.isArray(r.items)) r.items = []; if (typeof r.paid !== 'boolean') r.paid = true; a.push(r); });
+                var tm = function (r) { var t = typeof r.timestamp === 'number' ? r.timestamp : Date.parse(r.timestamp); return isFinite(t) ? t : Infinity; };
+                var order = a.map(function (r, i) { return { r: r, i: i, t: r && typeof r === 'object' ? tm(r) : Infinity }; });
+                order.sort(function (x, y) { return x.t === y.t ? x.i - y.i : (x.t < y.t ? -1 : 1); });
+                for (var i = 0; i < order.length; i++) a[i] = order[i].r;
+                try { if (typeof safeSetItem === 'function') safeSetItem(LOGKEYS.salesLog, JSON.stringify(a)); else localStorage.setItem(LOGKEYS.salesLog, JSON.stringify(a)); } catch (e) { /* in memory; the next save writes it */ }
+                try { if (typeof ackServerRecords === 'function') ackServerRecords('salesLog', add); else window.salesJournalSeenRecords('salesLog', add); } catch (e) { /* housekeeping */ }
+                try { if (typeof renderAllViews === 'function') renderAllViews(); } catch (e) { /* the next draw shows them */ }
+                return add.length;
+            } catch (e) { return 0; }
+        };
+        // ...and fetches them: called by the pull when it could not send this device's own changes first. At most one request per 10 s, remembers the
+        // server time it last looked at (so an unchanged shop is the usual few-byte answer), never throws, never touches anything but the sales list.
+        window.salesJournalPullWhileStuck = async function () {
+            if (window.__stuckPullBusy || Date.now() - (window.__stuckPullAt || 0) < 10000) return 0;
+            window.__stuckPullBusy = true; window.__stuckPullAt = Date.now();
+            var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+            var timer = setTimeout(function () { try { ctrl && ctrl.abort(); } catch (e) { /* done */ } }, 25000);
+            try {
+                var held = parseInt(localStorage.getItem(typeof appStoreKey === 'function' ? appStoreKey('pos_last_synced_at') : 'pos_last_synced_at') || '0', 10) || 0;
+                var since = Math.max(window.__stuckPullSince || 0, held);
+                var path = '/api/pos-sync' + (since > 0 ? '?since=' + since : '');
+                var res = await fetch(typeof apiUrl === 'function' ? apiUrl(path) : path, ctrl ? { signal: ctrl.signal } : {});
+                if (!res.ok) return 0;
+                var data = await res.json();
+                if (!data || data.unchanged || !(data.updatedAt > since)) return 0;
+                window.__stuckPullSince = data.updatedAt;
+                return window.salesJournalMergeNewSales(data);
+            } catch (e) { return 0; }
+            finally { clearTimeout(timer); window.__stuckPullBusy = false; }
+        };
         window.salesJournalPushStarted = function () {
             var now = Date.now();
             FIELDS.forEach(function (f) { meta[f].forEach(function (e) { if (e.st === 'pending') { e.tries = (e.tries || 0) + 1; e.lastTry = now; } }); });
@@ -1060,6 +1103,38 @@
 
         seed();                                              // now: the app has loaded its lists; anything saved from here on is new
         try { repairRecords(); } catch (e) { /* never block the start */ }   // before the app first draws (a broken record used to stop it)
+        // zip 186 - A CHANGE WAITING TO BE SENT IS NEVER LEFT ONLY IN MEMORY WHEN THE PAGE GOES AWAY. A restock / stock take / sale saves the lists and then queues
+        // its push (300 ms later); if a write failed (storage full) it is only retried every few seconds. A refresh, a closed tab or an app swiped away in
+        // that gap came back with the OLD figures ("I restocked, refreshed, and it was gone"). When the page is hidden or unloaded with a push still queued, or a
+        // write still failing, the lists are written again right now - synchronously, newest values - and the failed writes are retried once more. Nothing is
+        // written when nothing is waiting (an ordinary refresh costs nothing); a stopped second tab cannot write at all (see one-tab.html).
+        function persistOnExit() {
+            try {
+                var P = window.__ssPending;
+                var pend = P && P.pend ? Object.keys(P.pend).filter(function (k) { return !/:prev$/.test(k); }).length : 0;
+                if (!window.__pushQueued && !pend) return;
+                if (typeof saveAllLocal === 'function') { saveAllLocal(); }                                  // Aqua POS: its own "save everything" (stock per site, tanks, materials...)
+                else if (typeof safeSetItem === 'function') {
+                    var sk = function (k) { return typeof appStoreKey === 'function' ? appStoreKey(k) : k; };
+                    if (typeof inventory !== 'undefined' && Array.isArray(inventory)) safeSetItem(sk('pos_inventory'), JSON.stringify(inventory));
+                    if (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) safeSetItem(LOGKEYS.stockMovementLog || sk('pos_stock_movement_log'), JSON.stringify(stockMovementLog));
+                    if (typeof salesLog !== 'undefined' && Array.isArray(salesLog)) safeSetItem(LOGKEYS.salesLog, JSON.stringify(salesLog));
+                }
+                if (pend && typeof storageRetryPending === 'function') storageRetryPending();
+            } catch (e) { /* the retry timer / the next save still try */ }
+        }
+        window.addEventListener('pagehide', persistOnExit);
+        document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') persistOnExit(); });
+        window.addEventListener('beforeunload', function (ev) {
+            try {
+                persistOnExit();
+                // something still could not be stored on this device AND has not reached the server: say so before the page is closed (as for unsaved sales)
+                var P = window.__ssPending;
+                var left = P && P.pend ? Object.keys(P.pend).filter(function (k) { return !/:prev$/.test(k); }).length : 0;
+                if (left && typeof hasUnsyncedWork === 'function' && hasUnsyncedWork()) { ev.preventDefault(); ev.returnValue = ''; }
+            } catch (e) { /* never blocks closing */ }
+        });
+        window.salesJournalPersistNow = persistOnExit;
         function boot() {
             wrapRender();
             wrapProfits();

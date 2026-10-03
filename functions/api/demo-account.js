@@ -29,8 +29,6 @@ import { sendEmail } from './_email.js';
 import { hashPassword, passwordProblem } from './_password.js';
 import { termsRecord } from './_legal.js';
 import { verificationRequired, isVerified } from './verify.js';
-import { pushWebsiteLead } from './_crm/demo-lead.js';
-import { ledgerDb } from './_ledger.js';
 import { removeClientLink } from './account-recovery.js';
 import { ensureShopCallbackKeys } from './_callback-key.js';
 import { seedInitialState } from './pos-sync.js';
@@ -107,19 +105,6 @@ async function liveDemoState(env, account) {
     expiresAt: record ? record.expiresAt : account.expiresAt || null,
   };
 }
-
-// CRM (best-effort): a NEW registration / demo request is also filed as a website lead in the CRM (deduped by phone / e-mail; a returning person gets a
-// touch). Runs after the response is decided (waitUntil when the platform has it), swallows every error and does nothing without the D1 binding, so it can
-// never delay or break the signup. The KV account + index (what the demo dashboard uses) are untouched.
-function queueCrmLead(context, args) {
-  try {
-    if (!ledgerDb(context.env)) return null;
-    const p = pushWebsiteLead(context.env, args).catch(() => null);
-    if (typeof context.waitUntil === 'function') { context.waitUntil(p); return null; }
-    return p;
-  } catch (e) { return null; }
-}
-const attrOf = (request, body) => ({ ...body, password: undefined, confirmPassword: undefined, referrer: body.referrer || request.headers.get('Referer') });
 
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -220,7 +205,6 @@ export async function onRequestPost(context) {
     if (product && businessName) {
       const validProducts = listProducts().map((p) => p.id);
       if (!validProducts.includes(product)) {
-        await queueCrmLead(context, { fullName: account.fullName, phone, email, kind: 'register', attrInput: attrOf(request, body) });
         return jsonResponse({ error: 'Unknown product.' }, 400);
       }
       const record = await createClient(env, 'demo', businessName, product, {
@@ -254,8 +238,6 @@ export async function onRequestPost(context) {
       link = clientLink(env, record, origin);
       expiresAt = record.expiresAt;
     }
-
-    await queueCrmLead(context, { fullName: account.fullName, phone, email, product: link ? product : null, businessName: link ? businessName : null, kind: link ? 'demo' : 'register', expiresAt, attrInput: attrOf(request, body) });
     return jsonResponse({ token, link, expiresAt, product: account.product || null });
   }
 
@@ -398,8 +380,6 @@ export async function onRequestPost(context) {
     // flow, a link generated here still needs its own device-side Sign Up
     // the first time it's opened, same as a link with no account behind
     // it at all.
-
-    await queueCrmLead(context, { fullName: account.fullName, phone: account.phone, email: realEmailOf(account), product, businessName, kind: 'demo', expiresAt: record.expiresAt, attrInput: attrOf(request, body) });
     const origin = new URL(request.url).origin;
     return jsonResponse({ link: clientLink(env, record, origin), expiresAt: record.expiresAt });
   }

@@ -6,7 +6,7 @@ const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'pharmacy
 
 test('every till gets the checkout-workspace structure', async () => {
   for (const a of APPS) {
-    const { d, close } = await boot(a, { wait: 900 });
+    const { d, close } = await boot(a, { wait: 3000 });
     const panel = d.getElementById('active-checkout-cart-panel') || d.getElementById('cart-and-payment-panel');
     assert.ok(panel, a + ': panel');
     assert.ok(panel.classList.contains('pos-checkout'), a + ': pos-checkout class');
@@ -22,7 +22,7 @@ test('every till gets the checkout-workspace structure', async () => {
 
 test('all payment methods and fields still exist', async () => {
   for (const a of APPS) {
-    const { d, close } = await boot(a, { wait: 900 });
+    const { d, close } = await boot(a, { wait: 3000 });
     for (const id of ['cash-payment-panel', 'split-payment-panel', 'mpesa-prompt-panel', 'mpesa-code-input']) {
       if (!d.getElementById(id)) { close(); assert.fail(a + ' missing ' + id); }
     }

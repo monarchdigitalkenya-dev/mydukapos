@@ -1,5 +1,5 @@
-// functions/api/whatsapp-webhook.js — receives WhatsApp messages sent to the business number (WhatsApp Business Platform / Cloud API) and files each
-// new customer as a lead on the Owner Console's Leads tab. Setup: WHATSAPP_SETUP.md.
+// functions/api/whatsapp-webhook.js — receives WhatsApp messages sent to the business number (WhatsApp Business Platform / Cloud API) and keeps each
+// ad-referred customer in a small KV inbox (zip 186: the CRM that used to show them was removed). Setup: WHATSAPP_SETUP.md.
 //
 // Only people who start the chat from a Meta Click-to-WhatsApp AD become leads (Meta marks those messages with a `referral`); other texts are ignored.
 //
@@ -9,13 +9,7 @@
 //
 // Secrets (Cloudflare Pages -> Settings -> Variables and secrets): WHATSAPP_VERIFY_TOKEN, WHATSAPP_APP_SECRET.
 //
-// CRM (zip 157): when the D1 database is bound, EVERY inbound message (ad or not) is also written to the CRM as a conversation message (deduplicated by
-// the WhatsApp message id); ad-referral chats create / attach a CRM lead with attribution. The old KV inbox below keeps working during the transition.
 import { verifySignature, extractInboundMessages, keepAdMessages, addToInbox } from './_whatsapp.js';
-import { ledgerDb } from './_ledger.js';
-import { ensureCrmSchema } from './_crm/schema.js';
-import { ingestWhatsApp } from './_crm/inbox.js';
-import { runAutomation } from './_crm/automation.js';
 
 function text(body, status = 200) {
   return new Response(body, { status, headers: { 'Content-Type': 'text/plain' } });
@@ -40,8 +34,6 @@ export async function onRequestPost({ request, env }) {
   let payload;
   try { payload = JSON.parse(raw); } catch (e) { return text('Bad JSON', 400); }
   const messages = extractInboundMessages(payload);
-  const db = ledgerDb(env);
-  if (db && messages.length) { try { await ensureCrmSchema(db); await ingestWhatsApp(env, db, messages); try { await runAutomation(db); } catch (e) { console.error('crm automation', e && e.message); } } catch (e) { console.error('crm whatsapp ingest', e && e.message); return text('Try again', 500); } }      // Meta retries a non-200; ingest is idempotent
   // only people who came from a Meta ad are kept; everyone else is dropped
   try { await addToInbox(env, await keepAdMessages(env, messages)); } catch (e) { return text('Try again', 500); }      // Meta retries a non-200
   return text('OK');

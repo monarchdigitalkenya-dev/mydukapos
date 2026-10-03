@@ -38,6 +38,7 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { requireOwnerAuth } from './_owner-auth.js';
+import { mirrorGroupIncome, mirrorGroupIncomeClear } from './_owner-db.js';
 import { readState, readStateRaw, writeState, shopMode } from './_state-store.js';
 import { listClientSummaries, getLicense, saveLicense, deleteClient, restoreClient, PRODUCTS, getDemoDurationHours } from './_license.js';
 
@@ -125,6 +126,7 @@ export async function onRequestPost(context) {
     group.entries.push({ id: crypto.randomUUID(), at: Date.now(), agreed, paid, method, note });
     all[groupKey] = group;
     await writeGroupIncome(context.env, all);
+    await mirrorGroupIncome(context.env, groupKey, group);   // zip 187: per-person row in OWNER_DB (best effort; KV above is the truth)
     return jsonResponse({ entries: group.entries });
   }
 
@@ -145,6 +147,7 @@ export async function onRequestPost(context) {
       }
     }
     await context.env.mydukapos_kv.delete(GROUP_INCOME_KEY);
+    await mirrorGroupIncomeClear(context.env);               // zip 187
     return jsonResponse({ ok: true, cleared });
   }
 

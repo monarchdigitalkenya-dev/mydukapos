@@ -72,7 +72,7 @@ test('each guide is about ITS module (and only that module)', () => {
   has('production', /Hiring Counter/); has('production', /Assemble & Add to Stock/);
   has('services', /Client Registry/); has('services', /Print Intake Tag/); has('services', /Bookings/);
   has('water', /Bulk Tank/); has('water', /Price per Litre/); has('water', /Both sites/); has('water', /Stock Take \(per site\)/); not('water', /Low-stock|low-stock button/);
-  has('owner', /Generate Link/); has('owner', /Click-to-WhatsApp/); has('owner', /Errors/); not('owner', /Connect Bluetooth Printer/); not('owner', /Batch Commit/);
+  has('owner', /Generate Link/); has('owner', /Errors/); not('owner', /Connect Bluetooth Printer/); not('owner', /Batch Commit/);
   has('shop', /Gas Refill/); has('shop', /Cross-Branch/);
   for (const k of Object.keys(APPS)) { not(k, /Test print/); not(k, /Held¹/); }
 });

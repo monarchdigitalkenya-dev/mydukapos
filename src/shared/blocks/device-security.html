@@ -13,7 +13,7 @@
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-185';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-188';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -49,6 +49,9 @@
                     try { if (res && !res.ok) window.__apiLastFail = { kind: 'http', status: res.status, at: Date.now(), challenge: String(res.headers.get('cf-mitigated') || '').toLowerCase() === 'challenge' }; } catch (e) { /* cosmetic */ }
                     // zip 147: Cloudflare's security check answered instead of the POS server — that is not "refused" nor "offline"
                     try { if (res && window.__apiLastFail && window.__apiLastFail.challenge && window.__apiLastFail.at === Date.now() && window.PosNet) window.PosNet.report('challenge', 'Cloudflare security check (' + res.status + ')'); } catch (e) { /* cosmetic */ }
+                    // zip 186: any answer from our own API is evidence about the connection (see PosNet.seen): a 2xx brings an "offline" /
+                    // "server not answering" device back online at once; a refusal at least proves the internet works. Not for the security check.
+                    try { if (res && window.PosNet && window.PosNet.seen && !(window.__apiLastFail && window.__apiLastFail.challenge && window.__apiLastFail.at === Date.now())) window.PosNet.seen(res.status, res.headers.get('content-type')); } catch (e) { /* cosmetic */ }
                     if (res && res.status === 401) {
                         res.clone().json().then(function (b) { if (b && b.code === 'device_not_paired') notPaired(); }).catch(function () {});
                     }
@@ -89,11 +92,14 @@
             return { ok: false, error: out.error || ('The server answered ' + res.status + '.') };
         }
         // Quietly pair a device that already holds the shop password (every set-up device does — it signs in offline with it).
+        var autoPairBusy = null;                       // zip 186: one pairing at a time — two overlapping ones each made a token and the server kept the other's
         async function autoPair() {
+            if (autoPairBusy) return autoPairBusy;
             if (token() || (window.posNetOffline && window.posNetOffline())) return;
             var h = LS('pos_pw_hash') || LS('aqua_pw_hash');
             if (!h) return;
-            try { await pair({ proof: h }); } catch (e) { /* offline or refused: tried again later */ }
+            autoPairBusy = (async function () { try { await pair({ proof: h }); } catch (e) { /* offline or refused: tried again later */ } finally { autoPairBusy = null; } })();
+            return autoPairBusy;
         }
         window.devicePairNow = autoPair;
         // When this device first ran this release line (zip-121+): salted hashes wait a few days so older tills catch up (hashSealGateCheck).

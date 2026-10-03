@@ -72,7 +72,7 @@ test('every sale carries its till, device, cashier and shift; movements carry de
   assert.equal(sale.ctx.till, 1); assert.equal(sale.ctx.device, a.w.eval('getOrCreateDeviceId()'));
   assert.ok(sale.ctx.cashier); assert.equal(sale.ctx.shiftId, shiftId);
   const mv = s.serverState().stockMovementLog.find((m) => m.reason === 'Sale');
-  assert.equal(mv.dev, a.w.eval('getOrCreateDeviceId()')); assert.equal(mv.till, 1); assert.ok(mv.tries >= 1);
+  assert.equal(mv.dev, a.w.eval('getOrCreateDeviceId()')); assert.equal(mv.till, 1); assert.equal(mv.tries, undefined, 'zip 186: a send counter is never stamped INTO a movement (retries are counted apart)');
   // a failed send, then the retry, then a conflict the server resolved for this device
   s.state.down = true;
   await checkout(a); await settled(a);

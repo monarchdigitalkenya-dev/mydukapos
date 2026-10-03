@@ -8,11 +8,15 @@
 //
 // A permanent failure (a constraint, a missing table, a trigger refusing a DELETE) is never retried: it would fail the same way, and retrying
 // a refused write only delays the answer.
+// zip 186: a FULL database (D1 caps one database at 10 GB: SQLITE 7500 / "Exceeded maximum DB size") fails identically on every attempt, and every attempt
+// is a write the full database cannot take: never retried here, answered 507 by the callers (see isStorageFull) so the till pauses instead of looping.
+const STORAGE_FULL = /\[7500\]|\b7500:|SQLITE[_ ]?7500|exceeded maximum db(?:atabase)? size|maximum database size|SQLITE_FULL|database or disk is full|storage limit exceeded/i;
+export function isStorageFull(e) { return STORAGE_FULL.test(String((e && e.message) || e || '')); }
 const PERMANENT = /constraint|unique|not null|check failed|foreign key|syntax error|no such (table|column)|never deleted|append-only|cannot be edited|too many (sql )?variables|statement too long|SQLITE_TOOBIG/i;
 
 export function isTransient(e) {
   const msg = String((e && e.message) || e || '');
-  if (PERMANENT.test(msg)) return false;
+  if (PERMANENT.test(msg) || STORAGE_FULL.test(msg)) return false;
   return true;                                                       // unknown / network / overloaded / "Durable Object reset": worth another try
 }
 

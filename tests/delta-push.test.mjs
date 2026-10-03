@@ -45,6 +45,7 @@ for (const app of ['index.html', 'hotel/index.html', 'water/index.html']) {
     w.eval(`salesLog.push(${JSON.stringify(mkSales(1, 201)[0])})`);
     await push();
     fail = false;
+    w.eval('window.__pushBackoffUntil = 0');      // zip 186: after a refusal the next send waits out its backoff (2 s, 4 s ...); a person tapping the dot / the timer ends it
     await push();
     assert.deepEqual(bodies.at(-1).salesLog.map((s) => s.id), ['s201'], 'the record from the failed push is sent again');
     // a log with an id-less record is sent whole

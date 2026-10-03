@@ -2,8 +2,8 @@
 
 Every person who starts a chat with your business WhatsApp number **by clicking your Meta (Facebook / Instagram) Click-to-WhatsApp ad** becomes a lead on the Owner Console's **Leads** tab
 (name from their WhatsApp profile, phone number, the ad's headline and their message in the notes). **Ordinary texts that did not come from an ad are ignored** — they are never stored
-and never become leads. A person who came from an ad and then writes again stays one lead: their new messages are added to it. The leads appear in the CRM
-(source Meta ads, with the ad attribution); the old Owner Console Leads tab is retired.
+and never become leads. A person who came from an ad and then writes again stays one lead: their new messages are added to it. (zip 186: the CRM was removed, so for now ad chats are only
+kept in a small inbox on the server; the old Owner Console Leads tab is retired.)
 
 ## What it costs
 * **The POS side: nothing.** It runs on the same Cloudflare Pages Functions as the rest of the system.

@@ -2107,11 +2107,22 @@ function enrollManagerBiometric() {
 
 //@fn ensureSaleIds
 function ensureSaleIds(list) {
+            // zip 186: this runs on EVERY sales list that is loaded or pulled. A record that is not an object (a null from a bad write on another device) used to
+            // throw here - the pull stopped half-applied - and a sale without an item list (or an item without a name) threw inside Daily Sales, which then drew
+            // nothing at all: every sale of the day hidden because of one odd record. Such records are made drawable (never dropped) and the nulls are removed.
+            let bad = false;
             (list || []).forEach(s => {
+                if (!s || typeof s !== 'object') { bad = true; return; }
                 if (!s.id) s.id = `${new Date(s.timestamp).getTime() || Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
                 if (typeof s.paid !== 'boolean') s.paid = true;
+                if (!Array.isArray(s.items)) s.items = [];
+                else for (let i = 0; i < s.items.length; i++) {
+                    const it = s.items[i];
+                    if (!it || typeof it !== 'object') { s.items[i] = { name: 'Item', qty: 0, price: 0 }; continue; }
+                    if (typeof it.name !== 'string') it.name = it.name == null ? String(it.code || 'Item') : String(it.name);
+                }
             });
-            return list;
+            return bad ? list.filter(s => s && typeof s === 'object') : list;
         }
 
 //@fn ensureViewedBranchLoaded
@@ -3049,7 +3060,11 @@ function saleCtxNow() {
 //@fn stampLocalContext
 // Called on every push (from slimPayloadForPush): sales whose reference THIS device issued get the context captured then (never
 // a guess — records from other devices are left alone), and this device's stock movements still waiting for the server get the
-// device / till / station they came from and a count of how many times they have been sent (the server applies each once anyway).
+// device / till / station they came from — ONCE (only while `dev` is missing).
+// zip 186 (INCIDENT: one movement re-sent 1,391 times, 21.8M audit rows): this used to ALSO add one to `m.tries` INSIDE the movement on every push.
+// The record's data therefore changed on every send, so its signature never matched the acknowledged one (slimPayloadForPush sent it again, forever)
+// and the server saw "new data" each time. A send counter never lives in a record again: retries are counted in a separate per-device map
+// (pushNoteOutcome: pos_push_retry_v1), used only for backoff and the "needs attention" list.
 function stampLocalContext(payload) {
             try {
                 let issued = {};
@@ -3064,7 +3079,6 @@ function stampLocalContext(payload) {
                     payload.stockMovementLog.forEach((m) => {
                         if (!m || !m.lg || m._srv) return;
                         if (!m.dev) { m.dev = dev; m.till = till; if (station) m.stn = station; }
-                        m.tries = (Number(m.tries) || 0) + 1;
                     });
                 }
             } catch (e) { /* never block a push */ }
@@ -5512,6 +5526,8 @@ function perfInstall() {
 
 //@fn markSync
 function markSync(status) {
+            // zip 186: the "N items need attention — Retry" strip, the "server storage is full" notice and the slow automatic retry of parked records ride on the sync dot's updates
+            try { syncAttentionBar(); syncDeadProbe(); } catch (e) { /* cosmetic */ }
             // zip 129: connectivity is decided in ONE place (window.PosNet, the connectivity block). A sync that worked says so; a request
             // that got no answer is only a reason for it to CHECK — it never sets "offline" by itself.
             try {
@@ -5586,7 +5602,7 @@ async function pullState() {
 //@fn pullStateOnce
 async function pullStateOnce() {
             // navigator.onLine === false is only a hint; ask the server before believing it.
-            if (navigator.onLine === false && (await probeServer(4000)) === 0) {
+            if (navigator.onLine === false && (await probeServer(9000)) === 0) {      // zip 186: 9 s (was 4 s): on a slow line the "no" came from impatience, and this pull is what would have brought the device back online
                 markSync('offline');
                 return;
             }
@@ -5595,7 +5611,12 @@ async function pullStateOnce() {
             // lost for good (\"I changed it, refreshed, and it was back\"). If they can't be sent, keep them and skip this pull.
             if (hasUnsyncedWork()) {
                 const sent = await flushPendingPush();
-                if (!sent) return;
+                if (!sent) {
+                    // zip 186: ...but the rest of the shop must not go dark meanwhile. Other tills' NEW sales are only ever added (nothing here is replaced), so they
+                    // are taken even while this device's own push is stuck: the owner keeps seeing his employees' sales.
+                    try { if (typeof window.salesJournalPullWhileStuck === 'function') await window.salesJournalPullWhileStuck(); } catch (e) { /* the next poll tries again */ }
+                    return;
+                }
             }
             markSync('syncing');
             // zip 147b: a FULL fetch asked for (recover missing sales, "fetch from the server", repair sync) must stay full. Those callers
@@ -5640,7 +5661,10 @@ async function pullStateOnce() {
                     // only then sends it): the server's older form must not land on top of it in that gap. Read-only look at a flag; login code untouched.
                     if (hasUnsyncedWork() || window.__sealing) {
                         markSync('syncing');
-                        setTimeout(() => { try { Promise.resolve(flushThenPull()).catch(() => {}); } catch (e2) { /* the poll will */ } }, 300);
+                        try { if (typeof window.salesJournalMergeNewSales === 'function') window.salesJournalMergeNewSales(data); } catch (e2) { /* zip 186: other tills' NEW sales are taken now (only added, nothing replaced) */ }
+                        // zip 186: 300 ms while pushes are allowed; while they are being held back (refusal backoff, storage full, not the sending tab, circuit breaker)
+                        // the wait of that hold - this branch used to be the other half of the push -> pull -> push loop of the incident
+                        setTimeout(() => { try { Promise.resolve(flushThenPull()).catch(() => {}); } catch (e2) { /* the poll will */ } }, typeof syncDeferMs === 'function' ? syncDeferMs() : 300);
                         return;
                     }
                     applyRemotePayload(preparePulledPayload(data));
@@ -5875,6 +5899,7 @@ async function pushNow(opts) {
                         // the sale "sent" first and then failing to parse left it acknowledged but never uploaded.
                         let data = null;
                         try { data = await res.json(); } catch (e) { data = null; }
+                        if ((!data || typeof data !== 'object') && res.status === 204) data = {};      // zip 186: "accepted, nothing to say" is a success too (any 2xx is)
                         if (!data || typeof data !== 'object') { window.__pushFailKind = 'network'; markSync('error'); return false; }
                         slim.commit();
                         pushBacklogAfter(slim);
@@ -5895,8 +5920,18 @@ async function pushNow(opts) {
                             || (Array.isArray(slim.body.inventory) && slim.body.inventory.some((r) => r && r.code != null && typeof r.qty === 'number' && typeof r._sq !== 'number'))));
                         // heldUpTo === 0 means this device has never pulled: whatever the server held before our push is unseen too, so it must be fetched.
                         const missedSomething = movedStock || (typeof data.prev === 'number' && data.prev > heldUpTo);
+                        // zip 186: this follow-up pull used to run after EVERY push that carried a movement, and a movement the server had not stamped (`_srv`) was
+                        // carried by every later push too: push -> pull -> push, every ~0.4 s. It now runs at once only when the push carried a movement the
+                        // server had never seen (or the ledger was just switched on); otherwise at most once per 5 s, 10 s, 20 s ... (postPushPullOk) - the
+                        // 7 s poll fetches the result anyway, and the marker is not moved, so nothing is missed.
+                        let freshMove = ledgerJustOn;
+                        try {
+                            const sentIds = window.__movSent || (window.__movSent = new Set());
+                            (Array.isArray(slim.body.stockMovementLog) ? slim.body.stockMovementLog : []).forEach((m) => { if (m && m.id != null && !sentIds.has(String(m.id))) { sentIds.add(String(m.id)); freshMove = true; } });
+                            if (sentIds.size > 5000) sentIds.clear();
+                        } catch (e) { /* the rate limit below still applies */ }
                         if (!missedSomething) safeSetItem('pos_last_synced_at', String(data.updatedAt || payload.updatedAt));
-                        else setTimeout(() => { try { if (window.__pullInFlight) window.__pullAgain = true; else pullState(); } catch (e) { /* the poll will */ } }, 50);
+                        else if (postPushPullOk(window.__postPush || (window.__postPush = {}), Date.now(), freshMove) && !window.__tabInactive) setTimeout(() => { try { if (window.__pullInFlight) window.__pullAgain = true; else pullState(); } catch (e) { /* the poll will */ } }, 50);
                         if (!slim.more) ackLocalDirty(seqAtStart);               // more batches to send: still "unsent work"
                         schedulePushVerify(slim.body);                            // zip 146: then check the server really kept them
                         // zip 185: the baseline is what was SENT, not whatever the live lists look like now (an edit made while the push was on its
@@ -9018,6 +9053,10 @@ function slimPayloadForPush(payload) {
             const scale = window.__pushBatchScale || 1;
             const CAP = { salesLog: 150, stockMovementLog: 400, returns: 150, expenses: 150, tradeCredits: 150, attendanceLog: 300, adminActivityLog: 300, dispatchLog: 150, svcJobs: 120, svcAppointments: 150 };
             const known = typeof window.salesJournalKnownOnServer === 'function' ? window.salesJournalKnownOnServer : null;
+            // zip 186: records the server kept refusing wait in the "needs attention" list (never deleted); they are left out of the automatic pushes
+            // until Retry puts them back (syncRetryAttention). A record that is left out here is NOT marked as acknowledged (it is not in `pending`).
+            let deadKeys = null;
+            try { deadKeys = typeof syncDeadKeys === 'function' ? syncDeadKeys() : null; } catch (e) { deadKeys = null; }
             LOG_FIELDS.forEach((field) => {
                 const arr = payload[field];
                 if (!Array.isArray(arr) || arr.length === 0) return;
@@ -9032,6 +9071,7 @@ function slimPayloadForPush(payload) {
                     // zip 156: the journal's "already on the server" answer covers only a handful of fields. It is trusted for a record this session has
                     // never sent or seen acknowledged - not after that, or a later edit (a delivery status, a customer name) would be marked as sent unsent.
                     if (known && ack.get(k) === undefined && known(field, r)) { ack.set(k, sg); continue; }
+                    if (deadKeys && r.id != null && deadKeys.has(field + '|' + r.id)) continue;
                     changed.push(r);
                 }
                 const cap = Math.max(10, Math.floor((CAP[field] || 200) * scale));
@@ -9122,10 +9162,12 @@ function slimPayloadForPush(payload) {
             try { body._till = getOrCreateDeviceId(); } catch (e) { /* no id: the device keeps its own reference form */ }
             // and which app release it runs (device list in Settings and the Owner Console)
             try { body._dev = { v: window.__APP_RELEASE || '', app: (location.pathname.split('/')[1] || 'shop').slice(0, 20) }; } catch (e) { /* optional */ }
+            window.__lastPushBody = body;          // zip 186: what the failure counter (pushErrorCode -> pushNoteOutcome) counts against
             return {
                 body,
                 more,
                 commit() {
+                    try { if (typeof pushNoteOutcome === 'function') pushNoteOutcome(body, { ok: true }); } catch (e) { /* never block a push */ }
                     Object.keys(pending).forEach((f) => { const m = window.__pushAck[f] || (window.__pushAck[f] = new Map()); pending[f].forEach((sg, k) => m.set(k, sg)); });
                     fieldSigs.forEach((sg, f) => { window.__fieldAck.set(f, sg); });
                     Object.keys(keysNow).forEach((c) => { window.__keyAck[c] = keysNow[c]; });
@@ -9141,6 +9183,7 @@ function slimPayloadForPush(payload) {
 // After a push the server accepted (zip 129): more batches left -> send the next one right away; none left -> the backlog is done.
 function pushBacklogAfter(slim) {
             window.__pushBacklog = !!(slim && slim.more);
+            if (window.__pushBacklog && window.__tabInactive) window.__pushBacklog = false;      // zip 186: a tab another tab has taken over never carries on by itself
             if (window.__pushBacklog) {
                 setTimeout(() => {
                     try { if (typeof queuePush === 'function') queuePush(); else if (typeof pushNow === 'function') pushNow(); } catch (e) { /* the poll sends it */ }
@@ -9156,9 +9199,298 @@ function pushShrinkBatches() {
             window.__pushBatchScale = Math.max(1 / 16, (window.__pushBatchScale || 1) / 2);
         }
 
+//@fn pushBackoffMs
+// zip 186 (INCIDENT: one stock movement re-sent 1,391 times in 9 minutes). How long to wait before sending the same record(s) again after the
+// `fails`-th failure in a row: 2 s, 4 s, 8 s ... capped at 5 minutes, plus up to 25% random spread (two tabs / devices must not collide again), never
+// above the cap. `retryAfterMs` (the server's Retry-After, at most 30 s) is a floor. Pure.
+function pushBackoffMs(fails, retryAfterMs, rnd, capMs) {
+            const cap = capMs > 0 ? capMs : 300000;
+            const n = Math.min(30, Math.max(1, Math.floor(Number(fails) || 1)));
+            const base = Math.min(cap, 2000 * Math.pow(2, n - 1));
+            const r = typeof rnd === 'number' && rnd >= 0 && rnd <= 1 ? rnd : Math.random();
+            const floor = Math.min(30000, Math.max(0, Number(retryAfterMs) || 0));
+            return Math.min(cap, Math.max(Math.round(base * (1 + 0.25 * r)), floor));
+        }
+
+//@fn syncBreaker
+// zip 186: the device-wide circuit breaker. `starts` = the times (ms) this device started a push, newest last (pruned here). More than `limit` (30)
+// started within `windowMs` (60 s) means something is looping: from then on at most one push per `slowMs` (15 s) is allowed until the rate falls.
+// -> { allow, waitMs, tripped }. Pure apart from pruning `starts`.
+function syncBreaker(starts, now, opt) {
+            const o = opt || {};
+            const win = o.windowMs > 0 ? o.windowMs : 60000, limit = o.limit > 0 ? o.limit : 30, slow = o.slowMs > 0 ? o.slowMs : 15000;
+            while (starts.length && (now - starts[0] > win || starts[0] > now + win)) starts.shift();
+            if (starts.length <= limit) return { allow: true, waitMs: 0, tripped: false };
+            const wait = slow - (now - starts[starts.length - 1]);
+            return wait > 0 ? { allow: false, waitMs: wait, tripped: true } : { allow: true, waitMs: 0, tripped: true };
+        }
+
+//@fn syncLeaderDecide
+// zip 186: ONE sender per device. `lease` = { id, at } as last written by whichever tab sends (localStorage); `me` = this tab's id. This tab leads when
+// there is no lease, the lease is its own, or the lease has not been renewed for `staleMs` (20 s: the leader is dead / frozen / closed -> fail open).
+// -> { leader, lease } where `lease` is what this tab should write when it leads. Pure.
+function syncLeaderDecide(lease, me, now, staleMs) {
+            const stale = staleMs > 0 ? staleMs : 20000;
+            const l = lease && typeof lease === 'object' ? lease : null;
+            const age = l ? now - Number(l.at) : Infinity;
+            const live = !!(l && l.id && l.id !== me && age >= -stale && age < stale);
+            return live ? { leader: false, lease: l } : { leader: true, lease: { id: me, at: now } };
+        }
+
+//@fn postPushPullOk
+// zip 186: the pull that follows a push which moved stock ("fetch the server's figures"). `fresh` = the push carried something the server had never seen
+// (a new movement, the ledger just switched on): pull at once, as before. Otherwise (a re-send, a push with nothing new) at most one pull per 5 s, then
+// 10 s, 20 s ... up to 60 s while nothing new arrives - the ordinary 7 s poll still fetches the result. `st` = { at, streak }, mutated. Pure.
+function postPushPullOk(st, now, fresh, baseMs, capMs) {
+            if (fresh) { st.streak = 0; st.at = now; return true; }
+            const wait = Math.min(capMs > 0 ? capMs : 60000, (baseMs > 0 ? baseMs : 5000) * Math.pow(2, Math.min(10, st.streak || 0)));
+            if (st.at && now - st.at >= 0 && now - st.at < wait) return false;
+            st.streak = (st.streak || 0) + 1; st.at = now;
+            return true;
+        }
+
+//@fn deadLetterStep
+// zip 186: one failed push that the server ANSWERED, for the records (`keys` = 'field|id') it carried. Each record's failure count (`retries`) goes up
+// by one; at `cap` (8) the record moves to `dead` (the "needs attention" list - never deleted, never cleared automatically). `opt.immediate` moves
+// them at once (the server said this record is permanently refused), `opt.perm` marks them as not to be probed again by themselves. Both maps are
+// mutated; returns the keys moved. Pure otherwise.
+function deadLetterStep(retries, dead, keys, cap, now, why, opt) {
+            const lim = cap > 0 ? cap : 8, moved = [];
+            (keys || []).forEach((k) => {
+                if (dead[k]) return;
+                const e = retries[k] || (retries[k] = { n: 0, at: 0 });
+                e.n = (Number(e.n) || 0) + 1; e.at = now;
+                if ((opt && opt.immediate) || e.n >= lim) {
+                    const i = k.indexOf('|');
+                    dead[k] = { f: k.slice(0, i), id: k.slice(i + 1), at: now, n: e.n, why: String(why || '').slice(0, 160), perm: !!(opt && opt.perm) };
+                    moved.push(k);
+                }
+            });
+            return moved;
+        }
+
+//@fn syncStateLoad
+// zip 186: a small per-app map kept in localStorage (the retry counts, the "needs attention" list). Never throws.
+function syncStateLoad(name) {
+            try {
+                const o = JSON.parse(localStorage.getItem(appStoreKey(name)) || '{}');
+                return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+            } catch (e) { return {}; }
+        }
+
+//@fn syncStateSave
+function syncStateSave(name, obj) {
+            try { localStorage.setItem(appStoreKey(name), JSON.stringify(obj)); } catch (e) { /* kept in memory; the list is rebuilt by the next failure */ }
+        }
+
+//@fn syncRetryMap
+// 'field|id' -> { n, at }: how many times the server ANSWERED a push carrying this record with a failure (not "no answer": being offline never counts).
+function syncRetryMap() {
+            return window.__syncRetries || (window.__syncRetries = syncStateLoad('pos_push_retry_v1'));
+        }
+
+//@fn syncDeadMap
+// 'field|id' -> { f, id, at, n, why, perm }: the records the server kept refusing. They stay on this device and are left out of automatic pushes until the
+// person taps Retry (or the slow probe in syncDeadProbe succeeds); nothing here is ever deleted by the app.
+function syncDeadMap() {
+            return window.__syncDead || (window.__syncDead = syncStateLoad('pos_push_deadletter_v1'));
+        }
+
+//@fn syncDeadKeys
+function syncDeadKeys() {
+            const m = syncDeadMap();
+            return Object.keys(m).length ? new Set(Object.keys(m)) : null;
+        }
+
+//@fn syncPausedUntil
+// When the pause after "server storage is full" ends (0 = not paused). Kept in localStorage, so reloading the page does not restart a storm.
+function syncPausedUntil() {
+            let until = Number(window.__pushPausedUntil) || 0;
+            try { const o = JSON.parse(localStorage.getItem(appStoreKey('pos_push_pause_v1')) || 'null'); if (o && Number(o.until) > until) until = Number(o.until); } catch (e) { /* memory only */ }
+            return until > Date.now() ? until : 0;
+        }
+
+//@fn syncGateCheck
+// zip 186: may a push start NOW? (peek = just ask: change nothing.) Fails OPEN: any error in here lets the push go. -> { ok, waitMs, why }.
+//  * a tab another tab has taken over (one-tab block) never sends;
+//  * a person tapping Retry / a caller that someone waits on ({ force | priority }) always goes;
+//  * after "server storage is full" (507) nothing is sent for 5 minutes;
+//  * while the server keeps ANSWERING with a refusal, the wait grows 2 s, 4 s ... 5 min (window.__pushBackoffUntil). No answer at all (offline) is not
+//    delayed here: reconnecting must send at once (flushPendingPush probes the server);
+//  * one sender per device: a tab that is not the leader sends at most once per 15 s (a trickle, so its own unsent work is never stranded);
+//  * the circuit breaker (syncBreaker).
+function syncGateCheck(o, peek) {
+            try {
+                const now = Date.now();
+                if (window.__tabInactive) return { ok: false, waitMs: 60000, why: 'inactive' };
+                if (o && (o.force || o.priority)) return { ok: true, waitMs: 0, why: '' };
+                const paused = syncPausedUntil();
+                if (paused) return { ok: false, waitMs: paused - now, why: 'storage_full' };
+                if (window.__pushFailed && window.__pushFailKind !== 'network' && (window.__pushBackoffUntil || 0) > now) return { ok: false, waitMs: window.__pushBackoffUntil - now, why: 'backoff' };
+                // one sender per device. A page that has just opened is the working tab (the one-tab block freezes the older one), so its FIRST push takes the lease.
+                const first = !window.__syncTabId;
+                const me = window.__syncTabId || (peek ? 'peek' : (window.__syncTabId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)));
+                const key = 'pos_sync_leader_v1:' + (location.pathname || '/');
+                let lease = null;
+                try { lease = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { lease = null; }
+                const d = first && !peek ? { leader: true, lease: { id: me, at: now } } : syncLeaderDecide(lease, me, now, window.__syncLeaderStaleMs);
+                if (!d.leader) {
+                    const wait = 15000 - (now - (window.__syncNonLeaderAt || 0));
+                    if (wait > 0) return { ok: false, waitMs: wait, why: 'follower' };
+                    if (!peek) window.__syncNonLeaderAt = now;
+                } else if (!peek && (!lease || lease.id !== me || now - Number(lease.at) > 2000)) {
+                    try { localStorage.setItem(key, JSON.stringify(d.lease)); } catch (e) { /* no storage: this tab simply leads */ }
+                }
+                // circuit breaker
+                const starts = window.__pushStarts || (window.__pushStarts = []);
+                const b = syncBreaker(starts, now, window.__pushBacklog === true ? { limit: 200 } : null);
+                if (!b.allow) return { ok: false, waitMs: b.waitMs, why: 'breaker' };
+                if (!peek) {
+                    starts.push(now);
+                    if (b.tripped && !window.__breakerLogged) { window.__breakerLogged = now; try { syncJournal('breaker', 'more than 30 sends in a minute: slowing to one every 15 s — nothing is lost, the data stays on this device'); } catch (e) { /* diagnostics */ } }
+                    else if (!b.tripped) window.__breakerLogged = 0;
+                }
+                return { ok: true, waitMs: 0, why: '' };
+            } catch (e) { return { ok: true, waitMs: 0, why: '' }; }
+        }
+
+//@fn syncDeferMs
+// How long a caller that wants to "send first, then pull" (pullStateOnce: unsent work or a hash seal in progress when the server's copy arrives) should
+// wait before trying again. 300 ms at first; every further deferral within two minutes doubles it (0.6 s, 1.2 s ... 60 s) - that retry used to be a tight
+// loop (push, pull, push ... every 0.4 s) whenever the "unsent work" flag did not clear. While pushes are being held back by syncGateCheck it waits at
+// least that long.
+function syncDeferMs() {
+            try {
+                const now = Date.now();
+                window.__deferStreak = now - (window.__deferAt || 0) < 120000 ? Math.min(12, (window.__deferStreak || 0) + 1) : 0;
+                window.__deferAt = now;
+                const ms = Math.min(60000, 300 * Math.pow(2, Math.max(0, window.__deferStreak - 1)));
+                const g = syncGateCheck(null, true);
+                return g.ok ? ms : Math.max(ms, Math.min(300000, Math.round(g.waitMs) + 50));
+            } catch (e) { return 300; }
+        }
+
+//@fn syncPause
+// "Server storage is full" (507 / storage_full): stop sending for `ms` (5 min), keep everything on this device, tell the cashier.
+function syncPause(ms, why) {
+            const until = Date.now() + (ms > 0 ? ms : 300000);
+            window.__pushPausedUntil = until;
+            try { localStorage.setItem(appStoreKey('pos_push_pause_v1'), JSON.stringify({ until, why: String(why || 'storage_full') })); } catch (e) { /* memory only */ }
+            if (!window.__pausedLogged || Date.now() - window.__pausedLogged > 60000) {
+                window.__pausedLogged = Date.now();
+                try { syncJournal('paused', 'the server said its storage is full: sending paused for 5 minutes — your sales are safe on this device and upload automatically'); } catch (e) { /* diagnostics */ }
+            }
+            try { syncAttentionBar(); } catch (e) { /* cosmetic */ }
+        }
+
+//@fn pushNoteOutcome
+// zip 186: what a push that reached the server did to its log records (sales, stock movements, returns, expenses), counted per record id - never inside
+// the record. `res` = { ok:true } | { ok:false, status, code, data }. A 2xx (also `duplicate:true`) clears the records' failure counts and takes them off the
+// "needs attention" list. A refusal counts one failure per record carried; at 8 the record is parked in the "needs attention" list. A permanent refusal
+// ({ ok:false, permanent:true, ids? }) parks the named records at once (all the log records of that push when no ids are named: they are not lost, Retry
+// sends them again). A 507 / storage_full pauses sending for 5 minutes. Refusals that are about the request, not the records (401/403 licence, 408, 413
+// too large, 425, 429) are not counted.
+function pushNoteOutcome(body, res) {
+            try {
+                const keys = [];
+                ['salesLog', 'stockMovementLog', 'returns', 'expenses'].forEach((f) => { (body && Array.isArray(body[f]) ? body[f] : []).forEach((r) => { if (r && r.id != null) keys.push(f + '|' + r.id); }); });
+                const retries = syncRetryMap(), dead = syncDeadMap(), now = Date.now();
+                if (res && res.ok) {
+                    let changed = false, deadChanged = false;
+                    keys.forEach((k) => { if (retries[k]) { delete retries[k]; changed = true; } if (dead[k]) { delete dead[k]; deadChanged = true; } });
+                    if (window.__pushPausedUntil || syncPausedUntil()) { window.__pushPausedUntil = 0; try { localStorage.removeItem(appStoreKey('pos_push_pause_v1')); } catch (e) { /* none */ } deadChanged = true; }
+                    if (changed) syncStateSave('pos_push_retry_v1', retries);
+                    if (deadChanged) { syncStateSave('pos_push_deadletter_v1', dead); syncAttentionBar(); }
+                    return;
+                }
+                if (window.__pushAttemptLast === false) return;           // an inner "busy" retry of the same push: one cycle counts once (see trackPush)
+                const st = Number(res && res.status) || 0, code = String((res && res.code) || ''), data = res && res.data && typeof res.data === 'object' ? res.data : {};
+                if (st === 507 || code === 'storage_full') { syncPause(300000, code || 'http 507'); return; }
+                if (!st || [401, 403, 408, 413, 425, 429].indexOf(st) >= 0 || code === 'push_too_large') return;
+                let moved = [];
+                const named = [].concat(data.ids || data.recIds || data.rec_ids || data.records || []).map((x) => String(x && typeof x === 'object' ? x.id : x));
+                if (data.permanent === true) {
+                    const hit = named.length ? keys.filter((k) => named.indexOf(k.slice(k.indexOf('|') + 1)) >= 0) : keys;
+                    moved = deadLetterStep(retries, dead, hit, 8, now, data.error || data.message || code || ('refused (' + st + ')'), { immediate: true, perm: true });
+                    try { if (typeof showToast === 'function') showToast('The server refused ' + (hit.length === 1 ? 'one item' : hit.length + ' items') + ' and will not take ' + (hit.length === 1 ? 'it' : 'them') + ' as sent — ' + (hit.length === 1 ? 'it is' : 'they are') + ' kept safely on this device and listed under "need attention".', true); } catch (e) { /* cosmetic */ }
+                } else {
+                    moved = deadLetterStep(retries, dead, keys, 8, now, data.error || data.message || code || ('server answered ' + st));
+                }
+                syncStateSave('pos_push_retry_v1', retries);
+                if (moved.length) {
+                    syncStateSave('pos_push_deadletter_v1', dead);
+                    try { syncJournal('attention', moved.length + ' item' + (moved.length === 1 ? '' : 's') + ' kept failing and need attention (kept on this device, tap Retry): ' + moved.slice(0, 3).join(', ')); } catch (e) { /* diagnostics */ }
+                    syncAttentionBar();
+                    window.__deadProbeAt = now + 600000;
+                }
+            } catch (e) { /* never block a push */ }
+        }
+
+//@fn syncAttentionBar
+// zip 186: the small "N items need attention — Retry" strip (and the "Server storage is full" notice) next to the sync dot. Redrawn only when it changes.
+function syncAttentionBar() {
+            try {
+                if (typeof document === 'undefined' || !document.body) return;
+                const n = Object.keys(syncDeadMap()).length, full = syncPausedUntil() > 0;
+                let el = document.getElementById('sync-attention-bar');
+                if (!n && !full) { if (el) el.remove(); return; }
+                const sig = (full ? 'F' : '') + n;
+                if (el && el.dataset.sig === sig) return;
+                if (el) el.remove();
+                el = document.createElement('div');
+                el.id = 'sync-attention-bar'; el.dataset.sig = sig; el.className = 'no-print';
+                el.setAttribute('role', 'status');
+                el.style.cssText = 'position:fixed; left:12px; bottom:12px; z-index:99989; background:#9a6700; color:#fff; padding:8px 12px; border-radius:8px; font:13px system-ui,sans-serif; box-shadow:0 4px 14px rgba(0,0,0,.3); max-width:calc(94vw / var(--pos-z,1)); display:flex; gap:10px; align-items:center;';
+                const msg = document.createElement('span');
+                msg.textContent = full ? 'Server storage is full — your sales are safe on this device and will upload automatically.' + (n ? ' ' + n + ' item' + (n === 1 ? '' : 's') + ' need attention.' : '')
+                    : n + ' item' + (n === 1 ? '' : 's') + ' need attention — kept safely on this device.';
+                const btn = document.createElement('button');
+                btn.type = 'button'; btn.textContent = 'Retry';
+                btn.style.cssText = 'border:none; border-radius:6px; padding:5px 12px; font-weight:700; cursor:pointer; background:#fff; color:#6b4600;';
+                btn.onclick = () => { try { syncRetryAttention(); } catch (e) { /* the automatic retry carries on */ } };
+                el.appendChild(msg); el.appendChild(btn);
+                document.body.appendChild(el);
+            } catch (e) { /* cosmetic */ }
+        }
+
+//@fn syncRetryAttention
+// The "Retry" button (and the slow automatic probe): forget every pause and backoff, put the "needs attention" records back into the push (one more failure
+// parks them again), and send now. Nothing is deleted; a record the server accepts leaves the list by itself (pushNoteOutcome).
+async function syncRetryAttention(auto) {
+            const dead = syncDeadMap(), retries = syncRetryMap();
+            Object.keys(dead).forEach((k) => { if (!(auto && dead[k].perm)) { retries[k] = { n: 7, at: Date.now() }; delete dead[k]; } });
+            syncStateSave('pos_push_deadletter_v1', dead); syncStateSave('pos_push_retry_v1', retries);
+            window.__pushBackoffUntil = 0; window.__pushFails = 0; window.__pushPausedUntil = 0; window.__pushStarts = []; window.__syncNonLeaderAt = 0;
+            try { localStorage.removeItem(appStoreKey('pos_push_pause_v1')); } catch (e) { /* none */ }
+            try { markLocalDirty(); } catch (e) { /* none */ }
+            try { syncAttentionBar(); } catch (e) { /* cosmetic */ }
+            try { markSync('syncing'); } catch (e) { /* cosmetic */ }
+            try { return typeof pushNow === 'function' ? await pushNow({ force: true, skipPrePull: true }) : (typeof doPush === 'function' ? (await doPush(), !window.__pushFailed) : false); } catch (e) { return false; }
+        }
+
+//@fn syncDeadProbe
+// A record parked as "needs attention" because the server answered with errors (not a permanent refusal) is tried again by itself every 10 minutes, so a
+// server that was down for an hour does not leave a day's sales waiting for a tap. Called from markSync (cheap: a timestamp test).
+function syncDeadProbe() {
+            try {
+                if (window.__tabInactive) return;
+                if (window.__deadProbeAt === undefined) { if (Object.keys(syncDeadMap()).length) window.__deadProbeAt = Date.now() + 60000; return; }   // after a reload: first look a minute in
+                if (!window.__deadProbeAt || Date.now() < window.__deadProbeAt) return;
+                window.__deadProbeAt = Date.now() + 600000;
+                const dead = syncDeadMap();
+                if (!Object.keys(dead).some((k) => !dead[k].perm) || syncPausedUntil()) return;
+                if (window.__pushInFlight > 0) return;
+                Promise.resolve(syncRetryAttention(true)).catch(() => {});
+            } catch (e) { /* the Retry button remains */ }
+        }
+
 //@fn pushErrorCode
 async function pushErrorCode(res) {
-            try { const b = await res.clone().json(); return (b && b.code) || ''; } catch (e) { return ''; }
+            let b = null;
+            try { b = await res.clone().json(); } catch (e) { b = null; }
+            // zip 186: the server ANSWERED a push with a refusal: count it against the records that push carried (pushNoteOutcome)
+            try { pushNoteOutcome(window.__lastPushBody, { ok: false, status: res && res.status, code: (b && b.code) || '', data: b }); } catch (e) { /* never block a push */ }
+            return (b && b.code) || '';
         }
 
 //@fn schedulePushVerify
@@ -9184,6 +9516,7 @@ function schedulePushVerify(body) {
 
 //@fn verifyPushedRecords
 async function verifyPushedRecords(last) {
+            if (window.__tabInactive) return;                                  // zip 186: a tab another tab has taken over asks nothing and re-sends nothing
             const pend = window.__pushVerify || {};
             const lost = {};
             let nLost = 0, unanswered = false;
@@ -9193,7 +9526,8 @@ async function verifyPushedRecords(last) {
                 const byId = new Map();
                 try { (collectSyncPayload()[f] || []).forEach((r) => { if (r && r.id != null) byId.set(String(r.id), r); }); } catch (e) { /* none */ }
                 for (let i = 0; i < ids.length; i += 2000) {
-                    const part = ids.slice(i, i + 2000).filter((id) => { const r = byId.get(id); return r && r._deleted !== true; });
+                    const deadNow = typeof syncDeadKeys === 'function' ? syncDeadKeys() : null;     // zip 186: records waiting in "needs attention" are not "lost" - they are held back on purpose
+                    const part = ids.slice(i, i + 2000).filter((id) => { const r = byId.get(id); return r && r._deleted !== true && !(deadNow && deadNow.has(f + '|' + id)); });
                     if (!part.length) continue;
                     let have = null;
                     try {
@@ -9206,9 +9540,14 @@ async function verifyPushedRecords(last) {
                     part.forEach((id) => {
                         if (have[id] != null) return;
                         // never a loop: a record the server keeps refusing (e.g. older than its archive) is re-sent at most 5 times
-                        const n = (window.__pushVerifyTries.get(f + '|' + id) || 0) + 1;
-                        window.__pushVerifyTries.set(f + '|' + id, n);
+                        // zip 186: ...and only after its own backoff (2 s, 4 s, 8 s ...) has passed since the last time it was sent because it was missing
+                        const vk = f + '|' + id;
+                        const waits = window.__pushVerifyAt || (window.__pushVerifyAt = new Map());
+                        if (Date.now() < (waits.get(vk) || 0)) { unanswered = true; return; }      // not yet: stays pending, looked at again by the next check
+                        const n = (window.__pushVerifyTries.get(vk) || 0) + 1;
+                        window.__pushVerifyTries.set(vk, n);
                         if (n > 5) return;
+                        waits.set(vk, Date.now() + pushBackoffMs(n));
                         (lost[f] || (lost[f] = [])).push(id); nLost++;
                     });
                 }
@@ -9499,13 +9838,25 @@ function notePushHttp(res) {
 
 //@fn trackPush
 async function trackPush(fn, o) {
-            const maxTries = o && o.maxAttempts > 0 ? Math.floor(o.maxAttempts) : 3;     // zip 161: the invite push tries once and reports (its caller shows progress and asks again)
+            let maxTries = o && o.maxAttempts > 0 ? Math.floor(o.maxAttempts) : 3;     // zip 161: the invite push tries once and reports (its caller shows progress and asks again)
+            // zip 186 (INCIDENT): EVERY push - the 300 ms timer, flushThenPull, the retry timer, the backlog, a pull that sends first, another tab - comes through
+            // here, so this is where a push that must wait (a refusal answered a moment ago, "storage full", a tab that is not the sender, the circuit
+            // breaker) is held back. Nothing is dropped: the change stays queued (hasUnsyncedWork) and ONE timer sends it when the wait is over.
+            const gate = syncGateCheck(o);
+            if (!gate.ok) {
+                if (gate.why !== 'inactive') {
+                    clearTimeout(window.__pushGateT);
+                    window.__pushGateT = setTimeout(() => { try { if (!(window.__pushInFlight > 0) && typeof hasUnsyncedWork === 'function' && hasUnsyncedWork()) flushPendingPush(); } catch (e) { /* the poll will */ } }, Math.max(1000, Math.min(300000, Math.round(gate.waitMs) + 50)));
+                }
+                return false;
+            }
             // Wraps every push so the app always knows whether it has changes the server has not acknowledged yet:
             // queued (see queuePush), in flight, or failed. commit() (called only when the server says OK) clears "failed".
             window.__pushInFlight = (window.__pushInFlight || 0) + 1;
             window.__pushQueued = false;
             try { if (typeof window.salesJournalPushStarted === 'function') window.salesJournalPushStarted(); } catch (e) { /* bookkeeping */ }
             const wasFailing = (window.__pushFails || 0) > 0;
+            if (wasFailing && !(o && o.maxAttempts > 0)) maxTries = 1;     // zip 186: already failing = ONE try per backoff cycle (the quick "busy" retries are for a first collision)
             const jitter = (ms) => ms + Math.floor(Math.random() * ms * 0.6);
             try {
                 let r;
@@ -9514,6 +9865,7 @@ async function trackPush(fn, o) {
                 for (let attempt = 0; ; attempt++) {
                     window.__pushFailed = true;
                     window.__pushFailKind = '';
+                    window.__pushAttemptLast = attempt >= maxTries - 1;          // zip 186: only the last try of a cycle counts against the records (pushNoteOutcome)
                     r = await fn();
                     if (!window.__pushFailed || window.__pushFailKind !== 'busy' || attempt >= maxTries - 1) break;
                     markSync('syncing');
@@ -9547,11 +9899,14 @@ async function trackPush(fn, o) {
                 clearTimeout(window.__pushRetryTimer);
                 if (window.__pushFailed) {
                     window.__pushFails = (window.__pushFails || 0) + 1;
-                    const wait = window.__pushFailKind === 'busy'
-                        ? Math.max(window.__pushRetryAfterMs || 0, jitter(Math.min(10000, 1000 * Math.pow(2, window.__pushFails))))
-                        : Math.min(15000, 2000 * Math.pow(2, window.__pushFails));
+                    // zip 186: a refusal the server ANSWERED backs off 2 s, 4 s, 8 s ... up to 5 minutes (with jitter) and is held by syncGateCheck for every caller;
+                    // no answer at all (offline) keeps the short wait, because coming back online must send at once.
+                    let wait = window.__pushFailKind === 'network'
+                        ? Math.min(15000, 2000 * Math.pow(2, window.__pushFails))
+                        : pushBackoffMs(window.__pushFails, window.__pushRetryAfterMs);
+                    wait = Math.max(wait, Math.max(0, syncPausedUntil() - Date.now()));       // "server storage is full": the pause is the wait
                     window.__pushBackoffUntil = Date.now() + wait;
-                    if (window.__pushFailKind !== 'http' || window.__pushFails < 6) {
+                    if (!window.__tabInactive) {
                         window.__pushRetryTimer = setTimeout(() => {
                             try { if (!(window.__pushInFlight > 0) && typeof hasUnsyncedWork === 'function' && hasUnsyncedWork()) flushPendingPush(); } catch (e) { /* the poll will */ }
                         }, wait + 50);
@@ -9585,6 +9940,22 @@ async function syncRetryNow() {
 // was only ever saved locally, making it look like it silently reverted.
 // This counter survives the reload; see hasUnsyncedWork() and pushNow().
 function markLocalDirty() {
+            // zip 186: the stock movements a screen has just logged are saved WITH the change they belong to. logStockMovement only appends to
+            // the list in memory; the restock / purchase screens saved the stock figure but not the movement, and a page that was refreshed (or
+            // closed) right after - with the push already on its way, its answer lost - came back holding the new quantity and NO movement for it.
+            // The server HAD applied that movement, and the safety net ("stock correction, change not itemised") then logged the same difference
+            // a second time: restock 50, refresh, stock 200 instead of 150. Saved only when the list changed (length / last id), so it costs nothing on edits that
+            // move no stock.
+            try {
+                if (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog) && stockMovementLog.length) {
+                    const last = stockMovementLog[stockMovementLog.length - 1];
+                    const sig = stockMovementLog.length + ':' + (last && last.id != null ? last.id : '');
+                    if (window.__smlSavedSig !== sig) {
+                        const key = typeof appStoreKey === 'function' ? appStoreKey('pos_stock_movement_log') : 'pos_stock_movement_log';
+                        if (safeSetItem(key, JSON.stringify(stockMovementLog))) window.__smlSavedSig = sig;
+                    }
+                }
+            } catch (e) { /* the movement is saved by the next stock change at the latest */ }
             try { localStorage.setItem('pos_dirty_seq', String((parseInt(localStorage.getItem('pos_dirty_seq') || '0', 10) || 0) + 1)); } catch (e) { /* best effort */ }
         }
 
@@ -15948,6 +16319,36 @@ function bizReceiptStamp(t) {
                 const s = new Date(d.getTime() + off * 60000);
                 return { date: s.toLocaleDateString('en-GB', { timeZone: 'UTC' }), time: s.toLocaleTimeString('en-GB', { timeZone: 'UTC' }) };
             } catch (e) { return local(); }
+        }
+
+//@fn dailySalesSortMode
+function dailySalesSortMode() {
+            // zip 186: the order of the Daily Sales table - newest first unless this device chose another (kept on this device only).
+            try { const v = localStorage.getItem('pos_daily_sales_sort'); return v === 'old' || v === 'high' || v === 'low' ? v : 'new'; } catch (e) { return 'new'; }
+        }
+
+//@fn dailySalesComparator
+function dailySalesComparator(totalOf) {
+            // new = newest first (default) · old = oldest first · high = largest amount first · low = smallest amount first (ties: newest first)
+            const mode = dailySalesSortMode();
+            try { const el = document.getElementById('daily-sales-sort'); if (el && el.value !== mode) el.value = mode; } catch (e) { /* cosmetic */ }
+            const t = (x) => { const n = new Date(x && x.timestamp).getTime(); return isFinite(n) ? n : 0; };
+            const total = typeof totalOf === 'function' ? (x) => Number(totalOf(x)) || 0 : (x) => {
+                let n = 0;
+                try { n = (Array.isArray(x && x.items) ? x.items : []).reduce((a, it) => a + (Number(it && it.price) || 0) * (Number(it && it.qty) || 0), 0); } catch (e) { n = 0; }
+                try { if (typeof saleDeliveryFee === 'function') n += Number(saleDeliveryFee(x)) || 0; } catch (e) { /* none */ }
+                return n;
+            };
+            if (mode === 'old') return (a, b) => t(a) - t(b);
+            if (mode === 'high') return (a, b) => (total(b) - total(a)) || (t(b) - t(a));
+            if (mode === 'low') return (a, b) => (total(a) - total(b)) || (t(b) - t(a));
+            return (a, b) => t(b) - t(a);
+        }
+
+//@fn setDailySalesSort
+function setDailySalesSort(v) {
+            try { localStorage.setItem('pos_daily_sales_sort', v === 'old' || v === 'high' || v === 'low' ? v : 'new'); } catch (e) { /* this session only */ }
+            if (typeof renderDailySales === 'function') renderDailySales();
         }
 
 //@fn bizDayKey

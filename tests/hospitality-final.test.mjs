@@ -86,6 +86,8 @@ test('M-PESA: a typed code is checked against M-Pesa\'s own records — verified
   const kv = makeKV(); seedShop(kv, 'C1');
   const env = { mydukapos_kv: kv };
   const cb = await import(pathToFileURL(path.join(ROOT, 'functions/api/mpesa-callback.js')).href);
+  // zip 185: a callback only counts for a prompt this shop created: mpesa-stkpush.js stores this pending record first
+  kv.data.set('mpesa-tx:C1:ws_CO_1', { value: JSON.stringify({ status: 'pending', amount: 950, createdAt: Date.now() }) });
   // an STK prompt completed: Safaricom's callback (indexed by receipt now)
   await cb.onRequestPost({ request: new Request('https://x.pages.dev/api/mpesa-callback?c=C1', { method: 'POST', body: JSON.stringify({ Body: { stkCallback: { CheckoutRequestID: 'ws_CO_1', ResultCode: 0, ResultDesc: 'ok', CallbackMetadata: { Item: [{ Name: 'Amount', Value: 950 }, { Name: 'MpesaReceiptNumber', Value: 'QWE1234567' }, { Name: 'PhoneNumber', Value: 254712000000 }] } } } }) }), env });
   // a customer paid straight to the till (C2B confirmation)

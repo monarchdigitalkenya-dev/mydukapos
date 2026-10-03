@@ -16,7 +16,8 @@ const hit = async (p, method = 'GET') => {
 test('internal files and folders are not served', async () => {
   for (const p of ['/tests/money.test.mjs', '/src/shared/functions.js', '/tools/lib.mjs', '/wildcard-router/shop-store.js', '/functions/api/pos-sync.js',
     '/node_modules/x/index.js', '/.git/config', '/wrangler.toml', '/wrangler.staging.toml', '/package.json', '/package-lock.json', '/SYNC_AUTH_DESIGN.md',
-    '/STAGING_SETUP.md', '/README.md', '/DRIFT_REPORT.md', '/.gitignore', '/.dev.vars', '/.env', '/.env.production', '/%74ests/money.test.mjs', '/TESTS/x.js']) {
+    '/STAGING_SETUP.md', '/README.md', '/DRIFT_REPORT.md', '/.gitignore', '/.dev.vars', '/.env', '/.env.production', '/%74ests/money.test.mjs', '/TESTS/x.js',
+    '/migrations/0008_drop_crm.sql', '/docs/history/CHANGES_ZIP_150.md', '/backup/ledger_sales.sql', '/sql/x.sql', '/backup/schema.sql', '/schema.sql', '/hotel/export.sql', '/x.zip', '/CHANGELOG.md', '/.github/workflows/android.yml']) {
     const r = await hit(p);
     assert.equal(r.status, 404, p);
     assert.equal(r.passed, false, p + ' must not reach the static files');

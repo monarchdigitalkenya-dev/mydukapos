@@ -87,37 +87,6 @@ test('WhatsApp webhook: a message with a good signature is filed; a bad or missi
   assert.equal((await readInbox(env)).length, 1, 'nothing extra was stored');
 });
 
-test('CRM: people who message the number become CRM leads (name from their WhatsApp profile); a returning number is attached to its lead instead of duplicating; follow-ups and Meta retries never create leads or duplicates', async () => {
-  const { makeCrm } = await import('./crm-harness.mjs');
-  const c = await makeCrm({ WHATSAPP_APP_SECRET: SECRET });
-  const send = async (msgs, names) => { const b = JSON.stringify(payload(msgs, names)); const r = await hook(c.env, b, { 'x-hub-signature-256': sign(b) }); assert.equal(r.status, 200); return b; };
-  const bob = (await c.ok('POST', '/leads', { body: { name: 'Bob', phone: '0712 345 678', notes: 'called once' } })).lead;     // already a CRM lead
-  // Bob writes from a different number format, WITHOUT an ad: no new lead, the chat is linked to his lead
-  await send([msg('w1', '254712345678', 'Are you there?', 1789990000)], { '254712345678': 'Bob K' });
-  assert.equal(c.q('select count(*) n from crm_leads')[0].n, 1, 'Bob is not duplicated');
-  assert.equal(c.q(`select lead_id from crm_conversations where wa_id = '254712345678'`)[0].lead_id, bob.id, 'his WhatsApp chat is on his lead');
-  assert.equal(c.q('select name from crm_leads where id = ?', bob.id)[0].name, 'Bob', 'the CRM name is not overwritten by the profile name');
-  // an ad person becomes a lead (profile name, ad headline in the notes / attribution); the follow-up joins the same lead
-  const b2 = await send([msg('w2', '254799000111', 'Price for pharmacy POS?', 1789990100, AD)], { '254799000111': 'Amina' });
-  await send([msg('w3', '254799000111', 'Please call me', 1789990200)], { '254799000111': 'Amina' });
-  const amina = c.q(`select * from crm_leads where name = 'Amina'`);
-  assert.equal(amina.length, 1);
-  assert.equal(amina[0].phone, '+254799000111'); assert.equal(amina[0].status_key, 'new'); assert.equal(amina[0].source_key, 'meta_ads');
-  assert.match(amina[0].notes, /From the ad "POS for your shop"/);
-  assert.equal(c.q('select count(*) n from crm_messages m join crm_conversations v on v.id = m.conversation_id where v.lead_id = ?', amina[0].id)[0].n, 2, 'both of her messages are on the one lead');
-  // an ordinary text from a stranger never creates a lead (the conversation is kept, unlinked)
-  await send([msg('w4', '254700999888', 'Follow-up from someone unknown', 1789990300)], { '254700999888': 'Stranger' });
-  assert.equal(c.q(`select count(*) n from crm_leads where name = 'Stranger'`)[0].n, 0);
-  assert.equal(c.q(`select lead_id from crm_conversations where wa_id = '254700999888'`)[0].lead_id, null);
-  // Meta re-delivers the same notification: nothing is added twice
-  const before = [c.q('select count(*) n from crm_leads')[0].n, c.q('select count(*) n from crm_messages')[0].n];
-  await hook(c.env, b2, { 'x-hub-signature-256': sign(b2) });
-  assert.deepEqual([c.q('select count(*) n from crm_leads')[0].n, c.q('select count(*) n from crm_messages')[0].n], before);
-  // a bad signature stores nothing in the CRM either
-  assert.equal((await hook(c.env, b2, { 'x-hub-signature-256': 'sha256=' + '0'.repeat(64) })).status, 401);
-  assert.deepEqual([c.q('select count(*) n from crm_leads')[0].n, c.q('select count(*) n from crm_messages')[0].n], before);
-});
-
 test('WhatsApp webhook: ONLY people who came from a Meta ad become leads — ordinary texts are dropped, follow-ups from an ad person are kept', async () => {
   const kv = makeKV(); const env = { mydukapos_kv: kv, WHATSAPP_APP_SECRET: SECRET };
   const wa = await load('_whatsapp.js');

@@ -27,7 +27,6 @@ export async function onRequest(context) {
   const res = withDefaultsSafe(await context.next(), t0);
   if (!res || res.status === 101 || res.webSocket) return res;
   if (res.headers.get('Access-Control-Allow-Origin') == null) return res;
-  if (res.headers.get('X-CRM-Cors') === 'managed') { const o = new Response(res.body, res); o.headers.delete('X-CRM-Cors'); return o; }   // crm-lead.js checks its own allow-list (CRM_PUBLIC_ORIGINS)
   const allowed = originAllowed(context.request, context.env);
   const out = new Response(res.body, res);
   if (allowed) {

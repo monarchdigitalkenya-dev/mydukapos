@@ -26,6 +26,7 @@ import { requireOwnerAuth, getOwnerAccount } from './_owner-auth.js';
 import { proofMatches, isSealedProof } from './_device-auth.js';
 import { staffRecord } from './_staff-auth.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
+import { ownerDbRead } from './_owner-db.js';
 import { listClientSummaries, createClient, evaluateLicense, listProducts, clientLink, getRootDomain, purgeExpiredTrash } from './_license.js';
 
 function jsonResponse(body, status = 200) {
@@ -48,7 +49,10 @@ export async function onRequestGet(context) {
   // KV work only for entries actually old enough), and keeps Trash self-cleaning with no cron needed.
   if (trashOnly) await purgeExpiredTrash(env);
 
-  const summaries = await listClientSummaries(env, { q, trashOnly });
+  // zip 187: with the OWNER_DB read model bound AND healthy, the list and the person ledger come from it (one SQL query); on ANY doubt this is null and the
+  // KV reads below run exactly as before. KV stays the source of truth, and the response is identical either way.
+  const fromDb = await ownerDbRead(env, { q, trashOnly });
+  const summaries = fromDb ? fromDb.summaries : await listClientSummaries(env, { q, trashOnly });
   // The owner's own account has a real, permanent client record behind it
   // (see _owner-auth.js — this is what lets the owner actually use Shop POS
   // themselves, not just the admin dashboard). It's infrastructure, not a
@@ -76,8 +80,12 @@ export async function onRequestGet(context) {
   // owner-lock.js) — fetched here too, alongside the client list, so the
   // grouped client view has it ready without a separate round trip when a
   // person's detail is opened.
-  const groupIncomeRaw = await env.mydukapos_kv.get('owner-group-income:v1');
-  const groupIncome = groupIncomeRaw ? JSON.parse(groupIncomeRaw) : {};
+  let groupIncome;
+  if (fromDb) groupIncome = fromDb.groupIncome;
+  else {
+    const groupIncomeRaw = await env.mydukapos_kv.get('owner-group-income:v1');
+    groupIncome = groupIncomeRaw ? JSON.parse(groupIncomeRaw) : {};
+  }
 
   return jsonResponse({
     clients: enriched,

@@ -20,6 +20,9 @@
 // _license.js reads that header first (falling back to the raw URL hostname
 // for direct pages.dev/preview access, which never passes through here).
 
+import { ledgerHealth, saveAlert } from '../functions/api/_ledger-health.js';
+import { auditMaintenance } from '../functions/api/_audit-db.js';
+
 const PAGES_ORIGIN = 'mydukapos.pages.dev'; // <-- your Pages project's own *.pages.dev domain
 
 // Subdomains that should NOT be routed into the app — add to this if you
@@ -59,10 +62,37 @@ export default {
   //   HEALTH_URL = "https://mydukapos.store/api/owner-health"      ROUTER_SHARED_SECRET = (the same secret as on the Pages project)
   // The Pages endpoint then checks every shop and emails the owner only when something needs attention.
   async scheduled(event, env, ctx) {
+    // zip 186: LEDGER SIZE WATCHDOG (every cron firing, see wrangler.toml). Inert unless this Worker has the LEDGER_DB binding.
+    ctx.waitUntil(ledgerSizeWatchdog(env));
+    if (event && event.cron === WATCHDOG_ONLY_CRON) return;                  // the 6-hourly firing is for the watchdog only; the shop health check stays daily
     if (!env || !env.HEALTH_URL || !env.ROUTER_SHARED_SECRET) return;
     ctx.waitUntil(fetch(env.HEALTH_URL + (env.HEALTH_URL.includes('?') ? '&' : '?') + 'cron=1', { headers: { 'X-Router-Secret': env.ROUTER_SHARED_SECRET } }).catch(() => {}));
   },
 };
+
+// zip 186 (INCIDENT: ledger_audit filled the 10 GB D1 database). Reads the same bounded figures as GET /api/ledger-health (functions/api/_ledger-health.js: MAX(id),
+// one probe row, the newest 5000 ids - never a COUNT(*)) and keeps the result as ledger_meta 'size_alert' (the health endpoint / owner console show it), plus the KV
+// key 'ledger:size-alert' when this Worker also has the KV binding. Warns at 60%, critical at 80% of the cap, or on runaway growth. Never throws, never writes
+// anything but that one row, and does nothing without a LEDGER_DB (or DB) binding.
+export const WATCHDOG_ONLY_CRON = '20 */6 * * *';
+export async function ledgerSizeWatchdog(env) {
+  // zip 187/188: retention for the separate audit database (rows older than AUDIT_RETAIN_DAYS, default 90). With the R2 binding AUDIT_ARCHIVE: archived to R2 monthly, then pruned; without it: plain bounded trim. Inert without LEDGER_AUDIT_DB.
+  try { const t = await auditMaintenance(env); if (t.deleted || t.archived || t.error) console.log('audit retention:', JSON.stringify(t)); } catch (e) { /* never blocks the watchdog */ }
+  const db = env && (env.LEDGER_DB || env.DB);
+  if (!db) return { skipped: 'no_db' };
+  try {
+    const h = await ledgerHealth(db, { auditDb: (env && env.LEDGER_AUDIT_DB) || null });
+    try { console.log('ledger watchdog:', JSON.stringify({ level: h.level, pct: h.pctOfCap, rows: h.auditRows, perMin: h.ratePerMin, notes: h.notes })); } catch (e) { /* log only */ }
+    try { await saveAlert(db, h); } catch (e) { /* a full database cannot take even this row: the KV flag / the log still carry it */ }
+    if (env.mydukapos_kv && typeof env.mydukapos_kv.put === 'function') {
+      try { await env.mydukapos_kv.put('ledger:size-alert', JSON.stringify({ at: h.at, level: h.level, notes: h.notes, pctOfCap: h.pctOfCap, auditRows: h.auditRows }), { expirationTtl: 3 * 86400 }); } catch (e) { /* optional */ }
+    }
+    return { level: h.level };
+  } catch (e) {
+    try { console.error('ledger watchdog failed:', e && e.message); } catch (x) { /* log only */ }
+    return { error: true };
+  }
+}
 
 // ---------- SyncRoom Durable Object ----------
 //

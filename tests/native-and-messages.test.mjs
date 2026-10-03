@@ -156,6 +156,8 @@ test('messages in the app: shown one at a time, "Don\'t Show Again" sticks, kept
   };
   const b = await boot('index.html', { storage: { pos_inventory: JSON.stringify(ITEMS) }, fetch, wait: 3500 });
   const { w, d } = b;
+  // the page's start-up work is slower in this simulated browser than a fixed wait allows for; wait for the bar itself (up to 25 s)
+  for (let i = 0; i < 250 && !d.getElementById('owner-msg-bar'); i++) await new Promise((r) => setTimeout(r, 100));
   let bar = d.getElementById('owner-msg-bar');
   assert.ok(bar, 'the first unread message is shown');
   assert.match(bar.textContent, /Hello shops[\s\S]*1 of 2 new/);

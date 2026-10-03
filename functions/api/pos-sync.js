@@ -38,7 +38,7 @@ import {
 import { deviceGuard } from './_device-auth.js';
 import { stampSales } from './_staff-auth.js';
 import { recordPush } from './_ledger.js';
-import { withRetry } from './_retry.js';
+import { withRetry, isStorageFull } from './_retry.js';
 import { fenceOpen, fenceWaitVisible, fenceClaim, fenceRelease } from './_write-fence.js';
 
 // CORS is decided per request (see _cors.js): the apps call this on their own origin, so only the shop's own
@@ -48,6 +48,10 @@ function busyResponse(cors, e) {
   return new Response(JSON.stringify({ error: 'The server is busy — this device keeps its changes and sends them again in a moment.', code: 'busy', retryAfter: 2, detail: String((e && e.message) || e || '').slice(0, 160) }), {
     status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '2', ...cors },
   });
+}
+// zip 186: what the ledger noticed about this push, ADDED to the reply (the apps ignore fields they do not know): duplicate (a pure re-send), rateLimited, rejected.
+function ledgerHints(led) {
+  return { ...(led.duplicate ? { duplicate: true } : {}), ...(led.rateLimited ? { rateLimited: led.rateLimited } : {}), ...(led.rejected ? { rejected: led.rejected } : {}) };
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -167,8 +171,17 @@ export async function onRequestGet(context) {
   try {
     return await handleGet(context);
   } catch (e) {
+    if (isStorageFull(e)) return storageFullResponse(corsHeadersFor(context.request, context.env));      // zip 186: the 10 GB D1 cap is not "busy": the till pauses (see below)
     return busyResponse(corsHeadersFor(context.request, context.env), e);
   }
+}
+
+// zip 186: HTTP 507 {ok:false, code:'storage_full', retryAfter:300}. A full database fails identically on every try, so the till is told to PAUSE (5 minutes) and keep its
+// data, instead of the 503 "busy, retry in 2 s" it answered before (which made every till hammer a database that could not accept anything).
+function storageFullResponse(cors) {
+  return new Response(JSON.stringify({ ok: false, code: 'storage_full', retryAfter: 300, error: 'The server storage is full - this device keeps every sale and will send it again later. Please tell support.' }), {
+    status: 507, headers: { 'Content-Type': 'application/json', 'Retry-After': '300', ...cors },
+  });
 }
 
 async function handleGet(context) {
@@ -267,6 +280,14 @@ async function handlePost(context) {
   // as before and the shop is flagged for the Owner Console (see health.js) — a missing binding must not stop a till trading.
   // zip 156: with the device's clock corrected (as the shop's own copy is), so a void made on a slow-clock till is not older than the sale it voids
   const led = await recordPush(env, clientId, correctClockDrift(body, Date.now()), { source: 'pos-sync' });
+  if (!led.ok && led.code === 'storage_full') return storageFullResponse(cors);
+  // zip 186: terminal / throttled answers the till must NOT treat as "busy": a record the server can never accept (422 permanent), or one record changed too often (429)
+  if (!led.ok && (led.code === 'bad_record' || led.code === 'record_rate')) {
+    const wait = Number(led.retryAfter) > 0 ? Math.ceil(led.retryAfter) : 0;
+    return new Response(JSON.stringify({ ok: false, code: led.code, error: led.error, ...(led.permanent ? { permanent: true } : {}), ...(wait ? { retryAfter: wait } : {}), ...(led.rejected ? { rejected: led.rejected } : {}), ...(led.limited ? { limited: led.limited } : {}) }), {
+      status: led.status || 422, headers: { 'Content-Type': 'application/json', ...(wait ? { 'Retry-After': String(wait) } : {}), ...cors },
+    });
+  }
   if (!led.ok) {
     return new Response(JSON.stringify({ error: 'The transaction database did not answer — this device keeps every sale and sends it again in a moment.', code: 'busy', ledger: 'unavailable', retryAfter: 2, detail: led.error }), {
       status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '2', ...cors },
@@ -311,7 +332,7 @@ async function handlePost(context) {
         context.waitUntil(room.fetch('https://sync-room/broadcast', { method: 'POST', body: JSON.stringify({ poke: true }) }).catch(() => {}));
       } catch (e) { /* the poll is the fallback */ }
     }
-    return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), updatedAt: out.updatedAt, prev: out.prev, ...(out.ledger ? { ledger: out.ledger } : {}), ...(out.till ? { till: out.till } : {}) }, 200, cors);
+    return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), ...ledgerHints(led), updatedAt: out.updatedAt, prev: out.prev, ...(out.ledger ? { ledger: out.ledger } : {}), ...(out.till ? { till: out.till } : {}) }, 200, cors);
   }
 
   // Snapshot whatever's currently live (about to be overwritten) into today's
@@ -493,5 +514,5 @@ async function handlePost(context) {
   // The apps only ever read `updatedAt` from this reply, so don't send the whole shop back on every save.
   // (The full record still goes to other devices via the WebSocket broadcast and their next pull.)
   const till = typeof body._till === 'string' && record.tillNumbers ? record.tillNumbers[body._till] || 0 : 0;
-  return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), updatedAt: record.updatedAt, bytes, prev: existing.updatedAt || 0, ledger: 1, ...(till ? { till } : {}) }, 200, cors);
+  return jsonResponse({ ok: true, d1: led.skipped ? 0 : 1, ...(led.duplicates ? { duplicates: led.duplicates } : {}), ...ledgerHints(led), updatedAt: record.updatedAt, bytes, prev: existing.updatedAt || 0, ledger: 1, ...(till ? { till } : {}) }, 200, cors);
 }

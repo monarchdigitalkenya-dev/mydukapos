@@ -36,3 +36,12 @@ per-app differences as a setting, move the single version into `src/shared/funct
 `node tools/promote-identical.mjs --dry` lists functions that are identical (apart from comments) in every app that has them;
 without `--dry` it moves them into `src/shared/` (cuts each app's local copy, adds the name to its `@shared:begin` list). Then run
 `npm run sync && npm run check && npm test`. Functions that have genuinely diverged are never touched — see `DRIFT_REPORT.md`.
+
+## Incident tools (zip 186: `ledger_audit` filled the D1 database) — full run order in `docs/INCIDENT_LEDGER_AUDIT_186.md`
+
+| Tool | What it does |
+|---|---|
+| `tools\backup-all.cmd` | Exports the schema and every table except `ledger_audit` DATA, one file each, into `backup\`; failures are logged and the loop continues. |
+| `node tools\archive-audit.mjs` | Read-only: writes the audit rows the prune would delete to `backup\audit\*.ndjson.gz` (+ `manifest.json`). |
+| `tools\prune-audit.cmd --measure / --dry-run / --run` | Chunked, resumable removal of retry duplicates from `ledger_audit` (typed `YES`, guard trigger handled and restored, never rows younger than 10 min). |
+| `sql\incident\*.sql`, `tools\stock-reconcile.sql` | Read-only diagnostics and the stock reconciliation report (the correction is a commented template). |

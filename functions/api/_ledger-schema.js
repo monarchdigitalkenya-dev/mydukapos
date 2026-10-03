@@ -7,7 +7,7 @@
 //   * every insert or new version of a money record writes an audit row (trigger) — no code path can forget;
 //   * a payment is unique per (shop, payment id): a retried request is the same row, never a second one;
 //   * a QR order has at most ONE owner: the claim is a single conditional UPDATE, so two staff claiming at once cannot both win.
-export const LEDGER_SCHEMA_VERSION = 2;
+export const LEDGER_SCHEMA_VERSION = 3;          // 3 = zip 186: LEDGER_SCHEMA_0007 (quiet audit triggers, audit kill switch, prune-guarded audit delete trigger)
 
 export const LEDGER_SCHEMA = [
   // One row per financial document of ANY module: sale, return, expense, purchase, trade credit, debt, tab, patient charge,
@@ -359,4 +359,48 @@ END`,
   `CREATE TRIGGER IF NOT EXISTS payment_amount_locked BEFORE UPDATE OF amount, sale_id, bill_id, method ON ledger_payments
   WHEN NEW.amount IS NOT OLD.amount OR NEW.sale_id IS NOT OLD.sale_id OR NEW.bill_id IS NOT OLD.bill_id OR NEW.method IS NOT OLD.method
   BEGIN SELECT RAISE(ABORT, 'a payment cannot be edited — reverse it and record a new one'); END`,
+];
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// zip 186 — migration 0007 (INCIDENT: ledger_audit grew to 21.8M rows / 10 GB from a sync retry storm). migrations/0007_audit_idempotency.sql is GENERATED
+// from this list (tools/gen-migration.mjs; a test fails if they differ) and ensureLedgerSchema() applies the same list after LEDGER_SCHEMA, so the
+// migration and the runtime bootstrap can never disagree. 0001 (= LEDGER_SCHEMA above) is NEVER edited: it still creates the OLD noisy triggers on a fresh
+// database; these statements DROP and re-create them under the same names (IF NOT EXISTS in LEDGER_SCHEMA then keeps whichever is current).
+//
+// 1. VOLATILE_FIELDS: client-side retry / telemetry counters stamped INTO a record while it waits for the server (stampLocalContext: `tries`). They are
+//    not part of the business record: they are removed before the record is stored or compared (JS: stripVolatile in _ledger.js; SQL: sqlStripVolatile).
+// 2. audit_ledger_records_ins / _upd write an audit row ONLY when something real happened (upd: version, status, amount or the data minus VOLATILE_FIELDS
+//    changed) and ONLY when the kill switch ledger_meta k='audit_disabled' is not '1'. NO unique index on ledger_audit (old duplicates would make it fail).
+// 3. The audit snapshot is the full record, except a record whose JSON is longer than SNAPSHOT_MAX (2000 chars for a stock_move, 16000 for every money
+//    kind) gets a small valid-JSON stub {"truncated":1,"len":..,"kind","status","amount","version"} so one record can never put kilobytes into every row.
+//    (The full, current record is always in ledger_records.data; only the HISTORY copy of a huge record is shortened.)
+// 4. no_delete_ledger_audit keeps 'financial records are never deleted', EXCEPT while ledger_meta k='audit_prune_open' is '1' AND the row is older than
+//    10 minutes. tools/prune-audit.mjs opens the flag for the duration of a prune and closes it again. no_update_ledger_audit stays append-only.
+export const VOLATILE_FIELDS = ['tries', '_tries', 'retries', 'retryCount', '_retryCount', 'lastTryAt'];
+export const sqlStripVolatile = (expr) => `json_remove(${expr}, ${VOLATILE_FIELDS.map((f) => `'$.${f}'`).join(', ')})`;
+const FLAG = (k) => `COALESCE((SELECT v FROM ledger_meta WHERE k = '${k}'), '0')`;
+const SNAP = `CASE WHEN length(NEW.data) <= (CASE WHEN NEW.kind = 'stock_move' THEN 2000 ELSE 16000 END) THEN NEW.data
+      ELSE json_object('truncated', 1, 'len', length(NEW.data), 'kind', NEW.kind, 'status', NEW.status, 'amount', NEW.amount, 'version', NEW.version) END`;
+const AUDIT_INSERT = (action) => `INSERT INTO ledger_audit (client_id, kind, rec_id, action, version, amount, status, actor, source, at, snapshot)
+  VALUES (NEW.client_id, NEW.kind, NEW.rec_id, '${action}', NEW.version, NEW.amount, NEW.status, NEW.actor, NEW.source, NEW.updated_at,
+    ${SNAP});`;
+export const LEDGER_SCHEMA_0007 = [
+  `DROP TRIGGER IF EXISTS audit_ledger_records_ins`,
+  `DROP TRIGGER IF EXISTS audit_ledger_records_upd`,
+  `DROP TRIGGER IF EXISTS no_delete_ledger_audit`,
+  `CREATE TRIGGER audit_ledger_records_ins AFTER INSERT ON ledger_records
+WHEN ${FLAG('audit_disabled')} <> '1'
+BEGIN
+  ${AUDIT_INSERT('CREATE')}
+END`,
+  `CREATE TRIGGER audit_ledger_records_upd AFTER UPDATE ON ledger_records
+WHEN ${FLAG('audit_disabled')} <> '1'
+  AND (NEW.version IS NOT OLD.version OR NEW.status IS NOT OLD.status OR NEW.amount IS NOT OLD.amount
+    OR (CASE WHEN json_valid(NEW.data) AND json_valid(OLD.data) THEN ${sqlStripVolatile('NEW.data')} IS NOT ${sqlStripVolatile('OLD.data')} ELSE NEW.data IS NOT OLD.data END))
+BEGIN
+  ${AUDIT_INSERT('UPDATE')}
+END`,
+  `CREATE TRIGGER no_delete_ledger_audit BEFORE DELETE ON ledger_audit
+WHEN NOT (${FLAG('audit_prune_open')} = '1' AND OLD.at < (CAST(strftime('%s', 'now') AS INTEGER) - 600) * 1000)
+BEGIN SELECT RAISE(ABORT, 'financial records are never deleted'); END`,
 ];

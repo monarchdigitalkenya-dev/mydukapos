@@ -690,7 +690,7 @@ MODS.owner = {
   name: 'Owner Console', title: 'Owner Console — User Guide', tagline: 'For the owner of the software business — create and manage client links, watch their health, and run your own shop.',
   itemsPlural: 'items', itemWord: 'item', addTab: 'the Inventory', restockTab: 'Restock', noPastSale: true,
   overrides: { offline: 'ownerOffline', trouble: 'ownerTrouble', hardware: false },
-  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '🤝 CRM', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '🩺 Health', '📣 Messages', '📦 Apps & Versions', '⚙️ Settings', '☰ More'],
+  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '🩺 Health', '📣 Messages', '🏷️ Offers', '📦 Apps & Versions', '⚙️ Settings', '☰ More'],
   tabText: {
     'Messages': 'Send announcements, app updates, installation offers, maintenance or security notices to all shops, chosen apps or chosen shops — optionally only on the browser, Android or Windows app and certain app versions, from / until a date. Shops see them in their app (one at a time, and under Settings ▸ Install App); a device that is offline gets them when it reconnects.',
     'Apps & Versions': 'The Android (APK) and Windows (EXE / MSI) apps of each product: add a version, upload the real file (the server records its size and SHA-256), publish, withdraw. A shop is offered only its own app under Settings ▸ Install App.',
@@ -701,7 +701,7 @@ MODS.owner = {
     'Permanent': 'Every permanent (paid) client: manage, record income, remind, storage.',
     'Trash': 'Deleted links, restorable for 30 days before they\u2019re removed for good.',
     'Website': 'Edit the public website, pricing, payment methods and testimonials.',
-    'CRM': 'Opens the separate MyDuka CRM (leads, follow-ups, meetings, WhatsApp, revenue by campaign).',
+    'Offers': 'Timed offers for the public website: write the offer, set the start and end in Nairobi time, then Publish. The website judges the countdown by the server clock; Pause, Back to draft or Archive hide it. Every change is logged.',
     'Bills': 'What clients owe you (permanent-link balances) — settle or remind.',
     'Daily Sales': 'Your own sales and income records.',
     'Profits & Expenses': 'Your expenses and profit.',
@@ -731,13 +731,6 @@ MODS.owner = {
     }),
     ch('website', '🌐', 'The public website', {
       steps: ['Open **🌐 Website** to change the logo, headline, feature cards, showcase photos, **price** and **payment methods**, and testimonials. **Save & Publish Changes** updates the public site and the upgrade prompt every demo shows when its trial ends.'],
-    }),
-    ch('leads', '🤝', 'CRM: leads, follow-ups, meetings and WhatsApp', {
-      steps: [
-        'Leads are now managed in the separate **MyDuka CRM** at **/crm/** (open it from **🤝 CRM** in the Owner Console; the same owner sign-in works there). The old Leads tab is gone; its leads, meetings and WhatsApp ad chats were moved into the CRM (CRM ▸ Settings ▸ Import previous leads, then check the counts).',
-        'In the CRM you add team members (they get an invitation link and set their own password), give each a role and permissions, and they claim or are assigned leads, call or WhatsApp them, add notes, set follow-ups and meetings, and convert a lead into a sale. Revenue is tracked back to the campaign, ad and staff member.',
-        '**WhatsApp ad leads (people who start a chat from your Meta Click-to-WhatsApp ad) and website sign-ups** arrive in the CRM automatically (see WHATSAPP_SETUP.md and CRM_MIGRATION.md).',
-      ],
     }),
     ch('health', '🐞', 'Errors and Storage', {
       steps: [

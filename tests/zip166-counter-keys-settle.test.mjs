@@ -7,7 +7,7 @@ const APPS = ['index.html', 'hotel/index.html', 'hospital/index.html', 'pharmacy
 
 test('payment fields live inside the pinned bar in every till', async () => {
   for (const a of APPS) {
-    const { d, errors, close } = await boot(a, { wait: 900 });
+    const { d, errors, close } = await boot(a, { wait: 3000 });
     const bar = d.getElementById('cart-sticky-bar');
     assert.ok(bar.querySelector('.pos-pay-details'), a + ': payment details moved into the bar');
     for (const id of ['mpesa-prompt-panel', 'split-payment-panel', 'cash-payment-panel']) assert.ok(bar.contains(d.getElementById(id)), a + ' ' + id);

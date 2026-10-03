@@ -14,6 +14,11 @@ test('Aqua POS: a sale made while "both sites" is selected belongs to the Shop a
   const sizeId = w.eval("refillSizes.find(s => s.siteId === shopSiteId()).id");
   w.eval(`addRefillToCart('${sizeId}'); currentPaymentMethod = 'cash'`);
   d.getElementById('cash-tendered-input').value = '10000';
+  // zip 185: "All Sites" is a reporting view: a sale is refused there (nothing could leave a shelf), and the cart is kept for the right site
+  await w.eval('checkoutCart()');
+  assert.equal(w.eval('salesLog.length'), 0, 'refused in the combined view');
+  assert.match(d.getElementById('checkout-error').textContent, /Pick Shop or Production/);
+  w.eval(`activeSiteId = '${shop}'`);
   await w.eval('checkoutCart()');
   assert.equal(w.eval('salesLog.length'), 1, 'recorded');
   assert.equal(w.eval('salesLog[0].siteId'), shop, 'against the Shop, not against "both"');

@@ -2,7 +2,7 @@
 //   node tools/audit-d1-queries.mjs            table of statements that SCAN a table, and the ones it could not analyse
 //   node tools/audit-d1-queries.mjs --all      every statement with its query plan
 // Reads every SQL string out of functions/**.js (SELECT / UPDATE / DELETE, and INSERT ... SELECT), replaces `${...}` interpolations with `?` or a
-// list of `?`, creates the REAL schema (the same statements ensureLedgerSchema / ensureCrmSchema run) in SQLite and asks SQLite for EXPLAIN QUERY PLAN.
+// list of `?`, creates the REAL schema (the same statements ensureLedgerSchema run) in SQLite and asks SQLite for EXPLAIN QUERY PLAN.
 // A plan line "SCAN <table>" without an index means the statement reads every row of that table, however large it grows. Not every SCAN is a problem
 // (a small settings table, a per-shop table that stays a few hundred rows): the report says which is which. SQLite's planner is not D1's, but D1 IS SQLite.
 import fs from 'node:fs';
@@ -16,10 +16,7 @@ const load = (f) => import(pathToFileURL(path.join(ROOT, f)).href);
 export async function buildDb() {
   const db = new DatabaseSync(':memory:');
   const { LEDGER_SCHEMA } = await load('functions/api/_ledger-schema.js');
-  const { CRM_SCHEMA, CRM_SPEED_SCHEMA } = await load('functions/api/_crm/schema.js');
   for (const s of LEDGER_SCHEMA) db.exec(s);
-  for (const s of CRM_SCHEMA) db.exec(s);
-  for (const s of CRM_SPEED_SCHEMA) db.exec(s);
   try { const eff = await load('functions/api/_efficiency-schema.js'); for (const s of eff.EFFICIENCY_SCHEMA) db.exec(s); } catch (e) { /* not there yet */ }
   return db;
 }
@@ -73,7 +70,7 @@ export async function auditAll() {
 }
 
 // SCAN of a table (not "SCAN ... USING INDEX"/covering index; SEARCH is fine; a scan of a tiny config table is fine)
-const SMALL = new Set(['crm_meta', 'crm_roles', 'crm_statuses', 'crm_classifications', 'crm_sources', 'crm_lost_reasons', 'crm_products', 'crm_settings', 'ledger_meta', 'crm_users', 'crm_permissions']);
+const SMALL = new Set(['ledger_meta']);
 export function scans(plan) {
   return (plan || []).filter((d) => /^SCAN\b/.test(d) && !/USING (COVERING )?INDEX/.test(d) && !/^SCAN (\d+|\w+ USING INTEGER PRIMARY KEY)/.test(d)).map((d) => d.replace(/^SCAN( TABLE)? /, '').split(/\s/)[0]);
 }

@@ -20,6 +20,10 @@ Only the changed files are uploaded (Cloudflare compares file hashes: "61 upload
 Note: `wrangler.staging.toml` is excluded from the mirror on purpose. It holds YOUR staging KV id; copying the zip's version over it would put the placeholder back.
 If you ever lose it: `npx wrangler kv namespace list` shows your namespace ids (staging is the one titled mydukapos_kv_staging).
 
+## Zip 186 — D1 incident fixes, CRM removed, one clean site
+Order (Windows cmd, `C:\dev\mydukapos`): 1. `npm run db:backup` (tools\backup-all.cmd; it must include the crm_* tables), 2. free space on `mydukapos-ledger`, 3. `npm run db:migrate` (applies `0006`, the incident migration and `0008_drop_crm.sql` — 0008 DELETES the CRM tables for good), 4. `npm run deploy:router`, 5. `npm run deploy`.
+The CRM (`/crm/`, `/api/crm*`) is gone; sign-up, demo, contact and WhatsApp-webhook endpoints are unchanged for callers. Old change notes are in `docs/history/`.
+
 ## Zip 167 — Windows build fix
 Only `.github/workflows/windows.yml` changed. `npm run deploy` is not needed for it, but deploy anyway (the version stamp changed). Then git push and run the **windows** workflow again.
 

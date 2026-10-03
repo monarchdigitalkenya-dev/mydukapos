@@ -95,18 +95,6 @@ export async function measureAll({ legacy = false } = {}) {
   await r.arrayBuffer();
   add('product photo (GET media, per image, per device first view)', s2);
 
-  // --- CRM ---
-  const crmH = await import(pathToFileURL(path.join(ROOT, 'tests/crm-harness.mjs')).href);
-  const crm = await crmH.makeCrm(legacy ? LEGACY_ENV : {});
-  const d1c = countD1(crm.env.LEDGER_DB); crm.env.LEDGER_DB = d1c.db;
-  const kvc = countKV(crm.env.mydukapos_kv); crm.env.mydukapos_kv = kvc.kv;
-  const st = await crm.staff('Sam', 'sales');
-  d1c.reset(); kvc.reset();
-  await crm.api('GET', '/leads?limit=25', { token: st.token });
-  out.push({ name: 'CRM list leads as staff (GET /api/crm/leads)', kv: { get: kvc.counts.get, put: kvc.counts.put, list: 0, delete: 0 }, d1: { roundTrips: d1c.counts.roundTrips, statements: d1c.counts.statements }, do: 0 });
-  d1c.reset(); kvc.reset();
-  await crm.api('GET', '/leads?limit=25');
-  out.push({ name: 'CRM list leads as owner (GET /api/crm/leads)', kv: { get: kvc.counts.get, put: kvc.counts.put, list: 0, delete: 0 }, d1: { roundTrips: d1c.counts.roundTrips, statements: d1c.counts.statements }, do: 0 });
   return out;
 }
 

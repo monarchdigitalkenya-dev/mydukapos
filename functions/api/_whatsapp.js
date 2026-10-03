@@ -5,8 +5,8 @@
 // from a Meta (Facebook / Instagram) Click-to-WhatsApp AD become leads: Meta marks such a message with a `referral` object (the ad, its headline, its id).
 // Ordinary texts from anyone else are dropped and never stored. A person who came from an ad and then writes again (no `referral` on the follow-ups) stays a
 // lead: their number is remembered (KV 'leads-whatsapp-ad-numbers'). Kept messages go to a small INBOX (KV 'leads-whatsapp-inbox'); the next time the Leads
-// tab loaded its sheet, the old leads.js merged the inbox into it. That endpoint is gone: the CRM (functions/api/_crm/inbox.js, fed by the same webhook) is
-// the lead store now, and the KV inbox is kept only so _crm/legacy.js can still migrate what was in it.
+// tab loaded its sheet, the old leads.js merged the inbox into it. That endpoint is gone and the CRM that replaced it was removed in zip 186: the webhook
+// only keeps this small KV inbox now (nothing reads it back yet).
 
 export const INBOX_KEY = 'leads-whatsapp-inbox';
 export const AD_NUMBERS_KEY = 'leads-whatsapp-ad-numbers';

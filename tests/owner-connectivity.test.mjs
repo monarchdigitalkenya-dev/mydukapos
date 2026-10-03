@@ -42,6 +42,7 @@ test('a rate-limited request says so; a request with no answer at all is the one
     [/\/api\/owner-auth/, () => json({ hasAccount: true, authenticated: true, ownerClientId: 'OWN1' })],
     [/\/api\/health/, () => { if (mode === 'down') throw new TypeError('Failed to fetch'); return json({ ok: true }); }],
     [/\/api\/owner-clients/, () => { if (mode === 'down') throw new TypeError('Failed to fetch'); return json({ error: 'slow down' }, 429); }],
+    [/\/api\/pos-sync/, () => { throw new TypeError('Failed to fetch'); }],   // (zip 186: the check also asks the sync endpoint; offline = no answer there either)
   ]);
   const t = await boot('owner/index.html', { storage: OWNER, fetch, wait: 1200 });
   await t.w.eval("renderGroupedClientsList('demo', true)");

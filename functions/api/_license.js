@@ -1,5 +1,6 @@
 import { MODE_PREFIX, forgetShopMode } from './_state-store.js';
 import { withRetry } from './_retry.js';
+import { mirrorClient, mirrorRemove } from './_owner-db.js';   // zip 187: best-effort OWNER_DB read model; KV below stays the source of truth
 // functions/api/_license.js — shared helper, NOT a route.
 //
 // Every client link this master POS generates (demo or permanent) is backed
@@ -339,6 +340,7 @@ async function upsertIndexSummary(env, record) {
   if (idx === -1) list.push(summary);
   else list[idx] = summary;
   await env.mydukapos_kv.put(INDEX_KEY, JSON.stringify(list));
+  await mirrorClient(env, summary);     // zip 187: after the KV write; best effort, never throws, no-op without OWNER_DB
 }
 
 // Call this after saveLicense() any time a change should be reflected in the
@@ -361,6 +363,7 @@ export async function updateIndexBusinessName(env, clientId, businessName) {
   if (list[idx].businessName === businessName) return; // unchanged — skip the write
   list[idx] = { ...list[idx], businessName };
   await env.mydukapos_kv.put(INDEX_KEY, JSON.stringify(list));
+  await mirrorClient(env, list[idx]);   // zip 187
 }
 
 // NOTE ON CONCURRENT WRITES: this read-modify-write on a single JSON blob is
@@ -563,6 +566,7 @@ async function removeIndexSummary(env, clientId) {
   const list = await readIndex(env);
   const next = list.filter((e) => e.id !== clientId);
   await env.mydukapos_kv.put(INDEX_KEY, JSON.stringify(next));
+  await mirrorRemove(env, clientId);    // zip 187
 }
 
 // Soft delete: moves the client to Trash rather than removing anything. The slug and the client's own

@@ -8,7 +8,7 @@ import { makeKV, seedShop } from './kv-fake.mjs';
 import { makeD1 } from './d1-fake.mjs';
 import { countD1 } from './ops-count.mjs';
 import { setup, LEGACY_ENV } from '../tools/measure-hot-paths.mjs';
-import { migrationText, crmMigrationText, efficiencyMigrationText } from '../tools/gen-migration.mjs';
+import { migrationText, efficiencyMigrationText } from '../tools/gen-migration.mjs';
 
 // Zip 159 — speed and reliability on Cloudflare. Every behavioural change has a test here. Counts are OPERATIONS (KV reads, D1 round trips,
 // Durable Object calls), which is what can be proved offline; milliseconds on real Cloudflare are not claimed anywhere.
@@ -228,10 +228,9 @@ test('write fence also covers kvMergeUpdate (cross-branch sales): two at once, s
 });
 
 // ---------------------------------------------------------------- schema + migrations
-test('migrations: 0001, 0002 and 0003 equal what the code generates (single source of truth)', () => {
+test('migrations: 0001 and 0003 equal what the code generates (single source of truth)', () => {
   const rd = (f) => fs.readFileSync(path.join(ROOT, 'migrations', f), 'utf8');
   assert.equal(rd('0001_ledger.sql'), migrationText());
-  assert.equal(rd('0002_crm.sql'), crmMigrationText());
   assert.equal(rd('0003_efficiency.sql'), efficiencyMigrationText());
   assert.match(rd('0003_efficiency.sql'), /CREATE TABLE IF NOT EXISTS shop_write_fence/);
 });
@@ -239,26 +238,6 @@ test('migration 0003 is idempotent and creates the fence table', async () => {
   const db = makeD1(); const sql = fs.readFileSync(path.join(ROOT, 'migrations/0003_efficiency.sql'), 'utf8');
   await db.exec(sql.replace(/--.*\n/g, '')); await db.exec(sql.replace(/--.*\n/g, ''));
   assert.equal(db.query(`SELECT name FROM sqlite_master WHERE name = 'shop_write_fence'`).length, 1);
-});
-test('CRM: the new indexes exist after ensureCrmSchema, and the queries they serve use them', async () => {
-  const { makeCrm } = await import('./crm-harness.mjs');
-  const c = await makeCrm();
-  const names = c.q(`SELECT name FROM sqlite_master WHERE type = 'index'`).map((r) => r.name);
-  for (const n of ['ix_crm_meetings_user', 'ix_crm_leads_ad', 'ix_crm_sales_ad', 'ix_crm_spend_date', 'ix_crm_spend_ad', 'ix_crm_attr_ad']) assert.ok(names.includes(n), n);
-  const plan = (sql) => c.q('EXPLAIN QUERY PLAN ' + sql).map((r) => r.detail).join(' | ');
-  assert.match(plan(`SELECT COUNT(*) FROM crm_meetings WHERE user_id = 'u' AND status = 'completed'`), /USING (COVERING )?INDEX ix_crm_meetings_user/);
-  assert.match(plan(`UPDATE crm_leads SET first_adset_id = 'x' WHERE first_ad_id = 'a'`), /ix_crm_leads_ad/);
-  assert.match(plan(`UPDATE crm_sales SET adset_id = 'x' WHERE ad_id = 'a'`), /ix_crm_sales_ad/);
-});
-test('CRM schema upgrade: a database at the previous schema version gets the new indexes on its next request', async () => {
-  const { makeCrm } = await import('./crm-harness.mjs');
-  const c = await makeCrm();
-  c.db._db.exec(`DROP INDEX ix_crm_leads_ad; UPDATE crm_meta SET v = '3' WHERE k = 'schema'`);
-  const { ensureCrmSchema } = await load('_crm/schema.js');
-  // a new Worker instance forgets its "schema is ready" memory: model it with a fresh binding wrapper over the same database
-  const wrapped = { ...c.db };
-  await ensureCrmSchema(wrapped);
-  assert.equal(c.q(`SELECT name FROM sqlite_master WHERE name = 'ix_crm_leads_ad'`).length, 1);
 });
 
 // ---------------------------------------------------------------- media: validators, streaming, edge cache
@@ -344,7 +323,7 @@ test('_routes.json: valid for Pages, keeps every routed path the Function needs,
   const excluded = (pathname) => r.exclude.some((e) => (e.endsWith('/*') ? pathname.startsWith(e.slice(0, -1)) : pathname === e));
   for (const must of ['/', '/api/pos-sync', '/api/media', '/tests/x.mjs', '/src/shared/functions.js', '/tools/x.mjs', '/wildcard-router/worker.js', '/functions/_middleware.js', '/node_modules/x', '/.git/config', '/package.json', '/wrangler.toml', '/README.md', '/CHANGES_ZIP_1.md', '/.dev.vars', '/index.html'])
     assert.equal(excluded(must), false, must + ' must still go through the Function');
-  for (const app of ['hotel', 'hospital', 'pharmacy', 'production', 'services', 'water', 'order', 'owner', 'crm', 'public-site']) {
+  for (const app of ['hotel', 'hospital', 'pharmacy', 'production', 'services', 'water', 'order', 'owner', 'public-site']) {
     assert.ok(fs.existsSync(path.join(ROOT, app)), app + ' exists');
     assert.equal(excluded(`/${app}/index.html`), true);
   }
@@ -418,21 +397,3 @@ test('tools/measure-hot-paths.mjs: the legacy switch turns every zip-159 memory 
   assert.deepEqual(Object.keys(LEGACY_ENV).sort(), ['LEDGER_OUTBOX_CHECK_MS', 'LEDGER_SEEN_MS', 'LICENSE_CACHE_MS', 'SHOP_MODE_CACHE_MS']);
 });
 
-// ---------------------------------------------------------------- CRM: session check in one round trip
-test('CRM: signing a staff request in (user + roles + permission overrides) is ONE D1 round trip, and permissions still come out right', async () => {
-  const { makeCrm } = await import('./crm-harness.mjs');
-  const c = await makeCrm();
-  const st = await c.staff('Sam', 'sales');
-  await c.ok('PUT', '/staff/' + st.id + '/permissions', { body: { grant: [], revoke: ['leads.view_all'] } }).catch(() => {});
-  const cd = countD1(c.env.LEDGER_DB); c.env.LEDGER_DB = cd.db;
-  const { authenticate } = await load('_crm/auth.js');
-  const ctx = { request: new Request('https://mydukapos.store/api/crm/me', { headers: { Authorization: 'Bearer ' + st.token } }), env: c.env };
-  cd.reset();
-  const actor = await authenticate(ctx, cd.db);
-  assert.equal(cd.counts.roundTrips, 1);
-  assert.equal(actor.id, st.id); assert.equal(actor.role, 'sales'); assert.ok(actor.perms.size > 0);
-  const bad = { request: new Request('https://x/api/crm/me', { headers: { Authorization: 'Bearer c1.' + st.id + '.zz.' + '0'.repeat(64) } }), env: c.env };
-  await assert.rejects(authenticate(bad, cd.db), (e) => e.status === 401);
-  const owner = await c.ok('GET', '/me');
-  assert.equal(owner.user.role, 'owner');
-});
