@@ -120,7 +120,7 @@ export async function onRequestPost(context) {
   let body; try { body = await request.json(); } catch (e) { return json({ error: 'Invalid JSON body' }, 400); }
   if (body.action === 'mode' && body.clientId) {
     const rec = await readDeviceAuth(env, String(body.clientId), { fresh: true });
-    rec.mode = body.mode === 'paired' ? 'paired' : 'open';
+    rec.mode = 'open';                         // zip 194: pairing is not enforced any more; 'paired' is accepted but ignored
     await writeDeviceAuth(env, String(body.clientId), rec);
     return json({ ok: true, mode: rec.mode });
   }

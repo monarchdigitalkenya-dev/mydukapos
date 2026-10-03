@@ -107,7 +107,7 @@ test('2: account-recovery: cannot replace a shop\'s recovery email without the c
   assert.equal((await call({ action: 'change-password', currentPassword: 'secret2', newPassword: 'abcd', confirmNewPassword: 'abcd' })).status, 429, 'blocked after repeated wrong guesses');
 });
 
-test('2b: account-recovery link/unlink/change-password honour paired-devices-only; unlink with a wrong password is refused', async () => {
+test('2b: account-recovery link/unlink/change-password: unlink with a wrong password is refused; a stored paired-only mode is NOT enforced (zip 194)', async () => {
   const { kv, env } = mk();
   const m = await load('functions/api/account-recovery.js');
   const call = async (body, h = {}) => { const r = await m.onRequestPost({ request: recReq(body, 'C1', h), env }); return r.status; };
@@ -116,10 +116,11 @@ test('2b: account-recovery link/unlink/change-password honour paired-devices-onl
   assert.equal(await call({ action: 'status' }), 200);
   await kv.put('device-auth:C1', JSON.stringify({ mode: 'paired', devices: {} }));
   const dev = await load('functions/api/_device-auth.js'); await dev.readDeviceAuth(env, 'C1', { fresh: true });
-  assert.equal(await call({ action: 'unlink' }), 401, 'unpaired device refused');
-  assert.equal(await call({ action: 'link', email: 'z@x.co', password: 'secret1' }), 401);
+  assert.equal(await call({ action: 'unlink', currentPassword: 'wrong' }), 401, 'a wrong password is still refused (not a pairing refusal)');
+  assert.equal(await call({ action: 'unlink' }), 200, 'the app sends no password: allowed, and not refused for pairing');
+  assert.equal(await call({ action: 'link', email: 'z@x.co', password: 'secret1' }), 200, 'no device pairing needed any more');
   assert.equal(await call({ action: 'status' }), 200, 'status unchanged');
-  assert.equal(await call({ action: 'verify-for-client', password: 'secret1' }), 200, 'sign-in path stays open to an unpaired device');
+  assert.equal(await call({ action: 'verify-for-client', password: 'secret1' }), 200, 'sign-in path stays open');
 });
 
 test('3: gateway-config / branches / backups: no change in staff-session "off" mode; manager needed in "enforce" mode', async () => {
@@ -234,7 +235,7 @@ test('6: owner signup: OWNER_SETUP_TOKEN (optional) gates the bootstrap; without
     const acct = JSON.parse(await kv.get('owner-account:v1')); assert.ok(['a@x.co', 'b@x.co'].includes(acct.identifier)); }
 });
 
-test('7: sms-inbound GET honours paired devices; POST caps the list, validates the number, and honours an optional per-shop key', async () => {
+test('7: sms-inbound GET ignores a stored paired-only mode (zip 194); POST caps the list, validates the number, and honours an optional per-shop key', async () => {
   const { kv, env } = mk();
   const m = await load('functions/api/sms-inbound.js'), cb = await load('functions/api/_callback-key.js');
   const form = (url, from, text) => new Request(url, { method: 'POST', body: new URLSearchParams({ from, text }) });
@@ -252,10 +253,10 @@ test('7: sms-inbound GET honours paired devices; POST caps the list, validates t
   assert.equal(await get(), 200);
   await kv.put('device-auth:C1', JSON.stringify({ mode: 'paired', devices: {} }));
   const dev = await load('functions/api/_device-auth.js'); await dev.readDeviceAuth(env, 'C1', { fresh: true });
-  assert.equal(await get(), 401);
+  assert.equal(await get(), 200, 'zip 194: a stored paired-only mode is ignored');
 });
 
-test('7b: etims-config DELETE and mpesa-stkpush GET are guarded', async () => {
+test('7b: etims-config DELETE and mpesa-stkpush GET are not refused for an unpaired device (zip 194)', async () => {
   const { kv, env } = mk();
   const et = await load('functions/api/etims-config.js'), stk = await load('functions/api/mpesa-stkpush.js');
   assert.equal((await stk.onRequestGet({ request: new Request('https://x/api/mpesa-stkpush?c=NOPE'), env })).status, 403, 'unknown shop: no provider disclosure');
@@ -263,8 +264,8 @@ test('7b: etims-config DELETE and mpesa-stkpush GET are guarded', async () => {
   assert.equal((await et.onRequestDelete({ request: new Request('https://x/api/etims-config?c=C1', { method: 'DELETE' }), env })).status, 200);
   await kv.put('device-auth:C1', JSON.stringify({ mode: 'paired', devices: {} }));
   const dev = await load('functions/api/_device-auth.js'); await dev.readDeviceAuth(env, 'C1', { fresh: true });
-  assert.equal((await et.onRequestDelete({ request: new Request('https://x/api/etims-config?c=C1', { method: 'DELETE' }), env })).status, 401);
-  assert.equal((await stk.onRequestGet({ request: new Request('https://x/api/mpesa-stkpush?c=C1'), env })).status, 401);
+  assert.equal((await et.onRequestDelete({ request: new Request('https://x/api/etims-config?c=C1', { method: 'DELETE' }), env })).status, 200, 'zip 194: no pairing refusal');
+  assert.equal((await stk.onRequestGet({ request: new Request('https://x/api/mpesa-stkpush?c=C1'), env })).status, 200, 'zip 194: no pairing refusal');
 });
 
 test('9: OTP check — parallel wrong guesses cannot exceed 5 tries; demo-account register caps the business name', async () => {

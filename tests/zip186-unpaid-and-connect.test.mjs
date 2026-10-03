@@ -38,7 +38,7 @@ test('PosNet: health blocked but the sync endpoint answers -> online', async () 
   t.close();
 });
 
-test('PosNet: offline shows "Retry now"; pressing it re-checks and goes online when the server is back', async () => {
+test('PosNet (zip 194): offline shows only a small calm pill - no Retry bar, no button; PosNet.retryNow() still re-checks and the pill goes away', async () => {
   let up = false;
   const t = await boot('index.html', {
     fetch: (u) => up ? Promise.resolve(json({ ok: true })) : Promise.reject(new Error('offline')), wait: 600,
@@ -48,10 +48,14 @@ test('PosNet: offline shows "Retry now"; pressing it re-checks and goes online w
   t.w.__posNetSyncProbe = () => Promise.resolve({ kind: 'none' });
   await t.w.eval('PosNet.check("test")');
   assert.equal(t.w.eval('PosNet.state'), 'offline');
-  assert.ok(await until(() => t.d.getElementById('posnet-retry-btn'), 3000), 'Retry now is shown');
+  assert.ok(await until(() => t.d.getElementById('posnet-offline-pill'), 3000), 'the small pill is shown');
+  assert.equal(t.d.getElementById('posnet-offline-pill').textContent, 'Saving on this device - will sync automatically');
+  assert.equal(t.d.getElementById('posnet-retry-bar'), null, 'no Retry bar');
+  assert.equal(t.d.getElementById('posnet-retry-btn'), null, 'no Retry button');
+  assert.equal(t.d.getElementById('posnet-offline-pill').querySelector('button'), null);
   up = true;
-  t.d.getElementById('posnet-retry-btn').click();
-  assert.ok(await until(() => t.w.eval('PosNet.state') === 'online', 8000), 'online after Retry now');
-  assert.ok(await until(() => !t.d.getElementById('posnet-retry-bar'), 3000), 'the bar goes away');
+  await t.w.eval('PosNet.retryNow()');
+  assert.ok(await until(() => t.w.eval('PosNet.state') === 'online', 8000), 'online after retryNow');
+  assert.ok(await until(() => !t.d.getElementById('posnet-offline-pill'), 3000), 'the pill goes away');
   t.close();
 });

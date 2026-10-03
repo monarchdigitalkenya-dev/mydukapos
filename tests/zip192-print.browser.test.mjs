@@ -27,12 +27,12 @@ function serve() {
 const H = crypto.createHash('sha256').update('pw').digest('hex');
 const INV = [{ code: 'A1', type: 'item', name: 'Simba Stick', category: 'Ice Cream', price: 50, wholesalePrice: 30, qty: 50, unit: 'pcs' }];
 
-async function open(browser, base, { native = false, method = null } = {}) {
+async function open(browser, base, { native = false, method = null, theme = 'light', file = 'hotel/index.html', oldExe = false } = {}) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await ctx.route('**/api/**', (r) => r.abort());
-  await ctx.addInitScript(([h, inv, native, method]) => {
+  await ctx.addInitScript(([h, inv, native, method, theme, oldExe]) => {
     if (sessionStorage.getItem('s')) return; sessionStorage.setItem('s', '1');
-    localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'Hannan Snacks'); localStorage.setItem('pos_inventory', JSON.stringify(inv));
+    localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'Hannan Snacks'); localStorage.setItem('pos_theme', theme); localStorage.setItem('pos_inventory', JSON.stringify(inv));
     for (const k of ['pos_notif_prompt_last', 'pos_cd_detect_last']) localStorage.setItem(k, String(Date.now()));
     if (native) {
       window.__calls = [];
@@ -40,13 +40,14 @@ async function open(browser, base, { native = false, method = null } = {}) {
         print: (o) => { window.__calls.push(['print', o]); return Promise.resolve({ ok: true }); },
         printHtml: (o) => { window.__calls.push(['printHtml', o]); return Promise.resolve({ ok: true }); },
         printers: () => Promise.resolve({ ok: true, printers: [] }), netPrint: () => Promise.resolve({ ok: true }) };
+      if (oldExe) delete window.MyDukaNative.printHtml;
       localStorage.setItem('pos_native_printer_v1', JSON.stringify({ kind: 'windows-driver', deviceName: 'XP-80' }));
       if (method) localStorage.setItem('pos_native_print_method', method);
     }
-  }, [H, INV, native, method]);
+  }, [H, INV, native, method, theme, oldExe]);
   const page = await ctx.newPage(); const errors = []; page.on('pageerror', (e) => errors.push(String(e && e.message || e)));
-  await page.goto(base + '/hotel/index.html'); await page.waitForTimeout(1500);
-  await page.evaluate(() => { for (const id of ['login-screen', 'registration-screen']) { const el = document.getElementById(id); if (el) el.style.display = 'none'; } const a = document.getElementById('app-container'); if (a) a.style.display = ''; });
+  await page.goto(base + '/' + file); await page.waitForTimeout(1500);
+  await page.evaluate((theme) => { for (const id of ['login-screen', 'registration-screen']) { const el = document.getElementById(id); if (el) el.style.display = 'none'; } const a = document.getElementById('app-container'); if (a) a.style.display = ''; document.documentElement.setAttribute('data-theme', theme); }, theme);
   await page.waitForTimeout(300);
   return { ctx, page, errors };
 }
@@ -123,6 +124,38 @@ test('hotel: Order Ticket Size - paper, letters, auto-fit, save, and the print p
     await page.evaluate(() => { ticketSizeOpen(); ticketSizeSet(58); ticketSizeCancel(); });
     assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('pos_ticket_size_v1'))), { mm: 0, pt: 11.5 });
     assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('OLD exe (no printHtml): the default is the Windows print window - no silent job that would ignore the paper size', { skip }, async () => {
+  const srv = await serve(); const base = 'http://127.0.0.1:' + srv.address().port;
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium' });
+  try {
+    const t = await open(browser, base, { native: true, oldExe: true });
+    assert.equal(await t.page.evaluate(() => nativePrintMethod()), 'dialog');
+    await t.page.evaluate(SALE); await t.page.evaluate(() => { setPrintMode('receipt'); window.print(); });
+    await t.page.waitForTimeout(600);
+    assert.equal(await t.page.evaluate(() => window.__calls.length), 0);
+    const n = await open(browser, base, { native: true });
+    assert.equal(await n.page.evaluate(() => nativePrintMethod()), 'snapshot');
+  } finally { await browser.close(); srv.close(); }
+});
+
+test('DARK theme: the printed receipt is black on WHITE (the Windows app prints backgrounds) in the Shop and the Hotel', { skip }, async () => {
+  const srv = await serve(); const base = 'http://127.0.0.1:' + srv.address().port;
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM || '/opt/pw-browsers/chromium' });
+  try {
+    for (const file of ['hotel/index.html', 'index.html']) {
+      const { ctx, page } = await open(browser, base, { theme: 'dark', file });
+      await page.evaluate(SALE); await page.evaluate(() => { buildSystemPrintCopies(); setPrintMode('receipt'); });
+      await page.emulateMedia({ media: 'print' });
+      fs.writeFileSync('/tmp/zip192_dark.pdf', await page.pdf({ preferCSSPageSize: true, printBackground: true }));
+      execSync('pdftoppm -png -r 40 /tmp/zip192_dark.pdf /tmp/zip192_dark');
+      const share = Number(execSync(`python3 -W ignore -c "from PIL import Image; im=Image.open('/tmp/zip192_dark-1.png').convert('L'); px=list(im.getdata()); print(sum(1 for p in px if p<60)/len(px))"`, { encoding: 'utf8' }));
+      assert.ok(share < 0.25, file + ': a dark page printed (' + share + ' of it is dark)');
+      assert.ok(/Simba Stick/.test(execSync('pdftotext /tmp/zip192_dark.pdf -', { encoding: 'utf8' })), file + ': receipt text is on the page');
+      await ctx.close();
+    }
   } finally { await browser.close(); srv.close(); }
 });
 

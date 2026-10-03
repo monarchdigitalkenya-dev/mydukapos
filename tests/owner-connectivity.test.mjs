@@ -56,7 +56,7 @@ test('a rate-limited request says so; a request with no answer at all is the one
   t.close();
 });
 
-test('the internet works but only the POS server is down -> "the server is not answering", never "you are offline"', async () => {
+test('the internet works but only the POS server is down -> calm "saved, will sync" wording, never "you are offline"', async () => {
   const fetch = router([
     [/\/api\/owner-auth/, () => json({ hasAccount: true, authenticated: true, ownerClientId: 'OWN1' })],
     [/\/api\//, () => { throw new TypeError('Failed to fetch'); }],
@@ -67,7 +67,7 @@ test('the internet works but only the POS server is down -> "the server is not a
   assert.equal(t.w.eval('PosNet.state'), 'backend_unavailable');
   await t.w.eval("renderGroupedClientsList('demo', true)");
   const txt = t.d.getElementById('demo-links-list').textContent;
-  assert.match(txt, /your internet works, but the MyDukaPOS server is not answering/i);
+  assert.match(txt, /saved on this device and will sync automatically/i);   // zip 195: no scary server wording
   assert.doesNotMatch(txt, /offline/i);
   t.close();
 });

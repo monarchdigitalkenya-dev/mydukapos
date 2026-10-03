@@ -1,4 +1,6 @@
-// functions/api/device-pair.js — Cloudflare Pages Function: pairing a device with its shop (see _device-auth.js).
+// functions/api/device-pair.js — Cloudflare Pages Function: the shop's device list (see _device-auth.js).
+// zip 194: pairing is NOT required any more. Nothing here gates syncing; every action works for any device that has the shop link.
+// A device may still register itself (action 'pair') so it shows in the list; 'mode' is accepted but ignored (always 'open').
 //
 //   GET  ?c=<link>                         -> { mode, me: { id, paired }, devices: [...] }  (device list: this shop only)
 //   POST { action: 'pair', deviceId, name, proof }   proof = SHA-256 of the shop password or the management password (while the shop is
@@ -59,7 +61,6 @@ export async function onRequestGet(context) {
   const me = await checkDevice(request, env, clientId);
   const rec = await readDeviceAuth(env, clientId, { fresh: true });
   const base = { mode: rec.mode, me: { id: me.deviceId, paired: me.paired } };
-  if (rec.mode === 'paired' && !me.paired) return reply(base);            // an unpaired device only learns that it must pair
   const reg = await registry(env, clientId);
   if ((await shopMode(env, clientId)) === 'do' && !Object.keys(reg).length && (await shopDbOutdated(env, clientId))) base.serverWarning = 'db_outdated';
   const ids = new Set([...Object.keys(rec.devices), ...Object.keys(reg)]);
@@ -95,7 +96,7 @@ export async function onRequestPost(context) {
       if (!raw) return reply({ error: 'That pairing code is wrong or has expired. Make a new one on a paired device.', code: 'bad_code' }, 403);
       await env.mydukapos_kv.delete(CODE_KEY(clientId, code));                // one use only
       by = 'pairing code from ' + (JSON.parse(raw).from || 'a paired device');
-    } else if (await proofOk(env, clientId, body.proof, { typed: rec.mode === 'paired' })) {
+    } else if (await proofOk(env, clientId, body.proof, { typed: false })) {
       by = 'shop password';
     } else {
       return reply({ error: 'Wrong password.', code: 'bad_proof' }, 403);
@@ -107,19 +108,18 @@ export async function onRequestPost(context) {
     return reply({ ok: true, token, mode: rec.mode });
   }
 
-  if (!me.paired) return reply({ error: 'Pair this device first.', code: 'device_not_paired' }, 401);
-
   if (action === 'code') {
     let code = '';
     for (let i = 0; i < 5 && !code; i++) {
       const c = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
       if (!(await env.mydukapos_kv.get(CODE_KEY(clientId, c)))) code = c;
     }
-    const from = (rec.devices[me.deviceId] && rec.devices[me.deviceId].name) || me.deviceId;
+    const from = (rec.devices[me.deviceId] && rec.devices[me.deviceId].name) || me.deviceId || 'a device';
     await env.mydukapos_kv.put(CODE_KEY(clientId, code), JSON.stringify({ from, at: Date.now() }), { expirationTtl: 600 });
     return reply({ ok: true, code, expiresIn: 600 });
   }
   if (action === 'rename') {
+    if (!me.deviceId) return reply({ error: 'Missing device id.' }, 400);
     rec.devices[me.deviceId] = { ...rec.devices[me.deviceId], name: clean(body.name) };
     await writeDeviceAuth(env, clientId, rec);
     return reply({ ok: true });
@@ -134,7 +134,7 @@ export async function onRequestPost(context) {
       if (id === me.deviceId) return reply({ error: 'This is the device you are using — revoke it from another paired device.' }, 400);
       rec.devices[id] = { ...rec.devices[id], revoked: true, revokedAt: Date.now() };
     } else {
-      rec.mode = body.mode === 'paired' ? 'paired' : 'open';
+      rec.mode = 'open';                                                      // zip 194: 'paired' is accepted but never stored/enforced
     }
     await writeDeviceAuth(env, clientId, rec);
     return reply({ ok: true, mode: rec.mode });

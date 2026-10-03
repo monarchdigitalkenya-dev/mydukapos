@@ -1,5 +1,10 @@
 // functions/api/_device-auth.js — shared helper, NOT a route.
 //
+// DEVICE PAIRING IS NO LONGER REQUIRED (zip 194). deviceGuard() below ALWAYS lets a request through, whatever the stored `mode` is and
+// whether or not X-Device-Id / X-Device-Token are sent: every device that has the shop link can sync. The device list (informational)
+// and the device-pair endpoints still work; a stored mode:'paired' is ignored (readDeviceAuth reports 'open'). The text below is the
+// historical design (zip 120) and is NOT enforced any more.
+//
 // DEVICE PAIRING (zip 120). Until now a shop was identified ONLY by its link: anyone who knew it could read and change the whole shop.
 // Tills must keep signing in with no internet (owner's decision — SYNC_AUTH_DESIGN.md), so the check is on SYNC, not on sign-in:
 //
@@ -61,7 +66,7 @@ export async function readDeviceAuth(env, clientId, { fresh = false } = {}) {
   let rec = { mode: 'open', devices: {} };
   try {
     const raw = await env.mydukapos_kv.get(KEY(clientId));
-    if (raw) { const r = JSON.parse(raw); rec = { mode: r.mode === 'paired' ? 'paired' : 'open', devices: r.devices && typeof r.devices === 'object' ? r.devices : {} }; }
+    if (raw) { const r = JSON.parse(raw); rec = { mode: 'open' /* zip 194: a stored 'paired' is not enforced */, devices: r.devices && typeof r.devices === 'object' ? r.devices : {} }; }
   } catch (e) { /* unreadable: treated as open (never lock a shop out because of a read error) */ }
   cache.set(clientId, { at: Date.now(), rec });
   return rec;
@@ -90,17 +95,8 @@ export async function checkDevice(request, env, clientId) {
   return { paired, deviceId: id, mode: rec.mode };
 }
 
-// The guard every shop-data endpoint calls right after the license check. Returns null (go ahead) or the 401 Response.
-export async function deviceGuard(request, env, clientId, cors = {}) {
-  let r = await checkDevice(request, env, clientId);
-  if (r.mode !== 'paired' || r.paired) return null;
-  // zip 127: never refuse on a cached copy — a device paired a moment ago (possibly through another server instance) is not in it yet.
-  if (r.deviceId) {
-    await readDeviceAuth(env, clientId, { fresh: true });
-    r = await checkDevice(request, env, clientId);
-    if (r.mode !== 'paired' || r.paired) return null;
-  }
-  return new Response(JSON.stringify({ error: 'This device is not paired with the shop yet. Enter the shop password (or a pairing code) on this device to pair it.', code: 'device_not_paired' }), {
-    status: 401, headers: { 'Content-Type': 'application/json', ...cors },
-  });
+// The guard every shop-data endpoint calls right after the license check. zip 194: pairing is not required any more — this NEVER
+// refuses (returns null = go ahead). The signature is kept so every caller keeps working. It does not even read KV.
+export async function deviceGuard(request, env, clientId, cors = {}) { // eslint-disable-line no-unused-vars
+  return null;
 }

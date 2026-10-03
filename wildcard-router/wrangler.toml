@@ -58,18 +58,23 @@ head_sampling_rate = 0.05
 # zip 188: MONTHLY AUDIT ARCHIVE. Create the bucket once (npx wrangler r2 bucket create mydukapos-audit-archive), then REMOVE the leading "# " from the 3 lines
 # below and redeploy the router. Once a month the cron writes audit rows older than 90 days to this bucket as gzip files and only then deletes them.
 # Without this block the router just trims audit rows older than 90 days (no archive). Needs the LEDGER_AUDIT_DB binding (tools\setup-audit-db.mjs).
-# [[r2_buckets]]
-# binding = "AUDIT_ARCHIVE"
-# bucket_name = "mydukapos-audit-archive"
+[[r2_buckets]]
+binding = "AUDIT_ARCHIVE"
+bucket_name = "mydukapos-audit-archive"
 
-# zip 187: the separate AUDIT database (audit rows live here so a flood of them can never fill the sales database).
-[[d1_databases]]
-binding = "LEDGER_AUDIT_DB"
-database_name = "mydukapos-audit"
-database_id = "755f7467-4d0e-461b-b852-641cc01f0bab"
-
-# zip 187: the small shared OWNER database (a read model of the Owner Console list; KV stays the source of truth).
+# zip 194: weekly database backups (Sundays) and the daily cleanup also use R2. Optional separate bucket for the backups (otherwise AUDIT_ARCHIVE above is used,
+# under the db-backups/ prefix). Example only - remove the leading "# " to activate, then redeploy the router:
+[[r2_buckets]]
+binding = "DB_BACKUPS"
+bucket_name = "mydukapos-db-backups"
+# The owner database can be bound here too so its weekly backup is taken by the cron (optional; example only):
 [[d1_databases]]
 binding = "OWNER_DB"
 database_name = "mydukapos-owner"
 database_id = "0042e3c7-b032-411e-9825-1c40227f2fb1"
+
+# zip 187: the separate AUDIT database
+[[d1_databases]]
+binding = "LEDGER_AUDIT_DB"
+database_name = "mydukapos-audit"
+database_id = "755f7467-4d0e-461b-b852-641cc01f0bab"

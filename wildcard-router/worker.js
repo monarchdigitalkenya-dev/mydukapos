@@ -22,6 +22,7 @@
 
 import { ledgerHealth, saveAlert } from '../functions/api/_ledger-health.js';
 import { auditMaintenance } from '../functions/api/_audit-db.js';
+import { scheduledStorageJobs, configuredAuditDays } from '../functions/api/_storage-report.js';
 
 const PAGES_ORIGIN = 'mydukapos.pages.dev'; // <-- your Pages project's own *.pages.dev domain
 
@@ -77,7 +78,10 @@ export default {
 export const WATCHDOG_ONLY_CRON = '20 */6 * * *';
 export async function ledgerSizeWatchdog(env) {
   // zip 187/188: retention for the separate audit database (rows older than AUDIT_RETAIN_DAYS, default 90). With the R2 binding AUDIT_ARCHIVE: archived to R2 monthly, then pruned; without it: plain bounded trim. Inert without LEDGER_AUDIT_DB.
-  try { const t = await auditMaintenance(env); if (t.deleted || t.archived || t.error) console.log('audit retention:', JSON.stringify(t)); } catch (e) { /* never blocks the watchdog */ }
+  // zip 194: the retention the owner chose in the Owner Console (Storage -> Databases) wins over the 90-day default; no saved setting = unchanged.
+  try { const t = await auditMaintenance(env, { days: await configuredAuditDays(env) }); if (t.deleted || t.archived || t.error) console.log('audit retention:', JSON.stringify(t)); } catch (e) { /* never blocks the watchdog */ }
+  // zip 194: automatic cleanup of disposable data (at most once a day, guarded by a last-run marker) and the weekly backup. Non-fatal.
+  try { await scheduledStorageJobs(env); } catch (e) { /* never blocks the watchdog */ }
   const db = env && (env.LEDGER_DB || env.DB);
   if (!db) return { skipped: 'no_db' };
   try {

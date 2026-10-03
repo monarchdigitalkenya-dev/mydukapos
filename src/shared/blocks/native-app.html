@@ -79,7 +79,9 @@
             }
             window.nativeSnapshotHtml = snapshotHtml;
             function settle() { return new Promise(function (res) { requestAnimationFrame(function () { requestAnimationFrame(function () { setTimeout(res, 250); }); }); }); }
-            window.nativePrintMethod = function (v) { if (v) LS('pos_native_print_method', v); return LS('pos_native_print_method') || 'snapshot'; };
+            // zip 194: an installed exe WITHOUT printHtml is the old one: its silent print ignores the receipt's paper size and prints on the printer's default page (long blank pieces).
+            // Until that exe is rebuilt, the Windows print window (which does use the receipt's paper size, like the web) is the default for it.
+            window.nativePrintMethod = function (v) { if (v) LS('pos_native_print_method', v); return LS('pos_native_print_method') || (N.printHtml ? 'snapshot' : 'dialog'); };
             window.print = function () {
                 var p = saved();
                 if (!p || p.kind !== 'windows-driver') { if (origPrint) origPrint(); return; }
@@ -87,7 +89,7 @@
                 if (method === 'dialog') { if (origPrint) origPrint(); return; }
                 settle().then(function () {
                     var mm = pageMm(), html = (method === 'snapshot' && N.printHtml) ? snapshotHtml() : '';
-                    return html ? N.printHtml({ deviceName: p.deviceName, html: html, widthMm: mm.widthMm, heightMm: mm.heightMm }) : N.print({ deviceName: p.deviceName, widthMm: mm.widthMm, heightMm: mm.heightMm });
+                    return html ? N.printHtml({ deviceName: p.deviceName, html: html, widthMm: mm.widthMm, heightMm: mm.heightMm ? mm.heightMm + 4 : mm.heightMm }) : N.print({ deviceName: p.deviceName, widthMm: mm.widthMm, heightMm: mm.heightMm ? mm.heightMm + 4 : mm.heightMm });
                 }).then(function (r) {
                     if (!r || !r.ok) { try { showToast('Printing on ' + p.deviceName + ' failed: ' + ((r && r.error) || 'no answer') + '.', true); } catch (e) {} }
                     window.dispatchEvent(new Event('afterprint'));
@@ -195,7 +197,7 @@
                 + '<div id="native-printer-list" style="display:grid; gap:6px; margin-top:6px;"></div>'
                 + '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;">'
                 + (info.platform === 'android' ? '<button type="button" class="btn-main settings-small-btn" onclick="nativePrinterScan()">🔎 Choose a Bluetooth printer</button>' : '<button type="button" class="btn-main settings-small-btn" onclick="nativePrinterScan()">🖨️ Choose a Windows printer</button><button type="button" class="settings-small-btn" onclick="nativeNetPrinterAsk()">🌐 Network thermal printer (IP)</button>')
-                + (p && p.kind === 'windows-driver' ? '<div style="margin-top:10px; font-size:13px;">If the paper comes out empty: <select id="native-print-method" class="settings-small-btn" onchange="nativePrintMethod(this.value)"><option value="snapshot"' + (window.nativePrintMethod && window.nativePrintMethod() === 'snapshot' ? ' selected' : '') + '>Print method 1 (recommended)</option><option value="page"' + (window.nativePrintMethod && window.nativePrintMethod() === 'page' ? ' selected' : '') + '>Print method 2 (the page as shown)</option><option value="dialog"' + (window.nativePrintMethod && window.nativePrintMethod() === 'dialog' ? ' selected' : '') + '>Print method 3 (Windows print window)</option></select></div>' : '')
+                + (p && p.kind === 'windows-driver' ? '<div style="margin-top:10px; font-size:13px;">If the paper comes out empty: <select id="native-print-method" class="settings-small-btn" onchange="nativePrintMethod(this.value)"><option value="snapshot"' + (window.nativePrintMethod && window.nativePrintMethod() === 'snapshot' ? ' selected' : '') + '>Print method 1 (needs the newest app)</option><option value="page"' + (window.nativePrintMethod && window.nativePrintMethod() === 'page' ? ' selected' : '') + '>Print method 2 (the page as shown)</option><option value="dialog"' + (window.nativePrintMethod && window.nativePrintMethod() === 'dialog' ? ' selected' : '') + '>Print method 3 (Windows print window)</option></select></div>' : '')
                 + (p ? '<button type="button" class="settings-small-btn" onclick="nativePrinterTest()">🧾 Test print</button><button type="button" class="settings-small-btn" onclick="nativePrinterForget()">Remove</button>' : '')
                 + '</div>'
                 + (info.platform === 'android' ? '<div style="font-size:12px; color:#7f8c8d; margin-top:6px;">Pair a new printer once in Android Settings ▸ Bluetooth (PIN usually 0000 or 1234), then choose it here.</div>' : '');

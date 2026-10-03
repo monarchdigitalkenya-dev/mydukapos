@@ -17,6 +17,8 @@ if (!apps.length) { console.error('Unknown app. Choose from:', cfg.apps.map((a) 
 
 for (const a of apps) {
   const slug = a.name.replace(/\s+/g, '-');
+  // zip 195 - a ready-made .ico: electron-builder's own png->ico step (a WebAssembly tool) fails with "WebAssembly.Memory(): could not allocate memory" on some PCs
+  const icoPath = fs.existsSync(path.join(here, 'build', `${a.key}.ico`)) ? `build/${a.key}.ico` : `build/${a.key}.png`;
   console.log(`\n=== ${a.name} ${cfg.version.name} (${a.key}) ===`);
   await builder.build({
     targets: builder.Platform.WINDOWS.createTarget(['nsis', 'msi'], builder.Arch.x64),
@@ -25,10 +27,10 @@ for (const a of apps) {
       productName: a.name,
       copyright: 'MyDukaPOS',
       directories: { output: `dist/${a.key}`, buildResources: 'build' },
-      files: ['main.js', 'preload.js', 'package.json', `build/${a.key}.png`],
+      files: ['main.js', 'preload.js', 'package.json', `build/${a.key}.png`],  // the .ico is only a build resource
       extraResources: [{ from: '../launcher', to: 'launcher' }],
       extraMetadata: { version: cfg.version.name, mydukaApp: { key: a.key, name: a.name, product: a.product, path: a.path, rootDomain: cfg.rootDomain, fixed: !!a.fixed } },
-      win: { icon: `build/${a.key}.png`, target: ['nsis', 'msi'], artifactName: `${slug}-${cfg.version.name}-Setup.\${ext}` },
+      win: { icon: icoPath, target: ['nsis', 'msi'], artifactName: `${slug}-${cfg.version.name}-Setup.\${ext}` },
       nsis: { oneClick: false, perMachine: false, allowToChangeInstallationDirectory: true, createDesktopShortcut: true, createStartMenuShortcut: true, shortcutName: a.name, artifactName: `${slug}-${cfg.version.name}-Setup.\${ext}` },
       msi: { oneClick: false, perMachine: false, createDesktopShortcut: true, shortcutName: a.name, artifactName: `${slug}-${cfg.version.name}.\${ext}` },
       publish: null,

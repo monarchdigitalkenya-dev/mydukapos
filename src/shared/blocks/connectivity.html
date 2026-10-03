@@ -1,14 +1,17 @@
 <!-- CONNECTIVITY (zip 129) ---------------------------------------------------------------------------------------------------
          ONE place decides whether this device is online (window.PosNet). Nothing else sets "Offline".
            * Why: the dot used to turn "Offline" whenever the heaviest request (/api/pos-sync) was slow or failed — and a device that
-             could not finish one push (its whole history on a slow line, a "too large" answer, a licence/pairing answer) never ran
+             could not finish one push (its whole history on a slow line, a "too large" answer, a licence answer) never ran
              another pull, so nothing ever set it back: OFFLINE with working internet, "retrying… sending…" for ever.
            * States: online · checking · offline (this device has no internet) · backend_unavailable (internet works, the POS server
-             is not answering — retried) · auth_required (the server answered 401/403: pairing / licence) · config_error (the server
+             did not answer in time — retried quietly; shown to people only as "saving on this device") · auth_required (the server answered 403: licence) · config_error (the server
              refused, e.g. shop too large). A failed sync request is NEVER taken as "offline" by itself: it asks for a check.
            * The check: GET /api/health (no licence, no data, never cached) — answered → reachable; then, only if that failed,
              an independent internet probe (no-cors, Cloudflare + Google) — reachable → backend_unavailable, else offline.
              navigator.onLine is used only as a hint (it is wrong on some phones and PCs).
+           * zip 194: device pairing no longer exists. A 401 (an old server's 'device_not_paired') is IGNORED here: it never sets auth_required,
+             never stops pulls or pushes; the next poll simply tries again. The scary bottom "Retry" bar is gone; offline /
+             backend_unavailable show only a small, calm, non-blocking pill "Saving on this device - will sync automatically".
            * Recovery is automatic, without a refresh: the browser's online event, the app coming back to the screen, focus,
              pageshow / resume (PWA), a network change (Wi-Fi ⇄ mobile data), waking from sleep, a tap on the dot, and a steady
              retry with backoff (2 s, 4 s, 8 s, 15 s, then every 30 s) while not online. The moment it is online again, the
@@ -31,9 +34,9 @@
         var MSG = {
             online: 'Online',
             checking: 'Checking the connection…',
-            offline: 'Offline — this device has no internet. Selling works; everything is sent automatically when the connection is back.',
-            backend_unavailable: 'Your internet works, but the POS server is not answering right now. Retrying automatically — selling works and nothing is lost.',
-            auth_required: 'Connected — but this device must be paired or signed in again before it can sync.',
+            offline: 'Saving on this device - will sync automatically.',
+            backend_unavailable: 'Saving on this device - will sync automatically.',
+            auth_required: 'Connected — the shop\'s link needs attention before this device can sync. Selling works; contact support.',
             security_check: 'Connected — but Cloudflare\'s security check is holding back this browser\'s requests to the POS server. Tap the dot to clear it (the page reloads once; nothing is lost).',
             config_error: 'Connected — but the server refused the sync. Nothing is lost; support has been told.',
         };
@@ -228,6 +231,8 @@
                 S.nextAt = Date.now() + 60000;
                 return;
             }
+            // zip 194: pairing is gone. An old server's 401 / 'device_not_paired' is transient and ignorable: no state change, polls carry on.
+            if (kind === 'auth' && (!info || /paired|^auth$/i.test(String(info)))) { note('ignored', 'auth ' + (info || '401')); return; }
             if (kind === 'auth') { S.authIssue = info || 'auth'; S.lastOk = Date.now(); set('auth_required', S.authIssue); return; }
             if (kind === 'challenge') { S.lastOk = Date.now(); set('security_check', info || 'Cloudflare security check'); reportEpisode(); return; }
             if (kind === 'config') { S.lastOk = Date.now(); set('config_error', info || ''); return; }
@@ -242,7 +247,8 @@
         function reportHttp(status, code) {
             status = Number(status) || 0;
             if (status >= 200 && status < 400) return report('ok');
-            if (status === 401 || status === 403) return report('auth', code || (status === 401 ? 'device_not_paired' : 'licence'));
+            if (status === 401) return;                                              // zip 194: transient / ignorable (old server's device_not_paired, expired staff token): never auth_required
+            if (status === 403) return report('auth', code || 'licence');
             if (status === 413) return code === 'push_too_large' ? report('busy') : report('config', code || 'too large');
             if (code === 'shop_db_unavailable') return report('config', code);      // zip 147: not "busy" — the shop's database is down (see pos-sync)
             if (status === 507 || code === 'storage_full') return report('config', 'storage_full');      // zip 186: the server answered: the internet works, but its storage is full (not "busy", not "offline")
@@ -253,8 +259,8 @@
         /* ---- the dot: one picture of connectivity + sync, in plain words ---- */
         function effective(sync) {
             var net = S.state;
-            if (net === 'offline') return 'offline';
-            if (net === 'backend_unavailable' || net === 'auth_required' || net === 'config_error' || net === 'security_check') return 'error';
+            if (net === 'offline' || net === 'backend_unavailable') return 'offline';       // zip 194: calm, never red
+            if (net === 'auth_required' || net === 'config_error' || net === 'security_check') return 'error';
             if (sync === 'offline') return 'syncing';                        // a failed request is being checked, not "offline"
             if (net === 'checking' && sync !== 'synced') return 'syncing';
             return sync || 'syncing';
@@ -266,7 +272,7 @@
                 if (sync === 'error') return 'Online — Sync problem: the last sync did not go through; retrying by itself (tap to sync now)';
                 return 'Online — Syncing… (tap to sync now)';
             }
-            if (net === 'auth_required') return S.authIssue === 'device_not_paired' ? 'Connected — this device must be paired (Settings ▸ Devices & Security) before it can sync.' : (S.authIssue === 'licence' ? 'Connected — the shop\'s link is not active. Selling works; contact support.' : MSG.auth_required);
+            if (net === 'auth_required') return S.authIssue === 'licence' ? 'Connected — the shop\'s link is not active. Selling works; contact support.' : MSG.auth_required;
             if (net === 'config_error' && S.detail === 'storage_full') return 'Connected — the server\'s storage is full, so it cannot save changes right now. Selling works and every sale is kept on this device; it is sent by itself once space is freed (support has been told).';
             if (net === 'config_error' && /^shop_db/.test(S.detail || '')) return 'Connected — the server\'s shop database is not responding, so this shop cannot sync yet. Selling works and every sale is kept on this device; it is sent by itself once the server is fixed.';
             return MSG[net] || MSG.checking;
@@ -294,56 +300,46 @@
             retryBar();
         }
 
-        /* ---- "Retry now" (zip 186) ----
-           While the device is shown as offline / "server not answering" for more than a few seconds, a small bar says so in plain words and
-           offers ONE button that does everything a person could want: check the connection again right now (no waiting for the timer),
-           send what is waiting and fetch the shop (syncRetryNow), reopen the live socket. It disappears by itself the moment the device is online. */
+        /* ---- the calm pill (zip 194; was the "Retry now" bar of zip 186) ----
+           While the device is offline / cannot reach the server for more than a few seconds, a SMALL unobtrusive pill says what is happening:
+           the work is saved on this device and will sync by itself. No button, no red, never blocks a tap (pointer-events: none), and it
+           never claims the server is not answering. It disappears by itself the moment the device is online.
+           (window.PosNet.retryNow() still exists for code and tests that call it.) */
         var retryTimer = null, retrying = false;
+        var PILL_TEXT = 'Saving on this device - will sync automatically';
         function retryBar() {
             try {
                 var bad = S.state === 'offline' || S.state === 'backend_unavailable';
-                var el = document.getElementById('posnet-retry-bar');
+                var el = document.getElementById('posnet-offline-pill');
+                var old = document.getElementById('posnet-retry-bar');                  // (an older copy of the page may have left one)
+                if (old && old.parentNode) old.parentNode.removeChild(old);
                 if (!bad) { if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; } if (el && el.parentNode) el.parentNode.removeChild(el); return; }
-                if (el) { var t = el.querySelector('span'); if (t) t.textContent = retryText(); return; }
-                if (retryTimer || !document.body) return;
+                if (el || retryTimer || !document.body) return;
                 retryTimer = setTimeout(function () {
                     retryTimer = null;
                     if (S.state !== 'offline' && S.state !== 'backend_unavailable') return;
-                    if (document.getElementById('posnet-retry-bar')) return;
-                    var bar = document.createElement('div');
-                    bar.id = 'posnet-retry-bar'; bar.className = 'no-print'; bar.setAttribute('role', 'status');
-                    bar.style.cssText = 'position:fixed;left:50%;bottom:74px;transform:translateX(-50%);z-index:99985;background:#34495e;color:#fff;padding:8px 12px;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.3);font:13px system-ui,sans-serif;display:flex;gap:10px;align-items:center;max-width:calc(94vw / var(--pos-z,1));';
-                    var span = document.createElement('span'); span.textContent = retryText();
-                    var b = document.createElement('button');
-                    b.type = 'button'; b.id = 'posnet-retry-btn'; b.textContent = 'Retry now';
-                    b.style.cssText = 'background:#27ae60;color:#fff;border:0;border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;white-space:nowrap;';
-                    b.onclick = function () { retryNow(); };
-                    bar.appendChild(span); bar.appendChild(b);
-                    document.body.appendChild(bar);
+                    if (document.getElementById('posnet-offline-pill')) return;
+                    var pill = document.createElement('div');
+                    pill.id = 'posnet-offline-pill'; pill.className = 'no-print'; pill.setAttribute('role', 'status');
+                    pill.style.cssText = 'position:fixed;left:10px;bottom:10px;z-index:99985;background:rgba(52,73,94,.85);color:#fff;padding:3px 10px;border-radius:999px;font:11px system-ui,sans-serif;pointer-events:none;max-width:calc(80vw / var(--pos-z,1));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+                    pill.textContent = PILL_TEXT;
+                    document.body.appendChild(pill);
                 }, window.__posNetRetryBarMs != null ? window.__posNetRetryBarMs : 8000);
             } catch (e) { /* cosmetic */ }
         }
-        function retryText() {
-            return S.state === 'offline' ? 'No connection to the server. Sales are kept and sent by themselves.' : 'The server is not answering. Sales are kept and sent by themselves.';
-        }
-        // The button (also window.PosNet.retryNow()): check at once, then send + fetch. Never throws; resolves to the state it ended in.
+        // window.PosNet.retryNow() (no button any more): check at once, then send + fetch. Never throws; resolves to the state it ended in.
         async function retryNow() {
             if (retrying) return S.state;
             retrying = true;
-            var b = document.getElementById('posnet-retry-btn');
             try {
-                if (b) { b.disabled = true; b.textContent = 'Checking…'; }
                 S.checking = null; S.fails = 0; S.nextAt = 0;
                 try { window.__pushBackoffUntil = 0; } catch (e) { /* none */ }
                 await check('retry button');
                 try { if (typeof window.syncRetryNow === 'function') await window.syncRetryNow(); } catch (e) { /* the automatic retry carries on */ }
                 try { if (typeof window.connectSyncSocket === 'function') window.connectSyncSocket(); } catch (e) { /* optional */ }
-                if (S.state !== 'online') { try { if (typeof window.showToast === 'function') window.showToast(S.state === 'offline' ? "Still can't reach the server. Check the device's internet - sales are safe and will be sent by themselves." : 'Internet is working but the POS server is not answering yet. Sales are safe; trying again by itself.', true); } catch (e) { /* cosmetic */ } }
             } catch (e) { /* never throws */ }
             finally {
                 retrying = false;
-                var b2 = document.getElementById('posnet-retry-btn');
-                if (b2) { b2.disabled = false; b2.textContent = 'Retry now'; }
             }
             return S.state;
         }

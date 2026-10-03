@@ -89,7 +89,7 @@ test('a brand-new device (under 3 days on this release) does not seal', async ()
   a.close();
 });
 
-test('"paired only": a sealed hash (what a lost or revoked device holds) cannot pair — the password can', async () => {
+test('"mode" changes need the typed password, not the sealed hash a device keeps (zip 194: pairing itself is no longer enforced)', async () => {
   const s = makeServer();
   const a = await openDevice('index.html', s, { pos_pw_hash: PWH, pos_admin_pw_hash: PWH, pos_biz_name: 'Biz', pos_hash_seal_ok: '1' }, 900, { webcrypto: true }); quiet(a.w);
   await a.w.eval('sealStoredHashes()'); await a.w.eval('pushNow()');
@@ -100,7 +100,7 @@ test('"paired only": a sealed hash (what a lost or revoked device holds) cannot 
   const post = (body, headers = {}) => s.fetch('https://x/api/device-pair', { method: 'POST', body: JSON.stringify(body), headers });
   assert.equal((await post({ action: 'mode', mode: 'paired', proof: sealed }, h)).status, 403, 'switching needs the password itself');
   assert.equal((await post({ action: 'mode', mode: 'paired', proof: PWH }, h)).status, 200);
-  assert.equal((await post({ action: 'pair', deviceId: 'dev_thief', proof: sealed })).status, 403, 'a copied/revoked device cannot re-pair');
+  assert.equal((await post({ action: 'revoke', deviceId: 'dev_x', proof: sealed }, h)).status, 403, 'revoking needs the password itself too');
   assert.equal((await post({ action: 'pair', deviceId: 'dev_new', proof: PWH })).status, 200, 'the shop password still pairs');
   a.close();
 });

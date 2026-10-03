@@ -2649,6 +2649,80 @@
 
     <!-- TAB: STORAGE (from /api/owner-storage — see functions/api/_state-store.js) -->
     <div id="storage-tab" class="tab-content">
+        <div class="panel" id="dbs-panel">
+            <style>
+                #dbs-panel .dbs-head { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; margin-bottom:6px; }
+                #dbs-panel .dbs-head h3 { margin:0; border:0; padding:0; }
+                #dbs-panel .dbs-link { background:none; border:0; padding:0; color:var(--accent); cursor:pointer; font-size:14px; text-decoration:underline; }
+                #dbs-panel .dbs-lead { margin:0 0 12px; color:#7f8c8d; font-size:14px; }
+                #dbs-panel .dbs-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(310px, 1fr)); gap:14px; margin-bottom:16px; }
+                #dbs-panel .dbs-card { background:var(--bg-surface); border:1px solid var(--border-color); border-radius:12px; padding:14px 16px; box-shadow:0 1px 3px rgba(20,35,50,.06); }
+                #dbs-panel .dbs-card.dbs-off { opacity:.72; }
+                #dbs-panel .dbs-card h4 { margin:0 0 2px; font-size:16px; }
+                #dbs-panel .dbs-role { font-size:12.5px; color:#7f8c8d; margin:0 0 10px; }
+                #dbs-panel .dbs-badge { display:inline-block; font-size:11px; border-radius:10px; padding:1px 8px; margin-left:6px; background:var(--bg-surface-alt); border:1px solid var(--border-color); color:#7f8c8d; font-weight:normal; vertical-align:middle; }
+                #dbs-panel .dbs-bar { height:12px; border-radius:6px; background:var(--bg-surface-alt); border:1px solid var(--border-color); overflow:hidden; margin:6px 0 4px; }
+                #dbs-panel .dbs-bar > i { display:block; height:100%; background:var(--success); min-width:2px; }
+                #dbs-panel .dbs-bar.warn > i { background:#f39c12; }
+                #dbs-panel .dbs-bar.crit > i { background:var(--danger); }
+                #dbs-panel .dbs-size { font-size:15px; font-weight:600; }
+                #dbs-panel .dbs-na { font-size:13.5px; color:#7f8c8d; font-style:italic; }
+                #dbs-panel table.dbs-tbl { width:100%; border-collapse:collapse; font-size:13px; margin-top:6px; }
+                #dbs-panel table.dbs-tbl th, #dbs-panel table.dbs-tbl td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--border-color); }
+                #dbs-panel table.dbs-tbl td.n, #dbs-panel table.dbs-tbl th.n { text-align:right; white-space:nowrap; }
+                #dbs-panel details summary { cursor:pointer; font-size:13px; color:var(--accent); margin-top:8px; }
+                #dbs-panel .dbs-set { background:var(--bg-surface); border:1px solid var(--border-color); border-radius:12px; padding:14px 16px; margin-bottom:16px; }
+                #dbs-panel .dbs-set h4 { margin:0 0 8px; }
+                #dbs-panel input.dbs-num { width:120px; font-size:18px; padding:8px 10px; text-align:right; }
+                #dbs-panel .dbs-row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:10px 0 4px; }
+                #dbs-panel .dbs-msg { font-size:13.5px; margin-top:8px; white-space:pre-wrap; }
+                #dbs-panel .dbs-msg.err { color:var(--danger); }
+                #dbs-panel .dbs-msg.ok { color:#27ae60; }
+                #dbs-panel .dbs-note { font-size:12px; color:#7f8c8d; }
+            </style>
+            <div class="dbs-head">
+                <h3>🗄️ Databases &amp; cleanup</h3>
+                <button type="button" class="dbs-link" id="dbs-refresh" onclick="loadDatabases()">Refresh</button>
+                <span id="dbs-status" class="settings-msg" style="margin:0;"></span>
+            </div>
+            <p class="dbs-lead">Every database the system uses, how full it is, and what can be cleaned up. Only figures the server could really measure are shown; anything else says “not measurable” and why. Sales, payments, stock and customer records are never deleted by cleanup.</p>
+            <div id="dbs-alert" class="dbs-msg err" style="display:none;"></div>
+            <div id="dbs-stores" class="dbs-grid"></div>
+            <div class="dbs-set" id="dbs-settings">
+                <h4>🧹 Database storage</h4>
+                <div id="dbs-usage"></div>
+                <div class="table-scroll">
+                <table class="dbs-tbl" id="dbs-retention">
+                    <thead><tr><th>What</th><th class="n">Kept for (days)</th><th>Archived first</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+                </div>
+                <div class="dbs-row">
+                    <label for="dbs-limit" style="margin:0;"><strong>Size limit (GB)</strong></label>
+                    <input type="number" id="dbs-limit" class="dbs-num" min="0.1" max="1000" step="0.1">
+                    <span class="dbs-note">per D1 database. Free plan: 0.5 GB each (5 GB per account); paid plan: 10 GB each.</span>
+                </div>
+                <div class="dbs-row">
+                    <label style="margin:0; display:flex; gap:6px; align-items:center;"><input type="checkbox" id="dbs-auto-clean" style="width:auto;"> Clean up automatically once a day</label>
+                    <label style="margin:0; display:flex; gap:6px; align-items:center;"><input type="checkbox" id="dbs-auto-backup" style="width:auto;"> Back up automatically every Sunday</label>
+                </div>
+                <div class="dbs-row">
+                    <button type="button" class="btn-main settings-small-btn" id="dbs-save" onclick="dbsSave()">Save settings</button>
+                    <button type="button" class="btn-main settings-small-btn" id="dbs-clean" onclick="dbsCleanup()">Run cleanup now</button>
+                </div>
+                <div id="dbs-last" class="dbs-note" style="margin-top:6px;"></div>
+                <div id="dbs-msg" class="dbs-msg"></div>
+            </div>
+            <div class="dbs-set" id="dbs-backups">
+                <h4>💾 Weekly backups</h4>
+                <p class="dbs-note" id="dbs-backup-lead" style="margin:0 0 6px;"></p>
+                <div id="dbs-backup-last" style="font-size:14px;"></div>
+                <div class="dbs-row"><button type="button" class="btn-main settings-small-btn" id="dbs-backup-btn" onclick="dbsBackup()">Back up now</button></div>
+                <div id="dbs-backup-runs" class="dbs-note"></div>
+                <div id="dbs-backup-msg" class="dbs-msg"></div>
+            </div>
+        </div>
+
         <div class="panel">
             <h3>💾 Shop data size &amp; safety</h3>
             <p style="margin-bottom: 8px; color: #7f8c8d; font-size: 14px;">How big every shop's synced data is. Every save has to load the whole shop into memory on the server, so a shop is limited to about 12&nbsp;MB (a busy shop makes ~1.7&nbsp;KB per sale). A shop can be moved into <strong>its own database</strong> (🗄️ button): no size limit, nothing archived away, and tills only ever download a recent window while older history is fetched by date range. Shops that are still a single record <strong>archive their own old history automatically</strong> once they reach 80% of that limit (keeping the newest 90 days, or fewer if needed), so nobody at a shop ever has to deal with storage; the archives are kept and can be restored or downloaded below. Two manual levers, both reversible: <strong>🗜️ Compress</strong> only shrinks the copy kept on disk (lossless; nothing changes for anyone) — it does <em>not</em> lower the size that counts. <strong>🗄️ Archive old history</strong> is what actually shrinks a shop: sales, stock movements, expenses… older than N days are moved to a downloadable archive and every device then shows only the recent history until you restore it. <span id="storage-policy-line"></span></p>
@@ -7911,6 +7985,7 @@
             }
             if (tabId === 'storage-tab') {
                 loadStorage();
+                loadDatabases();
             }
             if (tabId === 'owner-messages-tab') loadOwnerMessages();
             if (tabId === 'owner-offers-tab') loadOwnerOffers();
@@ -17448,6 +17523,116 @@ async function healthSetMode(clientId, mode) {
     catch (e) { alert(e.message); }
 }
 
+/* ===== zip 194: Storage -> Databases & cleanup (everything shown comes from /api/owner-databases) ===== */
+let dbsData = null;
+function dbsFmt(bytes) {
+    if (bytes == null || !isFinite(bytes)) return '—';
+    if (bytes < 1000) return bytes + ' B';
+    if (bytes < 1e6) return Math.round(bytes / 1000) + ' KB';
+    if (bytes < 1e9) return (bytes / 1e6).toFixed(bytes < 1e7 ? 2 : 1) + ' MB';
+    return (bytes / 1e9).toFixed(2) + ' GB';
+}
+function dbsUtc(t) { return t ? new Date(t).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '—'; }
+function dbsNum(n) { return n == null ? '—' : Number(n).toLocaleString('en-US'); }
+async function dbsApi(method, body) {
+    const res = await fetch('/api/owner-databases', { method, headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() }, body: body ? JSON.stringify(body) : undefined });
+    if (res.status === 401) throw new Error(await ownerOnlyMessage(res));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { const e = new Error(data.error || ('Request failed (' + res.status + ').')); e.data = data; throw e; }
+    return data;
+}
+function dbsSet(id, text, cls) { const el = document.getElementById(id); if (!el) return; el.textContent = text; el.className = 'dbs-msg' + (cls ? ' ' + cls : ''); }
+async function loadDatabases() {
+    const st = document.getElementById('dbs-status');
+    if (!st) return;
+    st.textContent = 'Loading…';
+    try { dbsData = await dbsApi('GET'); st.textContent = ''; renderDatabases(); }
+    catch (e) { st.textContent = ''; dbsSet('dbs-msg', 'Could not load the database report: ' + e.message, 'err'); }
+}
+function dbsStoreCard(s) {
+    let h = `<div class="dbs-card${s.bound ? '' : ' dbs-off'}"><h4>${escapeHtml(s.name)}<span class="dbs-badge">${escapeHtml(s.binding)}${s.bound ? '' : ' · not bound'}</span></h4>`;
+    if (s.role) h += `<p class="dbs-role">${escapeHtml(s.role)}</p>`;
+    if (s.sizeBytes != null) {
+        if (s.limitBytes) {
+            const p = s.pctUsed == null ? 0 : s.pctUsed, cls = p >= 80 ? ' crit' : p >= 60 ? ' warn' : '';
+            h += `<div class="dbs-size">${escapeHtml(dbsFmt(s.sizeBytes))} of ${escapeHtml(dbsFmt(s.limitBytes))}, ${escapeHtml(String(p.toFixed(1)))}%</div><div class="dbs-bar${cls}"><i style="width:${Math.max(0, Math.min(100, p))}%"></i></div>`;
+        } else h += `<div class="dbs-size">${escapeHtml(dbsFmt(s.sizeBytes))}${s.objects != null ? ` · ${escapeHtml(dbsNum(s.objects))} files${s.objectsComplete === false ? ' (at least)' : ''}` : ''}${s.measured != null ? ` · ${escapeHtml(String(s.measured))} shop database${s.measured === 1 ? '' : 's'} measured` : ''}</div>`;
+        if (s.sizeSource) h += `<div class="dbs-note">measured by: ${escapeHtml(s.sizeSource)}</div>`;
+    } else h += `<div class="dbs-na">Size: not measurable — ${escapeHtml(s.sizeReason || 'unknown')}</div>`;
+    for (const n of s.notes || []) h += `<div class="dbs-note">${escapeHtml(n)}</div>`;
+    if (s.error) h += `<div class="dbs-msg err">${escapeHtml(s.error)}</div>`;
+    if (s.kind === 'kv' && s.groups && s.groups.length) {
+        h += '<table class="dbs-tbl"><thead><tr><th>What</th><th class="n">Keys</th></tr></thead><tbody>' + s.groups.map((g) => `<tr><td>${escapeHtml(g.label)}${g.bytesKnown != null ? `<div class="dbs-note">${escapeHtml(dbsFmt(g.bytesKnown))} (from ${escapeHtml(String(g.bytesKnownKeys))} keys that report a size)</div>` : ''}</td><td class="n">${g.keys == null ? 'not measurable' : (g.keysComplete ? '' : '≥ ') + escapeHtml(dbsNum(g.keys))}</td></tr>`).join('') + '</tbody></table>';
+    }
+    if (s.kind === 'do' && s.shops && s.shops.length) {
+        h += `<details><summary>${escapeHtml(String(s.shopsInOwnDb))} shop${s.shopsInOwnDb === 1 ? '' : 's'} in their own database — largest</summary><table class="dbs-tbl"><thead><tr><th>Shop id</th><th class="n">Records</th><th class="n">Size</th></tr></thead><tbody>` + s.shops.map((x) => `<tr><td>${escapeHtml(x.id)}</td><td class="n">${escapeHtml(dbsNum(x.records))}</td><td class="n">${escapeHtml(dbsFmt(x.bytes))}</td></tr>`).join('') + '</tbody></table></details>';
+    }
+    if (s.kind === 'd1' && s.tables && s.tables.length) {
+        h += `<details><summary>${escapeHtml(String(s.tables.length))} tables · ${s.totalRows == null ? 'rows not measurable' : escapeHtml(dbsNum(s.totalRows)) + ' rows'}</summary><table class="dbs-tbl"><thead><tr><th>Table</th><th class="n">Rows</th><th class="n">Size</th></tr></thead><tbody>` +
+            s.tables.map((t) => `<tr><td>${escapeHtml(t.name)}</td><td class="n" title="${escapeHtml(t.rowsReason || '')}">${t.rows == null ? 'not measurable' : (t.rowsIsEstimate ? '≤ ' : '') + escapeHtml(dbsNum(t.rows))}</td><td class="n">${t.bytes == null ? '—' : escapeHtml(dbsFmt(t.bytes))}</td></tr>`).join('') + '</tbody></table>' +
+            (s.tablesBytesReason ? `<div class="dbs-note">${escapeHtml(s.tablesBytesReason)}</div>` : '') + '</details>';
+    }
+    return h + '</div>';
+}
+function renderDatabases() {
+    const d = dbsData;
+    if (!d) return;
+    document.getElementById('dbs-stores').innerHTML = d.stores.map(dbsStoreCard).join('');
+    const hot = d.stores.filter((s) => s.pctUsed != null && s.pctUsed >= 80);
+    const al = document.getElementById('dbs-alert');
+    if (hot.length) { al.style.display = 'block'; al.textContent = '⚠️ ' + hot.map((s) => `${s.name} is ${s.pctUsed.toFixed(1)}% of its ${dbsFmt(s.limitBytes)} limit`).join('; ') + '. Run a cleanup, or raise the limit if your plan allows more.'; }
+    else al.style.display = 'none';
+    document.getElementById('dbs-usage').innerHTML = d.totalD1Bytes != null ? `<div class="dbs-size">${escapeHtml(dbsFmt(d.totalD1Bytes))} in all D1 databases</div>` : '<div class="dbs-na">Total D1 size: not measurable (a database did not report its size)</div>';
+    document.querySelector('#dbs-retention tbody').innerHTML = d.categories.map((c) => `<tr>
+        <td>${escapeHtml(c.label)}${c.note ? `<div class="dbs-note">${escapeHtml(c.note)}</div>` : ''}</td>
+        <td class="n">${c.editable ? `<input type="number" class="dbs-num" data-cat="${escapeHtml(c.id)}" min="${c.minDays}" max="3650" step="1" value="${c.days}" ${c.available ? '' : 'disabled'} aria-label="${escapeHtml(c.label)} kept for days">` : '<span class="dbs-note">expires by itself</span>'}</td>
+        <td>${c.archivedFirst == null ? '—' : c.archivedFirst ? 'yes' : 'no'}</td></tr>`).join('');
+    document.getElementById('dbs-limit').value = d.settings.limitGb;
+    document.getElementById('dbs-auto-clean').checked = !!d.settings.autoCleanup;
+    document.getElementById('dbs-auto-backup').checked = !!d.settings.autoBackup;
+    const lc = d.lastCleanup;
+    document.getElementById('dbs-last').textContent = lc ? `Last cleanup ${dbsUtc(lc.at)} (${lc.trigger}): ${lc.archived} archived, ${lc.removed} removed${lc.errors && lc.errors.length ? ' — problems: ' + lc.errors.join('; ') : ''}` : 'Last cleanup: never run.';
+    const b = d.backups;
+    document.getElementById('dbs-backup-lead').textContent = `Every Sunday the ledger and owner databases are copied to R2 (${b.bucket ? 'bucket binding ' + b.bucket : 'no bucket bound'}); last ${b.keep} kept. The audit database is not copied (it is archived monthly). ${b.timeTravel}`;
+    const l = b.last;
+    document.getElementById('dbs-backup-last').textContent = !b.configured ? 'Backups are not set up: ' + b.runsReason : l ? `Last backup ${dbsUtc(l.at)} (${l.trigger}) - ${l.ok ? 'OK' : l.partial ? 'PARTIAL' : 'FAILED'}, ${dbsNum(l.rows)} rows, ${dbsFmt(l.bytes)}${l.error ? ' — ' + l.error : ''}` : 'Last backup: none yet.';
+    document.getElementById('dbs-backup-runs').textContent = b.runs ? (b.runs.length ? 'In R2: ' + b.runs.map((r) => `${r.runId} (${dbsFmt(r.bytes)})`).join(', ') : 'No backup files in the bucket yet.') : (b.configured ? 'Could not list the bucket: ' + b.runsReason : '');
+    document.getElementById('dbs-backup-btn').disabled = !b.configured;
+}
+async function dbsSave() {
+    const retention = {};
+    document.querySelectorAll('#dbs-retention input[data-cat]').forEach((i) => { if (!i.disabled) retention[i.dataset.cat] = Number(i.value); });
+    const btn = document.getElementById('dbs-save'); btn.disabled = true; dbsSet('dbs-msg', 'Saving…');
+    try {
+        await dbsApi('POST', { action: 'save-settings', limitGb: Number(document.getElementById('dbs-limit').value), retention, autoCleanup: document.getElementById('dbs-auto-clean').checked, autoBackup: document.getElementById('dbs-auto-backup').checked });
+        await loadDatabases(); dbsSet('dbs-msg', 'Settings saved.', 'ok');
+    } catch (e) { dbsSet('dbs-msg', 'Not saved: ' + e.message, 'err'); }
+    btn.disabled = false;
+}
+async function dbsCleanup() {
+    const audit = dbsData && dbsData.categories.find((c) => c.id === 'audit');
+    const warn = audit && audit.available && !audit.archivedFirst ? '\n\nNo archive bucket is bound on this project: old audit rows will be REMOVED without an archive.' : '';
+    if (!confirm('Run the cleanup now? It only touches old history (audit log, push log, old shop backup copies). Sales, payments, stock and customers are never deleted.' + warn)) return;
+    const btn = document.getElementById('dbs-clean'); btn.disabled = true; dbsSet('dbs-msg', 'Cleaning up…');
+    try {
+        const r = (await dbsApi('POST', { action: 'cleanup' })).result;
+        const lines = r.results.map((x) => `• ${x.label}: ${x.error ? 'ERROR — ' + x.error : x.skipped ? 'skipped (' + x.skipped + ')' : x.archived + ' archived, ' + x.removed + ' removed'}`);
+        await loadDatabases();
+        dbsSet('dbs-msg', `Cleanup finished: ${r.archived} archived, ${r.removed} removed.\n` + lines.join('\n'), r.errors && r.errors.length ? 'err' : 'ok');
+    } catch (e) { dbsSet('dbs-msg', 'Cleanup failed: ' + e.message, 'err'); }
+    btn.disabled = false;
+}
+async function dbsBackup() {
+    const btn = document.getElementById('dbs-backup-btn'); btn.disabled = true; dbsSet('dbs-backup-msg', 'Backing up…');
+    try {
+        const r = (await dbsApi('POST', { action: 'backup-now' })).backup;
+        await loadDatabases();
+        const per = r.dbs.map((x) => `• ${x.name}: ${x.key ? x.rows + ' rows, ' + dbsFmt(x.bytes) : x.error ? 'ERROR — ' + x.error : 'skipped (' + x.skipped + ')'}`).join('\n');
+        dbsSet('dbs-backup-msg', (r.ok ? 'Backup OK.\n' : 'Backup ' + (r.partial ? 'PARTIAL' : 'FAILED') + (r.error ? ': ' + r.error : '') + '\n') + per, r.ok ? 'ok' : 'err');
+    } catch (e) { dbsSet('dbs-backup-msg', 'Backup failed: ' + e.message, 'err'); await loadDatabases().catch(() => {}); }
+    document.getElementById('dbs-backup-btn').disabled = !(dbsData && dbsData.backups.configured);
+}
+
 async function loadStorage() {
     const summary = document.getElementById('storage-summary');
     const tbody = document.querySelector('#storage-table tbody');
@@ -18344,14 +18529,17 @@ async function storageMeasureUnknown() {
 <!-- CONNECTIVITY (zip 129) ---------------------------------------------------------------------------------------------------
          ONE place decides whether this device is online (window.PosNet). Nothing else sets "Offline".
            * Why: the dot used to turn "Offline" whenever the heaviest request (/api/pos-sync) was slow or failed — and a device that
-             could not finish one push (its whole history on a slow line, a "too large" answer, a licence/pairing answer) never ran
+             could not finish one push (its whole history on a slow line, a "too large" answer, a licence answer) never ran
              another pull, so nothing ever set it back: OFFLINE with working internet, "retrying… sending…" for ever.
            * States: online · checking · offline (this device has no internet) · backend_unavailable (internet works, the POS server
-             is not answering — retried) · auth_required (the server answered 401/403: pairing / licence) · config_error (the server
+             did not answer in time — retried quietly; shown to people only as "saving on this device") · auth_required (the server answered 403: licence) · config_error (the server
              refused, e.g. shop too large). A failed sync request is NEVER taken as "offline" by itself: it asks for a check.
            * The check: GET /api/health (no licence, no data, never cached) — answered → reachable; then, only if that failed,
              an independent internet probe (no-cors, Cloudflare + Google) — reachable → backend_unavailable, else offline.
              navigator.onLine is used only as a hint (it is wrong on some phones and PCs).
+           * zip 194: device pairing no longer exists. A 401 (an old server's 'device_not_paired') is IGNORED here: it never sets auth_required,
+             never stops pulls or pushes; the next poll simply tries again. The scary bottom "Retry" bar is gone; offline /
+             backend_unavailable show only a small, calm, non-blocking pill "Saving on this device - will sync automatically".
            * Recovery is automatic, without a refresh: the browser's online event, the app coming back to the screen, focus,
              pageshow / resume (PWA), a network change (Wi-Fi ⇄ mobile data), waking from sleep, a tap on the dot, and a steady
              retry with backoff (2 s, 4 s, 8 s, 15 s, then every 30 s) while not online. The moment it is online again, the
@@ -18374,9 +18562,9 @@ async function storageMeasureUnknown() {
         var MSG = {
             online: 'Online',
             checking: 'Checking the connection…',
-            offline: 'Offline — this device has no internet. Selling works; everything is sent automatically when the connection is back.',
-            backend_unavailable: 'Your internet works, but the POS server is not answering right now. Retrying automatically — selling works and nothing is lost.',
-            auth_required: 'Connected — but this device must be paired or signed in again before it can sync.',
+            offline: 'Saving on this device - will sync automatically.',
+            backend_unavailable: 'Saving on this device - will sync automatically.',
+            auth_required: 'Connected — the shop\'s link needs attention before this device can sync. Selling works; contact support.',
             security_check: 'Connected — but Cloudflare\'s security check is holding back this browser\'s requests to the POS server. Tap the dot to clear it (the page reloads once; nothing is lost).',
             config_error: 'Connected — but the server refused the sync. Nothing is lost; support has been told.',
         };
@@ -18571,6 +18759,8 @@ async function storageMeasureUnknown() {
                 S.nextAt = Date.now() + 60000;
                 return;
             }
+            // zip 194: pairing is gone. An old server's 401 / 'device_not_paired' is transient and ignorable: no state change, polls carry on.
+            if (kind === 'auth' && (!info || /paired|^auth$/i.test(String(info)))) { note('ignored', 'auth ' + (info || '401')); return; }
             if (kind === 'auth') { S.authIssue = info || 'auth'; S.lastOk = Date.now(); set('auth_required', S.authIssue); return; }
             if (kind === 'challenge') { S.lastOk = Date.now(); set('security_check', info || 'Cloudflare security check'); reportEpisode(); return; }
             if (kind === 'config') { S.lastOk = Date.now(); set('config_error', info || ''); return; }
@@ -18585,7 +18775,8 @@ async function storageMeasureUnknown() {
         function reportHttp(status, code) {
             status = Number(status) || 0;
             if (status >= 200 && status < 400) return report('ok');
-            if (status === 401 || status === 403) return report('auth', code || (status === 401 ? 'device_not_paired' : 'licence'));
+            if (status === 401) return;                                              // zip 194: transient / ignorable (old server's device_not_paired, expired staff token): never auth_required
+            if (status === 403) return report('auth', code || 'licence');
             if (status === 413) return code === 'push_too_large' ? report('busy') : report('config', code || 'too large');
             if (code === 'shop_db_unavailable') return report('config', code);      // zip 147: not "busy" — the shop's database is down (see pos-sync)
             if (status === 507 || code === 'storage_full') return report('config', 'storage_full');      // zip 186: the server answered: the internet works, but its storage is full (not "busy", not "offline")
@@ -18596,8 +18787,8 @@ async function storageMeasureUnknown() {
         /* ---- the dot: one picture of connectivity + sync, in plain words ---- */
         function effective(sync) {
             var net = S.state;
-            if (net === 'offline') return 'offline';
-            if (net === 'backend_unavailable' || net === 'auth_required' || net === 'config_error' || net === 'security_check') return 'error';
+            if (net === 'offline' || net === 'backend_unavailable') return 'offline';       // zip 194: calm, never red
+            if (net === 'auth_required' || net === 'config_error' || net === 'security_check') return 'error';
             if (sync === 'offline') return 'syncing';                        // a failed request is being checked, not "offline"
             if (net === 'checking' && sync !== 'synced') return 'syncing';
             return sync || 'syncing';
@@ -18609,7 +18800,7 @@ async function storageMeasureUnknown() {
                 if (sync === 'error') return 'Online — Sync problem: the last sync did not go through; retrying by itself (tap to sync now)';
                 return 'Online — Syncing… (tap to sync now)';
             }
-            if (net === 'auth_required') return S.authIssue === 'device_not_paired' ? 'Connected — this device must be paired (Settings ▸ Devices & Security) before it can sync.' : (S.authIssue === 'licence' ? 'Connected — the shop\'s link is not active. Selling works; contact support.' : MSG.auth_required);
+            if (net === 'auth_required') return S.authIssue === 'licence' ? 'Connected — the shop\'s link is not active. Selling works; contact support.' : MSG.auth_required;
             if (net === 'config_error' && S.detail === 'storage_full') return 'Connected — the server\'s storage is full, so it cannot save changes right now. Selling works and every sale is kept on this device; it is sent by itself once space is freed (support has been told).';
             if (net === 'config_error' && /^shop_db/.test(S.detail || '')) return 'Connected — the server\'s shop database is not responding, so this shop cannot sync yet. Selling works and every sale is kept on this device; it is sent by itself once the server is fixed.';
             return MSG[net] || MSG.checking;
@@ -18637,56 +18828,46 @@ async function storageMeasureUnknown() {
             retryBar();
         }
 
-        /* ---- "Retry now" (zip 186) ----
-           While the device is shown as offline / "server not answering" for more than a few seconds, a small bar says so in plain words and
-           offers ONE button that does everything a person could want: check the connection again right now (no waiting for the timer),
-           send what is waiting and fetch the shop (syncRetryNow), reopen the live socket. It disappears by itself the moment the device is online. */
+        /* ---- the calm pill (zip 194; was the "Retry now" bar of zip 186) ----
+           While the device is offline / cannot reach the server for more than a few seconds, a SMALL unobtrusive pill says what is happening:
+           the work is saved on this device and will sync by itself. No button, no red, never blocks a tap (pointer-events: none), and it
+           never claims the server is not answering. It disappears by itself the moment the device is online.
+           (window.PosNet.retryNow() still exists for code and tests that call it.) */
         var retryTimer = null, retrying = false;
+        var PILL_TEXT = 'Saving on this device - will sync automatically';
         function retryBar() {
             try {
                 var bad = S.state === 'offline' || S.state === 'backend_unavailable';
-                var el = document.getElementById('posnet-retry-bar');
+                var el = document.getElementById('posnet-offline-pill');
+                var old = document.getElementById('posnet-retry-bar');                  // (an older copy of the page may have left one)
+                if (old && old.parentNode) old.parentNode.removeChild(old);
                 if (!bad) { if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; } if (el && el.parentNode) el.parentNode.removeChild(el); return; }
-                if (el) { var t = el.querySelector('span'); if (t) t.textContent = retryText(); return; }
-                if (retryTimer || !document.body) return;
+                if (el || retryTimer || !document.body) return;
                 retryTimer = setTimeout(function () {
                     retryTimer = null;
                     if (S.state !== 'offline' && S.state !== 'backend_unavailable') return;
-                    if (document.getElementById('posnet-retry-bar')) return;
-                    var bar = document.createElement('div');
-                    bar.id = 'posnet-retry-bar'; bar.className = 'no-print'; bar.setAttribute('role', 'status');
-                    bar.style.cssText = 'position:fixed;left:50%;bottom:74px;transform:translateX(-50%);z-index:99985;background:#34495e;color:#fff;padding:8px 12px;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,.3);font:13px system-ui,sans-serif;display:flex;gap:10px;align-items:center;max-width:calc(94vw / var(--pos-z,1));';
-                    var span = document.createElement('span'); span.textContent = retryText();
-                    var b = document.createElement('button');
-                    b.type = 'button'; b.id = 'posnet-retry-btn'; b.textContent = 'Retry now';
-                    b.style.cssText = 'background:#27ae60;color:#fff;border:0;border-radius:6px;padding:6px 12px;font-weight:600;cursor:pointer;white-space:nowrap;';
-                    b.onclick = function () { retryNow(); };
-                    bar.appendChild(span); bar.appendChild(b);
-                    document.body.appendChild(bar);
+                    if (document.getElementById('posnet-offline-pill')) return;
+                    var pill = document.createElement('div');
+                    pill.id = 'posnet-offline-pill'; pill.className = 'no-print'; pill.setAttribute('role', 'status');
+                    pill.style.cssText = 'position:fixed;left:10px;bottom:10px;z-index:99985;background:rgba(52,73,94,.85);color:#fff;padding:3px 10px;border-radius:999px;font:11px system-ui,sans-serif;pointer-events:none;max-width:calc(80vw / var(--pos-z,1));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+                    pill.textContent = PILL_TEXT;
+                    document.body.appendChild(pill);
                 }, window.__posNetRetryBarMs != null ? window.__posNetRetryBarMs : 8000);
             } catch (e) { /* cosmetic */ }
         }
-        function retryText() {
-            return S.state === 'offline' ? 'No connection to the server. Sales are kept and sent by themselves.' : 'The server is not answering. Sales are kept and sent by themselves.';
-        }
-        // The button (also window.PosNet.retryNow()): check at once, then send + fetch. Never throws; resolves to the state it ended in.
+        // window.PosNet.retryNow() (no button any more): check at once, then send + fetch. Never throws; resolves to the state it ended in.
         async function retryNow() {
             if (retrying) return S.state;
             retrying = true;
-            var b = document.getElementById('posnet-retry-btn');
             try {
-                if (b) { b.disabled = true; b.textContent = 'Checking…'; }
                 S.checking = null; S.fails = 0; S.nextAt = 0;
                 try { window.__pushBackoffUntil = 0; } catch (e) { /* none */ }
                 await check('retry button');
                 try { if (typeof window.syncRetryNow === 'function') await window.syncRetryNow(); } catch (e) { /* the automatic retry carries on */ }
                 try { if (typeof window.connectSyncSocket === 'function') window.connectSyncSocket(); } catch (e) { /* optional */ }
-                if (S.state !== 'online') { try { if (typeof window.showToast === 'function') window.showToast(S.state === 'offline' ? "Still can't reach the server. Check the device's internet - sales are safe and will be sent by themselves." : 'Internet is working but the POS server is not answering yet. Sales are safe; trying again by itself.', true); } catch (e) { /* cosmetic */ } }
             } catch (e) { /* never throws */ }
             finally {
                 retrying = false;
-                var b2 = document.getElementById('posnet-retry-btn');
-                if (b2) { b2.disabled = false; b2.textContent = 'Retry now'; }
             }
             return S.state;
         }

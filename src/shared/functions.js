@@ -5662,6 +5662,7 @@ async function pullStateOnce() {
                     if (hasUnsyncedWork() || window.__sealing) {
                         markSync('syncing');
                         try { if (typeof window.salesJournalMergeNewSales === 'function') window.salesJournalMergeNewSales(data); } catch (e2) { /* zip 186: other tills' NEW sales are taken now (only added, nothing replaced) */ }
+                        try { stockMergeWhileStuck(data); } catch (e2) { /* zip 195: the owner's stock figures are taken now (quantities only) */ }
                         // zip 186: 300 ms while pushes are allowed; while they are being held back (refusal backoff, storage full, not the sending tab, circuit breaker)
                         // the wait of that hold - this branch used to be the other half of the push -> pull -> push loop of the incident
                         setTimeout(() => { try { Promise.resolve(flushThenPull()).catch(() => {}); } catch (e2) { /* the poll will */ } }, typeof syncDeferMs === 'function' ? syncDeferMs() : 300);
@@ -10229,6 +10230,84 @@ function stockApplyPulledLedger(data) {
                 return rec;
             });
             return data;
+        }
+
+//@fn restockVariantByCode
+// zip 195 - an item with variants keeps its stock in the VARIANTS (each has its own code and its own cell on the server). The Restock tab only looked
+// at parent codes: a typed variant code made a brand-new duplicate item, and restocking the parent bumped a number the next pull reset to the sum
+// of the variants - the owner saw +5, nobody else ever did. A typed variant code now restocks THAT variant; a parent code of an item that has
+// variants is refused with a clear message (see restockParentHasVariants).
+function restockVariantByCode(code) {
+            const c = String(code || '').trim().toLowerCase();
+            if (!c || typeof inventory === 'undefined' || !Array.isArray(inventory)) return null;
+            for (const it of inventory) {
+                if (!it || it.type === 'service' || !Array.isArray(it.variants)) continue;
+                const v = it.variants.find((x) => x && x.code != null && String(x.code).trim().toLowerCase() === c);
+                if (v) return { item: it, variant: v };
+            }
+            return null;
+        }
+
+//@fn restockApplyVariant
+function restockApplyVariant(hit, qty, reason) {
+            const v = hit.variant, it = hit.item;
+            v.qty = stockRound3((Number(v.qty) || 0) + qty);
+            it.qty = stockRound3(it.variants.reduce((a, x) => a + (Number(x && x.qty) || 0), 0));
+            logStockMovement(v.code, `${it.name} (${v.name})`, qty, reason, 'qty');
+        }
+
+//@fn restockParentHasVariants
+function restockParentHasVariants(existing) {
+            if (!existing || !existing.hasVariants || !Array.isArray(existing.variants) || existing.variants.length === 0) return false;
+            try { showToast(`"${existing.name}" has variants: restock each variant with its own code (${existing.variants.map((v) => v && v.code).filter(Boolean).slice(0, 4).join(', ')}).`, true); } catch (e) { /* the row is skipped either way */ }
+            return true;
+        }
+
+//@fn stockMergeWhileStuck
+// zip 195 - STOCK REACHES EVERY DEVICE EVEN WHILE THIS DEVICE'S OWN PUSH IS STUCK. A pull is never applied over unsent changes (the older server
+// copy would land on top of them), so a till whose push kept failing for ANY reason skipped every pull and kept showing the old quantities - the
+// owner restocked at home and the shop's devices still said "no stock". With the stock ledger on, the server's quantity is the truth and this
+// device's own unsent movements are laid on top of it (exactly what a normal pull does), so that is all this changes: ONLY the quantity figures
+// (qty, pieceQty and the `_sq` / `_sp` baselines) of items this device already has. Nothing else the device holds is replaced, so no unsent edit
+// can be lost. Never throws; returns how many figures changed.
+function stockMergeWhileStuck(data) {
+            try {
+                if (!data || !Array.isArray(data.inventory) || typeof inventory === 'undefined' || !Array.isArray(inventory)) return 0;
+                if (typeof stockLedgerOn !== 'function' || !stockLedgerOn()) return 0;
+                const serverIds = new Set();
+                (Array.isArray(data.stockMovementLog) ? data.stockMovementLog : []).forEach((m) => { if (m && m.id != null) serverIds.add(String(m.id)); });
+                const by = stockMovesByKey(stockPendingMoves(serverIds));
+                const srv = new Map();
+                data.inventory.forEach((r) => { if (r && typeof r === 'object' && r.code != null) srv.set(String(r.code), r); });
+                let changed = 0;
+                const take = (loc, s) => {
+                    [['qty', '_sq'], ['pieceQty', '_sp']].forEach(([unit, base]) => {
+                        if (typeof s[unit] !== 'number' || !isFinite(s[unit])) return;
+                        const next = stockSimulate(s[unit], by.get(loc.code + '|' + unit));
+                        if (loc[unit] !== next || loc[base] !== s[unit]) { loc[base] = s[unit]; loc[unit] = next; changed++; }
+                    });
+                };
+                inventory.forEach((it) => {
+                    if (!it || it.code == null || it._deleted) return;
+                    const s = srv.get(String(it.code));
+                    if (!s || s._deleted) return;
+                    if (it.hasVariants && Array.isArray(it.variants) && it.variants.length > 0 && Array.isArray(s.variants)) {
+                        it.variants.forEach((v) => {
+                            if (!v || v.code == null) return;
+                            const sv = s.variants.find((x) => x && x.code != null && String(x.code) === String(v.code));
+                            if (sv) take(v, sv);
+                        });
+                        it.qty = Math.round(it.variants.reduce((a, v) => a + (Number(v && v.qty) || 0), 0) * 1000) / 1000;
+                        return;
+                    }
+                    take(it, s);
+                });
+                if (changed) {
+                    try { safeSetItem(typeof appStoreKey === 'function' ? appStoreKey('pos_inventory') : 'pos_inventory', JSON.stringify(inventory)); } catch (e) { /* in memory; the next save writes it */ }
+                    try { if (typeof renderAllViews === 'function') renderAllViews(); } catch (e) { /* the next draw shows it */ }
+                }
+                return changed;
+            } catch (e) { return 0; }
         }
 
 //@fn voidBillPayments
@@ -17626,7 +17705,7 @@ function netFailReason() {
                     if (f.kind === 'timeout') return 'the server took too long to answer. Your internet works — try again in a moment.';
                     if (f.kind === 'network') {
                         if (net) net.check('request failed');
-                        if (net && net.state === 'backend_unavailable') return 'your internet works, but the MyDukaPOS server is not answering. Try again in a moment.';
+                        if (net && net.state === 'backend_unavailable') return 'your work is saved on this device and will sync automatically.';
                         if (net && net.state === 'online') return 'the request did not get through (the connection dropped for a moment) — try again.';
                         // zip 147: the check above has only just started — its verdict is not known yet. "Check your internet" is said only when the
                         // manager has actually found no internet (the first line of this function); until then, never.
@@ -17641,7 +17720,7 @@ function netFailReason() {
                     if (f.status >= 500) return `the server had a problem (error ${f.status}). Your internet works — try again in a moment.`;
                     if (f.status) return `the server refused the request (error ${f.status}).`;
                 }
-                if (net && net.state === 'backend_unavailable') return 'your internet works, but the MyDukaPOS server is not answering. Try again in a moment.';
+                if (net && net.state === 'backend_unavailable') return 'your work is saved on this device and will sync automatically.';
                 if (net && net.state === 'auth_required') return 'this device must be paired or signed in again before it can do this.';
                 return 'something went wrong — try again. (Your connection looks fine.)';
             } catch (e) { return 'something went wrong — try again.'; }

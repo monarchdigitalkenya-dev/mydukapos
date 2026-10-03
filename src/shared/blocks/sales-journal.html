@@ -446,10 +446,47 @@
                 var data = await res.json();
                 if (!data || data.unchanged || !(data.updatedAt > since)) return 0;
                 window.__stuckPullSince = data.updatedAt;
-                return window.salesJournalMergeNewSales(data);
+                var stockN = 0; try { if (typeof stockMergeWhileStuck === 'function') stockN = stockMergeWhileStuck(data); } catch (e2) { /* zip 195: quantities only */ }
+                return window.salesJournalMergeNewSales(data) + stockN;
             } catch (e) { return 0; }
             finally { clearTimeout(timer); window.__stuckPullBusy = false; }
         };
+        // zip 195 - "NO STOCK" ON A DEVICE THAT HAS NOT HEARD OF THE NEW STOCK YET. When the till refuses a line for stock ("Only 0 ... available",
+        // "Not enough ... in stock") it first asks the server for the latest figures (at most once every 4 s): if the quantities moved, it says so
+        // and the item can be tapped again - nobody has to wait for the next 7 s poll or refresh the page.
+        (function stockRecheckInstall() {
+            var BAD = /^(Only .* available\.|Not enough .* in stock|Not enough loose|.*can be made with current ingredient stock)/i;
+            function sig() {
+                try { return JSON.stringify((typeof inventory !== 'undefined' && Array.isArray(inventory) ? inventory : []).map(function (p) { return p && [p.code, p.qty, p.pieceQty, Array.isArray(p.variants) ? p.variants.map(function (v) { return v && [v.code, v.qty, v.pieceQty]; }) : null]; })); } catch (e) { return ''; }
+            }
+            window.stockRecheck = function () {
+                var now = Date.now();
+                if (window.__stockRecheckBusy || now - (window.__stockRecheckAt || 0) < 4000) return;
+                window.__stockRecheckBusy = true; window.__stockRecheckAt = now;
+                var before = sig();
+                Promise.resolve(typeof flushThenPull === 'function' ? flushThenPull() : (typeof pullState === 'function' ? pullState() : null))
+                    .catch(function () { })
+                    .then(function () { return new Promise(function (r) { setTimeout(r, 700); }); })
+                    .then(function () {
+                        if (sig() !== before) { try { showToast('Stock was just updated from the server - tap the item again.', false); } catch (e) { /* cosmetic */ } }
+                    })
+                    .catch(function () { })
+                    .then(function () { window.__stockRecheckBusy = false; });
+            };
+            function install(n) {
+                if (typeof window.showToast !== 'function') { if (n < 40) setTimeout(function () { install(n + 1); }, 250); return; }
+                if (window.showToast.__stockWrapped) return;
+                var real = window.showToast;
+                var wrapped = function (msg, isError) {
+                    var r = real.apply(this, arguments);
+                    try { if (isError && typeof msg === 'string' && BAD.test(msg)) window.stockRecheck(); } catch (e) { /* the toast was shown */ }
+                    return r;
+                };
+                wrapped.__stockWrapped = true;
+                window.showToast = wrapped;
+            }
+            install(0);
+        })();
         window.salesJournalPushStarted = function () {
             var now = Date.now();
             FIELDS.forEach(function (f) { meta[f].forEach(function (e) { if (e.st === 'pending') { e.tries = (e.tries || 0) + 1; e.lastTry = now; } }); });
@@ -1049,15 +1086,7 @@
             var before = (arrOf('salesLog') || []).length;
             try {
                 if (window.PosNet && (await window.PosNet.check('sync to this device')) === 'offline') throw new Error('This device is offline. Nothing was changed; try again when it is online.');
-                say(0, 'run', 'Checking this device may sync…');
-                var dp = null;
-                try { var res = await fetch(typeof apiUrl === 'function' ? apiUrl('/api/device-pair') : '/api/device-pair'); dp = await res.json(); } catch (e) { dp = null; }
-                if (dp && dp.mode === 'paired' && !(dp.me && dp.me.paired)) {
-                    say(0, 'bad', 'This shop only syncs with paired devices, and this one is not paired yet.');
-                    if (typeof window.showDevicePairScreen === 'function') window.showDevicePairScreen();
-                    return { ok: false, error: 'Pair this device first (shop password or a pairing code), then tap Sync to this device again.' };
-                }
-                say(0, 'ok', dp ? 'This device may sync.' : 'Could not check pairing — continuing.');
+                say(0, 'ok', 'Ready to sync.');
                 say(1, 'run', 'Sending this device\'s unsent sales and changes first…');
                 var sent = await tries(async function () {
                     if (typeof flushPendingPush === 'function') return await flushPendingPush();

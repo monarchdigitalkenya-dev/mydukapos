@@ -34,13 +34,13 @@ test('owner only: each shop\'s stock integrity, below-zero items, device release
   assert.equal(bad.pairing, 'open');
 });
 
-test('the daily job: only with the router\'s secret; stores the result; the owner can switch a shop\'s pairing', async () => {
+test('the daily job: only with the router\'s secret; stores the result; the owner\'s old pairing switch is accepted but not enforced (zip 194)', async () => {
   const { kv, get, post } = await setup();
   assert.equal((await get('?cron=1', { 'X-Router-Secret': 'wrong' })).status, 401);
   const r = await get('?cron=1', { 'X-Router-Secret': 'rs' });
   assert.equal(r.body.total, 2); assert.equal(r.body.bad, 1);
   assert.equal(r.body.emailed, false, 'no email service configured in the test: nothing sent, nothing broken');
   assert.equal(JSON.parse(kv.data.get('owner-health:last').value).bad, 1);
-  assert.equal((await post({ action: 'mode', clientId: 'BAD', mode: 'paired' })).mode, 'paired');
-  assert.equal((await get('')).body.shops.find((s) => s.id === 'BAD').pairing, 'paired');
+  assert.equal((await post({ action: 'mode', clientId: 'BAD', mode: 'paired' })).mode, 'open', 'zip 194: accepted, never enforced');
+  assert.equal((await get('')).body.shops.find((s) => s.id === 'BAD').pairing, 'open');
 });

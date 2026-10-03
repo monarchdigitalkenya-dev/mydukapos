@@ -2,6 +2,27 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 196
+- **Deploy fix**: `npm run deploy:fast` / `deploy` now publish from a clean temporary copy (`tools/deploy-pages.mjs`) that leaves out `native/windows/dist` (installers), `node_modules`, `.git`, zips and any file over 24 MiB. Fixes "Pages only supports files up to 25 MiB" after building the exe.
+- wrangler updated to v4 (root and wildcard-router package.json).
+
+## Zip 195
+- **Exe build fix**: `WebAssembly.Memory(): could not allocate memory` (electron-builder's icon converter). Ready-made `.ico` files now ship in `native/windows/build/` and `build.mjs` uses them, so the failing step is skipped.
+- **Stock reaches every device** even while a device is "stuck" (`stockMergeWhileStuck`), plus a "no stock" recheck.
+- **Restock of a variant code** restocks that variant (no duplicate item); a parent code of a variant item is refused with a clear message.
+- **Sales are universal**: every device and staff member sees the same Sales totals (hotel bills too).
+- No more "server not answering" wording for users.
+
+## Zip 194
+- **Exe receipts came out as blank pieces of paper.** Reproduced with the real Electron print call and a virtual printer: the installed exe's silent print IGNORES the receipt's paper size (`@page`) and prints on the printer's default page, so a receipt came out on the wrong page size / chopped into pieces. Fixed in two layers:
+  - Rebuilt exe (`native/windows/main.js`): the paper size is passed to Windows (`pageSize`), and the receipt is printed from a clean snapshot window (`native:printHtml`). Verified in Electron to a virtual printer: exactly one 80 x 118 mm page with the whole receipt.
+  - Web side (works with the exe already installed): an exe without `printHtml` (the old one) now defaults to the Windows print window, which does honour the receipt's paper size, instead of the silent print that ignored it.
+- Zip 193 (black-on-white receipts in dark theme) and zip 192 (Order Ticket Size) are included.
+
+## Zip 193
+- **ROOT CAUSE of the exe's empty receipt found and fixed.** In the DARK theme the receipt paper's background was the dark screen colour while its letters are forced black. A browser's print dialog leaves backgrounds out (so the web print looked fine); the Windows app prints backgrounds, so the paper came out dark with black letters - an empty-looking receipt. New shared block `print-white`: receipt and order ticket always print black on white, in every app and theme. This is web-side, so it works with the INSTALLED exe, no rebuild needed. Test: tests/zip192-print.browser.test.mjs (dark theme, Shop + Hotel).
+- Zip 192's print-snapshot and Order Ticket Size are included.
+
 ## Zip 192
 - **Windows exe printed an EMPTY receipt (web was fine).** The exe now prints a *snapshot* of the receipt / order ticket from its own hidden window (`native:printHtml`), with the paper size passed to Windows, instead of printing the live page; the live-page method also waits for the layout to settle and sends the paper size. Settings ▸ Install App ▸ printers has "Print method 1 / 2 / 3" (3 = the Windows print window). Needs the exe rebuilt (`native/windows/main.js`, `preload.js`); the web side works with the old exe too (it falls back to method 2).
 - **Hotel: Settings ▸ Receipt Settings ▸ Order Ticket Size** - paper (same as receipt / 58 / 80 / custom), letter size, automatic shrink so no line wraps, live sample, test print, saved on the till.

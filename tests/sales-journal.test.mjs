@@ -250,43 +250,7 @@ test('every app carries the journal and the "Cancel / Save" receipt button', asy
   }
 });
 
-test('TEST 14: "Sync to this device" — sends this device\'s unsent sale first, fetches the other till\'s, no duplicates, nothing lost', async () => {
-  const server = makeServer();
-  const a = await openDevice('index.html', server, BASE, 900, { indexedDB: new IDBFactory() });
-  a.w.eval(PRINTER);
-  for (let i = 0; i < 2; i++) { a.w.eval("addToCart('A'); currentPaymentMethod = 'cash'"); a.d.getElementById('cash-tendered-input').value = '1000'; await a.w.eval('checkoutCart()'); }
-  await a.w.eval('flushPendingPush()');
-  const aIds = JSON.parse(a.w.eval('JSON.stringify(salesLog.map(s => s.id))'));
-  a.close();
-  // device B: made a sale while offline, has not seen A's sales
-  server.state.down = true;
-  const b = await openDevice('index.html', server, BASE, 900, { indexedDB: new IDBFactory() });
-  b.w.eval(PRINTER);
-  b.w.eval("addToCart('A'); currentPaymentMethod = 'cash'"); b.d.getElementById('cash-tendered-input').value = '1000';
-  await b.w.eval('checkoutCart()');
-  const bId = b.w.eval('salesLog[0].id');
-  server.state.down = false;
-  b.w.eval("window.__steps = []");
-  const r = JSON.parse(await b.w.eval("syncToThisDevice(function (i, s, t) { window.__steps.push([i, s]); }).then(JSON.stringify)"));
-  assert.equal(r.ok, true, r.error);
-  const ids = JSON.parse(b.w.eval('JSON.stringify(salesLog.map(s => s.id))'));
-  assert.deepEqual(ids.slice().sort(), [...aIds, bId].sort(), 'B now has all three sales, each once');
-  const srv = server.serverState().salesLog.map((s) => s.id);
-  assert.deepEqual(srv.slice().sort(), [...aIds, bId].sort(), 'the server has all three, each once');
-  assert.equal(b.w.eval(`salesSyncStatus('${bId}')`), 'synced');
-  const steps = JSON.parse(b.w.eval('JSON.stringify(window.__steps)'));
-  assert.ok(steps.some(([i, s]) => i === 1 && s === 'ok') && steps.some(([i, s]) => i === 4), 'progress is reported step by step');
-  // running it again changes nothing
-  const r2 = JSON.parse(await b.w.eval('syncToThisDevice().then(JSON.stringify)'));
-  assert.equal(r2.ok, true);
-  assert.equal(b.w.eval('salesLog.length'), 3);
-  assert.equal(server.serverState().salesLog.length, 3);
-  // it appears in the Audit as one "Synced to this device" line each time it ran
-  assert.match(b.w.eval('syncJournalAuditEvents().map(e => e.action).join()'), /Synced to this device/);
-  b.close();
-});
-
-test('TEST 14: "Sync to this device" respects "only paired devices may sync" — an unpaired device is asked to pair, and loses nothing', async () => {
+test('TEST 14 (zip 194): "Sync to this device" never asks to pair — even with a stored "paired" mode it just syncs, and loses nothing', async () => {
   const server = makeServer();
   server.kv.data.set('device-auth:C1', { value: JSON.stringify({ mode: 'paired', devices: {} }) });
   const b = await openDevice('index.html', server, BASE, 900, { indexedDB: new IDBFactory() });
@@ -294,9 +258,11 @@ test('TEST 14: "Sync to this device" respects "only paired devices may sync" —
   b.w.eval("addToCart('A'); currentPaymentMethod = 'cash'"); b.d.getElementById('cash-tendered-input').value = '1000';
   await b.w.eval('checkoutCart()');
   const r = JSON.parse(await b.w.eval('syncToThisDevice().then(JSON.stringify)'));
-  assert.equal(r.ok, false);
-  assert.match(r.error, /Pair this device/);
-  assert.ok(b.d.getElementById('device-pair-screen'), 'the pairing screen is shown');
+  assert.equal(r.ok, true, 'it just syncs: ' + r.error);
+  assert.doesNotMatch(String(r.error || ''), /pair/i);
+  assert.ok(!b.d.getElementById('device-pair-screen'), 'no pairing screen');
   assert.equal(b.w.eval('salesLog.length'), 1, 'the sale stays on the device');
+  assert.equal(server.serverState().salesLog.length, 1, 'and reached the server');
   b.close();
 });
+

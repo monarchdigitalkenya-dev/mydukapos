@@ -110,6 +110,7 @@ export const SHARED_BLOCKS = {
   'storage-compress': { startMarker: '<!-- STORAGE COMPRESSION', owner: true },   // must come first in <head>: everything below reads localStorage through it
   'error-reporting': { startMarker: '<!-- ERROR REPORTING', owner: true },   // also goes into the owner console
   'form-controls': { startMarker: '<!-- FORM CONTROLS', owner: true },   // zip 186: ONE bigger, modern look for every text box / select / textarea; its <style> is the last thing before </body> so it wins the cascade
+  'print-white': { startMarker: '<!-- PRINT WHITE' },   // zip 192: receipts and tickets print black on white in every theme (the Windows app prints backgrounds)
   'phone-till': { startMarker: '<!-- PHONE TILL' },
   'category-tiles': { startMarker: '<!-- CATEGORY TILES' },
   'stock-report-edit': { startMarker: '<!-- STOCK REPORT EDIT' },

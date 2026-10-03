@@ -1,0 +1,130 @@
+name = "mydukapos"
+compatibility_date = "2024-09-01"
+pages_build_output_dir = "."
+
+# SUBDOMAIN LINKS: client links are now issued as subdomains of your own
+# domain (e.g. https://georgehardware.mydukapos.store/) instead of a bare
+# ?c=<token> query param. Two things are needed for this to work:
+#
+#   1. In the Cloudflare dashboard, add a custom domain of *.mydukapos.store
+#      (Pages project -> Settings -> Domains) so every subdomain routes to
+#      this same deployment. If mydukapos.store's DNS is on Cloudflare,
+#      adding the custom domain creates the wildcard DNS record for you.
+#   2. If your domain isn't "mydukapos.store", set it below (or as a Pages
+#      project env var of the same name) so the server knows what to strip
+#      off a Host header to find the subdomain:
+#
+# [vars]
+# ROOT_DOMAIN = "mydukapos.store"
+#
+# The Owner Console itself intentionally stays on the apex domain (no
+# subdomain) and keeps using ?c=<token> — see functions/api/_license.js.
+
+# This project no longer uses a MASTER_ADMIN_PASSWORD environment variable or
+# a separate master.html admin dashboard. The one owner login (email/phone +
+# password) is created through the app itself, the first time you open the
+# deployed site's root URL — see README-MASTER.md.
+
+# Bind a KV namespace named mydukapos_kv to this project so the Pages Functions in
+# /functions/api can read and write shared POS state and M-Pesa transaction
+# records. Create the namespace first, then paste its id below:
+#
+#   npx wrangler kv namespace create mydukapos_kv
+#
+# This prints an `id` — put it here. If you deploy via the Cloudflare dashboard
+# (Git integration) instead of this CLI config, add the same binding under
+# Pages project -> Settings -> Functions -> KV namespace bindings, with
+# variable name "mydukapos_kv", instead of editing this file.
+[[kv_namespaces]]
+binding = "mydukapos_kv"
+id = "4c245fbb477449d88b2be62ade1c0f98"
+
+# Preview deployments (e.g. pull request previews) can use the same namespace,
+# or create a second one and set its id here to keep preview data separate.
+# [env.preview]
+# kv_namespaces = [
+#   { binding = "mydukapos_kv", id = "REPLACE_WITH_YOUR_PREVIEW_KV_NAMESPACE_ID" }
+# ]
+
+# CROSS-DEVICE LIVE PUSH: binds to the SyncRoom Durable Object class, which
+# is defined in the separate wildcard-router Worker (Pages Functions can
+# bind to a Durable Object class but can't define one itself — see the
+# comment at the bottom of wildcard-router/worker.js). Deploy that Worker
+# FIRST (`wrangler deploy` from wildcard-router/, which also runs its own
+# migration to register the class), THEN redeploy this Pages project so the
+# binding below resolves. If this binding is missing, unresolvable, or the
+# script it points to hasn't been deployed yet, functions/api/pos-sync.js
+# and functions/api/sync-ws.js both fail that part silently and every
+# device just keeps relying on its normal 7-second poll — nothing else
+# breaks.
+[[durable_objects.bindings]]
+name = "SYNC_ROOM"
+class_name = "SyncRoom"
+script_name = "mydukapos-wildcard-router"
+
+# PER-SHOP DATABASE (opt-in per shop): binds to the ShopStore Durable Object class defined in the wildcard-router Worker
+# (deploy that Worker first — its wrangler.toml registers the class). While a shop is not moved to the database, this binding
+# is simply never used.
+[[durable_objects.bindings]]
+name = "SHOP_STORE"
+class_name = "ShopStore"
+script_name = "mydukapos-wildcard-router"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# ENVIRONMENT VARIABLES / SECRETS
+# Because this file exists, Cloudflare treats it as the source of truth for this Pages project's BINDINGS (KV, Durable Objects).
+# Plain variables and secrets you set in the dashboard (Settings -> Environment variables) are NOT written here on purpose —
+# secrets must never be committed. After your first deploy from this file, open the dashboard and confirm your variables are
+# still there; re-add any that are missing. What the server code reads:
+#   Secrets (dashboard / `wrangler pages secret put NAME --project-name=mydukapos`):
+#     UPCITEMDB_API_KEY
+#   Payment credentials belong to each shop (Settings -> Payment Gateway, stored per shop). Since zip 119 the platform-level
+#   MPESA_* / PAYSTACK_SECRET_KEY / KCB_* / PAYWAVE_* secrets are NOT used for any shop, unless that shop's id is listed in
+#     GATEWAY_ENV_FALLBACK_CLIENTS = "clientId1,clientId2"   (only for a shop that really runs on the platform's own account)
+#   Optional settings (defaults are fine; put in [vars] below only if you want to change them):
+#     ROOT_DOMAIN (mydukapos.store)   PAYMENT_PROVIDER   MPESA_ENV / KCB_ENV (sandbox|production)   MPESA_TRANSACTION_TYPE
+#     SYNC_WARN_BYTES (4194304)  SYNC_MAX_BYTES (12582912)  SYNC_AUTO_COMPRESS_BYTES (8388608)  SYNC_MAX_PUSH_BYTES (25165824)
+#     SMS_HOURLY_LIMIT (1500)  STK_HOURLY_LIMIT (60)  RATE_LIMIT_BYPASS_IPS
+# [vars]
+# SYNC_WARN_BYTES = "4194304"
+# SYNC_MAX_BYTES = "12582912"
+
+# Zip 133: pictures for every module (product / menu photos, radiology images, custom-order reference images) live in R2.
+# Create the bucket ONCE before the first deploy that carries this:  npx wrangler r2 bucket create mydukapos-media
+# (Until it exists, remove these 3 lines to deploy — the code then keeps pictures in KV as before.)
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "mydukapos-media"
+
+# ---------------------------------------------------------------------------------------------------------------------
+# TRANSACTION DATABASE (zip 153) — Cloudflare D1 is the authoritative record of every sale, payment, bill, expense, return, stock movement
+# and QR order (see functions/api/_ledger.js). Until it is bound the tills keep trading exactly as before, but /api/health?deep=1 reports
+# d1:false and money is not yet in the ledger. ONE-TIME SETUP (Windows cmd, in the project folder):
+#     npx wrangler d1 create mydukapos-ledger          <- prints a database_id; paste it below and remove the leading "# "
+#     npx wrangler d1 migrations apply mydukapos-ledger --remote
+# (The server also creates any missing table by itself on first use, so the migration is a safety net, not a requirement.)
+[[d1_databases]]
+binding = "LEDGER_DB"
+database_name = "mydukapos-ledger"
+database_id = "12f9b35e-d4d9-468d-ac8c-2b3ff6b3848d"
+migrations_dir = "migrations"
+
+# zip 187: the SEPARATE AUDIT DATABASE. `node tools\setup-audit-db.mjs` creates it and adds the live binding below by itself (here and in
+# wildcard-router\wrangler.toml). With it bound the audit trail is written there, so a flood of audit rows can never fill the sales database again;
+# without it nothing changes (the old triggers keep writing). Example of what the tool adds:
+# [[d1_databases]]
+# binding = "LEDGER_AUDIT_DB"
+# database_name = "mydukapos-audit"
+# database_id = "<printed by the tool>"
+
+# zip 187: the separate AUDIT database (audit rows live here so a flood of them can never fill the sales database).
+[[d1_databases]]
+binding = "LEDGER_AUDIT_DB"
+database_name = "mydukapos-audit"
+database_id = "755f7467-4d0e-461b-b852-641cc01f0bab"
+
+# zip 187: the small shared OWNER database (a read model of the Owner Console list; KV stays the source of truth).
+[[d1_databases]]
+binding = "OWNER_DB"
+database_name = "mydukapos-owner"
+database_id = "0042e3c7-b032-411e-9825-1c40227f2fb1"

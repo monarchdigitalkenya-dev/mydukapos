@@ -120,7 +120,8 @@ test('TESTS 7, 8, 10, 12: POS server unreachable but internet fine -> "server un
   assert.ok(await until(() => t.state() === 'backend_unavailable'));
   await sleep(3200);
   assert.notEqual(t.dot().state, 'offline', 'the dot does not claim "no internet"');
-  assert.match(t.dot().title, /internet works/);
+  assert.match(t.dot().title, /Saving on this device/);
+  assert.doesNotMatch(t.dot().title, /not answering/i, 'never claims the server is not answering');
   ctl.health = 503;                                                     // the server answers, but failing
   await t.w.eval("PosNet.check('test')");
   assert.equal(t.state(), 'backend_unavailable');
@@ -129,16 +130,19 @@ test('TESTS 7, 8, 10, 12: POS server unreachable but internet fine -> "server un
   t.close();
 });
 
-test('TEST 11: a 401 / 403 is "sign-in / pairing needed", NOT offline; a later success clears it', async () => {
+test('TEST 11 (zip 194): a 401 (an old server\'s device_not_paired) is IGNORED — never auth_required, no pairing message; a 403 is still "licence" and a later success clears it', async () => {
   const ctl = { calls: [], internet: true, sync: 401, syncCode: 'device_not_paired' };
   const t = await app(ctl);
   await t.w.eval('pullStateOnce()');
-  assert.equal(t.state(), 'auth_required');
-  assert.match(t.w.eval('PosNet.message()'), /paired/);
+  assert.notEqual(t.state(), 'auth_required', '401 device_not_paired is ignored');
+  assert.doesNotMatch(t.w.eval('PosNet.message()'), /paired/i);
+  t.w.eval("PosNet.reportHttp(401, 'device_not_paired'); PosNet.report('auth', 'device_not_paired')");
+  assert.notEqual(t.state(), 'auth_required');
   ctl.sync = 403; ctl.syncCode = '';
   await t.w.eval('pullStateOnce()');
-  assert.equal(t.state(), 'auth_required');
-  ctl.sync = 0;                                                         // paired / licence fixed: the next sync attempt clears it
+  assert.equal(t.state(), 'auth_required', 'a refused licence is still shown');
+  assert.doesNotMatch(t.w.eval('PosNet.message()'), /paired/i);
+  ctl.sync = 0;                                                         // licence fixed: the next sync attempt clears it
   await t.w.eval('syncRetryNow()');
   assert.ok(await until(() => t.state() === 'online'));
   t.close();
