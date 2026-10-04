@@ -18332,6 +18332,58 @@ async function storageMeasureUnknown() {
         }, true);
     })();
     </script>
+
+<!-- INSTANT FEEDBACK (zip 207) -------------------------------------------
+         A button answers the finger at once, even when the real work (the server, the printer) takes a moment.
+           * pressed look on touch-down (no waiting for the click), so a tap never feels dead;
+           * a button whose action is still working after ~0.2 s (a request on its way, a receipt being printed) shows a small spinner
+             and ignores a second tap on itself until it is done, so nobody taps three times and gets three results;
+           * never changes the button's text, never blocks anything else on the page, gives up after 25 s.
+         Self-contained on purpose (same code in every app and the Owner Console). -->
+<style>
+    button:not(:disabled):active, .btn-main:not(:disabled):active, .tab-link:active, [role="button"]:active { transform: scale(.97); filter: brightness(.95); }
+    button, .btn-main, .tab-link { transition: transform .08s ease, filter .12s ease, box-shadow .15s ease; }
+    .mk-busy { position: relative; pointer-events: none; cursor: progress; opacity: .88; }
+    .mk-busy::after { content: ""; position: absolute; right: 8px; top: 50%; width: 14px; height: 14px; margin-top: -7px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: mk-spin .6s linear infinite; }
+    @keyframes mk-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .mk-busy::after { animation-duration: 1.6s; } button:not(:disabled):active { transform: none; } }
+</style>
+<script>
+(function () {
+    try {
+        if (window.__mkFeedback) return; window.__mkFeedback = true;
+        var seq = 0, pending = {}, origFetch = window.fetch;
+        if (typeof origFetch === 'function') {
+            window.fetch = function (input) {
+                var url = ''; try { url = String(typeof input === 'string' ? input : (input && input.url) || ''); } catch (e) { /* none */ }
+                var background = /\/api\/(health|pos-sync|print-relay|messages|license|session|ping)|\/__/.test(url);   // the app's own chatter never counts as "the button is working"
+                var id = background ? 0 : ++seq;
+                if (id) pending[id] = 1;
+                var done = function () { if (id) delete pending[id]; };
+                var p; try { p = origFetch.apply(this, arguments); } catch (e) { done(); throw e; }
+                try { p.then(done, done); } catch (e) { done(); }
+                return p;
+            };
+        }
+        function since(n) { for (var k in pending) if (Number(k) > n) return true; return false; }
+        document.addEventListener('click', function (e) {
+            var b = e.target && e.target.closest && e.target.closest('button, .btn-main, [role="button"]');
+            if (!b || b.disabled || b.hasAttribute('data-nobusy') || b.type === 'file') return;
+            if (b.closest('.kb-row, #pos-keyboard, [data-nobusy]')) return;
+            var start = seq;
+            setTimeout(function () {
+                if (!b.isConnected || b.classList.contains('mk-busy')) return;
+                var working = function () { return since(start) || window.__receiptPrinting === true; };
+                if (!working()) return;
+                b.classList.add('mk-busy');
+                var t0 = Date.now(), iv = setInterval(function () {
+                    if (!b.isConnected || !working() || Date.now() - t0 > 25000) { clearInterval(iv); b.classList.remove('mk-busy'); }
+                }, 120);
+            }, 200);
+        }, true);
+    } catch (e) { /* cosmetic only */ }
+})();
+</script>
 <!-- @shared-block:tap-rescue:end -->
 
 <!-- @shared-block:guide-ui:begin -->

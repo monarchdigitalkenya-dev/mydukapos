@@ -1,0 +1,115 @@
+<!-- MEASURE BY PRICE (zip 209) ---------------------------------------------------
+         For items sold by a measured unit (kg, g, litres, ml, metres ...): the cart line's price menu (Retail / Wholesale / Custom) gets a fourth choice,
+         "Measure by price". The cashier types what the customer wants to spend (e.g. 100) and the quantity is worked out from the line's CURRENT unit price:
+         quantity = amount / unit price, to 3 decimals (the precision stock is kept in).
+         WHY NOTHING CAN GO OUT OF BALANCE: this only sets the line's quantity, through the app's own setCartQty (the same stock check, the same
+         rendering) - the sale, the stock deduction (stockRound3 of that same quantity), the receipt, the payments and every report then use the same
+         quantity x price as for any other sale. The total can differ from the typed amount only by the rounding of the quantity to 3 decimals; the box says so
+         BEFORE it is applied (e.g. "KES 100.08"), and the cashier can choose the quantity nearest above or below.
+         Added by watching the price menu (a MutationObserver), so it survives the app redrawing / re-installing that menu. -->
+<style>
+    #mbp-bg { position: fixed; inset: 0; z-index: 100002; background: rgba(0, 0, 0, .55); display: flex; align-items: center; justify-content: center; padding: 16px; animation: mbp-in .15s ease-out both; }
+    #mbp { width: 100%; max-width: 360px; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-radius: 16px; padding: 18px; box-shadow: 0 10px 40px rgba(0, 0, 0, .35); }
+    #mbp h4 { margin: 0 0 4px; font-size: 17px; overflow-wrap: anywhere; } #mbp .mbp-sub { font-size: 13px; color: #7f8c8d; margin: 0 0 12px; }
+    #mbp input { width: 100%; box-sizing: border-box; min-height: 56px; font-size: 26px; font-weight: 800; text-align: center; border-radius: 12px; border: 2px solid var(--border-color, #ccd1d6); background: var(--bg-surface, #fff); color: inherit; }
+    #mbp .mbp-quick { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; } #mbp .mbp-quick button { flex: 1 1 60px; min-height: 44px; border-radius: 10px; border: 1px solid var(--border-color, #ccd1d6); background: var(--bg-surface-alt, #f4f6f7); color: inherit; font-weight: 700; cursor: pointer; }
+    #mbp .mbp-out { min-height: 62px; padding: 10px 12px; border-radius: 12px; background: rgba(39, 174, 96, .12); font-size: 15px; line-height: 1.35; }
+    #mbp .mbp-out.bad { background: rgba(231, 76, 60, .12); color: #c0392b; } #mbp .mbp-out b { font-size: 20px; }
+    #mbp .mbp-acts { display: flex; gap: 8px; margin-top: 12px; } #mbp .mbp-acts button { flex: 1; min-height: 48px; border-radius: 12px; border: 0; font: inherit; font-weight: 700; font-size: 15px; cursor: pointer; }
+    #mbp .mbp-ok { background: #27ae60; color: #fff; } #mbp .mbp-ok:disabled { opacity: .45; cursor: not-allowed; } #mbp .mbp-no { background: var(--bg-surface-alt, #ecf0f1); color: inherit; }
+    #mbp .mbp-alt { margin-top: 8px; font-size: 13px; } #mbp .mbp-alt button { min-height: 36px; border-radius: 8px; border: 1px solid var(--border-color, #ccd1d6); background: transparent; color: inherit; cursor: pointer; margin-right: 6px; }
+    @keyframes mbp-in { from { opacity: 0; } to { opacity: 1; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__mbp) return; window.__mbp = {};
+    var MEASURED = ['kg', 'g', 'l', 'ml', 'm', 'cm', 'mm', 'in', 'ft', 'yd', 'lb', 'oz', 'gal'];
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function r3(n) { return Math.round(n * 1000) / 1000; }
+    function r2(n) { return Math.round(n * 100) / 100; }
+    function lineOf(key) { try { return typeof currentCart !== 'undefined' ? currentCart[key] : null; } catch (e) { return null; } }
+    function measured(line) { return !!line && !line.isService && line.saleMode !== 'piece' && line.variantSaleMode !== 'piece' && MEASURED.indexOf(String(line.unit || '').toLowerCase()) >= 0; }
+    function avail(line) {
+        try { var p = inventory.find(function (x) { return x.code === line.code; }); if (p && typeof getAvailableStock === 'function') return getAvailableStock(p, line.saleMode); } catch (e) { /* unknown */ }
+        return Infinity;
+    }
+    function close() { var m = document.getElementById('mbp-bg'); if (m) m.remove(); }
+    // the quantity for an amount: nearest 0.001, plus the one just below / above, each with the money it makes
+    function calc(line, amount) {
+        var price = Number(line.price) || 0;
+        if (!(price > 0) || !(amount > 0)) return null;
+        var exact = amount / price, near = r3(exact), down = Math.floor(exact * 1000 + 1e-9) / 1000, up = Math.ceil(exact * 1000 - 1e-9) / 1000;
+        var o = function (q) { return { qty: q, total: r2(price * q) }; };
+        return { price: price, near: o(near), down: o(r3(down)), up: o(r3(up)) };
+    }
+    function open(key) {
+        var line = lineOf(key); if (!measured(line)) return;
+        close();
+        var unit = String(line.unit), price = Number(line.price) || 0, have = avail(line), chosen = null;
+        var bg = document.createElement('div'); bg.id = 'mbp-bg';
+        bg.innerHTML = '<div id="mbp" role="dialog" aria-modal="true" aria-label="Measure by price"><h4>⚖️ Measure by price</h4>'
+            + '<p class="mbp-sub">' + esc(line.name) + ' · KES ' + price.toFixed(2) + ' per ' + esc(unit) + '</p>'
+            + '<input id="mbp-amount" type="number" inputmode="decimal" min="0" step="any" placeholder="Amount in KES" autocomplete="off">'
+            + '<div class="mbp-quick">' + [20, 50, 100, 200, 500].map(function (a) { return '<button type="button" data-a="' + a + '">' + a + '</button>'; }).join('') + '</div>'
+            + '<div class="mbp-out" id="mbp-out" aria-live="polite">Type the amount the customer wants to spend.</div><div class="mbp-alt" id="mbp-alt"></div>'
+            + '<div class="mbp-acts"><button type="button" class="mbp-no">Cancel</button><button type="button" class="mbp-ok" id="mbp-ok" disabled>Set quantity</button></div></div>';
+        document.body.appendChild(bg);
+        var inp = bg.querySelector('#mbp-amount'), out = bg.querySelector('#mbp-out'), alt = bg.querySelector('#mbp-alt'), ok = bg.querySelector('#mbp-ok');
+        function bad(t) { out.className = 'mbp-out bad'; out.textContent = t; alt.innerHTML = ''; ok.disabled = true; chosen = null; }
+        function show() {
+            var a = parseFloat(inp.value), c = calc(line, a);
+            if (!(price > 0)) { bad('This line has no price, so there is nothing to measure by.'); return; }
+            if (!c) { out.className = 'mbp-out'; out.textContent = 'Type the amount the customer wants to spend.'; alt.innerHTML = ''; ok.disabled = true; chosen = null; return; }
+            if (c.near.qty < 0.001) { bad('That amount is less than the smallest measurable quantity (0.001 ' + unit + ').'); return; }
+            if (c.near.qty > have) { bad('Only ' + (have <= 0 ? 0 : r3(have)) + ' ' + unit + ' available — that is about KES ' + r2(have * price).toFixed(2) + ' worth.'); return; }
+            chosen = c.near; out.className = 'mbp-out';
+            var diff = Math.abs(c.near.total - a) > 0.005;
+            out.innerHTML = 'KES ' + a.toFixed(2) + ' buys <b>' + c.near.qty + ' ' + esc(unit) + '</b><br>Line total: <b>KES ' + c.near.total.toFixed(2) + '</b>' + (diff ? ' <small>(rounded to 0.001 ' + esc(unit) + ')</small>' : '');
+            var bits = [];
+            if (diff) {
+                [['down', 'just under'], ['up', 'just over']].forEach(function (p) { var x = c[p[0]]; if (x.qty >= 0.001 && x.qty <= have && x.qty !== c.near.qty) bits.push('<button type="button" data-q="' + x.qty + '">' + x.qty + ' ' + esc(unit) + ' = KES ' + x.total.toFixed(2) + '</button>'); });
+            }
+            alt.innerHTML = bits.length ? 'Or: ' + bits.join('') : '';
+            ok.disabled = false;
+        }
+        function apply(q) {
+            close();
+            try {
+                var before = line.qty;
+                setCartQty(key, q);                                   // the app's own stock check and redraw
+                var now = lineOf(key);
+                if (now && Number(now.qty) === Number(q)) { try { showToast('Quantity set to ' + q + ' ' + unit + ' (KES ' + r2(price * q).toFixed(2) + ').'); } catch (e) { /* cosmetic */ } }
+            } catch (e) { try { showToast('Could not set the quantity: ' + e.message, true); } catch (e2) { /* cosmetic */ } }
+        }
+        inp.addEventListener('input', show);
+        inp.addEventListener('keydown', function (e) { if (e.key === 'Enter' && chosen) apply(chosen.qty); if (e.key === 'Escape') close(); });
+        bg.addEventListener('click', function (e) {
+            var t = e.target;
+            if (t === bg || t.classList.contains('mbp-no')) { close(); return; }
+            if (t.hasAttribute && t.hasAttribute('data-a')) { inp.value = t.getAttribute('data-a'); show(); inp.focus(); return; }
+            if (t.hasAttribute && t.hasAttribute('data-q')) { apply(Number(t.getAttribute('data-q'))); return; }
+            if (t.id === 'mbp-ok' && chosen) apply(chosen.qty);
+        });
+        setTimeout(function () { inp.focus(); }, 30);
+    }
+    // add the choice to the price menu whenever the app shows it for a measured-unit line
+    function decorate(menu) {
+        if (!menu || menu.style.display === 'none' || menu.querySelector('.mbp-row')) return;
+        var any = menu.querySelector('.cpm-row[onclick]'), m = any && /selectCartPriceOption\('((?:[^'\\]|\\.)*)'/.exec(any.getAttribute('onclick') || '');
+        if (!m) return;
+        var key = m[1].replace(/\\(.)/g, '$1'), line = lineOf(key);
+        if (!measured(line)) return;
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'cpm-row mbp-row';
+        b.innerHTML = '<span>⚖️ Measure by price…</span><b>type an amount</b>';
+        b.addEventListener('click', function (e) { e.stopPropagation(); menu.style.display = 'none'; open(key); });
+        menu.appendChild(b);
+    }
+    function watch() {
+        var obs = new MutationObserver(function () { var m = document.getElementById('cart-price-menu'); if (m) decorate(m); });
+        obs.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+    }
+    window.__mbp = { open: open, calc: calc, measured: measured, close: close };
+    if (document.body) watch(); else document.addEventListener('DOMContentLoaded', watch);
+})();
+</script>

@@ -24,7 +24,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { loadGatewayConfig, saveGatewayConfig, clearGatewayProvider, hasPaystackConfig, hasDarajaConfig, hasKcbConfig, hasPaywaveConfig } from './_gateway-config.js';
+import { loadGatewayConfig, saveGatewayConfig, clearGatewayProvider, hasPaystackConfig, hasDarajaConfig, hasKcbConfig, hasPaywaveConfig, hasPesapalConfig, hasCoopConfig } from './_gateway-config.js';
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
@@ -72,6 +72,14 @@ export async function onRequestGet(context) {
     hasDarajaConfig: hasDarajaConfig(cfg),
     hasKcbConfig: hasKcbConfig(cfg),
     hasPaywaveConfig: hasPaywaveConfig(cfg),
+    hasPesapalConfig: hasPesapalConfig(cfg),
+    hasCoopConfig: hasCoopConfig(cfg),
+    pesapalEnv: cfg.pesapalEnv,
+    coopTokenUrl: cfg.coopTokenUrl || '',
+    coopStkUrl: cfg.coopStkUrl || '',
+    coopShortcode: cfg.coopShortcode || '',
+    coopTransactionType: cfg.coopTransactionType,
+    pesapalIpnUrl: shown(withKey(`${origin}/api/pesapal-ipn?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'pesapal'))),
     mpesaEnv: cfg.mpesaEnv,
     kcbEnv: cfg.kcbEnv,
     kcbSharedShortCode: cfg.kcbSharedShortCode,
@@ -109,7 +117,16 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'Invalid JSON body' }, 400);
   }
 
+  // zip 210: Co-op's token / STK addresses come from the owner, so they must be plain public https addresses (never a local / private one)
+  for (const k of ['coopTokenUrl', 'coopStkUrl']) {
+    if (body && body[k]) {
+      let u; try { u = new URL(String(body[k])); } catch (e) { return jsonResponse({ error: 'That address is not valid.' }, 400); }
+      const h = u.hostname.toLowerCase();
+      if (u.protocol !== 'https:' || !h.includes('.') || /^(localhost|.*\.local|.*\.internal)$/.test(h) || /^[\d.]+$/.test(h) || h.startsWith('[')) return jsonResponse({ error: 'Use the full https:// address of the bank (a website name, not an IP).' }, 400);
+    }
+  }
   await saveGatewayConfig(env, clientId, body);
+  if (body && Object.keys(body).some((k) => /^pesapal/i.test(k))) { try { await ensureCallbackKey(env, clientId, 'pesapal'); } catch (e) { /* URL stays unsigned */ } }
   // zip 143: KCB settings saved -> this shop's IPN URL (shown in Settings, given to KCB) carries a secret key from now on
   if (body && Object.keys(body).some((k) => /^kcb/i.test(k))) { try { await ensureCallbackKey(env, clientId, 'kcb'); } catch (e) { /* URL stays unsigned */ } }
   return jsonResponse({ ok: true });
@@ -139,7 +156,7 @@ export async function onRequestDelete(context) {
     return jsonResponse({ error: 'Invalid JSON body' }, 400);
   }
 
-  const which = ['paystack', 'daraja', 'kcb', 'paywave'].includes(body.which) ? body.which : null;
+  const which = ['paystack', 'daraja', 'kcb', 'paywave', 'pesapal', 'coop'].includes(body.which) ? body.which : null;
   if (!which) return jsonResponse({ error: 'Unknown provider.' }, 400);
 
   await clearGatewayProvider(env, clientId, which);

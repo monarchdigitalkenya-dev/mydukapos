@@ -303,6 +303,14 @@ else {
       ] },
     ]));
     createWindow();
+    // zip 213: PowerShell is started only once the shop page has finished loading and the PC has been quiet for a while (it used to start
+    // 2.5 s after launch, right while the page was still loading, and made opening the app slow); the first print waits for it if needed
+    const warmLater = () => setTimeout(() => { try { rawPrint.warm().catch(() => {}); } catch (e) { /* printing falls back to the slower way */ } }, 12000);
+    let warmQueued = false;
+    const queueWarm = () => { if (!warmQueued) { warmQueued = true; warmLater(); } };
+    try { win.webContents.once('did-finish-load', queueWarm); } catch (e) { /* the timer below covers it */ }
+    setTimeout(queueWarm, 15000);   // safety: never skipped
+    app.on('before-quit', () => { try { rawPrint.workerKill(); } catch (e) { /* closing anyway */ } });
   });
   app.on('window-all-closed', () => app.quit());
 }

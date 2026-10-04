@@ -43,6 +43,8 @@ const PROVIDER_FIELDS = {
   daraja: { mpesaConsumerKey: 'MPESA_CONSUMER_KEY', mpesaConsumerSecret: 'MPESA_CONSUMER_SECRET', mpesaShortcode: 'MPESA_SHORTCODE', mpesaPasskey: 'MPESA_PASSKEY' },
   kcb: { kcbConsumerKey: 'KCB_CONSUMER_KEY', kcbConsumerSecret: 'KCB_CONSUMER_SECRET', kcbOrgShortCode: 'KCB_ORG_SHORT_CODE', kcbOrgPassKey: 'KCB_ORG_PASS_KEY' },
   paywave: { paywaveApiKey: 'PAYWAVE_API_KEY', paywaveEmail: 'PAYWAVE_EMAIL' },
+  pesapal: { pesapalConsumerKey: 'PESAPAL_CONSUMER_KEY', pesapalConsumerSecret: 'PESAPAL_CONSUMER_SECRET' },
+  coop: { coopConsumerKey: 'COOP_CONSUMER_KEY', coopConsumerSecret: 'COOP_CONSUMER_SECRET', coopTokenUrl: 'COOP_TOKEN_URL', coopStkUrl: 'COOP_STK_URL', coopShortcode: 'COOP_SHORTCODE', coopPasskey: 'COOP_PASSKEY' },
 };
 
 export function envFallbackAllowed(env, clientId) {
@@ -75,6 +77,9 @@ export async function loadGatewayConfig(env, clientId) {
     kcbSharedShortCode: stored.kcbSharedShortCode !== undefined ? stored.kcbSharedShortCode : true,
     // Paywave Express — a hosted aggregator that wraps Daraja for you (see
     // paywavexpress.co.ke/documentation): an API key + the email on the account.
+    // zip 210 — Pesapal (hosted checkout) and Co-operative Bank (M-Pesa STK through Co-op's own gateway)
+    pesapalEnv: stored.pesapalEnv || env.PESAPAL_ENV || 'sandbox',
+    coopTransactionType: stored.coopTransactionType || env.COOP_TRANSACTION_TYPE || 'CustomerPayBillOnline',
     forcedProvider: (stored.forcedProvider !== undefined ? stored.forcedProvider : (env.PAYMENT_PROVIDER || '')).toLowerCase(),
   };
 }
@@ -104,6 +109,8 @@ export async function saveGatewayConfig(env, clientId, updates) {
     'kcbOrgPassKey',
     'paywaveApiKey',
     'paywaveEmail',
+    'pesapalEnv', 'pesapalConsumerKey', 'pesapalConsumerSecret',
+    'coopConsumerKey', 'coopConsumerSecret', 'coopTokenUrl', 'coopStkUrl', 'coopShortcode', 'coopPasskey', 'coopTransactionType',
   ];
   fields.forEach((key) => {
     if (updates[key] !== undefined && updates[key] !== '') merged[key] = updates[key];
@@ -125,6 +132,8 @@ export async function clearGatewayProvider(env, clientId, which) {
     daraja: ['mpesaConsumerKey', 'mpesaConsumerSecret', 'mpesaShortcode', 'mpesaPasskey'],
     kcb: ['kcbConsumerKey', 'kcbConsumerSecret', 'kcbOrgShortCode', 'kcbOrgPassKey'],
     paywave: ['paywaveApiKey', 'paywaveEmail'],
+    pesapal: ['pesapalConsumerKey', 'pesapalConsumerSecret'],
+    coop: ['coopConsumerKey', 'coopConsumerSecret', 'coopTokenUrl', 'coopStkUrl', 'coopShortcode', 'coopPasskey'],
   };
   const fields = fieldsByProvider[which] || [];
   fields.forEach((key) => { delete merged[key]; });
@@ -150,6 +159,15 @@ export function hasPaywaveConfig(cfg) {
   return !!(cfg.paywaveApiKey && cfg.paywaveEmail);
 }
 
+export function hasPesapalConfig(cfg) {
+  return !!(cfg.pesapalConsumerKey && cfg.pesapalConsumerSecret);
+}
+
+// Co-op Bank's gateway details (token + STK addresses, shortcode) come from the shop's own Co-op API portal; nothing is guessed.
+export function hasCoopConfig(cfg) {
+  return !!(cfg.coopConsumerKey && cfg.coopConsumerSecret && /^https:\/\//i.test(cfg.coopTokenUrl || '') && /^https:\/\//i.test(cfg.coopStkUrl || '') && cfg.coopShortcode);
+}
+
 // An explicit forcedProvider wins (if that provider is actually configured);
 // otherwise Paystack is preferred if more than one happens to be configured.
 export function resolveProvider(cfg) {
@@ -158,9 +176,13 @@ export function resolveProvider(cfg) {
   if (forced === 'daraja' && hasDarajaConfig(cfg)) return 'daraja';
   if (forced === 'kcb' && hasKcbConfig(cfg)) return 'kcb';
   if (forced === 'paywave' && hasPaywaveConfig(cfg)) return 'paywave';
+  if (forced === 'pesapal' && hasPesapalConfig(cfg)) return 'pesapal';
+  if (forced === 'coop' && hasCoopConfig(cfg)) return 'coop';
   if (hasPaystackConfig(cfg)) return 'paystack';
   if (hasDarajaConfig(cfg)) return 'daraja';
   if (hasKcbConfig(cfg)) return 'kcb';
   if (hasPaywaveConfig(cfg)) return 'paywave';
+  if (hasCoopConfig(cfg)) return 'coop';
+  if (hasPesapalConfig(cfg)) return 'pesapal';
   return null;
 }

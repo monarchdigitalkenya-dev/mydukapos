@@ -48,7 +48,7 @@ export async function ensureCallbackKey(env, clientId, rail) {
 // zip 185: a shop created from now on starts with all four rails keyed (stk = Daraja/KCB STK result, c2b = Till confirmations, kcb = KCB IPN, paywave = Paywave Express webhook),
 // so an unsigned callback is never believed for it. Best effort: a failure here leaves the shop in the old "legacy" state, never blocks creation.
 export async function ensureShopCallbackKeys(env, clientId) {
-  try { await Promise.all(['stk', 'c2b', 'kcb', 'paywave'].map((r) => ensureCallbackKey(env, clientId, r))); } catch (e) { /* stays legacy until its first prompt / registration */ }
+  try { await Promise.all(['stk', 'c2b', 'kcb', 'paywave', 'pesapal'].map((r) => ensureCallbackKey(env, clientId, r))); } catch (e) { /* stays legacy until its first prompt / registration */ }
 }
 
 // -> { ok: true, legacy: boolean } | { ok: false, keyCreatedAt }

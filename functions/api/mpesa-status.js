@@ -18,6 +18,7 @@
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
 import { loadGatewayConfig } from './_gateway-config.js';
+import { pesapalStatus, applyPesapalStatus, indexPesapalReceipt } from './_pesapal.js';
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
@@ -227,7 +228,8 @@ export async function onRequestGet(context) {
     return jsonResponse({ status: 'unknown' });
   }
 
-  if (record.status === 'pending' && Date.now() - (record.createdAt || 0) > FALLBACK_QUERY_AFTER_MS) {
+  // Pesapal has no callback straight to the till, so its result is asked for at once (its IPN, when it arrives first, has already filled the record)
+  if (record.status === 'pending' && (Date.now() - (record.createdAt || 0) > FALLBACK_QUERY_AFTER_MS || (record.provider === 'pesapal' && Date.now() - (record.createdAt || 0) > 3000))) {
     try {
       const cfg = await loadGatewayConfig(env, clientId);
       const provider = record.provider || 'daraja'; // records saved before this update default to daraja
@@ -238,7 +240,9 @@ export async function onRequestGet(context) {
       // this fallback only exists as a safety net for the other two.
       const updated = provider === 'paystack'
         ? await refreshFromPaystack(record, checkoutRequestId, cfg)
-        : provider === 'kcb'
+        : provider === 'pesapal'
+          ? applyPesapalStatus(record, await pesapalStatus(cfg, checkoutRequestId))
+        : provider === 'kcb' || provider === 'coop'
           ? null
           : provider === 'paywave'
             ? await refreshFromPaywaveExpress(record, checkoutRequestId, cfg)
@@ -246,6 +250,7 @@ export async function onRequestGet(context) {
       if (updated) {
         record = updated;
         await env.mydukapos_kv.put(kvKey, JSON.stringify(record));
+        if (record.status === 'success' && record.provider === 'pesapal') await indexPesapalReceipt(env, clientId, record, checkoutRequestId);
         if (record.status === 'success') await recordGatewayTxn(env, clientId, { provider: record.provider || 'daraja', txnId: checkoutRequestId, code: record.receiptNumber, amount: record.amount, phone: record.phone, status: 'RECEIVED' });
       }
     } catch (e) {

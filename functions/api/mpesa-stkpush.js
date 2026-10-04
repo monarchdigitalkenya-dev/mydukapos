@@ -44,6 +44,10 @@
 //   Payment Gateway (already includes ?c=...) needs to be pasted in there
 //   once, same as the Paystack setup step above.
 //
+// OPTION E — Pesapal (hosted checkout: M-Pesa, Airtel Money, card, bank) — Consumer Key + Secret. Not a phone prompt: the till shows a payment link.
+// OPTION F — Co-operative Bank (M-Pesa STK through Co-op's gateway) — Consumer Key + Secret + the token / STK addresses and shortcode from the
+//   shop's own Co-op API portal. Result comes back to /api/mpesa-callback like Daraja's.
+//
 // If you set up more than one, Paystack is used by default. Force a specific
 // one with the "Force a specific provider" dropdown in Settings.
 //
@@ -54,6 +58,7 @@
 
 import { ensureCallbackKey, withKey } from './_callback-key.js';
 import { loadGatewayConfig, resolveProvider } from './_gateway-config.js';
+import { pesapalToken, pesapalIpnId, pesapalSubmitOrder } from './_pesapal.js';
 import { requireValidLicense, resolveClientId } from './_license.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { deviceGuard } from './_device-auth.js';
@@ -304,6 +309,74 @@ async function sendViaPaywaveExpress({ phone, amount, accountRef }, cfg) {
   };
 }
 
+/* ---------- Pesapal (zip 210) ---------- */
+// Hosted checkout: an order is created and Pesapal returns a payment page link. The customer opens it (M-Pesa, Airtel Money, card, bank);
+// the result arrives at pesapal-ipn.js and/or by mpesa-status.js asking Pesapal. The till shows the link (paymentUrl).
+async function sendViaPesapal({ phone, amount, accountRef, description }, cfg, ctx) {
+  const token = await pesapalToken(cfg);
+  const ipnId = await pesapalIpnId(ctx.env, cfg, ctx.clientId, token, ctx.ipnUrl);
+  const merchantReference = ('P' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)).replace(/[^A-Za-z0-9]/g, '').slice(0, 50);
+  const order = await pesapalSubmitOrder(cfg, token, {
+    id: merchantReference,
+    currency: 'KES',
+    amount,
+    description: String(description || 'POS Sale').slice(0, 100),
+    callback_url: ctx.returnUrl,
+    notification_id: ipnId,
+    billing_address: { phone_number: phone, country_code: 'KE', first_name: 'Customer', last_name: String(accountRef || 'POS').slice(0, 30) },
+  });
+  return {
+    id: order.order_tracking_id,
+    merchantRequestId: merchantReference,
+    merchantReference,
+    paymentUrl: order.redirect_url,
+    customerMessage: 'Payment page ready — the customer opens the link and pays.',
+  };
+}
+
+/* ---------- Co-operative Bank (zip 210) ---------- */
+// M-Pesa STK through Co-op Bank's own API gateway ("SafaricomSTKPush" on the Co-op developer portal). Co-op publishes the exact addresses and
+// field names only inside the portal (login needed), so this does NOT guess them: the shop owner pastes the token address and the STK address
+// from their own portal's API console (Settings -> Payment Gateway) and nothing is sent until both are saved. The request is Daraja-shaped
+// (Co-op wraps Safaricom's STK) and the result comes back to the same /api/mpesa-callback as Daraja's.
+async function coopAccessToken(cfg) {
+  const auth = btoa(`${cfg.coopConsumerKey}:${cfg.coopConsumerSecret}`);
+  const sep = cfg.coopTokenUrl.includes('?') ? '&' : '?';
+  const url = /grant_type=/.test(cfg.coopTokenUrl) ? cfg.coopTokenUrl : `${cfg.coopTokenUrl}${sep}grant_type=client_credentials`;
+  const res = await fetch(url, { method: 'POST', headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'grant_type=client_credentials' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) throw new Error(`Co-op Bank rejected the Consumer Key / Secret${data && (data.error_description || data.error) ? ' (' + (data.error_description || data.error) + ')' : ''}.`);
+  return data.access_token;
+}
+
+async function sendViaCoop({ phone, amount, accountRef, description }, cfg, callbackUrl) {
+  const token = await coopAccessToken(cfg);
+  const d = new Date(); const pad = (n) => String(n).padStart(2, '0');
+  const timestamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const payload = {
+    BusinessShortCode: cfg.coopShortcode,
+    Password: cfg.coopPasskey ? btoa(`${cfg.coopShortcode}${cfg.coopPasskey}${timestamp}`) : undefined,
+    Timestamp: timestamp,
+    TransactionType: cfg.coopTransactionType || 'CustomerPayBillOnline',
+    Amount: amount,
+    PartyA: phone,
+    PartyB: cfg.coopShortcode,
+    PhoneNumber: phone,
+    CallBackURL: callbackUrl,
+    AccountReference: accountRef,
+    TransactionDesc: description,
+  };
+  const res = await fetch(cfg.coopStkUrl, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const raw = await res.text();
+  let data; try { data = JSON.parse(raw); } catch (e) { throw new Error(`Co-op Bank returned an unexpected response (HTTP ${res.status}): ${raw.slice(0, 200)}`); }
+  const body = data && (data.response || data.Response || data);
+  const checkoutId = body && (body.CheckoutRequestID || body.checkoutRequestID || body.CheckoutRequestId);
+  if (!res.ok || !checkoutId || (body.ResponseCode !== undefined && String(body.ResponseCode) !== '0')) {
+    throw new Error((body && (body.ResponseDescription || body.errorMessage || body.message || body.error)) || `Co-op Bank declined the STK request (HTTP ${res.status}): ${raw.slice(0, 200)}`);
+  }
+  return { id: checkoutId, merchantRequestId: body.MerchantRequestID, customerMessage: body.CustomerMessage || 'Prompt sent to customer phone.' };
+}
+
 /* ---------- Paystack ---------- */
 
 async function sendViaPaystack({ phone, amount, accountRef }, cfg) {
@@ -376,7 +449,7 @@ export async function onRequestPost(context) {
   const provider = resolveProvider(cfg);
   if (!provider) {
     return jsonResponse({
-      error: 'No payment gateway configured. Go to Settings -> Payment Gateway and save your Paystack secret key, your Daraja credentials, your KCB Buni credentials, or your Paywave Express API key.',
+      error: 'No payment gateway configured. Go to Settings -> Payment Gateway and save your Paystack secret key, your Daraja credentials, your KCB Buni credentials, your Paywave Express API key, your Pesapal keys or your Co-op Bank details.',
     }, 500);
   }
 
@@ -416,6 +489,10 @@ export async function onRequestPost(context) {
         ? await sendViaKcb({ phone, amount, accountRef, description }, cfg, callbackUrl)
         : provider === 'paywave'
           ? await sendViaPaywaveExpress({ phone, amount, accountRef, description }, cfg)
+          : provider === 'coop'
+            ? await sendViaCoop({ phone, amount, accountRef, description }, cfg, callbackUrl)
+            : provider === 'pesapal'
+              ? await sendViaPesapal({ phone, amount, accountRef, description }, cfg, { env, clientId, ipnUrl: withKey(`${origin}/api/pesapal-ipn?c=${encodeURIComponent(clientId)}`, await ensureCallbackKey(env, clientId, 'pesapal')), returnUrl: `${origin}/pesapal-done.html` })
           : await sendViaDaraja({ phone, amount, accountRef, description }, cfg, callbackUrl);
 
     // Save a "pending" placeholder — keyed by the same id in both gateways —
@@ -428,6 +505,7 @@ export async function onRequestPost(context) {
       amount,
       accountRef,
       transactionRequestId: result.transactionRequestId,
+      merchantReference: result.merchantReference,
       createdAt: Date.now(),
     }));
 
@@ -435,6 +513,7 @@ export async function onRequestPost(context) {
       checkoutRequestId: result.id,
       merchantRequestId: result.merchantRequestId,
       customerMessage: result.customerMessage,
+      ...(result.paymentUrl ? { paymentUrl: result.paymentUrl } : {}),
     });
   } catch (err) {
     return jsonResponse({ error: err.message || 'Unexpected error contacting the payment gateway.' }, 500);

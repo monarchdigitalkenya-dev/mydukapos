@@ -10970,7 +10970,7 @@ function notePushHttp(res) {
                 if (!ctx) throw new Error('this browser cannot draw the logo');
                 ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h);
                 const bytes = receiptLogoRasterFromRgba(ctx.getImageData(0, 0, w, h).data, w, h, dots);
-                if (!bytes) throw new Error('the logo does not fit the paper');
+                if (!bytes) throw new Error('the logo is all white / transparent or does not fit the paper');
                 window.__logoRaster = { key, bytes }; window.__logoRasterError = '';
                 return bytes;
             } catch (e) {
@@ -11607,12 +11607,21 @@ function pushShrinkBatches() {
             const bytesPerRow = W / 8, xOff = Math.floor((W - w) / 2);
             const rows = new Uint8Array(bytesPerRow * h);
             for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (lum[y * w + x] === 0) { const px = xOff + x; rows[y * bytesPerRow + (px >> 3)] |= 0x80 >> (px & 7); }
+            // zip 212: a logo with empty (white / transparent) margins, or one that is all white, printed as a tall blank strip ABOVE the shop name.
+            // Blank rows at the top and bottom are cut off; a logo with nothing to print is left out altogether.
+            let top = 0, bottom = h - 1;
+            const rowEmpty = (y) => { for (let k = 0; k < bytesPerRow; k++) if (rows[y * bytesPerRow + k]) return false; return true; };
+            while (top <= bottom && rowEmpty(top)) top++;
+            while (bottom >= top && rowEmpty(bottom)) bottom--;
+            if (top > bottom) return null;
+            const trimmed = rows.subarray(top * bytesPerRow, (bottom + 1) * bytesPerRow);
+            const th = bottom - top + 1;
             const bands = [];
-            for (let y0 = 0; y0 < h; y0 += 128) {
-                const bh = Math.min(128, h - y0);
+            for (let y0 = 0; y0 < th; y0 += 128) {
+                const bh = Math.min(128, th - y0);
                 const head = new Uint8Array([0x1D, 0x76, 0x30, 0x00, bytesPerRow & 0xFF, bytesPerRow >> 8, bh & 0xFF, bh >> 8]);   // GS v 0 m xL xH yL yH
                 const band = new Uint8Array(8 + bytesPerRow * bh);
-                band.set(head, 0); band.set(rows.subarray(y0 * bytesPerRow, (y0 + bh) * bytesPerRow), 8);
+                band.set(head, 0); band.set(trimmed.subarray(y0 * bytesPerRow, (y0 + bh) * bytesPerRow), 8);
                 bands.push(band);
             }
             bands.push(new Uint8Array([0x0A]));   // one blank line under the logo
@@ -35192,7 +35201,7 @@ async function zReportPreflight() {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-206';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-213';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {
@@ -37371,6 +37380,129 @@ async function zReportPreflight() {
     })();
     </script>
 <!-- @shared-block:connectivity:end -->
+<!-- @shared-block:gateway-more:begin -->
+<!-- PAYMENT GATEWAYS: PESAPAL + CO-OP BANK (zip 210) -------------------------------
+     Settings > Payment Gateway gets two more options next to Paystack / Daraja / KCB / Paywave, and the till shows Pesapal's payment link.
+     OPTION E  Pesapal: Consumer Key + Secret. Hosted checkout (M-Pesa, Airtel Money, card, bank): the till shows a link (open / copy / WhatsApp) and
+               waits; the result is confirmed by asking Pesapal itself.
+     OPTION F  Co-operative Bank: Consumer Key + Secret + the token address, STK address and shortcode from the shop's own Co-op API portal
+               (Co-op only publishes them behind its login, so they are never guessed). M-Pesa phone prompt; result returns like Daraja's.
+     Added by this block alone (the existing panels are untouched): it builds its own panels, adds the two choices to "Force a specific provider",
+     and, when the STK request answers with a paymentUrl, shows the link under the status line. -->
+<script>
+(function () {
+    'use strict';
+    if (window.__gwMore) return; window.__gwMore = true;
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function api(path, opts) { return fetch(typeof apiUrl === 'function' ? apiUrl(path) : path, opts); }
+    function msg(id, ok, text) { var m = $(id); if (m) { m.className = 'settings-msg ' + (ok ? 'success' : 'error'); m.textContent = text; } }
+    var CARD = 'margin:14px 0; padding:14px; border-radius:14px; border:1px solid rgba(127,140,141,.35); background:rgba(127,140,141,.07);';
+    var OKBOX = 'display:none; background:#eafaf1; border:1px solid #a9dfbf; border-radius:8px; padding:10px; color:#1e4d2b;';
+
+    function panelsHtml() {
+        return '<div id="gw-more">'
+        + '<div style="' + CARD + '"><h4 style="margin:0 0 4px;">Option E — Pesapal <span id="pesapal-badge" class="settings-msg" style="display:inline;margin:0;"></span></h4>'
+        + '<p class="settings-hint" style="margin:0 0 8px;">Pesapal’s hosted checkout: the customer pays by <b>M-Pesa, Airtel Money, card or bank</b> on a secure Pesapal page. At the till you get a link to open, copy or send by WhatsApp. Get your keys at <a href="https://developer.pesapal.com" target="_blank" rel="noopener">developer.pesapal.com</a> (sandbox) or from your live Pesapal merchant account.</p>'
+        + '<div id="pesapal-fields"><div class="vat-inline-row"><label style="font-size:13px;font-weight:normal;margin:0;">Environment:</label><select id="pesapal-env"><option value="sandbox">Sandbox (testing)</option><option value="production">Production (real money)</option></select></div>'
+        + '<input type="text" id="pesapal-key" placeholder="Consumer Key" autocomplete="off"><input type="password" id="pesapal-secret" placeholder="Consumer Secret" autocomplete="off">'
+        + '<button type="button" class="btn-main settings-small-btn" id="pesapal-save">Save Pesapal Keys</button><p id="pesapal-msg" class="settings-msg"></p></div>'
+        + '<div id="pesapal-done" style="' + OKBOX + '"><p class="settings-msg success" style="margin:0 0 8px;">✅ Pesapal is configured for this shop.</p><button type="button" class="settings-small-btn" style="background:var(--danger);color:white;" id="pesapal-reset">Reset Pesapal</button></div>'
+        + '<label class="label" style="margin-top:10px;">Notification (IPN) address — registered with Pesapal automatically on the first payment; shown for reference</label><div class="invite-link-box"><input type="text" id="pesapal-ipn-url" readonly><button type="button" class="settings-small-btn" id="pesapal-ipn-copy">Copy</button></div></div>'
+        + '<div style="' + CARD + '"><h4 style="margin:0 0 4px;">Option F — Co-operative Bank <span id="coop-badge" class="settings-msg" style="display:inline;margin:0;"></span></h4>'
+        + '<p class="settings-hint" style="margin:0 0 8px;">M-Pesa STK prompt through Co-op Bank’s API gateway. Co-op shows the exact addresses only inside your own Co-op API portal (after login), so copy them from there: the <b>token</b> address and the <b>STK push</b> address of the Safaricom STK product (its API console / Try-Out tab), plus your Paybill/Till. Nothing is sent until all are saved. Use <b>Send test</b> in Co-op’s sandbox before real money.</p>'
+        + '<div id="coop-fields"><input type="text" id="coop-key" placeholder="Consumer Key" autocomplete="off"><input type="password" id="coop-secret" placeholder="Consumer Secret" autocomplete="off">'
+        + '<input type="text" id="coop-token-url" placeholder="Token address (https://…) — from the Co-op portal" autocomplete="off"><input type="text" id="coop-stk-url" placeholder="STK push address (https://…) — from the Co-op portal" autocomplete="off">'
+        + '<input type="text" id="coop-shortcode" placeholder="Paybill / Till number" autocomplete="off"><input type="password" id="coop-passkey" placeholder="Passkey (only if your portal asks for one)" autocomplete="off">'
+        + '<div class="vat-inline-row"><label style="font-size:13px;font-weight:normal;margin:0;">Type:</label><select id="coop-type"><option value="CustomerPayBillOnline">Paybill</option><option value="CustomerBuyGoodsOnline">Till Number</option></select></div>'
+        + '<button type="button" class="btn-main settings-small-btn" id="coop-save">Save Co-op Bank Details</button><p id="coop-msg" class="settings-msg"></p></div>'
+        + '<div id="coop-done" style="' + OKBOX + '"><p class="settings-msg success" style="margin:0 0 8px;">✅ Co-op Bank is configured for this shop.</p><button type="button" class="settings-small-btn" style="background:var(--danger);color:white;" id="coop-reset">Reset Co-op Bank</button></div>'
+        + '<p class="settings-hint" style="margin-top:10px;">Co-op’s result arrives at the same callback address shown under Option B (Daraja).</p></div></div>';
+    }
+
+    function mount() {
+        var forced = $('gateway-forced-provider-input');
+        if (!forced || $('gw-more')) return;
+        var row = forced.closest('.settings-row') || forced.parentNode;
+        var host = document.createElement('div'); host.innerHTML = panelsHtml();
+        row.parentNode.insertBefore(host.firstChild, row.previousElementSibling && row.previousElementSibling.tagName === 'HR' ? row.previousElementSibling : row);
+        [['pesapal', 'Always use Pesapal'], ['coop', 'Always use Co-operative Bank']].forEach(function (o) { var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1]; forced.appendChild(op); });
+        $('pesapal-save').addEventListener('click', savePesapal); $('coop-save').addEventListener('click', saveCoop);
+        $('pesapal-reset').addEventListener('click', function () { reset('pesapal', 'Pesapal'); }); $('coop-reset').addEventListener('click', function () { reset('coop', 'Co-operative Bank'); });
+        $('pesapal-ipn-copy').addEventListener('click', function () { var i = $('pesapal-ipn-url'); try { i.select(); navigator.clipboard.writeText(i.value); showToast('Copied.'); } catch (e) { /* select-only */ } });
+        refresh();
+    }
+    function post(payload) { return api('/api/gateway-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+    async function savePesapal() {
+        var p = { pesapalEnv: $('pesapal-env').value, pesapalConsumerKey: $('pesapal-key').value.trim(), pesapalConsumerSecret: $('pesapal-secret').value.trim() };
+        if (!p.pesapalConsumerKey || !p.pesapalConsumerSecret) return msg('pesapal-msg', false, 'Both the Consumer Key and Secret are required.');
+        try { var r = await post(p); if (!r.ok) throw 0; msg('pesapal-msg', true, 'Saved.'); $('pesapal-secret').value = ''; refresh(); } catch (e) { msg('pesapal-msg', false, 'Could not save — try again.'); }
+    }
+    async function saveCoop() {
+        var p = { coopConsumerKey: $('coop-key').value.trim(), coopConsumerSecret: $('coop-secret').value.trim(), coopTokenUrl: $('coop-token-url').value.trim(), coopStkUrl: $('coop-stk-url').value.trim(), coopShortcode: $('coop-shortcode').value.trim(), coopTransactionType: $('coop-type').value };
+        var pk = $('coop-passkey').value.trim(); if (pk) p.coopPasskey = pk;
+        if (!p.coopConsumerKey || !p.coopConsumerSecret || !p.coopTokenUrl || !p.coopStkUrl || !p.coopShortcode) return msg('coop-msg', false, 'Key, secret, both addresses and the Paybill/Till number are all required.');
+        try { var r = await post(p); if (!r.ok) { var d = {}; try { d = await r.json(); } catch (e) { /* none */ } throw new Error(d.error || ''); } msg('coop-msg', true, 'Saved.'); $('coop-secret').value = ''; $('coop-passkey').value = ''; refresh(); } catch (e) { msg('coop-msg', false, e.message || 'Could not save — try again.'); }
+    }
+    async function reset(which, label) {
+        if (!confirm('Remove the saved ' + label + ' configuration? Payments via ' + label + ' will stop working until it is set up again.')) return;
+        try { var r = await api('/api/gateway-config', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ which: which }) }); if (!r.ok) throw 0; showToast(label + ' configuration removed.'); refresh(); } catch (e) { showToast('Could not reset ' + label + ' — try again.', true); }
+    }
+    async function refresh() {
+        if (!$('gw-more')) return;
+        try {
+            var cfg = await (await api('/api/gateway-config')).json();
+            function sw(prefix, on) { $(prefix + '-fields').style.display = on ? 'none' : 'block'; $(prefix + '-done').style.display = on ? 'block' : 'none'; $(prefix + '-badge').textContent = on ? '✅ Saved' : ''; }
+            sw('pesapal', !!cfg.hasPesapalConfig); sw('coop', !!cfg.hasCoopConfig);
+            $('pesapal-env').value = cfg.pesapalEnv || 'sandbox'; $('pesapal-ipn-url').value = cfg.pesapalIpnUrl || '';
+            if (!cfg.hasCoopConfig) { $('coop-token-url').value = cfg.coopTokenUrl || ''; $('coop-stk-url').value = cfg.coopStkUrl || ''; $('coop-shortcode').value = cfg.coopShortcode || ''; }
+            $('coop-type').value = cfg.coopTransactionType || 'CustomerPayBillOnline';
+            if ($('gateway-forced-provider-input')) $('gateway-forced-provider-input').value = cfg.forcedProvider || '';
+            var st = $('payment-gateway-status'), stk = await (await api('/api/mpesa-stkpush')).json();
+            if (st && stk.provider === 'pesapal') st.innerHTML = '<p class="settings-msg success">✅ Using Pesapal (payment link) for card / mobile-money payments.</p>';
+            if (st && stk.provider === 'coop') st.innerHTML = '<p class="settings-msg success">✅ Using Co-operative Bank for the M-Pesa STK prompt.</p>';
+        } catch (e) { /* the panels stay as they are */ }
+    }
+    // keep the new panels in step whenever the app re-checks the gateway
+    var orig = window.checkPaymentGatewayStatus;
+    if (typeof orig === 'function' && !orig.__gwMore) {
+        window.checkPaymentGatewayStatus = function () { var r = orig.apply(this, arguments); Promise.resolve(r).then(function () { mount(); refresh(); }); return r; };
+        window.checkPaymentGatewayStatus.__gwMore = true;
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount); else mount();
+    setTimeout(mount, 1500);
+
+    // THE TILL: show Pesapal's payment link when the STK request answers with one
+    function linkCard(url, phone) {
+        var el = $('mpesa-status-line'); if (!el) return;
+        var c = $('pesapal-link-card');
+        if (!c) { c = document.createElement('div'); c.id = 'pesapal-link-card'; c.style.cssText = 'margin:8px 0;padding:12px;border-radius:12px;border:1px solid #a9dfbf;background:#eafaf1;color:#1e4d2b;font-size:14px;'; el.parentNode.insertBefore(c, el.nextSibling); }
+        var dg = String(phone || '').replace(/\D/g, ''); if (/^0[17]\d{8}$/.test(dg)) dg = '254' + dg.slice(1); else if (/^[17]\d{8}$/.test(dg)) dg = '254' + dg;
+        var wa = 'https://wa.me/' + dg + '?text=' + encodeURIComponent('Please pay here: ' + url);
+        c.innerHTML = '<div style="font-weight:700;margin-bottom:6px;">🔗 Payment link ready</div><div style="margin-bottom:8px;">The customer opens this link and pays by M-Pesa, Airtel Money or card. This screen confirms by itself.</div>'
+            + '<div style="display:flex;gap:8px;flex-wrap:wrap;"><a href="' + esc(url) + '" target="_blank" rel="noopener" class="settings-small-btn" style="text-decoration:none;display:inline-block;">Open page</a>'
+            + '<button type="button" class="settings-small-btn" id="pl-copy">Copy link</button><a href="' + esc(wa) + '" target="_blank" rel="noopener" class="settings-small-btn" style="text-decoration:none;display:inline-block;">WhatsApp</a></div>';
+        $('pl-copy').addEventListener('click', function () { try { navigator.clipboard.writeText(url); showToast('Link copied.'); } catch (e) { /* manual copy */ } });
+    }
+    function clearCard() { var c = $('pesapal-link-card'); if (c) c.remove(); }
+    var f0 = window.fetch;
+    if (typeof f0 === 'function' && !f0.__gwMore) {
+        window.fetch = function (input, init) {
+            var p = f0.apply(this, arguments), u = typeof input === 'string' ? input : (input && input.url) || '';
+            if (/\/api\/mpesa-stkpush(\?|$)/.test(u) && init && /POST/i.test(init.method || '')) {
+                var phone = ''; try { phone = JSON.parse(init.body).phone || ''; } catch (e) { /* none */ }
+                clearCard();
+                p.then(function (r) { try { r.clone().json().then(function (d) { if (d && d.paymentUrl) linkCard(d.paymentUrl, phone); }).catch(function () {}); } catch (e) { /* none */ } }).catch(function () {});
+            } else if (/\/api\/mpesa-status\?/.test(u)) {
+                p.then(function (r) { try { r.clone().json().then(function (d) { if (d && (d.status === 'success' || d.status === 'failed')) clearCard(); }).catch(function () {}); } catch (e) { /* none */ } }).catch(function () {});
+            }
+            return p;
+        };
+        window.fetch.__gwMore = true;
+    }
+})();
+</script>
+<!-- @shared-block:gateway-more:end -->
 <!-- @shared-block:tap-rescue:begin -->
 <!-- TAP RESCUE (zip 122) ----------------------------------------------------
          Every button works on the FIRST tap, even when the screen redraws under the finger.
@@ -37464,6 +37596,58 @@ async function zReportPreflight() {
         }, true);
     })();
     </script>
+
+<!-- INSTANT FEEDBACK (zip 207) -------------------------------------------
+         A button answers the finger at once, even when the real work (the server, the printer) takes a moment.
+           * pressed look on touch-down (no waiting for the click), so a tap never feels dead;
+           * a button whose action is still working after ~0.2 s (a request on its way, a receipt being printed) shows a small spinner
+             and ignores a second tap on itself until it is done, so nobody taps three times and gets three results;
+           * never changes the button's text, never blocks anything else on the page, gives up after 25 s.
+         Self-contained on purpose (same code in every app and the Owner Console). -->
+<style>
+    button:not(:disabled):active, .btn-main:not(:disabled):active, .tab-link:active, [role="button"]:active { transform: scale(.97); filter: brightness(.95); }
+    button, .btn-main, .tab-link { transition: transform .08s ease, filter .12s ease, box-shadow .15s ease; }
+    .mk-busy { position: relative; pointer-events: none; cursor: progress; opacity: .88; }
+    .mk-busy::after { content: ""; position: absolute; right: 8px; top: 50%; width: 14px; height: 14px; margin-top: -7px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: mk-spin .6s linear infinite; }
+    @keyframes mk-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .mk-busy::after { animation-duration: 1.6s; } button:not(:disabled):active { transform: none; } }
+</style>
+<script>
+(function () {
+    try {
+        if (window.__mkFeedback) return; window.__mkFeedback = true;
+        var seq = 0, pending = {}, origFetch = window.fetch;
+        if (typeof origFetch === 'function') {
+            window.fetch = function (input) {
+                var url = ''; try { url = String(typeof input === 'string' ? input : (input && input.url) || ''); } catch (e) { /* none */ }
+                var background = /\/api\/(health|pos-sync|print-relay|messages|license|session|ping)|\/__/.test(url);   // the app's own chatter never counts as "the button is working"
+                var id = background ? 0 : ++seq;
+                if (id) pending[id] = 1;
+                var done = function () { if (id) delete pending[id]; };
+                var p; try { p = origFetch.apply(this, arguments); } catch (e) { done(); throw e; }
+                try { p.then(done, done); } catch (e) { done(); }
+                return p;
+            };
+        }
+        function since(n) { for (var k in pending) if (Number(k) > n) return true; return false; }
+        document.addEventListener('click', function (e) {
+            var b = e.target && e.target.closest && e.target.closest('button, .btn-main, [role="button"]');
+            if (!b || b.disabled || b.hasAttribute('data-nobusy') || b.type === 'file') return;
+            if (b.closest('.kb-row, #pos-keyboard, [data-nobusy]')) return;
+            var start = seq;
+            setTimeout(function () {
+                if (!b.isConnected || b.classList.contains('mk-busy')) return;
+                var working = function () { return since(start) || window.__receiptPrinting === true; };
+                if (!working()) return;
+                b.classList.add('mk-busy');
+                var t0 = Date.now(), iv = setInterval(function () {
+                    if (!b.isConnected || !working() || Date.now() - t0 > 25000) { clearInterval(iv); b.classList.remove('mk-busy'); }
+                }, 120);
+            }, 200);
+        }, true);
+    } catch (e) { /* cosmetic only */ }
+})();
+</script>
 <!-- @shared-block:tap-rescue:end -->
 <!-- @shared-block:one-tab:begin -->
 <!-- ONE TAB (zip 125) ---------------------------------------------------------
@@ -37840,7 +38024,7 @@ async function zReportPreflight() {
                 return '<!doctype html><html data-theme="' + (document.documentElement.getAttribute('data-theme') || 'light') + '" style="' + rootStyle.replace(/"/g, '&quot;') + '"><head><meta charset="utf-8"><style>' + css + '</style></head><body class="' + cls.replace(/"/g, '') + '" style="' + bodyStyle.replace(/"/g, '&quot;') + '">' + el.outerHTML + '</body></html>';
             }
             window.nativeSnapshotHtml = snapshotHtml;
-            function settle() { return new Promise(function (res) { requestAnimationFrame(function () { requestAnimationFrame(function () { setTimeout(res, 250); }); }); }); }
+            function settle() { return new Promise(function (res) { requestAnimationFrame(function () { requestAnimationFrame(function () { setTimeout(res, 100); }); }); }); }
             // zip 194: an installed exe WITHOUT printHtml is the old one: its silent print ignores the receipt's paper size and prints on the printer's default page (long blank pieces).
             // Until that exe is rebuilt, the Windows print window (which does use the receipt's paper size, like the web) is the default for it.
             window.nativePrintMethod = function (v) { if (v) LS('pos_native_print_method', v); return LS('pos_native_print_method') || (N.printHtml ? 'snapshot' : 'dialog'); };
@@ -40205,19 +40389,33 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         .ctl-hidden-file { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
         .ctl-msg { min-height: 20px; margin: 8px 0 0; font-size: 14px; }
         .ctl-msg.bad { color: var(--danger, #e74c3c); }
+        /* zip 209: a category / sub-category WITHOUT a picture is a plain button (like the chips), picture tiles only where a picture was added */
+        .ctl-plainrow { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+        .ctl-plain { flex: 1 1 150px; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 56px; padding: 0 18px; font: inherit; font-weight: 700; font-size: 16px; text-align: left; cursor: pointer;
+            border: 1px solid var(--border-color, #ccd1d6); border-radius: 28px; background: var(--bg-surface-alt, #f4f6f7); color: var(--dark, #2c3e50); box-shadow: 0 1px 3px rgba(0, 0, 0, .08); -webkit-tap-highlight-color: transparent; }
+        .ctl-plain:active { transform: scale(.98); }
+        .ctl-plain:focus-visible { outline: 3px solid var(--accent, #3498db); outline-offset: 2px; }
+        .ctl-pn { flex: 0 0 auto; min-width: 26px; padding: 2px 9px; border-radius: 999px; background: rgba(0, 0, 0, .12); font-size: 12px; font-weight: 800; text-align: center; }
+        html[data-theme="dark"] .ctl-plain { box-shadow: none; }
+        /* zip 209: smooth - each level fades in, the item list too; nothing jumps */
+        @keyframes ctl-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        .ctl-host .ctl-grid, .ctl-host .ctl-plainrow, .ctl-host .ctl-head { animation: ctl-in .18s ease-out both; }
+        body.ctl-on #item-image-grid.ctl-pop { animation: ctl-in .2s ease-out both; }
+        @media (prefers-reduced-motion: reduce) { .ctl-host .ctl-grid, .ctl-host .ctl-plainrow, .ctl-host .ctl-head, body.ctl-on #item-image-grid.ctl-pop { animation: none; } }
     </style>
     <script>
     (function () {
         'use strict';
         if (window.__catTiles) return;
         window.__catTiles = {};
-        var LS_IMG = 'pos_category_images', LS_ON = 'pos_cat_tiles', SS_ORIG = 'ctl_orig_v1';
+        var LS_IMG = 'pos_category_images', LS_ON = 'pos_cat_tiles', LS_PLAIN = 'pos_cat_plain', SS_ORIG = 'ctl_orig_v1';
         var MAX_IMAGES = 60, MAX_PX = 240, QUALITY = [0.72, 0.62, 0.52, 0.42], MAX_CHARS = 28000, ALL_KEY = '__all', SEP = ' › ';
         var S = { cat: null, sub: null };           // the opened category (a {key,label,id,norm,all} from categories()) and sub-category id ('all' | id | 'none') once chosen
         var imgCache = { raw: null, map: {} };
         var origSel;                                // Hotel: the chip selection before the tiles took over (undefined = tiles have not touched it)
         var origSub = {};
         var srcInfo = null;
+        var lastMode = '';
 
         /* ---------- tiny helpers ---------- */
         function $(id) { return document.getElementById(id); }
@@ -40258,6 +40456,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             return ok;
         }
         function enabled() { return lsGet(LS_ON) === 'true'; }
+        function plainOn() { var v = lsGet(LS_PLAIN); return v === null ? hotelMode() : v === 'true'; }        // zip 209: the Hotel starts with plain buttons; the other apps keep the letter tiles until the owner ticks it
         function readOnlyBranch() { try { return typeof viewedBranchId !== 'undefined' && viewedBranchId !== 'self'; } catch (e) { return false; } }
 
         /* ---------- which categories does this app have? ---------- */
@@ -40371,9 +40570,19 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         function hue(name) { var h = 7; for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
         function tileHtml(kind, key, label, n, imgKey, phText) {
             var im = imgKey ? images()[imgKey] : '';
+            if (!im && plainOn()) return plainHtml(kind, key, label, n);
             var pic = im ? '<img src="' + esc(im) + '" alt="" loading="lazy" decoding="async">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(phText || initials(label)) + '</span>';
             return '<button type="button" class="ctl-tile" data-ctl="' + kind + '" data-k="' + esc(encodeURIComponent(key)) + '" aria-label="' + esc(label + ', ' + n + (n === 1 ? ' item' : ' items')) + '">'
                 + '<span class="ctl-img">' + pic + '</span><span class="ctl-badge">' + n + '</span><span class="ctl-name">' + esc(label) + '</span></button>';
+        }
+        function plainHtml(kind, key, label, n) {
+            return '<button type="button" class="ctl-plain" data-ctl="' + kind + '" data-k="' + esc(encodeURIComponent(key)) + '" aria-label="' + esc(label + ', ' + n + (n === 1 ? ' item' : ' items')) + '"><span class="ctl-pname">' + esc(label) + '</span><span class="ctl-pn">' + n + '</span></button>';
+        }
+        // picture tiles in a grid, plain buttons in a row under them (or the whole list as plain buttons when no picture exists)
+        function layout(items, label) {
+            var pics = items.filter(function (x) { return x.indexOf('class="ctl-tile"') >= 0; }), plain = items.filter(function (x) { return x.indexOf('class="ctl-tile"') < 0; });
+            return (pics.length ? '<div class="ctl-grid" role="group" aria-label="' + esc(label) + '">' + pics.join('') + '</div>' : '')
+                + (plain.length ? '<div class="ctl-plainrow" role="group" aria-label="' + esc(label) + '">' + plain.join('') + '</div>' : '');
         }
         function hostEl() {
             var grid = $('item-image-grid'); if (!grid || !grid.parentNode) return null;
@@ -40396,17 +40605,15 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
                 if (m === 'off' || m === 'search') { setHost(h, ''); return; }
                 var html = '';
                 if (m === 'root') {
-                    html = '<div class="ctl-grid" role="group" aria-label="Categories">' + cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).join('')
-                        + tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️') + '</div>';
+                    html = layout(cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).concat([tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️')]), 'Categories');
                 } else if (m === 'sub') {
                     var subs = hotelSubs(S.cat), counts = {}, tot = 0, none = 0;
                     try { var r = hospScreenItems('sales', ''); counts = r.subCounts || {}; } catch (e) { counts = {}; }
                     subs.forEach(function (x) { tot += counts[x.id] || 0; }); none = counts.none || 0; tot += none;
                     html = head('<button type="button" class="ctl-back" data-ctl="root">← All categories</button><span class="ctl-crumb">· ' + esc(S.cat.label) + '</span>')
-                        + '<div class="ctl-grid" role="group" aria-label="Sub-categories of ' + esc(S.cat.label) + '">'
-                        + tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)
-                        + subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); }).join('')
-                        + (none > 0 ? tileHtml('sub', 'none', 'Other', none, '') : '') + '</div>';
+                        + layout([tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)]
+                            .concat(subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); }))
+                            .concat(none > 0 ? [tileHtml('sub', 'none', 'Other', none, '')] : []), 'Sub-categories of ' + S.cat.label);
                 } else {
                     var parts = '<button type="button" class="ctl-back" data-ctl="root">← All categories</button>';
                     if (S.cat.all) parts += '<span class="ctl-crumb">· All items</span>';
@@ -40417,6 +40624,8 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
                     html = head(parts);
                 }
                 setHost(h, html);
+                if (m === 'grid' && lastMode !== 'grid') { var ig = $('item-image-grid'); if (ig) { ig.classList.remove('ctl-pop'); void ig.offsetWidth; ig.classList.add('ctl-pop'); setTimeout(function () { ig.classList.remove('ctl-pop'); }, 400); } }
+                lastMode = m;
             } catch (e) { /* the app's own grid stays usable */ }
         }
 
@@ -40476,6 +40685,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             var o = {};
             if (lsGet(LS_IMG) !== null) o.categoryImages = images();          // only a device that has its own copy sends one: a fresh phone must never blank the shop's pictures
             var on = lsGet(LS_ON); if (on !== null) o.catTilesOn = on === 'true';
+            var pl = lsGet(LS_PLAIN); if (pl !== null) o.catPlainOn = pl === 'true';
             return o;
         }
         function applyRemote(data) {
@@ -40487,6 +40697,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
                 window.__ctlAck = sig(clean);                                   // the server has exactly this set
             }
             if (typeof data.catTilesOn === 'boolean' && data.catTilesOn !== enabled()) { lsSet(LS_ON, data.catTilesOn ? 'true' : 'false'); changed = true; }
+            if (typeof data.catPlainOn === 'boolean' && data.catPlainOn !== plainOn()) { lsSet(LS_PLAIN, data.catPlainOn ? 'true' : 'false'); changed = true; }
             if (changed) { try { renderPanel(); } catch (e) { /* the page may not be open */ } refresh(); }
         }
         function installSync() {
@@ -40570,6 +40781,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             return enabled();
         }
 
+        function setPlain(on) { lsSet(LS_PLAIN, on ? 'true' : 'false'); pushSoon(); renderPanel(); lastMode = ''; refresh(); return plainOn(); }
         /* ---------- Settings > Category images ---------- */
         var pendingKey = '';
         function msg(t, bad) { var m = $('ctl-msg'); if (m) { m.textContent = t || ''; m.className = 'ctl-msg' + (bad ? ' bad' : ''); } }
@@ -40596,6 +40808,8 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             el.innerHTML = '<h3 style="margin-top:0;">🖼️ Category images</h3>'
                 + '<p class="ctl-note">Give each category a picture. With the switch below on, the Sales Counter opens on big picture tiles: tap a tile to see the items (or sub-categories) in it. Searching still works as always. Every till and phone follows these settings.</p>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-switch"' + (enabled() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Show category image tiles on the Sales Counter</label>'
+                + '<label class="ctl-sw"><input type="checkbox" id="ctl-plain-switch"' + (plainOn() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Categories and sub-categories without a picture stay plain buttons</label>'
+                + '<p class="ctl-note">With this on, only the categories you gave a picture show as picture tiles; the others are ordinary buttons. Items always show their own pictures.</p>'
                 + '<p class="ctl-note">' + used + ' of ' + MAX_IMAGES + ' pictures used. Pictures are made small automatically.' + (ro ? ' Another branch is open: pictures can only be changed in your own branch.' : '') + '</p>'
                 + (rows || '<p class="ctl-note">No categories yet. Give items a category in Inventory, then come back.</p>')
                 + '<input type="file" id="ctl-file" class="ctl-hidden-file" accept="image/*" tabindex="-1" aria-hidden="true">'
@@ -40609,6 +40823,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         }
         function onPanelChange(ev) {
             var t = ev.target; if (!t) return;
+            if (t.id === 'ctl-plain-switch') { setPlain(!!t.checked); msg(t.checked ? 'Categories without a picture are plain buttons.' : 'Categories without a picture show a coloured letter tile.'); return; }
             if (t.id === 'ctl-switch') { setEnabled(!!t.checked); msg(t.checked ? 'Category tiles are ON for the Sales Counter.' : 'Category tiles are OFF. The Sales Counter is back to the usual list.'); return; }
             if (t.id === 'ctl-file') {
                 var file = t.files && t.files[0], key = pendingKey; if (!file || !key) return;
@@ -40653,7 +40868,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         }
         Object.assign(window.__catTiles, {
             version: 1, MAX_IMAGES: MAX_IMAGES, MAX_PX: MAX_PX,
-            enabled: enabled, setEnabled: setEnabled, images: images, setImage: setImage, removeImage: removeImage, scaleFile: scaleFile,
+            enabled: enabled, setEnabled: setEnabled, plainOn: plainOn, setPlain: setPlain, images: images, setImage: setImage, removeImage: removeImage, scaleFile: scaleFile,
             categories: categories, state: function () { return { cat: S.cat && S.cat.key, sub: S.sub, mode: mode(categories()) }; },
             open: openCat, openSub: openSub, back: back, refresh: refresh, sync: function () { sync(); }, collect: collect, apply: applyRemote, renderPanel: renderPanel
         });

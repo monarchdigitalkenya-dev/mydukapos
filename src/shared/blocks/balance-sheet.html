@@ -1,0 +1,72 @@
+<!-- BALANCE SHEET (zip 209) ------------------------------------------------------
+     Reports > "Balance Sheet": what the business owns and owes AS AT TODAY (no period needed).
+     ASSETS  = stock at buying price + money customers owe (open bills, debts, "they owe me" trade credits) + cash / M-Pesa / bank the owner counted (typed once here, kept on this device)
+     LIABILITIES = "I owe them" trade credits still open
+     EQUITY  = Assets - Liabilities (the owner's stake). It is the balancing figure, so the sheet always balances: Assets = Liabilities + Equity.
+     Only what the app really records is counted; the page says what is not. Registered through window.reportExtraBuilders (like the Services reports). -->
+<script>
+(function () {
+  'use strict';
+  var CASH_KEY = 'pos_bs_cash_v1';
+  function num(v) { v = Number(v); return isFinite(v) ? v : 0; }
+  function money(n) { return (typeof reportMoney === 'function') ? reportMoney(n) : 'KES ' + Math.round(num(n)).toLocaleString('en-US'); }
+  function esc(s) { return (typeof escapeHtml === 'function') ? escapeHtml(String(s)) : String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function arr(name) { try { var v = eval('typeof ' + name + " !== 'undefined' ? " + name + ' : []'); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+  function getCash() { try { return Math.max(0, num(localStorage.getItem(CASH_KEY))); } catch (e) { return 0; } }
+  function setCash(v) { try { localStorage.setItem(CASH_KEY, String(Math.max(0, num(v)))); } catch (e) { /* kept for this view only */ } }
+
+  function compute() {
+    var stockCost = 0, stockRetail = 0;
+    arr('inventory').forEach(function (p) {
+      if (!p || p.removed) return;
+      var list = (p.hasVariants && Array.isArray(p.variants) && p.variants.length) ? p.variants : [p];
+      list.forEach(function (v) { var q = Math.max(0, num(v.qty)); stockCost += q * num(v.wholesalePrice); stockRetail += q * num(v.price); });
+    });
+    var billsOwed = 0;
+    arr('bills').forEach(function (b) { if (!b || b.closed || b.voided) return; var t = (typeof billTotalOf === 'function') ? num(billTotalOf(b)) : 0; billsOwed += Math.max(0, t - num(b.amountPaid)); });
+    var debtsOwed = 0;
+    arr('debts').forEach(function (d) { if (!d || d.removed) return; var paid = num(d.paidAmount) + (Array.isArray(d.payments) ? d.payments.reduce(function (s, p) { return s + num(p.amount); }, 0) : 0); debtsOwed += Math.max(0, num(d.amount) - paid); });
+    var theyOwe = 0, iOwe = 0;
+    arr('tradeCredits').forEach(function (t) { if (!t || t.status === 'settled' || t.removed) return; if (t.direction === 'they_owe') theyOwe += num(t.amount); else iOwe += num(t.amount); });
+    var cash = getCash();
+    var receivables = billsOwed + debtsOwed + theyOwe;
+    var assets = cash + stockCost + receivables;
+    var liabilities = iOwe;
+    return { cash: cash, stockCost: stockCost, stockRetail: stockRetail, billsOwed: billsOwed, debtsOwed: debtsOwed, theyOwe: theyOwe, receivables: receivables, assets: assets, iOwe: iOwe, liabilities: liabilities, equity: assets - liabilities };
+  }
+
+  function build() {
+    var c = compute();
+    var asOf = new Date().toLocaleString('en-GB');
+    var H = 'padding:6px 10px;', R = 'text-align:right;white-space:nowrap;';
+    function row(label, v, bold) { return '<tr style="' + (bold ? 'font-weight:700;background:#f4f6f7;' : '') + '"><td style="' + H + '">' + label + '</td><td style="' + H + R + '">' + money(v) + '</td></tr>'; }
+    function box(title, color, rows) { return '<div style="flex:1 1 280px;border:1px solid #e5e8eb;border-radius:12px;overflow:hidden;"><div style="background:' + color + ';color:#fff;padding:8px 12px;font-weight:700;">' + title + '</div><table style="width:100%;border-collapse:collapse;font-size:14px;">' + rows + '</table></div>'; }
+    var assetRows = row('Cash, M-Pesa &amp; bank (counted)', c.cash) + row('Stock at buying price', c.stockCost) + row('Customers owe — open bills', c.billsOwed) + row('Customers owe — debts', c.debtsOwed) + row('Others owe me (trade credit)', c.theyOwe) + row('TOTAL ASSETS', c.assets, true);
+    var liabRows = row('I owe others (trade credit)', c.iOwe) + row('TOTAL LIABILITIES', c.liabilities, true) + '<tr><td colspan="2" style="height:10px"></td></tr>' + row('OWNER’S EQUITY (Assets − Liabilities)', c.equity, true) + row('TOTAL LIABILITIES + EQUITY', c.liabilities + c.equity, true);
+    var html = '<div style="margin:8px 0;padding:10px 12px;border-radius:10px;background:#eaf6ef;border:1px solid #bfe3cd;font-size:14px;">⚖️ <b>As at ' + esc(asOf) + '.</b> Assets ' + money(c.assets) + ' = Liabilities ' + money(c.liabilities) + ' + Equity ' + money(c.equity) + ' ✓</div>'
+      + '<div style="margin:8px 0;padding:10px 12px;border-radius:10px;background:#fff8e6;border:1px solid #f0dca0;font-size:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><label for="bs-cash" style="margin:0;font-weight:600;">💵 Cash, M-Pesa &amp; bank you hold now (KES):</label><input id="bs-cash" type="number" min="0" step="1" value="' + (c.cash || '') + '" style="max-width:160px;" placeholder="0"><button type="button" class="report-kind-btn" onclick="window.__bsSaveCash && window.__bsSaveCash()">Update</button></div>'
+      + '<div style="display:flex;gap:12px;flex-wrap:wrap;margin:10px 0;">' + box('ASSETS — what you own', '#27ae60', assetRows) + box('LIABILITIES &amp; EQUITY — what you owe / what is yours', '#2980b9', liabRows) + '</div>'
+      + '<p style="font-size:12px;color:#7f8c8d;">Stock is valued at buying price (retail value would be ' + money(c.stockRetail) + '). The app does not record your bank/till balance, so cash is the figure you type above. Money owed to suppliers is counted only when entered as an “I owe them” trade credit. Equity is the balancing figure (capital + profits kept in the business).</p>';
+    var csv = [['Section', 'Item', 'Amount (KES)'],
+      ['Assets', 'Cash, M-Pesa & bank (counted)', c.cash], ['Assets', 'Stock at buying price', c.stockCost], ['Assets', 'Customers owe - open bills', c.billsOwed], ['Assets', 'Customers owe - debts', c.debtsOwed], ['Assets', 'Others owe me (trade credit)', c.theyOwe], ['Assets', 'TOTAL ASSETS', c.assets],
+      ['Liabilities', 'I owe others (trade credit)', c.iOwe], ['Liabilities', 'TOTAL LIABILITIES', c.liabilities], ['Equity', "Owner's equity", c.equity], ['Total', 'LIABILITIES + EQUITY', c.liabilities + c.equity]];
+    return { title: 'Balance Sheet', html: html, csv: csv };
+  }
+  window.__bsSaveCash = function () { var el = document.getElementById('bs-cash'); if (!el) return; setCash(el.value); if (typeof reportsGenerate === 'function') reportsGenerate('balance'); };
+  window.bsCompute = compute;
+  window.reportExtraBuilders = window.reportExtraBuilders || {};
+  window.reportNoRange = Array.isArray(window.reportNoRange) ? window.reportNoRange : [];
+  window.reportExtraBuilders.balance = build;
+  if (window.reportNoRange.indexOf('balance') === -1) window.reportNoRange.push('balance');
+
+  function addButton() {
+    var first = document.querySelector('#reports-tab .report-kind-btn'); var host = first && first.parentNode;
+    if (!host || host.querySelector('[data-kind="balance"]')) return;
+    var b = document.createElement('button'); b.type = 'button'; b.className = 'report-kind-btn'; b.setAttribute('data-kind', 'balance'); b.innerHTML = '⚖️ Balance Sheet';
+    b.addEventListener('click', function () { reportsGenerate('balance'); });
+    var exp = host.querySelector('[data-kind="expenses"]'); if (exp && exp.nextSibling) host.insertBefore(b, exp.nextSibling); else host.appendChild(b);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', addButton); else addButton();
+  setTimeout(addButton, 1500);
+})();
+</script>

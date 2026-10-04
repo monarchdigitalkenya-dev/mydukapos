@@ -51,19 +51,33 @@
         .ctl-hidden-file { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
         .ctl-msg { min-height: 20px; margin: 8px 0 0; font-size: 14px; }
         .ctl-msg.bad { color: var(--danger, #e74c3c); }
+        /* zip 209: a category / sub-category WITHOUT a picture is a plain button (like the chips), picture tiles only where a picture was added */
+        .ctl-plainrow { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+        .ctl-plain { flex: 1 1 150px; display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 56px; padding: 0 18px; font: inherit; font-weight: 700; font-size: 16px; text-align: left; cursor: pointer;
+            border: 1px solid var(--border-color, #ccd1d6); border-radius: 28px; background: var(--bg-surface-alt, #f4f6f7); color: var(--dark, #2c3e50); box-shadow: 0 1px 3px rgba(0, 0, 0, .08); -webkit-tap-highlight-color: transparent; }
+        .ctl-plain:active { transform: scale(.98); }
+        .ctl-plain:focus-visible { outline: 3px solid var(--accent, #3498db); outline-offset: 2px; }
+        .ctl-pn { flex: 0 0 auto; min-width: 26px; padding: 2px 9px; border-radius: 999px; background: rgba(0, 0, 0, .12); font-size: 12px; font-weight: 800; text-align: center; }
+        html[data-theme="dark"] .ctl-plain { box-shadow: none; }
+        /* zip 209: smooth - each level fades in, the item list too; nothing jumps */
+        @keyframes ctl-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        .ctl-host .ctl-grid, .ctl-host .ctl-plainrow, .ctl-host .ctl-head { animation: ctl-in .18s ease-out both; }
+        body.ctl-on #item-image-grid.ctl-pop { animation: ctl-in .2s ease-out both; }
+        @media (prefers-reduced-motion: reduce) { .ctl-host .ctl-grid, .ctl-host .ctl-plainrow, .ctl-host .ctl-head, body.ctl-on #item-image-grid.ctl-pop { animation: none; } }
     </style>
     <script>
     (function () {
         'use strict';
         if (window.__catTiles) return;
         window.__catTiles = {};
-        var LS_IMG = 'pos_category_images', LS_ON = 'pos_cat_tiles', SS_ORIG = 'ctl_orig_v1';
+        var LS_IMG = 'pos_category_images', LS_ON = 'pos_cat_tiles', LS_PLAIN = 'pos_cat_plain', SS_ORIG = 'ctl_orig_v1';
         var MAX_IMAGES = 60, MAX_PX = 240, QUALITY = [0.72, 0.62, 0.52, 0.42], MAX_CHARS = 28000, ALL_KEY = '__all', SEP = ' › ';
         var S = { cat: null, sub: null };           // the opened category (a {key,label,id,norm,all} from categories()) and sub-category id ('all' | id | 'none') once chosen
         var imgCache = { raw: null, map: {} };
         var origSel;                                // Hotel: the chip selection before the tiles took over (undefined = tiles have not touched it)
         var origSub = {};
         var srcInfo = null;
+        var lastMode = '';
 
         /* ---------- tiny helpers ---------- */
         function $(id) { return document.getElementById(id); }
@@ -104,6 +118,7 @@
             return ok;
         }
         function enabled() { return lsGet(LS_ON) === 'true'; }
+        function plainOn() { var v = lsGet(LS_PLAIN); return v === null ? hotelMode() : v === 'true'; }        // zip 209: the Hotel starts with plain buttons; the other apps keep the letter tiles until the owner ticks it
         function readOnlyBranch() { try { return typeof viewedBranchId !== 'undefined' && viewedBranchId !== 'self'; } catch (e) { return false; } }
 
         /* ---------- which categories does this app have? ---------- */
@@ -217,9 +232,19 @@
         function hue(name) { var h = 7; for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360; return h; }
         function tileHtml(kind, key, label, n, imgKey, phText) {
             var im = imgKey ? images()[imgKey] : '';
+            if (!im && plainOn()) return plainHtml(kind, key, label, n);
             var pic = im ? '<img src="' + esc(im) + '" alt="" loading="lazy" decoding="async">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(phText || initials(label)) + '</span>';
             return '<button type="button" class="ctl-tile" data-ctl="' + kind + '" data-k="' + esc(encodeURIComponent(key)) + '" aria-label="' + esc(label + ', ' + n + (n === 1 ? ' item' : ' items')) + '">'
                 + '<span class="ctl-img">' + pic + '</span><span class="ctl-badge">' + n + '</span><span class="ctl-name">' + esc(label) + '</span></button>';
+        }
+        function plainHtml(kind, key, label, n) {
+            return '<button type="button" class="ctl-plain" data-ctl="' + kind + '" data-k="' + esc(encodeURIComponent(key)) + '" aria-label="' + esc(label + ', ' + n + (n === 1 ? ' item' : ' items')) + '"><span class="ctl-pname">' + esc(label) + '</span><span class="ctl-pn">' + n + '</span></button>';
+        }
+        // picture tiles in a grid, plain buttons in a row under them (or the whole list as plain buttons when no picture exists)
+        function layout(items, label) {
+            var pics = items.filter(function (x) { return x.indexOf('class="ctl-tile"') >= 0; }), plain = items.filter(function (x) { return x.indexOf('class="ctl-tile"') < 0; });
+            return (pics.length ? '<div class="ctl-grid" role="group" aria-label="' + esc(label) + '">' + pics.join('') + '</div>' : '')
+                + (plain.length ? '<div class="ctl-plainrow" role="group" aria-label="' + esc(label) + '">' + plain.join('') + '</div>' : '');
         }
         function hostEl() {
             var grid = $('item-image-grid'); if (!grid || !grid.parentNode) return null;
@@ -242,17 +267,15 @@
                 if (m === 'off' || m === 'search') { setHost(h, ''); return; }
                 var html = '';
                 if (m === 'root') {
-                    html = '<div class="ctl-grid" role="group" aria-label="Categories">' + cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).join('')
-                        + tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️') + '</div>';
+                    html = layout(cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).concat([tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️')]), 'Categories');
                 } else if (m === 'sub') {
                     var subs = hotelSubs(S.cat), counts = {}, tot = 0, none = 0;
                     try { var r = hospScreenItems('sales', ''); counts = r.subCounts || {}; } catch (e) { counts = {}; }
                     subs.forEach(function (x) { tot += counts[x.id] || 0; }); none = counts.none || 0; tot += none;
                     html = head('<button type="button" class="ctl-back" data-ctl="root">← All categories</button><span class="ctl-crumb">· ' + esc(S.cat.label) + '</span>')
-                        + '<div class="ctl-grid" role="group" aria-label="Sub-categories of ' + esc(S.cat.label) + '">'
-                        + tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)
-                        + subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); }).join('')
-                        + (none > 0 ? tileHtml('sub', 'none', 'Other', none, '') : '') + '</div>';
+                        + layout([tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)]
+                            .concat(subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); }))
+                            .concat(none > 0 ? [tileHtml('sub', 'none', 'Other', none, '')] : []), 'Sub-categories of ' + S.cat.label);
                 } else {
                     var parts = '<button type="button" class="ctl-back" data-ctl="root">← All categories</button>';
                     if (S.cat.all) parts += '<span class="ctl-crumb">· All items</span>';
@@ -263,6 +286,8 @@
                     html = head(parts);
                 }
                 setHost(h, html);
+                if (m === 'grid' && lastMode !== 'grid') { var ig = $('item-image-grid'); if (ig) { ig.classList.remove('ctl-pop'); void ig.offsetWidth; ig.classList.add('ctl-pop'); setTimeout(function () { ig.classList.remove('ctl-pop'); }, 400); } }
+                lastMode = m;
             } catch (e) { /* the app's own grid stays usable */ }
         }
 
@@ -322,6 +347,7 @@
             var o = {};
             if (lsGet(LS_IMG) !== null) o.categoryImages = images();          // only a device that has its own copy sends one: a fresh phone must never blank the shop's pictures
             var on = lsGet(LS_ON); if (on !== null) o.catTilesOn = on === 'true';
+            var pl = lsGet(LS_PLAIN); if (pl !== null) o.catPlainOn = pl === 'true';
             return o;
         }
         function applyRemote(data) {
@@ -333,6 +359,7 @@
                 window.__ctlAck = sig(clean);                                   // the server has exactly this set
             }
             if (typeof data.catTilesOn === 'boolean' && data.catTilesOn !== enabled()) { lsSet(LS_ON, data.catTilesOn ? 'true' : 'false'); changed = true; }
+            if (typeof data.catPlainOn === 'boolean' && data.catPlainOn !== plainOn()) { lsSet(LS_PLAIN, data.catPlainOn ? 'true' : 'false'); changed = true; }
             if (changed) { try { renderPanel(); } catch (e) { /* the page may not be open */ } refresh(); }
         }
         function installSync() {
@@ -416,6 +443,7 @@
             return enabled();
         }
 
+        function setPlain(on) { lsSet(LS_PLAIN, on ? 'true' : 'false'); pushSoon(); renderPanel(); lastMode = ''; refresh(); return plainOn(); }
         /* ---------- Settings > Category images ---------- */
         var pendingKey = '';
         function msg(t, bad) { var m = $('ctl-msg'); if (m) { m.textContent = t || ''; m.className = 'ctl-msg' + (bad ? ' bad' : ''); } }
@@ -442,6 +470,8 @@
             el.innerHTML = '<h3 style="margin-top:0;">🖼️ Category images</h3>'
                 + '<p class="ctl-note">Give each category a picture. With the switch below on, the Sales Counter opens on big picture tiles: tap a tile to see the items (or sub-categories) in it. Searching still works as always. Every till and phone follows these settings.</p>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-switch"' + (enabled() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Show category image tiles on the Sales Counter</label>'
+                + '<label class="ctl-sw"><input type="checkbox" id="ctl-plain-switch"' + (plainOn() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Categories and sub-categories without a picture stay plain buttons</label>'
+                + '<p class="ctl-note">With this on, only the categories you gave a picture show as picture tiles; the others are ordinary buttons. Items always show their own pictures.</p>'
                 + '<p class="ctl-note">' + used + ' of ' + MAX_IMAGES + ' pictures used. Pictures are made small automatically.' + (ro ? ' Another branch is open: pictures can only be changed in your own branch.' : '') + '</p>'
                 + (rows || '<p class="ctl-note">No categories yet. Give items a category in Inventory, then come back.</p>')
                 + '<input type="file" id="ctl-file" class="ctl-hidden-file" accept="image/*" tabindex="-1" aria-hidden="true">'
@@ -455,6 +485,7 @@
         }
         function onPanelChange(ev) {
             var t = ev.target; if (!t) return;
+            if (t.id === 'ctl-plain-switch') { setPlain(!!t.checked); msg(t.checked ? 'Categories without a picture are plain buttons.' : 'Categories without a picture show a coloured letter tile.'); return; }
             if (t.id === 'ctl-switch') { setEnabled(!!t.checked); msg(t.checked ? 'Category tiles are ON for the Sales Counter.' : 'Category tiles are OFF. The Sales Counter is back to the usual list.'); return; }
             if (t.id === 'ctl-file') {
                 var file = t.files && t.files[0], key = pendingKey; if (!file || !key) return;
@@ -499,7 +530,7 @@
         }
         Object.assign(window.__catTiles, {
             version: 1, MAX_IMAGES: MAX_IMAGES, MAX_PX: MAX_PX,
-            enabled: enabled, setEnabled: setEnabled, images: images, setImage: setImage, removeImage: removeImage, scaleFile: scaleFile,
+            enabled: enabled, setEnabled: setEnabled, plainOn: plainOn, setPlain: setPlain, images: images, setImage: setImage, removeImage: removeImage, scaleFile: scaleFile,
             categories: categories, state: function () { return { cat: S.cat && S.cat.key, sub: S.sub, mode: mode(categories()) }; },
             open: openCat, openSub: openSub, back: back, refresh: refresh, sync: function () { sync(); }, collect: collect, apply: applyRemote, renderPanel: renderPanel
         });

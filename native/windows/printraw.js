@@ -84,11 +84,15 @@ function psScript(verifyMs) {
     "if ($r.StartsWith('OK|')) {",
     '  $jobId = [int]($r.Split(\'|\')[1])',
     '  try {',
-    '    Start-Sleep -Milliseconds ' + Math.max(0, Math.min(5000, Number(verifyMs) || 0)),
+    '    $limit = [DateTime]::UtcNow.AddMilliseconds(' + Math.max(0, Math.min(5000, Number(verifyMs) || 0)) + ')',
+    '    do {',
+    '      $j = Get-PrintJob -PrinterName $name -ID $jobId -ErrorAction SilentlyContinue',
+    '      if (-not $j) { break }',
+    '      Start-Sleep -Milliseconds 80',
+    '    } while ([DateTime]::UtcNow -lt $limit)',
     '    $pr = Get-Printer -Name $name -ErrorAction Stop',
     '    $out.printerStatus = [string]$pr.PrinterStatus',
     '    $out.workOffline = [bool]$pr.WorkOffline',
-    '    $j = Get-PrintJob -PrinterName $name -ID $jobId -ErrorAction SilentlyContinue',
     "    if ($j) { $out.jobStatus = [string]$j.JobStatus } else { $out.jobStatus = 'gone' }",
     '  } catch { }',
     '}',
@@ -152,6 +156,102 @@ function interpret(stdout, bytesLen) {
   return res;
 }
 
+
+// ---- zip 207: ONE long-lived PowerShell. Starting PowerShell and compiling the C# class took 2-4 seconds per print; the worker does it once
+// (pre-warmed when the app starts) and then each print is a few milliseconds. If the worker dies or does not answer it is thrown away and the
+// next print uses the one-shot way above, so printing never depends on the worker being healthy.
+function workerScript() {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$src = @'", CSHARP, "'@",
+    // zip 213: compiling the class (csc.exe) used up several seconds of a mid-range PC's CPU every time the app opened. It is compiled ONCE into
+    // a small DLL (named after the code, so an update compiles a new one) and every later start just loads it. Any problem -> the old compile.
+    '$loaded = $false',
+    'try {',
+    "  $dir = Join-Path $(if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:TEMP }) 'MyDukaPOS'",
+    '  $md5 = [System.Security.Cryptography.MD5]::Create()',
+    '  $hash = ([BitConverter]::ToString($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($src))) -replace "-","").Substring(0,12)',
+    '  $dll = Join-Path $dir ("rawprint-" + $hash + ".dll")',
+    '  if (-not (Test-Path -LiteralPath $dll)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null; Add-Type -TypeDefinition $src -Language CSharp -OutputAssembly $dll }',
+    '  Add-Type -Path $dll; $loaded = $true',
+    '} catch { $loaded = $false }',
+    'if (-not $loaded -or -not ("MyDukaRaw" -as [type])) { Add-Type -TypeDefinition $src -Language CSharp }',
+    '[Console]::Out.WriteLine("READY"); [Console]::Out.Flush()',
+    'while (($line = [Console]::In.ReadLine()) -ne $null) {',
+    '  $out = @{}',
+    '  try {',
+    '    $req = $line | ConvertFrom-Json',
+    '    $out.id = $req.id',
+    '    $bytes = [System.IO.File]::ReadAllBytes([string]$req.file)',
+    '    $name = [string]$req.name',
+    '    $r = [MyDukaRaw]::Send($name, $bytes)',
+    '    $out.raw = $r',
+    "    if ($r.StartsWith('OK|')) {",
+    "      $jobId = [int]($r.Split('|')[1])",
+    '      try {',
+    '        $limit = [DateTime]::UtcNow.AddMilliseconds([int]$req.verifyMs)',
+    '        do { $j = Get-PrintJob -PrinterName $name -ID $jobId -ErrorAction SilentlyContinue; if (-not $j) { break }; Start-Sleep -Milliseconds 60 } while ([DateTime]::UtcNow -lt $limit)',
+    '        $pr = Get-Printer -Name $name -ErrorAction Stop',
+    '        $out.printerStatus = [string]$pr.PrinterStatus; $out.workOffline = [bool]$pr.WorkOffline',
+    "        if ($j) { $out.jobStatus = [string]$j.JobStatus } else { $out.jobStatus = 'gone' }",
+    '      } catch { }',
+    '    }',
+    '  } catch { $out.raw = "ERR|script|0"; $out.detail = [string]$_.Exception.Message }',
+    '  [Console]::Out.WriteLine(($out | ConvertTo-Json -Compress)); [Console]::Out.Flush()',
+    '}',
+  ].join('\r\n');
+}
+
+const worker = { proc: null, ready: null, buf: '', waiting: new Map(), seq: 0 };
+function workerKill() {
+  const p = worker.proc; worker.proc = null; worker.ready = null; worker.buf = '';
+  try { if (p) p.kill(); } catch (e) { /* gone */ }
+  for (const [, w] of worker.waiting) w(null);
+  worker.waiting.clear();
+}
+// opts.spawn is for tests. Resolves true when the worker is compiled and listening, false when it cannot be used.
+function warm(opts) {
+  const o = opts || {};
+  if (worker.proc && worker.ready) return worker.ready;
+  if (process.platform !== 'win32' && !o.spawn) return Promise.resolve(false);
+  const { spawn } = require('child_process');
+  let p;
+  try {
+    p = (o.spawn || spawn)(o.powershell || powershellPath(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodePs(workerScript())], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (e) { return Promise.resolve(false); }
+  worker.proc = p; worker.buf = '';
+  // zip 213: the worker never competes with the till for the processor (it only matters while the PC is busy; a print is still instant)
+  try { if (p && p.pid) require('os').setPriority(p.pid, require('os').constants.priority.PRIORITY_BELOW_NORMAL); } catch (e) { /* not allowed: normal priority */ }
+  worker.ready = new Promise((resolve) => {
+    let done = false; const fin = (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } };
+    const t = setTimeout(() => { fin(false); if (worker.proc === p) workerKill(); }, o.warmMs || 20000);
+    p.stdout.on('data', (d) => {
+      worker.buf += d.toString('utf8');
+      let i;
+      while ((i = worker.buf.indexOf('\n')) >= 0) {
+        const line = worker.buf.slice(0, i).trim(); worker.buf = worker.buf.slice(i + 1);
+        if (line === 'READY') { fin(true); continue; }
+        let m = null; try { m = JSON.parse(line); } catch (e) { continue; }
+        const w = m && worker.waiting.get(m.id); if (w) { worker.waiting.delete(m.id); w(m); }
+      }
+    });
+    const dead = () => { fin(false); if (worker.proc === p) workerKill(); };
+    p.on('exit', dead); p.on('error', dead); p.stdin.on('error', () => {});
+  });
+  return worker.ready;
+}
+// one request through the worker; resolves the parsed answer, or null when the worker cannot be used (the caller falls back)
+async function viaWorker(name, file, verifyMs, o) {
+  if (!(await warm(o))) return null;
+  const p = worker.proc; if (!p) return null;
+  const id = ++worker.seq;
+  return new Promise((resolve) => {
+    const t = setTimeout(() => { worker.waiting.delete(id); workerKill(); resolve(null); }, o.timeoutMs || 30000);
+    worker.waiting.set(id, (m) => { clearTimeout(t); resolve(m); });
+    try { p.stdin.write(JSON.stringify({ id, name, file, verifyMs }) + '\n'); } catch (e) { clearTimeout(t); worker.waiting.delete(id); workerKill(); resolve(null); }
+  });
+}
+
 // ---- one job at a time: jobs never overlap or merge, and each gets its own answer ----
 let tail = Promise.resolve();
 const enqueue = (fn) => { const run = tail.then(fn, fn); tail = run.catch(() => {}); return run; };
@@ -175,9 +275,11 @@ function sendRaw(opts) {
     const file = path.join(os.tmpdir(), 'mydukapos-raw-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.bin');
     const cleanup = () => { try { fs.unlinkSync(file); } catch (e) { /* gone */ } };
     try { fs.writeFileSync(file, bytes); } catch (e) { resolve({ ok: false, stage: 'file', error: 'Could not prepare the print data: ' + e.message }); return; }
-    const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodePs(psScript(o.verifyMs == null ? 1500 : o.verifyMs))];
+    const verifyMs = o.verifyMs == null ? 900 : o.verifyMs;   // the job is checked until it has left the queue (usually ~100 ms), never a fixed wait
+    const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodePs(psScript(verifyMs))];
     let settled = false;
     const finish = (r) => { if (settled) return; settled = true; cleanup(); resolve(r); };
+    const oneShot = () => {
     try {
       exec(o.powershell || powershellPath(), args, { env: { ...process.env, MYDUKA_PRN: name, MYDUKA_FILE: file }, windowsHide: true, timeout: o.timeoutMs || 30000, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
         if (err && !String(stdout || '').trim()) {
@@ -188,7 +290,11 @@ function sendRaw(opts) {
         finish(interpret(stdout, bytes.length));
       });
     } catch (e) { finish({ ok: false, stage: 'powershell', error: 'Windows printing could not start: ' + e.message }); }
+    };
+    if (!o.exec && (process.platform === 'win32' || o.spawn)) {
+      viaWorker(name, file, verifyMs, o).then((m) => { if (m) finish(interpret(JSON.stringify(m), bytes.length)); else oneShot(); }, oneShot);
+    } else oneShot();
   }));
 }
 
-module.exports = { sendRaw, interpret, decodeStatus, friendlyError, psScript, encodePs, CSHARP, enqueue };
+module.exports = { warm, workerKill, workerScript, sendRaw, interpret, decodeStatus, friendlyError, psScript, encodePs, CSHARP, enqueue };

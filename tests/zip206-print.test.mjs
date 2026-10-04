@@ -200,3 +200,50 @@ test('order ticket: the settings screen has the new controls, the test button pr
   assert.equal(JSON.parse(w.localStorage.getItem('pos_ticket_size_v1')).cut, 'full');
   b.close();
 });
+
+// ---------- zip 207: speed ----------
+import { EventEmitter } from 'node:events';
+function fakePs(log) {
+  return () => {
+    const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
+    p.stdin = Object.assign(new EventEmitter(), { write(line) { const r = JSON.parse(line); log.push(r); setTimeout(() => p.stdout.emit('data', Buffer.from(JSON.stringify({ id: r.id, raw: 'OK|7|' + fs.readFileSync(r.file).length, jobStatus: 'gone' }) + '\n')), 5); } });
+    p.kill = () => { p.emit('exit'); };
+    setTimeout(() => p.stdout.emit('data', Buffer.from('READY\n')), 5);
+    return p;
+  };
+}
+test('speed: one long-lived PowerShell serves every print (started once, not once per print)', async () => {
+  raw.workerKill();
+  const log = []; let starts = 0; const sp = fakePs(log); const spawn = (...a) => { starts++; return sp(...a); };
+  const t0 = Date.now();
+  const rs = [];
+  for (let i = 0; i < 5; i++) rs.push(await raw.sendRaw({ deviceName: 'XP-80', bytes: Buffer.from([0x1b, 0x40, i]), spawn }));
+  assert.ok(rs.every((r) => r.ok && r.stage === 'sent'), JSON.stringify(rs));
+  assert.equal(starts, 1, 'PowerShell was started once');
+  assert.equal(log.length, 5);
+  assert.ok(Date.now() - t0 < 1500, 'five prints in well under 1.5 s');
+  raw.workerKill();
+});
+test('speed: a worker that dies or never answers falls back to the one-shot way, the print still happens', async () => {
+  raw.workerKill();
+  const deadSpawn = () => { const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter(); p.stdin = Object.assign(new EventEmitter(), { write() {} }); p.kill = () => {}; setTimeout(() => p.emit('exit'), 5); return p; };
+  const r = await raw.sendRaw({ deviceName: 'XP-80', bytes: Buffer.from('x'), spawn: deadSpawn, warmMs: 200, powershell: process.execPath, timeoutMs: 2000 });
+  assert.equal(r.ok, false, 'one-shot ran (and, with node as fake PowerShell, honestly failed) instead of hanging');
+  assert.ok(r.error);
+  raw.workerKill();
+});
+test('speed: a button doing slow work shows a spinner after 0.2 s, never for background chatter, and a quick one never does', async () => {
+  let release; const gate = new Promise((r) => { release = r; });
+  const fetch = async (u) => { if (String(u).includes('slow')) await gate; return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({}), text: async () => '{}', clone() { return this; } }; };
+  const b = await boot('index.html', { fetch, wait: 700 });
+  const { w, d } = b;
+  const mk = (id, js) => { const x = d.createElement('button'); x.id = id; x.textContent = id; x.onclick = () => w.eval(js); d.body.appendChild(x); return x; };
+  const slow = mk('slowb', "fetch('/api/slow')"), bg = mk('bgb', "fetch('/api/health'); new Promise(r=>setTimeout(r,0)); window.__x=1"), quick = mk('quickb', 'window.__q=1');
+  slow.click(); bg.click(); quick.click();
+  await new Promise((r) => setTimeout(r, 450));
+  assert.ok(slow.classList.contains('mk-busy'), 'slow action shows busy');
+  assert.ok(!quick.classList.contains('mk-busy')); assert.ok(!bg.classList.contains('mk-busy'), 'background chatter is not "working"');
+  release(); await new Promise((r) => setTimeout(r, 400));
+  assert.ok(!slow.classList.contains('mk-busy'), 'busy clears when the work is done');
+  b.close();
+});

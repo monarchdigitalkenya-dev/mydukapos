@@ -284,7 +284,7 @@ test('hotel: tiles, sub-category tiles first, chips hidden then restored, search
     assert.notEqual(baseline.chips, 'none', 'chips visible today'); assert.equal((await cells(b0.page)).length, 6);
     await b0.ctx.close();
 
-    const { ctx, page, errors } = await open(browser, base, 'hotel', { inv: HOTEL });
+    const { ctx, page, errors } = await open(browser, base, 'hotel', { inv: HOTEL, storage: { pos_cat_plain: 'false' } });
     await seedSubs(page); await toSales(page);
     await toPanel(page);
     // the panel lists the category AND its sub-categories
@@ -342,7 +342,7 @@ test('hotel: tiles, sub-category tiles first, chips hidden then restored, search
 
 test('hotel: the settings payload carries the pictures; sub-category pictures are keyed "Category > Sub"', { skip, timeout: 90000 }, async () => {
   await withApp(async (browser, base) => {
-    const { ctx, page, errors } = await open(browser, base, 'hotel', { inv: HOTEL, storage: { pos_category_images: JSON.stringify({ Mains: RED_URL, 'Milkshakes › 100': RED_URL }), pos_cat_tiles: 'true' } });
+    const { ctx, page, errors } = await open(browser, base, 'hotel', { inv: HOTEL, storage: { pos_category_images: JSON.stringify({ Mains: RED_URL, 'Milkshakes › 100': RED_URL }), pos_cat_tiles: 'true', pos_cat_plain: 'false' } });
     const r = await page.evaluate(() => { const p = collectSyncPayload(); return { keys: Object.keys(p.categoryImages).sort(), on: p.catTilesOn, wrapped: !!window.slimPayloadForPush.__ctl && !!window.applyRemotePayload.__ctl && !!window.collectSyncPayload.__ctl }; });
     assert.deepEqual(r.keys, ['Mains', 'Milkshakes › 100']); assert.equal(r.on, true); assert.equal(r.wrapped, true);
     assert.deepEqual(errors, []); await ctx.close();
@@ -354,6 +354,66 @@ test('water: no product grid, so the block does nothing and nothing breaks', { s
     const { ctx, page, errors } = await open(browser, base, 'water', { storage: { pos_cat_tiles: 'true' } });
     const r = await page.evaluate(() => ({ host: !!document.getElementById('ctl-host'), panel: !!document.getElementById('ctl-panel'), on: document.body.classList.contains('ctl-on') }));
     assert.deepEqual(r, { host: false, panel: false, on: false });
+    assert.deepEqual(errors, []); await ctx.close();
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// zip 209: Hotel - a category WITHOUT a picture is a plain button, with a picture it is a picture tile; sub-categories are plain buttons;
+// Category > Sub-category > Items (with their own pictures) > cart; the switch gives the letter tiles back; the other apps are unchanged.
+test('hotel: plain buttons for categories / sub-categories without a picture, picture tiles only where a picture was added', { skip, timeout: 180000 }, async () => {
+  await withApp(async (browser, base) => {
+    const { ctx, page, errors } = await open(browser, base, 'hotel', { inv: HOTEL, storage: { pos_category_images: JSON.stringify({ Milkshakes: RED_URL }), pos_cat_tiles: 'true' } });
+    await page.evaluate(() => {
+      const id = hospScreenChips('sales').find((c) => /Milkshakes/.test(c.label)).id;
+      hospConfig.subcats = { [id]: [{ id: 's200', name: '200' }, { id: 's100', name: '100' }] };
+      const sub = (c, s) => { inventory.find((p) => p.code === c).subCat = s; };
+      sub('M1', 's200'); sub('M3', 's200'); sub('M2', 's100');
+      saveHospConfig(); hospCatTouch(); renderItemImageGrid('');
+    });
+    await toSales(page);
+    const snap = () => page.evaluate(() => ({
+      pics: Array.from(document.querySelectorAll('#ctl-host .ctl-tile .ctl-name')).map((e) => e.textContent),
+      plain: Array.from(document.querySelectorAll('#ctl-host .ctl-plain .ctl-pname')).map((e) => e.textContent),
+      letters: document.querySelectorAll('#ctl-host .ctl-ph').length,
+    }));
+    let r = await snap();
+    assert.deepEqual(r.pics, ['Milkshakes'], 'only the category with a picture is a picture tile');
+    assert.deepEqual(r.plain.sort(), ['All items', 'Drinks', 'Mains'], 'the rest are plain buttons, as the chips were');
+    assert.equal(r.letters, 0, 'no coloured letter tiles');
+    // category -> its sub-categories (no pictures): plain buttons; the parent picture sits on "All Milkshakes"
+    await page.locator('.ctl-tile', { hasText: 'Milkshakes' }).click(); await page.waitForTimeout(350);
+    r = await snap();
+    assert.deepEqual(r.pics, ['All Milkshakes']); assert.deepEqual(r.plain.sort(), ['100', '200']);
+    // sub-category -> its items, each with the item's own picture cell
+    await page.locator('.ctl-plain', { hasText: '200' }).click(); await page.waitForTimeout(350);
+    assert.deepEqual(sorted(await cells(page)), ['Choc shake', 'Mango shake']); assert.equal(await gridShown(page), true);
+    // item -> cart (the sale), still inside the same sub-category
+    await page.locator('#item-image-grid .item-grid-cell', { hasText: 'Choc' }).click(); await page.waitForTimeout(400);
+    assert.ok(await page.evaluate(() => Object.keys(currentCart).length >= 1));
+    assert.deepEqual(sorted(await cells(page)), ['Choc shake', 'Mango shake']);
+    // back to the root, a category with no sub-categories goes straight to its items
+    await page.locator('.ctl-back').click(); await page.waitForTimeout(300);
+    await page.locator('.ctl-plain', { hasText: 'Mains' }).click(); await page.waitForTimeout(350);
+    assert.deepEqual(sorted(await cells(page)), ['Burger', 'Pizza']);
+    // the switch gives the letter tiles back
+    await page.evaluate(() => window.__catTiles.setPlain(false)); await page.locator('.ctl-back').click(); await page.waitForTimeout(300);
+    r = await snap();
+    assert.equal(r.plain.length, 0); assert.ok(r.letters >= 3, 'letter tiles are back: ' + r.letters);
+    assert.deepEqual(errors, []); await ctx.close();
+  });
+});
+
+test('shop: nothing changes by itself - the letter tiles stay until the owner ticks the option', { skip, timeout: 120000 }, async () => {
+  await withApp(async (browser, base) => {
+    const { ctx, page, errors } = await open(browser, base, 'shop', { storage: { pos_category_images: JSON.stringify({ Drinks: RED_URL }), pos_cat_tiles: 'true' } });
+    await toSales(page);
+    assert.equal(await page.evaluate(() => window.__catTiles.plainOn()), false);
+    assert.ok(await page.evaluate(() => document.querySelectorAll('#ctl-host .ctl-ph').length) >= 2, 'letter tiles as before');
+    await page.evaluate(() => window.__catTiles.setPlain(true)); await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => document.querySelectorAll('#ctl-host .ctl-ph').length), 0);
+    assert.ok(await page.evaluate(() => document.querySelectorAll('#ctl-host .ctl-plain').length) >= 2);
     assert.deepEqual(errors, []); await ctx.close();
   });
 });

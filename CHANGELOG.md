@@ -2,6 +2,40 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 213 — Windows app opens faster
+
+- The print helper (PowerShell) used to start 2.5 s after launch and compile its C# class (several seconds of CPU on a mid-range PC) while the shop page was still loading. It now starts only after the page has loaded + 12 s, at below-normal priority, and the compiled class is cached in a small DLL so later starts just load it (no compile). A print before it is ready still works.
+- Rebuild the Windows apps to get this (web code unchanged).
+
+## Zip 212 — No blank strip above the receipt from the logo
+
+- A logo with empty / white margins, or an all-white one, printed as a tall blank strip above the shop name on thermal receipts. Blank rows are now trimmed and a logo with nothing to print is left out.
+
+## Zip 210 — Pesapal and Co-operative Bank payments
+
+- **Pesapal (Option E)**: Consumer Key + Secret in Settings > Payment Gateway (sandbox / production). Hosted checkout for M-Pesa, Airtel Money, card and bank: the till shows a payment link (Open / Copy / WhatsApp) and confirms by itself. The IPN address is registered with Pesapal automatically; a notification is never believed on its own — Pesapal is asked for the real status, and an under-payment is refused.
+- **Co-operative Bank (Option F)**: M-Pesa STK prompt through Co-op's gateway. The token address, STK address and Paybill/Till come from the shop's own Co-op API portal (not published publicly, so never guessed); nothing is sent until saved. Result returns to the existing callback.
+- Confirmed Pesapal payments are indexed by confirmation code, so the till's receipt check works from any device and one payment cannot pay two sales.
+- "Force a specific provider" now lists both. New route `/api/pesapal-ipn`, page `pesapal-done.html`.
+
+## Zip 209 — Hotel category buttons, remove image, measure by price, balance sheet
+
+- **Hotel flow**: category buttons (plain when no picture, picture tile when one is set) → sub-categories as plain buttons → items with their own pictures → sale → payment. Setting "plain category buttons" (default on in Hotel only).
+- **Remove an item's picture**: choose Change or Remove picture (Inventory rows and the add/edit form).
+- **Measure by price**: on cart lines in kg / g / l / ml / m etc., the price menu (Retail, Wholesale, Custom) gets "Measure by price"; type KES 100 and the quantity is worked out to 3 decimals. Stock, totals, receipt and reports use that same quantity × price, so everything balances; the exact resulting total is shown first, with nearest-below / above choices.
+- **Balance Sheet report** (Reports > Balance Sheet, as at today): assets (counted cash, stock at cost, bills, debts, trade credit owed to you) = liabilities (trade credit you owe) + owner's equity. Print and CSV.
+
+## Zip 208 — Option to hide "Sell Unlisted Item"
+
+- Settings ▸ General: new switch "Hide the Sell Unlisted Item button" (Shop, Hotel, Pharmacy, Production, Services). Per device, off by default, remembered after restart. Only the button is hidden.
+
+## Zip 207 — Speed: instant button feedback, faster Windows printing
+
+- **Windows printing no longer starts PowerShell for every receipt:** one background PowerShell (started when the app opens) serves all prints, so a print is ~tens of milliseconds instead of 2-4 s plus a fixed 1.5 s wait. The job is checked only until it leaves the queue. If the worker dies it falls back to the slower one-shot way.
+- **Every button answers at once:** pressed look on touch-down; an action still working after 0.2 s (server request, receipt printing) shows a small spinner and ignores a second tap on that button. Background sync chatter never triggers it.
+- Windows print window waits 100 ms (was 250 ms) before printing.
+- Measured in a browser with 800 products and 1,600 sales: tab switches 20-90 ms, add-to-cart 19 ms, checkout 143 ms; the remaining waits are the network and the printer.
+
 ## Zip 206 — Printing rebuilt for the Windows .exe (raw ESC/POS), Order Ticket settings, staff "owner only" error
 
 - **Root cause (from the code):** the installed .exe had no raw ESC/POS path for a USB / Windows-installed thermal printer. Every such print went page → Chromium → Windows driver, and the driver (not the app) decides the page length and the cutter — hence blank or very long paper and no cut, while Chrome/web (which sends its own ESC/POS) worked. There were also no time-outs and no honest stage-by-stage result.

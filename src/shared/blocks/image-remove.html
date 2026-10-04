@@ -1,0 +1,71 @@
+<!-- ITEM IMAGE: REMOVE (zip 209) -------------------------------------------------
+         Tapping an item's picture in the Inventory list used to go straight to "choose a new picture" - there was no way to take a picture away.
+         Now, when the item HAS a picture, the tap opens a small chooser: Change image / Remove image / Cancel. An item without a picture goes straight to
+         the file chooser as before. The Add Item form also gets a "Remove image" button under its preview. Removing keeps everything else about the item
+         (price, stock, sales history); the record gets a new updatedAt so every till takes the removal and an older copy cannot bring the picture back.
+         Self-contained: it wraps window.triggerInventoryRowImageUpload and uses the app's own safeSetItem / queuePush / renderInventoryTable. -->
+<style>
+    #img-menu-bg { position: fixed; inset: 0; z-index: 100001; background: rgba(0, 0, 0, .55); display: flex; align-items: center; justify-content: center; padding: 16px; animation: imgm-in .15s ease-out both; }
+    #img-menu { width: 100%; max-width: 340px; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-radius: 16px; padding: 16px; box-shadow: 0 10px 40px rgba(0, 0, 0, .35); text-align: center; }
+    #img-menu img { width: 120px; height: 120px; object-fit: cover; border-radius: 12px; background: #eee; }
+    #img-menu h4 { margin: 10px 0 12px; font-size: 16px; overflow-wrap: anywhere; }
+    #img-menu button { display: block; width: 100%; min-height: 48px; margin: 8px 0 0; border-radius: 12px; border: 0; font: inherit; font-weight: 700; font-size: 15px; cursor: pointer; }
+    #img-menu .im-change { background: #2980b9; color: #fff; } #img-menu .im-remove { background: #c0392b; color: #fff; } #img-menu .im-cancel { background: var(--bg-surface-alt, #ecf0f1); color: inherit; }
+    @keyframes imgm-in { from { opacity: 0; } to { opacity: 1; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__imgRemove) return; window.__imgRemove = true;
+    function find(code) { try { return (typeof inventory !== 'undefined' ? inventory : []).find(function (p) { return p && p.code === code; }); } catch (e) { return null; } }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function close() { var m = document.getElementById('img-menu-bg'); if (m) m.remove(); }
+    function removeItemImage(code) {
+        var p = find(code);
+        if (!p || !p.image) { close(); return false; }
+        delete p.image; p.updatedAt = Date.now();
+        try { safeSetItem('pos_inventory', JSON.stringify(inventory)); } catch (e) { /* the page keeps it for now */ }
+        try { queuePush(); } catch (e) { /* the next change sends it */ }
+        try { renderInventoryTable(); } catch (e) { /* cosmetic */ }
+        try { if (typeof renderItemImageGrid === 'function') renderItemImageGrid(''); } catch (e) { /* cosmetic */ }
+        try { showToast('Image removed from "' + p.name + '".'); } catch (e) { /* cosmetic */ }
+        close(); return true;
+    }
+    function menu(code, original) {
+        var p = find(code); close();
+        var bg = document.createElement('div'); bg.id = 'img-menu-bg';
+        bg.innerHTML = '<div id="img-menu" role="dialog" aria-modal="true" aria-label="Item image"><img src="' + esc(p.image) + '" alt=""><h4>' + esc(p.name) + '</h4>'
+            + '<button type="button" class="im-change">📷 Change image</button><button type="button" class="im-remove">🗑️ Remove image</button><button type="button" class="im-cancel">Cancel</button></div>';
+        bg.addEventListener('click', function (e) {
+            var t = e.target; if (t === bg) { close(); return; }
+            if (t.classList.contains('im-cancel')) close();
+            else if (t.classList.contains('im-change')) { close(); original(code); }
+            else if (t.classList.contains('im-remove')) removeItemImage(code);
+        });
+        document.body.appendChild(bg);
+        var b = bg.querySelector('.im-change'); if (b) b.focus();
+    }
+    function install() {
+        var orig = window.triggerInventoryRowImageUpload;
+        if (typeof orig === 'function' && !orig.__imgrm) {
+            var w = function (code) { var p = find(code); if (p && p.image) menu(code, orig); else orig(code); };
+            w.__imgrm = true; window.triggerInventoryRowImageUpload = w;
+        }
+        // the Add Item form: a Remove button under the preview
+        var pv = document.getElementById('photo-preview-element');
+        if (pv && !document.getElementById('add-image-remove-btn')) {
+            var blank = pv.getAttribute('src');
+            var b = document.createElement('button'); b.type = 'button'; b.id = 'add-image-remove-btn'; b.className = 'settings-small-btn'; b.textContent = '🗑️ Remove image'; b.style.cssText = 'margin-top:8px;';
+            b.onclick = function () {
+                try { currentCapturedImageBase64 = null; } catch (e) { /* not in this app */ }
+                pv.setAttribute('src', blank);
+                var fi = document.getElementById('image-file-input'); if (fi) fi.value = '';
+                try { showToast('Image removed.'); } catch (e) { /* cosmetic */ }
+            };
+            pv.insertAdjacentElement('afterend', b);
+        }
+    }
+    window.removeItemImage = removeItemImage;
+    if (document.readyState === 'complete') install(); else window.addEventListener('load', install);
+})();
+</script>

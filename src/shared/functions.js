@@ -12996,12 +12996,21 @@ function receiptLogoRasterFromRgba(rgba, w, h, dots) {
             const bytesPerRow = W / 8, xOff = Math.floor((W - w) / 2);
             const rows = new Uint8Array(bytesPerRow * h);
             for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (lum[y * w + x] === 0) { const px = xOff + x; rows[y * bytesPerRow + (px >> 3)] |= 0x80 >> (px & 7); }
+            // zip 212: a logo with empty (white / transparent) margins, or one that is all white, printed as a tall blank strip ABOVE the shop name.
+            // Blank rows at the top and bottom are cut off; a logo with nothing to print is left out altogether.
+            let top = 0, bottom = h - 1;
+            const rowEmpty = (y) => { for (let k = 0; k < bytesPerRow; k++) if (rows[y * bytesPerRow + k]) return false; return true; };
+            while (top <= bottom && rowEmpty(top)) top++;
+            while (bottom >= top && rowEmpty(bottom)) bottom--;
+            if (top > bottom) return null;
+            const trimmed = rows.subarray(top * bytesPerRow, (bottom + 1) * bytesPerRow);
+            const th = bottom - top + 1;
             const bands = [];
-            for (let y0 = 0; y0 < h; y0 += 128) {
-                const bh = Math.min(128, h - y0);
+            for (let y0 = 0; y0 < th; y0 += 128) {
+                const bh = Math.min(128, th - y0);
                 const head = new Uint8Array([0x1D, 0x76, 0x30, 0x00, bytesPerRow & 0xFF, bytesPerRow >> 8, bh & 0xFF, bh >> 8]);   // GS v 0 m xL xH yL yH
                 const band = new Uint8Array(8 + bytesPerRow * bh);
-                band.set(head, 0); band.set(rows.subarray(y0 * bytesPerRow, (y0 + bh) * bytesPerRow), 8);
+                band.set(head, 0); band.set(trimmed.subarray(y0 * bytesPerRow, (y0 + bh) * bytesPerRow), 8);
                 bands.push(band);
             }
             bands.push(new Uint8Array([0x0A]));   // one blank line under the logo
@@ -13037,7 +13046,7 @@ async function prepareReceiptLogoRaster() {
                 if (!ctx) throw new Error('this browser cannot draw the logo');
                 ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h);
                 const bytes = receiptLogoRasterFromRgba(ctx.getImageData(0, 0, w, h).data, w, h, dots);
-                if (!bytes) throw new Error('the logo does not fit the paper');
+                if (!bytes) throw new Error('the logo is all white / transparent or does not fit the paper');
                 window.__logoRaster = { key, bytes }; window.__logoRasterError = '';
                 return bytes;
             } catch (e) {
