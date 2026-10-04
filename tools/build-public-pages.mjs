@@ -12,7 +12,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WA = `https://wa.me/${SUPPORT_WHATSAPP}`;
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-const NAV = [['/', 'Home'], ['/offers', 'Offers'], ['/faq', 'FAQ'], ['/contact', 'Contact'], ['/dashboard.html', 'Sign in']];
+const NAV = [['/', 'Home'], ['/shop', 'Hardware'], ['/offers', 'Offers'], ['/faq', 'FAQ'], ['/contact', 'Contact'], ['/dashboard.html', 'Sign in']];
 const FOOT = [['/terms', 'Terms of Service'], ['/privacy', 'Privacy Policy'], ['/cookies', 'Cookies'], ['/acceptable-use', 'Acceptable Use']];
 
 function shell({ file, title, description, body, extraHead = '', script = '' }) {
@@ -43,7 +43,7 @@ ${body}
 <footer class="foot"><div class="wrap"><div class="cols">
 <div><h4>mydukapos</h4>Point of sale software for Kenyan businesses.<br><a href="${WA}" rel="noopener">WhatsApp us</a></div>
 <div><h4>Legal</h4>${foot}</div>
-<div><h4>Help</h4><a href="/faq">FAQ</a><br><a href="/contact">Contact</a><br><a href="/offers">Offers</a></div>
+<div><h4>Help</h4><a href="/faq">FAQ</a><br><a href="/contact">Contact</a><br><a href="/shop">Hardware</a><br><a href="/offers">Offers</a></div>
 </div><p class="small">© <span id="yr">2026</span> mydukapos. All rights reserved.</p></div></footer>
 <script>document.getElementById('yr').textContent=new Date().getFullYear();try{if(navigator.doNotTrack!=='1'&&navigator.sendBeacon)navigator.sendBeacon('/api/hit',new Blob([JSON.stringify({path:location.pathname})],{type:'application/json'}))}catch(e){}(function(){var c=document.querySelector('link[data-canonical]');if(c)c.href=location.origin+c.getAttribute('href')})();</script>
 ${script}</body>

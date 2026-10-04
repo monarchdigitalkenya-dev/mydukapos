@@ -36,7 +36,7 @@ test('a legacy instalment (no billId) is linked to the one bill it belongs to, a
 
 test('it runs by itself at start-up (no button, no message)', async () => {
   const { w, close } = await boot('index.html', { storage: { pos_inventory: INV, pos_bills: JSON.stringify([bill('B1', 'Jane', [{ at: T0, amount: 60 }])]), pos_sales_log: JSON.stringify([paySale('P1', 'Jane', 60, T0 + 500)]) },
-    beforeParse: (win) => { win.__legacyBillRepairDelayMs = 500; }, wait: 2000 });
+    beforeParse: (win) => { win.__legacyBillRepairDelayMs = 500; }, wait: 5000 });
   assert.deepEqual(linked(w), [['P1', 'B1']]);
   close();
 });

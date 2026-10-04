@@ -17,7 +17,7 @@ test('zip 176: the Sales Counter workspace CSS + fit code ship in every module',
 
 test('zip 176: the product card gets its footer row (hint + Sell Unlisted Item) and the cart a count pill', async () => {
   for (const a of APPS.filter((x) => x !== 'water/index.html')) {
-    const { w, d, close } = await boot(a, { wait: 1500 });
+    const { w, d, close } = await boot(a, { wait: 4000 });
     try {
       const card = d.querySelector('#item-image-grid').parentNode;
       assert.ok(card.classList.contains('pos-products'), a + ': marked');

@@ -21,9 +21,10 @@ export const APEX_PAGES = {
   '/faq': 'faq',
   '/contact': 'contact',
   '/offers': 'offers',
+  '/shop': 'shop',
 };
 // Files the marketing pages load with root-relative URLs (kept next to the pages in /public-site/).
-export const APEX_FILES = /^\/(?:app\.html|dashboard\.html|site\.css|site\.js|img\/[A-Za-z0-9_.-]+)$/;
+export const APEX_FILES = /^\/(?:app\.html|dashboard\.html|site\.css|site\.js|premium\.css|motion\.js|shop-art\.js|shop-ui\.js|shop-catalog\.json|img\/[A-Za-z0-9_.-]+)$/;
 
 // Product pages, /products/<id>. Names and one-line descriptions match public-site/app.html (checked by tests/zip177-public-site.test.mjs).
 export const PRODUCT_PAGES = {
@@ -41,6 +42,7 @@ export function sitemapEntries() {
   const e = [
     { path: '/', changefreq: 'weekly', priority: '1.0' },
     ...Object.keys(PRODUCT_PAGES).map((k) => ({ path: '/products/' + k, changefreq: 'monthly', priority: '0.8' })),
+    { path: '/shop', changefreq: 'weekly', priority: '0.8' },
     { path: '/offers', changefreq: 'daily', priority: '0.7' },
     { path: '/faq', changefreq: 'monthly', priority: '0.6' },
     { path: '/contact', changefreq: 'yearly', priority: '0.5' },

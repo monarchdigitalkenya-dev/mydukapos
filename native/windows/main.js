@@ -12,6 +12,7 @@ const { app, BrowserWindow, ipcMain, shell, net, session, Menu, screen } = requi
 const path = require('path');
 const fs = require('fs');
 const netSock = require('net');
+const rawPrint = require('./printraw');             // raw ESC/POS to a Windows printer through the spooler (zip 206)
 
 const PKG = require('./package.json');
 const APP = PKG.mydukaApp || { key: 'shop', name: 'MyDukaPOS', product: 'shop', path: '/', rootDomain: 'mydukapos.store' };
@@ -127,6 +128,21 @@ function createWindow() {
   if (link && isOurs(link)) win.loadURL(link); else win.loadFile(launcherPath());
 }
 
+// A print that never calls back must not hang the till for ever: after the limit the cashier gets an answer and the next job can go.
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve) => { const t = setTimeout(() => resolve({ ok: false, error: message }), ms); promise.then((r) => { clearTimeout(t); resolve(r); }, (err) => { clearTimeout(t); resolve({ ok: false, error: err && err.message || 'The print failed.' }); }); });
+}
+
+// One line per print job in print.log (user data folder, kept small): when, what kind, which printer, how many bytes, the result.
+// Never the receipt's content, names or amounts.
+function printLog(kind, info) {
+  try {
+    const f = path.join(app.getPath('userData'), 'print.log');
+    try { if (fs.statSync(f).size > 200 * 1024) fs.renameSync(f, f + '.old'); } catch (x) { /* none yet */ }
+    fs.appendFileSync(f, JSON.stringify({ t: new Date().toISOString(), kind, ...info }) + '\n');
+  } catch (x) { /* logging never breaks printing */ }
+}
+
 // ---- IPC: every handler checks the page asking is ours ----
 const fromOurs = (e) => isOurs(e.senderFrame && e.senderFrame.url);
 const fromLauncher = (e) => isLauncher(e.senderFrame && e.senderFrame.url);
@@ -185,9 +201,9 @@ ipcMain.handle('native:print', async (e, opts) => {
   const po = { silent: !!o.deviceName, deviceName: o.deviceName || undefined, printBackground: true, margins: { marginType: 'none' } };
   const w = Number(o.widthMm), h = Number(o.heightMm);
   if (w >= 30 && w <= 320 && h >= 30 && h <= 3000) po.pageSize = { width: Math.round(w * 1000), height: Math.round(h * 1000) };
-  return await new Promise((resolve) => {
+  return await withTimeout(new Promise((resolve) => {
     e.sender.print(po, (success, failureReason) => resolve(success ? { ok: true } : { ok: false, error: failureReason || 'The print failed.' }));
-  });
+  }), 45000, 'Windows did not answer the print request in time.');
 });
 
 // zip 192: prints a SNAPSHOT (the receipt / kitchen ticket markup + the page's styles) from its own hidden window, so the print never depends on what
@@ -207,9 +223,9 @@ ipcMain.handle('native:printHtml', async (e, opts) => {
     await new Promise((r) => setTimeout(r, 400));
     const po = { silent: !!o.deviceName, deviceName: o.deviceName || undefined, printBackground: true, margins: { marginType: 'none' } };
     if (w >= 30 && w <= 320 && h >= 30 && h <= 3000) po.pageSize = { width: Math.round(w * 1000), height: Math.round(h * 1000) };
-    return await new Promise((resolve) => {
-      win.webContents.print(po, (success, why) => resolve(done(success ? { ok: true } : { ok: false, error: why || 'The print failed.' })));
-    });
+    return done(await withTimeout(new Promise((resolve) => {
+      win.webContents.print(po, (success, why) => resolve(success ? { ok: true } : { ok: false, error: why || 'The print failed.' }));
+    }), 45000, 'Windows did not answer the print request in time.'));
   } catch (err) { return done({ ok: false, error: err.message }); }
 });
 
@@ -226,6 +242,35 @@ ipcMain.handle('native:netPrint', async (e, host, port, base64) => {
     s.on('timeout', () => { s.destroy(); finish({ ok: false, error: 'The printer did not answer (check its IP address and that it is on).' }); });
     s.on('error', (err) => finish({ ok: false, error: err.code === 'ECONNREFUSED' ? 'The printer refused the connection (wrong port?).' : err.message }));
   });
+});
+
+// RAW ESC/POS bytes to a Windows-installed printer (USB, shared, or any with a driver) through the spooler. ok = the spooler took every byte and
+// Windows shows no fault for the printer/job - see printraw.js. This is what makes the cutter, drawer, logo and raster bytes reach the printer.
+ipcMain.handle('native:rawPrint', async (e, deviceName, base64) => {
+  if (!fromOurs(e)) return { ok: false, error: 'Not allowed.' };
+  const bytes = Buffer.from(String(base64 || ''), 'base64');
+  const r = await rawPrint.sendRaw({ deviceName: String(deviceName || ''), bytes });
+  printLog('raw', { printer: String(deviceName || '').slice(0, 80), bytes: bytes.length, ok: !!r.ok, stage: r.stage, job: r.jobId || 0, status: r.printerStatus || '', jobStatus: r.jobStatus || '', err: r.ok ? '' : String(r.error || '').slice(0, 160) });
+  return r;
+});
+
+// What Windows says about ONE printer right now (or about the saved one): present? offline? paper out? Used by Settings > Printer health.
+ipcMain.handle('native:printerStatus', async (e, deviceName) => {
+  if (!fromOurs(e)) return { ok: false, error: 'Not allowed.' };
+  try {
+    const list = await e.sender.getPrintersAsync();
+    const p = list.find((x) => x.name === deviceName);
+    if (!p) return { ok: true, found: false, count: list.length, error: 'Windows does not list a printer called "' + deviceName + '" (removed or renamed).' };
+    const st = rawPrint.decodeStatus(p.status);
+    return { ok: true, found: true, name: p.name, isDefault: !!p.isDefault, status: st, driver: (p.options && (p.options['printer-make-and-model'] || p.options.driverName)) || '' };
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+
+// The last lines of print.log, for the diagnostics panel
+ipcMain.handle('native:printLog', async (e) => {
+  if (!fromOurs(e)) return { ok: false, error: 'Not allowed.' };
+  try { const t = fs.readFileSync(path.join(app.getPath('userData'), 'print.log'), 'utf8').trim().split('\n').slice(-40); return { ok: true, lines: t }; }
+  catch (err) { return { ok: true, lines: [] }; }
 });
 
 ipcMain.handle('native:forgetShop', async (e) => {

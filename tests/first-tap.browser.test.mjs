@@ -65,6 +65,8 @@ test('small phone: "More" stays on screen after opening a long-named tab, and a 
   const srv = await serve(); const base = 'http://127.0.0.1:' + srv.address().port; const browser = await chromium.launch();
   try {
     const { ctx, page } = await open(browser, base, 360);
+    await page.evaluate(() => window.sidebarNav && window.sidebarNav.off());   // zip 202: the sidebar is the default; this checks the fallback bar still behaves
+    await page.waitForTimeout(300);
     const more = page.locator('#tabs-more-btn');
     await tapBox(page, more);
     const t = page.locator('#tabs-more-menu .tab-link[data-tab="returns-tab"]'); await t.scrollIntoViewIfNeeded(); await tapBox(page, t);

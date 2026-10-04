@@ -77,7 +77,7 @@ test('connectivity in a real browser: fresh (Guest) and installed profiles, bloc
     assert.equal(s2.state, 'backend_unavailable', 'the site answered, so this device HAS internet: never "offline" (' + JSON.stringify(s2) + ')');
     assert.doesNotMatch(s2.title, /no internet/i);
     const diag = await g.evaluate(() => window.PosNet.diagnostics());
-    assert.equal(diag.ownSite, true); assert.equal(diag.health.kind, 'neterr');
+    assert.equal(diag.ownSite, true, JSON.stringify(diag)); assert.equal(diag.health.kind, 'neterr');
     // --- 3. it comes back by itself
     ctl.health = 'ok';
     await g.evaluate(() => window.PosNet.check('test: back'));

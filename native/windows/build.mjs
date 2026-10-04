@@ -27,7 +27,7 @@ for (const a of apps) {
       productName: a.name,
       copyright: 'MyDukaPOS',
       directories: { output: `dist/${a.key}`, buildResources: 'build' },
-      files: ['main.js', 'preload.js', 'package.json', `build/${a.key}.png`],  // the .ico is only a build resource
+      files: ['main.js', 'preload.js', 'printraw.js', 'package.json', `build/${a.key}.png`],  // the .ico is only a build resource
       extraResources: [{ from: '../launcher', to: 'launcher' }],
       extraMetadata: { version: cfg.version.name, mydukaApp: { key: a.key, name: a.name, product: a.product, path: a.path, rootDomain: cfg.rootDomain, fixed: !!a.fixed } },
       win: { icon: icoPath, target: ['nsis', 'msi'], artifactName: `${slug}-${cfg.version.name}-Setup.\${ext}` },

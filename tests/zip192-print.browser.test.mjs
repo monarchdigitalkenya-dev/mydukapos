@@ -108,7 +108,7 @@ test('hotel: Order Ticket Size - paper, letters, auto-fit, save, and the print p
     const fits = await page.evaluate(() => { const t = document.getElementById('ticket-sample-text'); const r = document.createRange(); r.selectNodeContents(t); return r.getClientRects().length; });
     assert.ok(fits > 0);
     await page.evaluate(() => ticketSizeSave());
-    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('pos_ticket_size_v1'))), { mm: 58, pt: 20 });
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('pos_ticket_size_v1'))), { mm: 58, pt: 20, ls: 0, gap: 0, top: 0, feed: 1, cut: 'partial' });
     const pg = await page.evaluate(() => { setKitchenPrintPage(); return { rule: document.getElementById('print-page-style').textContent, w: document.body.style.getPropertyValue('--receipt-print-width'), f: document.body.style.getPropertyValue('--ticket-font') }; });
     assert.match(pg.rule, /size: 58mm /); assert.equal(pg.w, '58mm'); assert.ok(parseFloat(pg.f) > 8 && parseFloat(pg.f) < 20 * 96 / 72);
     assert.match(await page.evaluate(() => document.querySelector('.ticket-size-now').textContent), /58 mm paper, letters 20 pt/);
@@ -122,7 +122,7 @@ test('hotel: Order Ticket Size - paper, letters, auto-fit, save, and the print p
     assert.equal(rw[0], rw[1] + 'mm');
     // cancel does not save
     await page.evaluate(() => { ticketSizeOpen(); ticketSizeSet(58); ticketSizeCancel(); });
-    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('pos_ticket_size_v1'))), { mm: 0, pt: 11.5 });
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('pos_ticket_size_v1'))), { mm: 0, pt: 11.5, ls: 0, gap: 0, top: 0, feed: 1, cut: 'partial' });
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });

@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('MyDukaNative', {
   printers: () => ipcRenderer.invoke('native:printers'),
   print: (opts) => ipcRenderer.invoke('native:print', opts),
   printHtml: (opts) => ipcRenderer.invoke('native:printHtml', opts),
+  rawPrint: (deviceName, base64) => ipcRenderer.invoke('native:rawPrint', deviceName, base64),
+  printerStatus: (deviceName) => ipcRenderer.invoke('native:printerStatus', deviceName),
+  printLog: () => ipcRenderer.invoke('native:printLog'),
   netPrint: (host, port, base64) => ipcRenderer.invoke('native:netPrint', host, port, base64),
   forgetShop: () => ipcRenderer.invoke('native:forgetShop'),
 });

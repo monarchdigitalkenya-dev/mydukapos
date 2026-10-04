@@ -51,14 +51,32 @@
             if (!p || !N) return null;
             if (info.platform === 'android' && p.kind === 'android-bt' && N.btPrint) return p;
             if (info.platform === 'windows' && p.kind === 'windows-net' && N.netPrint) return p;
+            if (info.platform === 'windows' && p.kind === 'windows-raw' && N.rawPrint) return p;
             return null;
         };
+        /* zip 206: a small in-page log of every print attempt (stage + honest result) — shown in Settings ▸ Install App ▸ printer diagnostics */
+        var PLOG = [];
+        function plog(kind, msg, ok) {
+            PLOG.push({ t: new Date().toLocaleTimeString('en-GB'), kind: kind, ok: ok !== false, msg: String(msg) });
+            if (PLOG.length > 60) PLOG.shift();
+            try { var el = document.getElementById('native-print-log'); if (el) el.textContent = PLOG.map(function (x) { return x.t + ' ' + (x.ok ? '✓' : '✗') + ' [' + x.kind + '] ' + x.msg; }).reverse().join('\n'); } catch (e) { /* panel closed */ }
+        }
+        window.nativePrintLog = function () { return PLOG.slice(); };
+        function withTimeout(promise, ms, what) {
+            var t; return Promise.race([promise, new Promise(function (_, rej) { t = setTimeout(function () { rej(new Error(what + ' did not answer within ' + Math.round(ms / 1000) + ' seconds.')); }, ms); })]).then(function (v) { clearTimeout(t); return v; }, function (e) { clearTimeout(t); throw e; });
+        }
         window.nativeSendBytes = async function (bytes) {
             var p = window.nativeBytePrinter();
             if (!p) throw new Error('No app printer chosen.');
             var b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-            var r = p.kind === 'android-bt' ? await androidCall('btPrint', [p.address, toB64(b)]) : await N.netPrint(p.host, p.port || 9100, toB64(b));
-            if (!r || !r.ok) throw new Error((r && r.error) || 'The printer did not answer.');
+            var r;
+            try {
+                r = p.kind === 'android-bt' ? await androidCall('btPrint', [p.address, toB64(b)])
+                    : p.kind === 'windows-raw' ? await withTimeout(N.rawPrint(p.deviceName, toB64(b)), 40000, 'Windows printing')
+                    : await withTimeout(N.netPrint(p.host, p.port || 9100, toB64(b)), 20000, 'The network printer');
+            } catch (e) { plog(p.kind, 'send failed: ' + e.message, false); throw e; }
+            if (!r || !r.ok) { var m = (r && r.error) || 'The printer did not answer.'; plog(p.kind, (r && r.stage ? 'stage "' + r.stage + '": ' : '') + m, false); throw new Error(m); }
+            plog(p.kind, b.length + ' bytes accepted' + (r.state ? ' (' + r.state + ')' : ''), true);
             return true;
         };
         // Windows: a Windows printer (with its driver) prints WITHOUT the dialog; the page's 'afterprint' comes after Windows' answer
@@ -84,7 +102,7 @@
             window.nativePrintMethod = function (v) { if (v) LS('pos_native_print_method', v); return LS('pos_native_print_method') || (N.printHtml ? 'snapshot' : 'dialog'); };
             window.print = function () {
                 var p = saved();
-                if (!p || p.kind !== 'windows-driver') { if (origPrint) origPrint(); return; }
+                if (!p || (p.kind !== 'windows-driver' && p.kind !== 'windows-raw')) { if (origPrint) origPrint(); return; }
                 var method = window.nativePrintMethod();
                 if (method === 'dialog') { if (origPrint) origPrint(); return; }
                 settle().then(function () {
@@ -103,6 +121,15 @@
             out.set([0x1b, 0x40], 0); out.set(t, 2); out.set([0x1d, 0x56, 0x42, 0x00], 2 + t.length);   // init … text … feed + cut
             return out;
         };
+        // diagnostic ladder: each level adds one thing, so the first level that fails shows where the problem is
+        function escLevel(level, biz) {
+            var enc = function (t) { return Array.prototype.slice.call(new TextEncoder().encode(t)); };
+            var out = [0x1b, 0x40];
+            if (level === 1) return new Uint8Array(out.concat(enc('MyDukaPOS test 1: plain text\n')));
+            if (level === 2) return new Uint8Array(out.concat(enc('MyDukaPOS test 2: text + feed\n'), [0x1b, 0x64, 0x04]));
+            if (level === 3) return new Uint8Array(out.concat(enc('MyDukaPOS test 3: text + feed + cut\n'), [0x1b, 0x64, 0x04, 0x1d, 0x56, 0x42, 0x00]));
+            return ESC_TEST(['MyDukaPOS — printer test', biz, new Date().toLocaleString('en-GB'), '--------------------------------', 'Item            Qty     Price', 'Sample item       2    100.00', '--------------------------------', 'TOTAL                  200.00', '', 'If you can read this, the printer', 'is set up for receipts.']);
+        }
         function useAsReceiptPrinter() {
             try { if (typeof setPrinterMode === 'function') setPrinterMode('bluetooth'); else LS('pos_printer_mode', 'bluetooth'); } catch (e) { /* the mode is also read on start */ }
         }
@@ -191,7 +218,7 @@
         function renderPrinters(msg) {
             var box = document.getElementById('native-printers');
             if (!box) return;
-            var p = saved(), cur = p ? (p.kind === 'android-bt' ? 'Bluetooth: ' + esc(p.name) : p.kind === 'windows-net' ? 'Network printer ' + esc(p.host) + ':' + esc(p.port || 9100) : 'Windows printer: ' + esc(p.deviceName)) : 'none — receipts use the print dialog';
+            var p = saved(), cur = p ? (p.kind === 'android-bt' ? 'Bluetooth: ' + esc(p.name) : p.kind === 'windows-net' ? 'Network printer ' + esc(p.host) + ':' + esc(p.port || 9100) : p.kind === 'windows-raw' ? 'Thermal receipt printer (direct ESC/POS): ' + esc(p.deviceName) : 'Windows printer: ' + esc(p.deviceName)) : 'none — receipts use the print dialog';
             var body = '<div style="font-size:13px;">Receipt printer: <strong id="native-printer-current">' + cur + '</strong></div>'
                 + '<div id="native-printer-status" class="settings-msg" style="margin-top:6px;">' + (msg || '') + '</div>'
                 + '<div id="native-printer-list" style="display:grid; gap:6px; margin-top:6px;"></div>'
@@ -200,8 +227,12 @@
                 + (p && p.kind === 'windows-driver' ? '<div style="margin-top:10px; font-size:13px;">If the paper comes out empty: <select id="native-print-method" class="settings-small-btn" onchange="nativePrintMethod(this.value)"><option value="snapshot"' + (window.nativePrintMethod && window.nativePrintMethod() === 'snapshot' ? ' selected' : '') + '>Print method 1 (needs the newest app)</option><option value="page"' + (window.nativePrintMethod && window.nativePrintMethod() === 'page' ? ' selected' : '') + '>Print method 2 (the page as shown)</option><option value="dialog"' + (window.nativePrintMethod && window.nativePrintMethod() === 'dialog' ? ' selected' : '') + '>Print method 3 (Windows print window)</option></select></div>' : '')
                 + (p ? '<button type="button" class="settings-small-btn" onclick="nativePrinterTest()">🧾 Test print</button><button type="button" class="settings-small-btn" onclick="nativePrinterForget()">Remove</button>' : '')
                 + '</div>'
+                + (p && (p.kind === 'windows-raw' || p.kind === 'windows-driver') ? '<div id="native-printer-health" style="margin-top:8px; padding:8px 10px; border-radius:8px; background:rgba(127,140,141,.12); font-size:13px;">Checking the printer…</div>' : '')
+                + (p && p.kind === 'windows-raw' ? '<div style="margin-top:8px; font-size:13px; font-weight:600;">If something is wrong, run the tests in order — the first one that fails shows where the problem is:</div><div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;"><button type="button" class="settings-small-btn" onclick="nativePrinterLadder(0)">1 ▸ Is Windows OK?</button><button type="button" class="settings-small-btn" onclick="nativePrinterLadder(1)">2 ▸ Plain text</button><button type="button" class="settings-small-btn" onclick="nativePrinterLadder(2)">3 ▸ Text + feed</button><button type="button" class="settings-small-btn" onclick="nativePrinterLadder(3)">4 ▸ Text + feed + cut</button><button type="button" class="settings-small-btn" onclick="nativePrinterLadder(4)">5 ▸ Full sample receipt</button></div>' : '')
+                + (p ? '<details style="margin-top:8px; font-size:12px;"><summary style="cursor:pointer;">Print log (what was sent and what Windows answered)</summary><pre id="native-print-log" style="white-space:pre-wrap; max-height:160px; overflow:auto; margin:4px 0 0;"></pre>' + (info.platform === 'windows' && N && N.printLog ? '<button type="button" class="settings-small-btn" onclick="nativePrinterShowFileLog()">Show the app\'s saved print.log</button>' : '') + '</details>' : '')
                 + (info.platform === 'android' ? '<div style="font-size:12px; color:#7f8c8d; margin-top:6px;">Pair a new printer once in Android Settings ▸ Bluetooth (PIN usually 0000 or 1234), then choose it here.</div>' : '');
             box.innerHTML = card('🖨️ This app\'s printers', body);
+            if (p) { plog('app', 'panel opened'); window.nativePrinterHealth(); }
         }
         function status(t, kind) { var s = document.getElementById('native-printer-status'); if (s) { s.className = 'settings-msg' + (kind ? ' ' + kind : ''); s.textContent = t; } }
         window.nativePrinterScan = async function () {
@@ -221,10 +252,50 @@
         window.nativePrinterPick = async function (i) {
             var d = (window.__nativePrinterItems || [])[i];
             if (!d) return;
-            if (info.platform === 'android') { LS(PKEY, JSON.stringify({ kind: 'android-bt', address: d.address, name: d.name })); useAsReceiptPrinter(); }
-            else LS(PKEY, JSON.stringify({ kind: 'windows-driver', deviceName: d.name }));
-            renderPrinters('Saved. Print a test to check it.');
+            if (info.platform === 'android') { LS(PKEY, JSON.stringify({ kind: 'android-bt', address: d.address, name: d.name })); useAsReceiptPrinter(); renderPrinters('Saved. Print a test to check it.'); await window.nativePrinterTest(); return; }
+            if (!N.rawPrint) { LS(PKEY, JSON.stringify({ kind: 'windows-driver', deviceName: d.name })); renderPrinters('Saved. Print a test to check it.'); await window.nativePrinterTest(); return; }
+            // Windows: say HOW this printer will be used
+            window.__nativePickedWin = d.name;
+            var list = document.getElementById('native-printer-list');
+            if (list) list.innerHTML = '<div style="font-size:13px;">How is <strong>' + esc(d.name) + '</strong> used?</div>'
+                + '<button type="button" class="btn-main settings-small-btn" style="text-align:left;" onclick="nativePrinterUse(\'raw\')">🧾 Thermal receipt printer (Xprinter, Epson, …) — recommended<br><span style="font-weight:400; font-size:12px;">Sends the receipt straight to the printer: correct length, feed and cutter.</span></button>'
+                + '<button type="button" class="settings-small-btn" style="text-align:left;" onclick="nativePrinterUse(\'driver\')">📄 Normal Windows printer (A4 / office)<br><span style="font-weight:400; font-size:12px;">Prints through the Windows driver like any document.</span></button>';
+            status('Choose how to use it:');
+        };
+        window.nativePrinterUse = async function (how) {
+            var name = window.__nativePickedWin;
+            if (!name) return;
+            if (how === 'raw') { LS(PKEY, JSON.stringify({ kind: 'windows-raw', deviceName: name })); useAsReceiptPrinter(); }
+            else LS(PKEY, JSON.stringify({ kind: 'windows-driver', deviceName: name }));
+            renderPrinters('Saved. Printing a test…');
             await window.nativePrinterTest();
+        };
+        window.nativePrinterHealth = async function () {
+            var el = document.getElementById('native-printer-health'), p = saved();
+            if (!el || !p || !N || !N.printerStatus || !p.deviceName) return;
+            try {
+                var r = await withTimeout(N.printerStatus(p.deviceName), 8000, 'Windows');
+                if (!r || !r.ok) el.innerHTML = '⚠ Could not read the printer state: ' + esc((r && r.error) || 'no answer');
+                else if (!r.found) el.innerHTML = '❌ ' + esc(r.error);
+                else if (!r.status.ready) el.innerHTML = '❌ <strong>' + esc(r.name) + '</strong> reports: ' + esc(r.status.text) + '. Fix this first (power, cable, paper, cover).';
+                else el.innerHTML = '✅ <strong>' + esc(r.name) + '</strong> is ready in Windows' + (r.driver ? ' (' + esc(r.driver) + ')' : '') + '. Windows cannot see the paper or cutter — only a test print shows that.';
+                plog('health', r && r.found ? (r.status.ready ? 'ready' : r.status.text) : ((r && r.error) || 'unknown'), !!(r && r.found && r.status.ready));
+            } catch (e) { el.innerHTML = '⚠ ' + esc(e.message); }
+        };
+        window.nativePrinterShowFileLog = async function () {
+            var pre = document.getElementById('native-print-log');
+            try { var r = await N.printLog(); if (pre) pre.textContent = (r && r.lines && r.lines.length ? r.lines.join('\n') : 'print.log is empty.'); } catch (e) { if (pre) pre.textContent = e.message; }
+        };
+        window.nativePrinterLadder = async function (level) {
+            var p = saved();
+            if (!p) return;
+            if (level === 0) { status('Checking Windows…'); await window.nativePrinterHealth(); status('Done — see the box below. If it says ready, run test 2.', 'success'); return; }
+            status('Test ' + (level + 1) + ': sending…');
+            var biz = ''; try { biz = (typeof businessName !== 'undefined' && businessName) || ''; } catch (e) {}
+            try {
+                await window.nativeSendBytes(escLevel(level, biz));
+                status('✓ Test ' + (level + 1) + ': Windows accepted the data. Look at the printer: ' + (level === 1 ? 'did text print?' : level === 2 ? 'did the paper advance?' : level === 3 ? 'did the cutter cut?' : 'is the receipt complete?'), 'success');
+            } catch (e) { status('✗ Test ' + (level + 1) + ' failed: ' + e.message, 'error'); }
         };
         window.nativeNetPrinterAsk = async function () {
             var v = prompt('The network thermal printer\'s IP address (and port, if not 9100), e.g. 192.168.1.50 or 192.168.1.50:9100');
@@ -242,14 +313,14 @@
             status('Printing a test page…');
             try {
                 if (p.kind === 'windows-driver') {
-                    var r = await N.print({ deviceName: p.deviceName });
+                    var r = await withTimeout(N.print({ deviceName: p.deviceName }), 40000, 'Windows printing');
                     if (!r || !r.ok) throw new Error((r && r.error) || 'no answer');
                     status('✓ Windows accepted the print job on ' + p.deviceName + '.', 'success');
                     return;
                 }
                 var biz = ''; try { biz = (typeof businessName !== 'undefined' && businessName) || ''; } catch (e) {}
-                await window.nativeSendBytes(ESC_TEST(['MyDukaPOS — printer test', biz, new Date().toLocaleString('en-GB'), '--------------------------------', 'If you can read this, the printer', 'is set up for receipts.']));
-                status('✓ Printed — the printer received the test page.', 'success');
+                await window.nativeSendBytes(p.kind === 'windows-raw' ? escLevel(4, biz) : ESC_TEST(['MyDukaPOS — printer test', biz, new Date().toLocaleString('en-GB'), '--------------------------------', 'If you can read this, the printer', 'is set up for receipts.']));
+                status(p.kind === 'windows-raw' ? '✓ Sent to ' + p.deviceName + ' and accepted by Windows. Check the paper: text, feed and cut.' : '✓ Printed — the printer received the test page.', 'success');
             } catch (e) {
                 status('✗ Not printed: ' + e.message, 'error');
             }

@@ -361,6 +361,7 @@ test('hotel: tabs hidden on this phone wait under More; Sales Counter and Settin
   await withApps(async (browser, base) => {
     const app = APPS[1];
     const { ctx, page, errors } = await open(browser, base, app);
+    await page.evaluate(() => window.sidebarNav && window.sidebarNav.off());   // zip 202: this per-phone preference belongs to the fallback bar
     await openSettingsCard(page);
     // Sales Counter and Settings are not in the list
     const listed = await page.evaluate(() => Array.from(document.querySelectorAll('.ptl-tab-cb')).map((c) => c.value));
@@ -390,6 +391,7 @@ test('hotel: tabs hidden on this phone wait under More; Sales Counter and Settin
     assert.equal(await page.evaluate(() => (JSON.parse(localStorage.getItem('pos_ptl_tabs_off')) || []).length >= 1), true);
     await page.close();
     const again = await open(browser, base, app, { reuse: { ctx } });
+    await again.page.evaluate(() => window.sidebarNav && window.sidebarNav.off());
     await again.page.waitForTimeout(800);
     assert.equal(await again.page.evaluate((t) => { const b = document.querySelector('.tab-link[data-tab="' + t + '"]'); return b.classList.contains('ptl-tab-off'); }, hide[0]), true);
     assert.deepEqual(errors, []); assert.deepEqual(again.errors, []);

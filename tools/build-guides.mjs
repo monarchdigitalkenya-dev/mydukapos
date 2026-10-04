@@ -444,7 +444,7 @@ MODS.hotel = {
 MODS.hospital = {
   name: 'Hospital POS', title: 'Hospital POS — User Guide', tagline: 'Clinics and hospitals — registration, queue, consultation charges, laboratory, pharmacy, wards and beds, insurance and reports.',
   itemsPlural: 'medications and supplies', itemWord: 'medication', addTab: '➕ Add Medication', restockTab: '📥 Restock',
-  tabs: ['🛎️ Reception', '📅 Appointments', '🚦 Triage', '🩺 Clinic / Consultation', '🚑 Emergency', '🤰 ANC / Maternity', '⏱️ Labour & Delivery', '🤱 Postnatal', '👶 Newborn / Child Health', '🧪 Laboratory', '🩻 Radiology', '🩹 Procedures / Theatre', '💳 Cashier / Counter', '💊 Pharmacy (Dispensing)', '📦 Pharmacy Stock', '➕ Add Medication', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🏥🛏️ Wards & Beds', '↩️ Returned Goods', '🚚 Deliveries', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Medication Demand', '🧾 Patient Bills', '📒 Debts', '📊 Hospital Report', '👤 My Customers', '🏥 Insurance / Institutions', '🗂️ Patient Records', '➡️ Referrals', '🏁 Discharge', '💵 Cashier Shift', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['📊 Dashboard', '🛎️ Reception', '📅 Appointments', '🚦 Triage', '🩺 Clinic / Consultation', '🚑 Emergency', '🤰 ANC / Maternity', '⏱️ Labour & Delivery', '🤱 Postnatal', '👶 Newborn / Child Health', '🧪 Laboratory', '🩻 Radiology', '🩹 Procedures / Theatre', '💳 Cashier / Counter', '💊 Pharmacy (Dispensing)', '📦 Pharmacy Stock', '➕ Add Medication', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🏥🛏️ Wards & Beds', '↩️ Returned Goods', '🚚 Deliveries', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Medication Demand', '🧾 Patient Bills', '📒 Debts', '📊 Hospital Report', '👤 My Customers', '🏥 Insurance / Institutions', '🗂️ Patient Records', '➡️ Referrals', '🏁 Discharge', '💵 Cashier Shift', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
   tabText: {
     'Reception': 'Search for one patient (name, patient number or phone) or register a new one, then ask \u201cWhere are you going today?\u201d: tap the service (General Clinic, ANC, Maternity, Child Health, Immunization, Family Planning, TB, HIV/CCC, Dental, Eye, Lab, Pharmacy, Emergency\u2026) and the patient gets a ticket in THAT queue. No clinical history is shown here.',
     'Clinic / Consultation': 'The consulting clinics (General Clinic / OPD, Chronic, TB, HIV/CCC, Dental, Eye, Specialist, Family Planning and any you add), each with its own queue: NOW SERVING, the next 5, CALL NEXT PATIENT. Open the consultation, then send the patient on (lab, pharmacy, cashier, discharge). You can still search any patient below.',
@@ -690,7 +690,7 @@ MODS.owner = {
   name: 'Owner Console', title: 'Owner Console — User Guide', tagline: 'For the owner of the software business — create and manage client links, watch their health, and run your own shop.',
   itemsPlural: 'items', itemWord: 'item', addTab: 'the Inventory', restockTab: 'Restock', noPastSale: true,
   overrides: { offline: 'ownerOffline', trouble: 'ownerTrouble', hardware: false },
-  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '🩺 Health', '📣 Messages', '🏷️ Offers', '📦 Apps & Versions', '⚙️ Settings', '☰ More'],
+  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '🛍️ Catalogue', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '🩺 Health', '📣 Messages', '🏷️ Offers', '📦 Apps & Versions', '⚙️ Settings', '☰ More'],
   tabText: {
     'Messages': 'Send announcements, app updates, installation offers, maintenance or security notices to all shops, chosen apps or chosen shops — optionally only on the browser, Android or Windows app and certain app versions, from / until a date. Shops see them in their app (one at a time, and under Settings ▸ Install App); a device that is offline gets them when it reconnects.',
     'Apps & Versions': 'The Android (APK) and Windows (EXE / MSI) apps of each product: add a version, upload the real file (the server records its size and SHA-256), publish, withdraw. A shop is offered only its own app under Settings ▸ Install App.',
@@ -701,6 +701,7 @@ MODS.owner = {
     'Permanent': 'Every permanent (paid) client: manage, record income, remind, storage.',
     'Trash': 'Deleted links, restorable for 30 days before they\u2019re removed for good.',
     'Website': 'Edit the public website, pricing, payment methods and testimonials.',
+    'Catalogue': 'The products, complete systems, categories, prices, offers and pictures shown on the public /shop page and home page.',
     'Offers': 'Timed offers for the public website: write the offer, set the start and end in Nairobi time, then Publish. The website judges the countdown by the server clock; Pause, Back to draft or Archive hide it. Every change is logged.',
     'Bills': 'What clients owe you (permanent-link balances) — settle or remind.',
     'Daily Sales': 'Your own sales and income records.',
@@ -728,6 +729,9 @@ MODS.owner = {
         'From there you can **lock/unlock**, **extend** a demo, **confirm** a demo as permanent (its data is moved to its own database), and **delete**.',
         'Under **Permanent**, use the **💰 income toggle** to record money agreed and paid: paying part creates a bill for the balance with **Settle** and **Remind** (the client\u2019s admin sees a payment reminder banner until they press OK).',
       ],
+    }),
+    ch('catalogue', '🛍️', 'The hardware catalogue', {
+      steps: ['Open **🛍️ Catalogue**. The first time, tap **⬇️ Load starter items** to import a starting list, or add your own with **➕ New product**.', '**Products:** name, category, price, picture style, stock status, SKU, short and full description, specs, up to 12 pictures (the first is the main one), related products. **Hide** keeps an item off the website without deleting it; **☆ Feature** puts it on the home page.', '**Special offers:** tick *This item is on offer*, enter the offer price and the start and end time (Nairobi time). The website works out the discount amount and percent, and stops the offer by itself at the end time.', '**Complete systems:** pick existing products and quantities. The website shows the Individual value, the System price and **YOU SAVE** automatically (only when every part has a price). A product that is part of a system cannot be deleted until you remove it from the system.', '**Categories:** make as many as you like (product categories and system types). Changes show on the website within about 30 seconds.'],
     }),
     ch('website', '🌐', 'The public website', {
       steps: ['Open **🌐 Website** to change the logo, headline, feature cards, showcase photos, **price** and **payment methods**, and testimonials. **Save & Publish Changes** updates the public site and the upgrade prompt every demo shows when its trial ends.'],

@@ -4031,7 +4031,7 @@ function kbToggleShift() {
 //@fn kitchenTicketPrintJob
 async function kitchenTicketPrintJob() {
             const text = lastKitchenTicketText;
-            if (printerMode === 'bluetooth' && btPrinterCharacteristic) {
+            if (printerMode === 'bluetooth' && (btPrinterCharacteristic || (window.nativeBytePrinter && window.nativeBytePrinter()))) {
                 await printViaBluetooth(text);
                 return;
             }
@@ -4642,7 +4642,7 @@ async function openCashDrawer(isManualTest) {
             };
 
             try {
-                if (printerMode === 'bluetooth' && btPrinterCharacteristic) {
+                if (printerMode === 'bluetooth' && (btPrinterCharacteristic || (window.nativeBytePrinter && window.nativeBytePrinter()))) {
                     await sendBytesViaBluetooth(buildDrawerKickBytes());
                     setStatus('Drawer kick sent over Bluetooth.');
                 } else if (printerMode === 'usb' && usbPrinterDevice && usbPrinterEndpoint !== null) {
@@ -5374,7 +5374,7 @@ function printReceiptInNewWindow() {
 
 //@fn printRelayHasRealPrinter
 function printRelayHasRealPrinter() {
-            return (printerMode === 'bluetooth' && btPrinterCharacteristic) || (printerMode === 'usb' && usbPrinterDevice);
+            return (printerMode === 'bluetooth' && (btPrinterCharacteristic || (window.nativeBytePrinter && window.nativeBytePrinter()))) || (printerMode === 'usb' && usbPrinterDevice);
         }
 
 //@fn printReportInNewWindow
@@ -6031,7 +6031,12 @@ function qtyInputHint(raw, unit) {
 
 //@fn queuePrintJob
 function queuePrintJob(jobFn) {
-            printQueueTail = printQueueTail.then(jobFn, jobFn); // run next job even if the previous one rejected
+            // zip 206: a job that never answers (printer off, spooler stuck) must not block every later print — give up on it after 90 s
+            const guarded = () => Promise.race([
+                Promise.resolve().then(jobFn),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('The print job did not finish within 90 seconds and was given up.')), 90000)),
+            ]);
+            printQueueTail = printQueueTail.then(guarded, guarded); // run next job even if the previous one rejected
             return printQueueTail;
         }
 
@@ -11002,7 +11007,7 @@ async function testPaperCut() {
             };
             const cutBytes = ESCPOS.concat([ESCPOS.INIT, ESCPOS.FEED3, ESCPOS.CUT]);
             try {
-                if (printerMode === 'bluetooth' && btPrinterCharacteristic) {
+                if (printerMode === 'bluetooth' && (btPrinterCharacteristic || (window.nativeBytePrinter && window.nativeBytePrinter()))) {
                     await sendBytesViaBluetooth(cutBytes);
                     setStatus('Cut command sent over Bluetooth.');
                 } else if (printerMode === 'usb' && usbPrinterDevice && usbPrinterEndpoint !== null) {
@@ -15170,7 +15175,7 @@ function hwStatus(kind, cls, text) {
 function hwIsReady(kind) {
             try {
                 if (kind === 'usb') return !!(usbPrinterDevice && usbPrinterEndpoint !== null && usbPrinterDevice.opened !== false);
-                return !!(btPrinterCharacteristic && btPrinterDevice && btPrinterDevice.gatt && btPrinterDevice.gatt.connected);
+                return !!(btPrinterCharacteristic && btPrinterDevice && btPrinterDevice.gatt && btPrinterDevice.gatt.connected) || !!(window.nativeBytePrinter && window.nativeBytePrinter());
             } catch (e) { return false; }
         }
 
@@ -18022,7 +18027,7 @@ async function printPaperWidthTest() {
             const text = ['PAPER WIDTH TEST', '', '32 characters:', r32, '', '42 characters:', r42, '', '48 characters:', r48, '', 'Last number you can read in full', 'on a line = your printer width.', 'Cut off or broken at 42? Set', 'Characters a line = 42 (or 32).', '', '', ''].join('\n');
             const bytes = new Uint8Array([0x1B, 0x40, 0x1B, 0x4D, 0x00, ...new TextEncoder().encode(text), 0x1D, 0x56, 0x42, 0x00]);
             try {
-                if (printerMode === 'bluetooth' && typeof btPrinterCharacteristic !== 'undefined' && btPrinterCharacteristic) { await sendBytesViaBluetooth(bytes); say('Test sent over Bluetooth — see the note on the paper.'); return; }
+                if (printerMode === 'bluetooth' && typeof btPrinterCharacteristic !== 'undefined' && (btPrinterCharacteristic || (window.nativeBytePrinter && window.nativeBytePrinter()))) { await sendBytesViaBluetooth(bytes); say('Test sent over Bluetooth — see the note on the paper.'); return; }
                 if (printerMode === 'usb' && typeof usbPrinterDevice !== 'undefined' && usbPrinterDevice && usbPrinterEndpoint !== null) { await sendBytesViaUSB(bytes); say('Test sent over USB — see the note on the paper.'); return; }
                 say('Connect a USB or Bluetooth printer first (Settings ▸ Hardware). With the system print dialog, the receipt preview shows exactly what will print.', true);
             } catch (e) { say('The test could not be sent: ' + (e && e.message ? e.message : e), true); }

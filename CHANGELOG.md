@@ -2,6 +2,49 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 206 — Printing rebuilt for the Windows .exe (raw ESC/POS), Order Ticket settings, staff "owner only" error
+
+- **Root cause (from the code):** the installed .exe had no raw ESC/POS path for a USB / Windows-installed thermal printer. Every such print went page → Chromium → Windows driver, and the driver (not the app) decides the page length and the cutter — hence blank or very long paper and no cut, while Chrome/web (which sends its own ESC/POS) worked. There were also no time-outs and no honest stage-by-stage result.
+- **New:** `native/windows/printraw.js` sends the receipt bytes straight to the Windows spooler with the RAW datatype (one job at a time, a time-out for each, the Windows error translated into plain words). `Settings ▸ Install App ▸ Choose a Windows printer` now asks "Thermal receipt printer (recommended)" or "Normal Windows printer (A4)". Printer health panel, 5-step diagnostic ladder (Windows OK? → text → feed → cut → sample receipt), in-page print log and the saved `print.log`.
+- **Safe by design:** a failed print never touches the sale, never marks the receipt printed, never freezes the till (the print queue gives up on a job after 90 s); reprint asks and never creates a second sale. Web version unchanged.
+- **Fixed:** drawer kick, cut test, kitchen ticket, print-relay and printer-status paths only recognised a browser Bluetooth printer; they now also use the app's printer.
+- **Order Ticket (Hotel):** its own settings, independent of the receipt — space above, line spacing, space between items, paper pushed out after the last line, cut mode (partial / full / none), printable-width note, live preview, and "Print test order ticket" (dummy order through the real pipeline, using unsaved settings). The ticket is only as long as its lines plus the chosen feed.
+- **Staff "owner only" red error** on the Owner Console is gone (friendly note instead).
+- **Not testable here:** a physical Xprinter/Epson and the installed .exe. The new exe must be built on Windows (`node build.mjs`) and one test print done per till.
+
+## Zip 205 — Audit: mobile, every button, and a line-by-line bug check of the new website code
+
+- **Catalogue safety (server):** a failed or corrupt read can no longer wipe the catalogue (the save is refused with a clear message); two windows or a double tap can no longer overwrite each other (revision check, the page reloads); pictures are only deleted after the catalogue is saved and never while another item uses them; a product that is part of a system cannot be deleted from under it; product/system addresses stay stable when you rename; a category keeps its kind; a product only takes a product category; deleting everything on purpose leaves the shop empty (not back on the starter list); hidden products never leak through a system; bad requests get clean errors; catalogue size is guarded.
+- **Owner Catalogue tab:** Save can't be double-tapped into duplicates; unsaved work is protected (asks before discarding) and stray pictures are cleaned; uploads can't race with Cancel/Save; reorder works inside a filtered list; categories are added with a proper inline form (no pop-up prompts); better phone layout and bigger tap targets; clear Retry if the catalogue fails to load.
+- **Website:** a mangled address no longer leaves a blank page; "You may also need" no longer shows unrelated items; home "Featured" top-up fixed; Products menu behaves for mouse, touch and keyboard (arrow keys, Escape); phone menu closes on Escape / outside tap and doesn't scroll the page behind; offers that expire while a page is open stop showing; search typed just before tapping a card no longer redraws the next page; filter panel on phones opens as an overlay and the filters stay reachable; larger tap targets (chips, footer links, checkbox); stale structured-data cleared between pages; unknown product addresses are marked noindex.
+- Tests: new safety/rules/pictures tests (API), phone sweep + drawer/filter touch test (storefront), double-save/stale-window/inline-category tests (owner).
+
+## Zip 204 — Premium website: real product catalogue, offers, complete systems
+
+Public website only; the POS apps are unchanged.
+
+- **Owner Console → 🛍️ Catalogue**: add, edit, hide/publish, feature, reorder and delete products and complete systems; unlimited categories and system types; up to 12 pictures per item; specs, SKU, stock status, previous price, related products. Nothing on the site is hard-coded any more (the old list only shows until you set the catalogue up; "Load starter items" imports it).
+- **Special offers**: offer price + start/end dates; discount amount and % are worked out by the server (server clock decides if an offer is live).
+- **Complete systems**: built from your existing products; shows Individual value, System price and YOU SAVE automatically.
+- **/shop** is now a storefront: special offers, complete systems, category/offers/systems views, search, price range, availability, sort, smooth no-reload transitions, product and system pages (`/shop/p/<item>`, `/shop/s/<system>`), "You may also need", quote basket to WhatsApp.
+- **Home page**: Featured products, Complete systems and Special offers sections fed by the catalogue (hidden while empty); Products ▾ menu in the header; count-up numbers; calm motion that switches off under reduced-motion.
+- API: `functions/api/catalog.js`. Tests: zip204-catalog-api, zip204-storefront, zip204-owner-catalogue.
+
+## Zip 203
+- **Premium public website (mydukapos.store only; the POS apps are untouched).** New navy / blue look with big type for the home page; a staged hero entrance (background, headline, text, buttons, devices, each 300–800ms), softly floating device illustrations with slow parallax and a gentle pointer tilt, a moving aurora background, a nav that tightens on scroll, a thin scroll-progress line, staggered scroll reveals, buttons with a light sweep, cards that lift. Everything stops under "reduce motion", and nothing waits on the animation.
+- **New Hardware page `/shop`:** catalogue of POS terminals, printers, scanners, computers, monitors, networking, accessories and complete systems, with category chips, search, and an "Add to quote" basket that builds one WhatsApp message. The list lives in `public-site/shop-catalog.json` (prices are `null` = "Get a quote" until you fill them in; add a photo per item with the `img` field). Illustrations are drawn in code until real photos are added.
+- Home page: "Hardware" link, "Shop hardware" button and a hardware section. All public pages get the Hardware link (the generator `tools/build-public-pages.mjs` was updated), `/shop` is in the sitemap and served on the apex only.
+- Tests: `tests/zip203-premium-site.test.mjs` (routing, catalogue, motion rules, no POS app loads the website layer, entrance finishes visible, reduced motion, shop filter / search / quote, phone width).
+- Test hygiene: two timing-sensitive start-up tests (legacy bill repair, workspace card) now wait longer so a slower machine does not fail them; the drawer width uses the display-scale compensation.
+
+## Zip 202
+- **New left sidebar navigation (all 7 apps)** replaces the long horizontal tab bar: logo and business name on top, icon + label entries, modules grouped into folders (Sales, Inventory/Stock, Finances, Reports, Customers, Staff, Business, System) that expand with a chevron and animate; Sales Counter and Dashboard stay on top level. Collapsible to an icon rail (hamburger) with tooltips and a fly-out for each group; remembered per device. On phones and small tablets it is a slide-out drawer (no sideways tab scrolling).
+- **Permissions untouched:** the sidebar is built from the tabs the app already shows each person. A group is only a folder and never grants anything; a group with no permitted tab is not shown at all; there are no greyed-out entries. Access checks (`guardedSwitchTab`, management-password lock, server rules) are unchanged.
+- Header: live clock (time + weekday, date), hamburger, theme toggle, branch switcher and notifications kept. Profile card at the bottom of the sidebar with a clearly visible **Clock Out** (uses the existing attendance logic) and the branch switcher.
+- Light and dark themes both designed. If the sidebar ever fails to build, the old bar is restored automatically.
+- Note: the per-phone "hide tabs" option no longer changes anything while the sidebar is in use. Category tiles show fewer columns on small laptops because the sidebar takes 248px (collapse it to get the room back).
+- Tests: `tests/zip202-sidebar.browser.test.mjs` (owner, Sales Counter + Stock Take, single finance tab, no tabs, enforcement, collapse and reload, phone drawer, themes, clock, Clock Out, fallback, all 7 apps); three older tests now exercise the fallback bar or a wider screen.
+
 ## Zip 201
 - **Stock scenarios tested end to end** (refresh after a sale / restock, offline then online, two devices at once, repeated syncs, manual edits): stock never reverts to old values and never adds itself. 7 new scenarios in `tests/zip201-stock-scenarios.test.mjs`.
 - Deleted **expenses, trade credits and saved barcodes** now stay deleted on every device (tombstones sent, and other tills drop them on their next sync).

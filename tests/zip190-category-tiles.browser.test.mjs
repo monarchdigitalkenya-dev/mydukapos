@@ -253,9 +253,9 @@ test('shop: at most 60 pictures; a replacement still works at the cap; a phone a
   });
 });
 
-test('shop: a wide screen shows 4+ columns', { skip, timeout: 60000 }, async () => {
+test('shop: a wide screen (sidebar beside it) shows 4+ columns', { skip, timeout: 60000 }, async () => {
   await withApp(async (browser, base) => {
-    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const ctx = await browser.newContext({ viewport: { width: 1600, height: 800 } });
     await ctx.route('**/api/**', (r) => r.abort());
     await ctx.addInitScript(([h, inv]) => { if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1'); localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_inventory', JSON.stringify(inv)); localStorage.setItem('pos_cat_tiles', 'true'); }, [H, SHOP]);
     const page = await ctx.newPage(); const errors = []; page.on('pageerror', (e) => errors.push(String(e.message)));

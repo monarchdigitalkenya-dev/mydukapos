@@ -114,6 +114,7 @@ export const SHARED_BLOCKS = {
   'phone-till': { startMarker: '<!-- PHONE TILL' },
   'branch-switcher': { startMarker: '<!-- BRANCH SWITCHER' },   // zip 199: the owner's global branch switcher in the header (opens the other branch on the same screen; All branches = read-only)
   'phone-pay-steps': { startMarker: '<!-- PHONE PAY STEPS' },   // zip 200: phone only - Collect, then the shop's payment methods, then that method's boxes, then Confirm
+  'sidebar-nav': { startMarker: '<!-- SIDEBAR NAV' },   // zip 202: grouped collapsible left sidebar built from the permitted tab buttons (drawer on phones/tablets)
   'category-tiles': { startMarker: '<!-- CATEGORY TILES' },
   'stock-report-edit': { startMarker: '<!-- STOCK REPORT EDIT' },
   // Orders tab (purchase orders) sits next to Restock. Water's Restocking tab is a different design
