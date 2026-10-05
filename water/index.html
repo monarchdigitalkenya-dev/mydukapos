@@ -33630,6 +33630,9 @@ async function zReportPreflight() {
             try {
                 var p = document.querySelector('.pos-checkout'); if (!p) return;
                 var tab = document.getElementById('sales-tab'), grid = tab && tab.querySelector('.pos-grid');
+                /* zip 214: every override this function makes is cleared first, so each fit starts from the plain layout */
+                var cartEl = p.querySelector('.pos-cart-scroll');
+                p.style.height = ''; p.style.overflow = ''; p.style.position = ''; if (cartEl) cartEl.style.minHeight = '';
                 if (window.innerWidth <= 900 || !tab || !grid || !tab.classList.contains('active')) { p.style.maxHeight = ''; if (tab) tab.style.removeProperty('--pos-h'); return; }
                 /* zip 176: on a desktop the product card and the checkout card are the SAME height — exactly what is left of the screen below the
                    header — so the product grid and the cart list use all the room (no big blank area under them) and scroll inside their cards */
@@ -33645,6 +33648,20 @@ async function zReportPreflight() {
                     var barOther = bar.offsetHeight - wrap.offsetHeight + 28;   /* + the card's bottom padding */
                     var avail = maxH - topH - (innerHeight < 860 ? 150 : innerHeight < 1000 ? 215 : 280) - barOther;   /* room kept for the cart list */
                     wrap.style.maxHeight = Math.max(avail, 90) + 'px';
+                }
+                /* zip 214 - THE CONFIRM BUTTON MUST ALWAYS BE REACHABLE. On a short screen (a laptop under Chrome's toolbars, browser zoom 110-125 %,
+                   a small window) the card is never shorter than 500 px, and the card clips what does not fit: the payment methods and the Confirm
+                   button fell below its edge and neither the page nor the card could scroll to them. Now, if anything is clipped: first the cart
+                   list gives up its minimum height, then the payment details shrink (they scroll), and if it still does not fit the card stops being
+                   a fixed-height box and simply grows - the page scrolls and Confirm is at the bottom. */
+                var clippedNow = function () { return p.scrollHeight > p.clientHeight + 2; };
+                if (clippedNow() && cartEl) cartEl.style.minHeight = '90px';
+                if (clippedNow() && wrap) wrap.style.maxHeight = '80px';
+                if (clippedNow()) {
+                    if (wrap) wrap.style.maxHeight = '';
+                    if (cartEl) cartEl.style.minHeight = '';
+                    p.style.maxHeight = 'none'; p.style.height = 'auto'; p.style.overflow = 'visible'; p.style.position = 'static';
+                    tab.style.removeProperty('--pos-h');
                 }
             } catch (e) { /* cosmetic */ }
         });
@@ -35201,7 +35218,7 @@ async function zReportPreflight() {
         'use strict';
         if (window.__deviceSecurityInit) return;
         window.__deviceSecurityInit = true;
-        window.__APP_RELEASE = 'zip-213';           // bump each release: shown per device in Settings and the Owner Console
+        window.__APP_RELEASE = 'zip-214';           // bump each release: shown per device in Settings and the Owner Console
 
         var LS = function (k, v) { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode */ } return null; };
         function deviceId() {

@@ -2,6 +2,10 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 214 - Confirm button always reachable
+- On shorter screens (1366x768 laptops, browser zoom, small windows) the checkout card was a fixed-height box that clipped the payment methods and the Confirm button, and nothing could scroll to them. The card now frees space (cart list, payment details) and, if it still does not fit, grows so the page scrolls down to Confirm. Fixed once in the shared block, so every app gets it.
+- Test: `tests/zip214-confirm-reachable.browser.test.mjs`.
+
 ## Zip 213 — Windows app opens faster
 
 - The print helper (PowerShell) used to start 2.5 s after launch and compile its C# class (several seconds of CPU on a mid-range PC) while the shop page was still loading. It now starts only after the page has loaded + 12 s, at below-normal priority, and the compiled class is cached in a small DLL so later starts just load it (no compile). A print before it is ready still works.
