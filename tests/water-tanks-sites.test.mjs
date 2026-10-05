@@ -51,7 +51,7 @@ test('a Shop sale only draws down the Shop tank', async () => {
 });
 
 test('a Production sale only draws down the Production tank, and needs water in it', async () => {
-  const { w, d, close } = await boot('water/index.html', { storage: store({ aqua_active_site_id: PROD }) });
+  const { w, d, close } = await boot('water/index.html', { url: 'https://demo.mydukapos.store/#production', storage: store({ aqua_active_site_id: PROD }) });
   const sizeId = w.eval("refillSizes.find(s => s.siteId === 'site-production').id");
   w.eval(`addRefillToCart('${sizeId}')`);
   assert.equal(w.eval('Object.keys(currentCart).length'), 0, 'empty Production tank: cannot sell, even though the Shop has 3000L');

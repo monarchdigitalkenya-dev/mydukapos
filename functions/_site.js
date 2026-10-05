@@ -35,6 +35,7 @@ export const PRODUCT_PAGES = {
   pharmacy: { name: 'Pharmacy POS', description: 'Pharmacy point of sale with batch-level expiry tracking, FEFO stock rotation and prescription records.' },
   services: { name: 'Services POS (Repairs, Salons & Bookings)', description: 'POS for phone and electronics repair shops, salons, barbershops, garages and laundromats: client jobs, staff bookings and appointments.' },
   water: { name: 'Water Refill Station POS (AquaPOS)', description: 'POS for water refill stations and bottling shops: dispensers, bales and bulk tanks, tiered pricing, delivery zones and refill tracking.' },
+  chama: { name: 'Chama (savings group manager)', description: 'Mobile-first chama, merry-go-round and savings group manager for Kenya: contributions with partial payments, M-Pesa payment reports verified by the secretary, meetings, loans, fundraisers and statements.' },
 };
 
 // Everything in sitemap.xml (path, how often it changes, priority). The Offers page is listed because it always exists, even with no active offer.
@@ -56,7 +57,7 @@ export function sitemapEntries() {
 
 // The paths robots.txt keeps crawlers out of (apps, consoles, APIs). robots.txt is a courtesy, not security — all of these are also protected by
 // sign-in and answer with X-Robots-Tag: noindex (see _headers).
-export const PRIVATE_PATHS = ['/api/', '/owner/', '/crm/', '/hotel/', '/hospital/', '/pharmacy/', '/production/', '/services/', '/water/', '/order/', '/dashboard.html'];
+export const PRIVATE_PATHS = ['/api/', '/owner/', '/crm/', '/hotel/', '/hospital/', '/pharmacy/', '/production/', '/services/', '/water/', '/chama/', '/order/', '/dashboard.html'];
 
 // Is this request for the bare apex domain (or www) — the marketing site — as opposed to a client's own subdomain or any other host?
 export function isApexRequest(request, env) {

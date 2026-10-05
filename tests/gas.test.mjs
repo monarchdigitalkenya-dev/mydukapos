@@ -35,16 +35,20 @@ async function pay(b) {
   await b.w.eval('checkoutCart()');
   return JSON.parse(b.w.eval('JSON.stringify(salesLog[salesLog.length - 1])'));
 }
-const add = (b, type, q = 1) => { b.w.eval(`setGasTxType('${type}')`); val(b.d, 'gas-tx-qty', q); b.w.eval('addGasLineToCart()'); };
+// the Sales Counter chooser's own function: type is the old word (exchange | outright | set | empty), the chooser's word is (exchange | full | set | cylinder)
+const MODE = { exchange: 'exchange', outright: 'full', set: 'set', empty: 'cylinder' };
+const add = (b, type, q = 1, extra = {}) => JSON.parse(b.w.eval(`JSON.stringify(Lpg.cartAdd(Object.assign({ fullCode: window.__t_sel, mode: '${MODE[type]}', qty: ${q} }, ${JSON.stringify(extra)})))`));
+const sel = (b, code) => { b.w.eval(`window.__t_sel = '${code}'`); };
 
 for (const app of APPS) {
   test(`${app}: sizes with Full and Empty counts (13kg 20/5, 6kg 31/8) live in Inventory, with totals by state; brand is optional; counts and prices can be corrected in place`, async () => {
     const { b, f13 } = await stocked(app);
     const { w, d } = b;
     assert.deepEqual([qty(w, '13kg (Full)'), qty(w, '13kg (Empty)'), qty(w, '6kg (Full)'), qty(w, '6kg (Empty)')], [20, 5, 31, 8]);
-    assert.deepEqual(totals(w), { full: 51, empty: 13, away: 0, total: 64 });
+    assert.deepEqual(totals(w), { full: 51, empty: 13, away: 0, damaged: 0, total: 64 });
     assert.match(d.getElementById('gas-totals').textContent, /Full\s*51/); assert.match(d.getElementById('gas-totals').textContent, /Empty\s*13/); assert.match(d.getElementById('gas-totals').textContent, /All cylinders\s*64/);
     assert.equal(d.querySelectorAll('#gas-board-body tr').length, 2, 'one row per size');
+  void f13;
     w.eval('renderInventoryTable()');
     assert.match(d.getElementById('inventory-table').textContent, /13kg \(Full\)/, 'they are ordinary inventory items');
     assert.match(d.getElementById('inventory-table').textContent, /6kg \(Empty\)/);
@@ -64,13 +68,13 @@ for (const app of APPS) {
 for (const app of APPS) test(`${app}: refill / exchange: one less full and one more empty, at the refill price; a void puts both back`, async () => {
   const { b, f13 } = await stocked(app);
   const { w } = b;
-  w.eval(`selectGasSize('${f13}')`);
+  sel(b, f13);
   add(b, 'exchange', 2);
   const cart = JSON.parse(w.eval('JSON.stringify(Object.values(currentCart))'));
-  assert.equal(cart.length, 1); assert.equal(cart[0].price, 1500); assert.equal(cart[0].qty, 2); assert.match(cart[0].name, /13kg — Refill\/Exchange/);
+  assert.equal(cart.length, 1); assert.equal(cart[0].price, 1500); assert.equal(cart[0].qty, 2); assert.match(cart[0].name, /13kg — Exchange/);
   const sale = await pay(b);
   assert.deepEqual([qty(w, '13kg (Full)'), qty(w, '13kg (Empty)')], [18, 7], '20 full - 2, 5 empty + 2');
-  assert.deepEqual(totals(w), { full: 49, empty: 15, away: 0, total: 64 }, 'the number of cylinders you own does not change');
+  assert.deepEqual(totals(w), { full: 49, empty: 15, away: 0, damaged: 0, total: 64 }, 'the number of cylinders you own does not change');
   if (w.eval("typeof performVoidSale === 'function'")) {
     w.eval(`pendingVoidSaleSource = 'sales'; pendingVoidReason = 'test'; performVoidSale('${sale.id}')`);
     assert.deepEqual([qty(w, '13kg (Full)'), qty(w, '13kg (Empty)')], [20, 5], 'void: back to where it was');
@@ -81,34 +85,30 @@ for (const app of APPS) test(`${app}: refill / exchange: one less full and one m
 for (const app of APPS) test(`${app}: full cylinder (theirs to keep): only the full count drops; empty cylinder on its own: only the empty count drops`, async () => {
   const { b, f13, f6 } = await stocked(app);
   const { w } = b;
-  w.eval(`selectGasSize('${f13}')`); add(b, 'outright', 1);
+  sel(b, f13); add(b, 'outright', 1);
   assert.equal(JSON.parse(w.eval('JSON.stringify(Object.values(currentCart)[0])')).price, 4500);
   await pay(b);
   assert.deepEqual([qty(w, '13kg (Full)'), qty(w, '13kg (Empty)')], [19, 5]);
-  w.eval(`selectGasSize('${f6}')`); add(b, 'empty', 3);
+  sel(b, f6); add(b, 'empty', 3);
   const line = JSON.parse(w.eval('JSON.stringify(Object.values(currentCart)[0])'));
   assert.equal(line.price, 1200); assert.match(line.name, /6kg — Empty Cylinder/);
   await pay(b);
   assert.deepEqual([qty(w, '6kg (Full)'), qty(w, '6kg (Empty)')], [31, 5], '8 empties - 3');
-  assert.deepEqual(totals(w), { full: 50, empty: 10, away: 0, total: 60 });
-  add(b, 'empty', 6);
-  assert.match(b.d.getElementById('gas-add-msg').textContent, /Only 5 empty "6kg" in stock/, 'cannot sell empties you do not have');
+  assert.deepEqual(totals(w), { full: 50, empty: 10, away: 0, damaged: 0, total: 60 });
+  const over = add(b, 'empty', 6);
+  assert.equal(over.ok, false); assert.match(over.msg, /Only 5 more empty "6kg"/, 'cannot sell empties you do not have');
   b.close();
 });
 
-test('complete set: the full cylinder plus the accessories you tick (with how many per set); accessories are ordinary items that can also be sold alone', async () => {
+test('complete set: the full cylinder plus the accessories you pick (with how many per set); accessories are ordinary items that can also be sold alone', async () => {
   const { b, f13 } = await stocked('services/index.html');
   const { w, d } = b;
   d.getElementById('gas-accessory-pick').value = 'REG'; w.eval('markGasAccessory()');
   d.getElementById('gas-accessory-pick').value = 'HOS'; w.eval('markGasAccessory()');
   assert.equal(w.eval("inventory.filter(p => p.isGasAccessory).length"), 2);
-  w.eval(`selectGasSize('${f13}')`); w.eval("setGasTxType('set')");
-  assert.equal(d.getElementById('gas-set-accessories').style.display, 'block');
-  const rows = [...d.querySelectorAll('#gas-set-accessories-list .gas-acc-row')];
-  assert.equal(rows.length, 2);
-  for (const r of rows) r.querySelector('.gas-acc-check').checked = true;
-  rows.find((r) => r.dataset.code === 'HOS').querySelector('.gas-acc-qty').value = '2';
-  add(b, 'set', 2);
+  sel(b, f13);
+  const r = add(b, 'set', 2, { accessories: [{ code: 'REG', qty: 1 }, { code: 'HOS', qty: 2 }] });
+  assert.equal(r.ok, true, r.msg);
   const cart = Object.fromEntries(JSON.parse(w.eval('JSON.stringify(Object.values(currentCart))')).map((l) => [l.code, l.qty]));
   assert.equal(cart[f13], 2); assert.equal(cart.REG, 2, '1 regulator x 2 sets'); assert.equal(cart.HOS, 4, '2 hoses x 2 sets');
   await pay(b);
@@ -126,7 +126,7 @@ test('cylinders with the supplier: sent empties are counted as "with supplier", 
   const rec = (dir, q) => { d.getElementById('gas-supplier-variant-select').value = f13; d.getElementById('gas-supplier-direction').value = dir; val(d, 'gas-supplier-qty', q); w.eval('performSupplierGasExchange()'); return d.getElementById('gas-supplier-msg').textContent; };
   rec('send', 3);
   assert.deepEqual([qty(w, '13kg (Full)'), qty(w, '13kg (Empty)')], [20, 2]); assert.equal(totals(w).away, 3);
-  assert.deepEqual(totals(w), { full: 51, empty: 10, away: 3, total: 64 }, 'still 64 cylinders, and you can see where each is');
+  assert.deepEqual(totals(w), { full: 51, empty: 10, away: 3, damaged: 0, total: 64 }, 'still 64 cylinders, and you can see where each is');
   assert.match(rec('receive', 5), /Only 3/, 'cannot receive more than are away');
   rec('receive', 2);
   assert.deepEqual([qty(w, '13kg (Full)'), qty(w, '13kg (Empty)')], [22, 2]); assert.equal(totals(w).away, 1);
@@ -139,8 +139,9 @@ test('cylinders with the supplier: sent empties are counted as "with supplier", 
 test('a price is needed before something can be sold', async () => {
   const b = await session('services/index.html');
   addSize(b, '13kg', 5, 5);
-  b.w.eval("setGasTxType('exchange')"); val(b.d, 'gas-tx-qty', 1); b.w.eval('addGasLineToCart()');
-  assert.match(b.d.getElementById('gas-add-msg').textContent, /Set the refill price/);
+  sel(b, find(b.w, '13kg (Full)').code);
+  const r = add(b, 'exchange', 1);
+  assert.equal(r.ok, false); assert.match(r.msg, /Set the refill price/);
   assert.equal(b.w.eval('Object.keys(currentCart).length'), 0);
   b.close();
 });

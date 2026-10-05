@@ -318,8 +318,8 @@ for (const app of APPS.filter((a) => a.search)) {
       assert.equal(await vis(again.page, '#ptl-search-btn'), true);
       assert.equal(await vis(again.page, '#sales-search'), false);
       assert.ok(await again.page.evaluate(() => localStorage.getItem('pos_ptl_search') === 'icon'));
-      // it is NOT part of the shop settings that sync
-      assert.equal(await again.page.evaluate(() => JSON.stringify(extraSettingsCollect()).includes('icon')), false);
+      // zip 217: the search style is a shop setting now - it travels to every device
+      assert.equal(await again.page.evaluate(() => (extraSettingsCollect().phoneTill || {}).search), 'icon');
       assert.deepEqual(errors, []); assert.deepEqual(again.errors, []);
       await ctx.close();
     });
@@ -357,16 +357,16 @@ test('hotel: the Table / Room picker can be hidden even with Tab payments on; th
   });
 });
 
-test('hotel: tabs hidden on this phone wait under More; Sales Counter and Settings cannot be hidden; roles still win', { skip, timeout: 120000 }, async () => {
+test('hotel: tabs hidden on this phone are gone; only Settings cannot be hidden; roles still win', { skip, timeout: 120000 }, async () => {
   await withApps(async (browser, base) => {
     const app = APPS[1];
     const { ctx, page, errors } = await open(browser, base, app);
     await page.evaluate(() => window.sidebarNav && window.sidebarNav.off());   // zip 202: this per-phone preference belongs to the fallback bar
     await openSettingsCard(page);
-    // Sales Counter and Settings are not in the list
+    // zip 215: the Sales Counter can be hidden too; only Settings is never in the list
     const listed = await page.evaluate(() => Array.from(document.querySelectorAll('.ptl-tab-cb')).map((c) => c.value));
     assert.ok(listed.length > 5);
-    assert.equal(listed.includes('sales-tab'), false); assert.equal(listed.includes('settings-tab'), false);
+    assert.equal(listed.includes('sales-tab'), true); assert.equal(listed.includes('settings-tab'), false);
     // hide Kitchen and the Dashboard (when present) on this phone
     const hide = ['kitchen-tab', 'dashboard-tab'].filter((t) => listed.includes(t));
     assert.ok(hide.length >= 1);
@@ -374,20 +374,18 @@ test('hotel: tabs hidden on this phone wait under More; Sales Counter and Settin
     await page.evaluate(() => { const b = document.querySelector('.tab-link[data-tab="staff-tab"]'); if (b) b.style.display = 'none'; });
     for (const t of hide) { await page.evaluate((id) => document.querySelector('.ptl-tab-cb[value="' + id + '"]').closest('label').scrollIntoView({ block: 'center' }), t); await page.click('label:has(.ptl-tab-cb[value="' + t + '"])'); }
     await page.waitForTimeout(400);
+    // zip 215: a hidden tab is GONE (bar, More and side menu), not parked under More
     for (const t of hide) {
-      const st = await page.evaluate((id) => { const b = document.querySelector('.tab-link[data-tab="' + id + '"]'); return { parent: b.parentNode.id || b.parentNode.className, shownInBar: getComputedStyle(b).display !== 'none' && b.parentNode.matches('nav.tabs') }; }, t);
-      assert.equal(st.shownInBar, false, t + ' is not in the bar');
-      assert.equal(st.parent, 'tabs-more-menu', t + ' waits in the More list');
+      const st = await page.evaluate((id) => Array.from(document.querySelectorAll('.tab-link[data-tab="' + id + '"]')).map((b) => ({ off: b.classList.contains('ptl-tab-off'), shown: getComputedStyle(b).display !== 'none' })), t);
+      assert.ok(st.length >= 1 && st.every((x) => x.off && !x.shown), t + ' is hidden everywhere');
     }
-    assert.equal(await vis(page, '#tabs-more-btn'), true, 'More is there to reach them');
     assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.tab-link[data-tab="staff-tab"]')).display), 'none', 'a role-hidden tab stays hidden');
-    // they are reachable: open More, tap one
-    await page.evaluate(() => document.getElementById('tabs-more-btn').click()); await page.waitForTimeout(200);
-    assert.equal(await vis(page, '#tabs-more-menu .tab-link[data-tab="' + hide[0] + '"]'), true);
-    await page.evaluate((t) => document.querySelector('#tabs-more-menu .tab-link[data-tab="' + t + '"]').click(), hide[0]); await page.waitForTimeout(500);
-    assert.equal(await page.evaluate((t) => document.getElementById(t).classList.contains('active'), hide[0]), true, 'the hidden tab opens from More');
-    // per device: not in the synced payload; survives a reload
-    assert.equal(await page.evaluate(() => JSON.stringify(extraSettingsCollect()).includes('kitchen-tab')), false);
+    // ticking it again brings it back
+    await page.evaluate((id) => document.querySelector('.ptl-tab-cb[value="' + id + '"]').closest('label').scrollIntoView({ block: 'center' }), hide[0]); await page.click('label:has(.ptl-tab-cb[value="' + hide[0] + '"])'); await page.waitForTimeout(300);
+    assert.equal(await page.evaluate((t) => Array.from(document.querySelectorAll('.tab-link[data-tab="' + t + '"]')).some((b) => !b.classList.contains('ptl-tab-off')), hide[0]), true, 'it is back');
+    await page.evaluate((id) => document.querySelector('.ptl-tab-cb[value="' + id + '"]').closest('label').scrollIntoView({ block: 'center' }), hide[0]); await page.click('label:has(.ptl-tab-cb[value="' + hide[0] + '"])'); await page.waitForTimeout(300);
+    // zip 217: the hidden tabs are shop settings now - in the synced payload (every device); survives a reload
+    assert.equal(await page.evaluate(() => JSON.stringify((extraSettingsCollect().phoneTill || {}).tabsOff || []).includes('kitchen-tab')), true);
     assert.equal(await page.evaluate(() => (JSON.parse(localStorage.getItem('pos_ptl_tabs_off')) || []).length >= 1), true);
     await page.close();
     const again = await open(browser, base, app, { reuse: { ctx } });

@@ -2,6 +2,36 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 218 - Photos per row (2 or 3) on the phone
+- Settings > Phone till (Payment methods card): **Photos per row on the phone - 2 big photos / 3 smaller photos**. It applies to the item photo grid AND the category / sub-category picture tiles, and is saved for **every device** of the shop.
+- Sub-category pictures (Hotel) were already supported: Settings > Category images lists every sub-category under its category with Add image; a sub-category without a picture is a plain button when "plain buttons" is on. Category -> Sub-category -> Items each show pictures or buttons.
+
+## Zip 217 - Counter tweaks (included in the 216 package)
+- The Sales panel heading now reads **Today's Sales** (or "Sales - <date>" when another day is picked) instead of "Everyone".
+- Settings > General: hide the 🧾 Bills button and/or the 💰 Sales button on the Sales Counter (per device; nothing is deleted).
+- Choose a Price: typing a decimal quantity (0.5, 2.25) now adds exactly that to the cart; it used to round to a whole number.
+- Hidden payment methods, hidden buttons (Bills / Sales / ad-hoc), hidden phone tabs and the search style now apply to **every device of the shop**, not just the one you changed them on.
+- "Tengeneza Payroll" is now **Create Payroll** everywhere.
+- **NEW PRODUCT: Chama** (`/chama/`, generate links on the Owner Console like any other product). Mobile-first chama / merry-go-round / savings-group manager: phone + PIN sign-in with remembered devices, roles (admin, secretary, treasurer, members) with permissions, configurable contribution periods with first-class partial payments, M-Pesa message paste (only code, amount, date, time and recipient are read and kept; balance, daily limit, link and raw text are never stored), duplicate-code protection, secretary verify/reject inbox, meetings, attendance, optional penalties, minutes (draft/approved), announcements, merry-go-round, loans with guarantors, fundraisers, multiple funds, append-only ledger with reversals, statements, reports (print/PDF, CSV), audit log. New D1 tables: `migrations/0012_chama.sql`.
+
+## Zip 216 - Create Payroll + LPG / gas retail
+- **Create Payroll** (Staff group, every app): staff register with documents (ID, contract, certificates; stored privately in R2), salary set-up, pay runs (review > approve > pay), payslips (screen + PDF), additions and deductions, optional statutory template (OFF by default - verify rates with KRA / NSSF / SHA before switching on). Admin and payroll-rights people only; a worker opens only their own paid payslips; another person's private document = ACCESS DENIED. An approved / paid run can never be edited - corrections are a reversal or adjustment run. Needs internet and a signed-in staff PIN session. Server: `functions/api/payroll.js`, migration `0010_payroll.sql`.
+- **LPG / gas**: one chooser at the Sales Counter (**🔥 Gas**: Buy Full / Exchange Empty / Buy Cylinder / Buy Set); a mixed cart is one sale and one payment. The Gas tab's mini-counter is gone; the tab now keeps stock: Full / Empty / Away / Damaged per size, full / refill / empty prices **and costs** (gas lines used to record a price tier as their cost - margins were wrong), bundles with cost, margin and promo price, damaged handling with reasons, cylinder stock take with admin approval (adjusts by the variance found), brand exchange rules (own brand always; partner brands only by agreement), movement history (before / change / after / why / sale), dashboard cards and gas reports.
+- Every cylinder movement now carries a gas note; exchanges also log the empty that came in (it used to change without a movement). A failed checkout puts back the Damaged / Away counters and a set's parts too. At payment the cart is re-checked as a whole.
+- Server: `lpg_movements` (append-only), `lpg_sale_lines`, `lpg_stocktakes` (decided = final), filled in the same atomic group as the sale; migration `0011_lpg.sql`. Every row carries the branch's client id.
+- Tests: `tests/zip216-payroll*.mjs`, `tests/zip216-lpg.test.mjs`, rewritten `tests/gas.test.mjs`.
+
+## Zip 215 - Aqua POS: honest costs, staff, stamp, tabs, stock, Capture Sales
+- **Material cost is never hidden**: the recipe window now shows each material's cost (editable right there), the line cost and a plain note about whether the item's own Cost Price is counted. A new install no longer starts with a 1.50/litre water cost. (The 708.50 came from an old "1.5 BOTTLES" material in the recipe whose cost was never visible.)
+- **Plain link = Shop** (every shop staff member); only a link ending **#production** is Production. The last-used site is no longer remembered at start-up.
+- **Removed staff** can no longer be picked, use their old personal link, or approve as a manager - in every app.
+- **PAID / UNPAID stamp mark** (Settings > Receipts > Receipt Stamp): prints under the stamp (or alone). UNPAID = Pay Later / Pay on Delivery / bill owing.
+- **Hide any tab** (including Sales Counter and Bills; only Settings stays): hidden = removed from the bar, More and side menu until ticked again. Per device.
+- **Stock**: restocking from a captured list in the "All Sites" view was shown but never saved (came back to the old figure) - fixed. Many random two-till sale/offline/sync runs checked: sale + material stock always agree.
+- **Capture sales from a book** (Aqua > Daily Sales): photo/upload -> AI reads items, quantities, prices -> you match each line -> one confirm records the sale and takes stock off (products, bale bottles, tank litres, recipe materials).
+- **Aqua tabs**: Add New Items, Inventory and Materials (with Suppliers) are now three tabs. Staff who had Inventory keep access to all three.
+- Tests: `tests/zip215-aqua-fixes.test.mjs`, `tests/zip215-tabs.browser.test.mjs`.
+
 ## Zip 214 - Confirm button always reachable
 - On shorter screens (1366x768 laptops, browser zoom, small windows) the checkout card was a fixed-height box that clipped the payment methods and the Confirm button, and nothing could scroll to them. The card now frees space (cart list, payment details) and, if it still does not fit, grows so the page scrolls down to Confirm. Fixed once in the shared block, so every app gets it.
 - Test: `tests/zip214-confirm-reachable.browser.test.mjs`.

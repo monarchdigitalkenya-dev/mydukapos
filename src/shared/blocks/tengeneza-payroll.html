@@ -1,0 +1,721 @@
+<!-- TENGENEZA PAYROLL ---------------------------------------------------------
+     "💼 Payroll": the staff register, staff documents, pay runs and payslips (zip 216). Same block in every app.
+     Everything is kept on the server in the shop's D1 database (functions/api/payroll.js) and the SERVER decides who may see or do what:
+     the Admin everything; a staff member the Admin has given payroll access exactly that; every other staff member only their OWN payslips.
+     This page only displays what the server returns. It needs the internet (salaries and ID copies are never kept on the device).
+     Flow for the user:  Add staff -> add salary -> Run payroll -> Review -> Approve -> Mark paid -> Payslip (print / PDF / share). -->
+<style>
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl { max-width: 1040px; margin: 0 auto; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-head h3 { margin: 0; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-nav { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 14px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-nav button { width: auto; padding: 9px 14px; border-radius: 999px; border: 1px solid var(--border-color, #ccd1d6); background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); font-weight: 600; font-size: 14px; cursor: pointer; margin: 0; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-nav button.on { background: #1f8a70; border-color: #1f8a70; color: #fff; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 8px 0 14px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-card { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e1e5e8); border-radius: 12px; padding: 12px 14px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-card small { display: block; color: #7f8c8d; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-card b { display: block; font-size: 22px; margin-top: 4px; color: var(--dark, #2c3e50); }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-card.good { border-left: 5px solid #1f8a70; } :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-card.warn { border-left: 5px solid #e67e22; } :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-card.info { border-left: 5px solid #2980b9; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-box { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e1e5e8); border-radius: 12px; padding: 14px; margin: 10px 0; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-box h4 { margin: 0 0 8px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-tip { background: #eaf6f2; border-left: 4px solid #1f8a70; padding: 10px 12px; border-radius: 8px; font-size: 13px; color: #1b5e4d; margin: 8px 0; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-warnbox { background: #fff6e5; border-left: 4px solid #e67e22; padding: 10px 12px; border-radius: 8px; font-size: 13px; color: #8a4b08; margin: 8px 0; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-err { background: #fdecea; border-left: 4px solid #e74c3c; padding: 10px 12px; border-radius: 8px; font-size: 13px; color: #8e2a1f; margin: 8px 0; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-list { display: flex; flex-direction: column; gap: 8px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e1e5e8); border-radius: 12px; padding: 11px 14px; cursor: pointer; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-row:hover { border-color: #1f8a70; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-row .l { min-width: 0; } :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-row .l b { display: block; overflow: hidden; text-overflow: ellipsis; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-row .l span { font-size: 12px; color: #7f8c8d; } :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-row .r { text-align: right; white-space: nowrap; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #ecf0f1; color: #566; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.active, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.paid { background: #d9f2e7; color: #146c4e; } :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.on_leave, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.reviewed { background: #fff0cf; color: #8a5a00; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.suspended, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.former, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.late { background: #fbe0dc; color: #9b2c1f; } :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.approved { background: #dcebfa; color: #1b5b95; } :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.draft { background: #ecf0f1; color: #566; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-chip.adj { background: #efe0f7; color: #6b2c8a; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-actions button, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-btn { width: auto; margin: 0; padding: 10px 16px; border-radius: 10px; border: 1px solid transparent; font-weight: 700; font-size: 14px; cursor: pointer; background: #1f8a70; color: #fff; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-actions button.sec, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-btn.sec { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-color: var(--border-color, #ccd1d6); }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-actions button.dng, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-btn.dng { background: #e74c3c; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-actions button:disabled { opacity: .5; cursor: default; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px 12px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-form label { display: block; font-size: 12px; font-weight: 700; color: #566; margin-bottom: 3px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-form input, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-form select, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-form textarea { width: 100%; box-sizing: border-box; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-sub { display: flex; gap: 4px; border-bottom: 2px solid var(--border-color, #e1e5e8); margin: 10px 0; overflow-x: auto; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-sub button { width: auto; margin: 0; background: none; border: 0; border-bottom: 3px solid transparent; padding: 9px 12px; font-weight: 700; color: #7f8c8d; cursor: pointer; border-radius: 0; white-space: nowrap; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-sub button.on { color: #1f8a70; border-bottom-color: #1f8a70; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-steps { display: flex; gap: 6px; margin: 8px 0 12px; flex-wrap: wrap; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-steps span { flex: 1 1 90px; text-align: center; padding: 8px 6px; border-radius: 8px; background: #ecf0f1; color: #7f8c8d; font-weight: 700; font-size: 13px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-steps span.done { background: #d9f2e7; color: #146c4e; } :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-steps span.now { background: #1f8a70; color: #fff; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-calc { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 14px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-calc .tot { font-weight: 800; border-top: 2px solid #1f8a70; padding-top: 6px; margin-top: 4px; font-size: 16px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-calc .r { text-align: right; font-variant-numeric: tabular-nums; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-line { display: grid; grid-template-columns: 110px 1fr 120px 36px; gap: 6px; align-items: center; margin: 6px 0; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-line input, :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-line select { width: 100%; box-sizing: border-box; margin: 0; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-line .x { width: auto; margin: 0; padding: 6px 10px; background: #e74c3c; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-muted { color: #7f8c8d; font-size: 12px; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-empty { text-align: center; padding: 26px 12px; color: #7f8c8d; }
+    :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-empty b { display: block; font-size: 16px; color: var(--dark, #2c3e50); margin-bottom: 4px; }
+    #prl-modal { position: fixed; inset: 0; z-index: 9800; background: rgba(0, 0, 0, .55); display: none; align-items: flex-start; justify-content: center; overflow: auto; padding: 16px 10px; }
+    #prl-modal.on { display: flex; }
+    #prl-modal .prl-modal-in { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-radius: 14px; width: 100%; max-width: 760px; padding: 16px; box-sizing: border-box; }
+    #prl-modal .prl-modal-in h4 { margin: 0 0 8px; }
+    @media (max-width: 600px) { :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-line { grid-template-columns: 1fr 1fr; } :is(#payroll-tab, #prl-modal, #prl-dash-card) .prl-line .x { grid-column: 2; } }
+</style>
+<div id="payroll-tab" class="tab-content">
+    <div class="panel prl">
+        <div class="prl-head"><h3>💼 Create Payroll</h3><span id="prl-who" class="prl-muted"></span></div>
+        <div id="prl-body"><p class="prl-muted">Opening payroll…</p></div>
+    </div>
+</div>
+<div id="prl-modal" role="dialog" aria-modal="true"><div class="prl-modal-in" id="prl-modal-in"></div></div>
+<script>
+(function () {
+    'use strict';
+    var S = { view: 'overview', who: null, me: null, sub: 'overview', emps: [], types: null, runs: [], busy: false, q: '', lastErr: '', runId: null, empId: null, ready: false };
+    var STEPS = ['draft', 'reviewed', 'approved', 'paid'];
+    var CATS = { national_id: 'National ID copy', passport: 'Passport', certificate: 'Certificate', academic: 'Academic certificate', professional: 'Professional certificate', contract: 'Employment contract', appointment: 'Appointment letter', other: 'Other document' };
+    var FREQ = { monthly: 'Monthly', biweekly: 'Every 2 weeks', weekly: 'Weekly', daily: 'Daily' };
+    var ESTAT = { active: 'Active', on_leave: 'On leave', suspended: 'Suspended', former: 'Former employee' };
+    var PERM_LABEL = { view: 'See salaries & payslips', staff: 'Add / edit staff & documents', run: 'Run payroll (prepare & review)', approve: 'Approve & pay payroll', settings: 'Payroll settings & audit log' };
+
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function kes(n) { var v = Math.round((Number(n) || 0) * 100) / 100; return 'KES ' + v.toLocaleString('en-KE', { minimumFractionDigits: v % 1 ? 2 : 0, maximumFractionDigits: 2 }); }
+    function num(v) { var n = parseFloat(v); return isFinite(n) ? n : 0; }
+    function dshow(d) { if (!d) return '—'; var t = new Date(String(d).slice(0, 10) + 'T00:00:00Z'); return isNaN(t) ? String(d) : t.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }); }
+    function today() { return new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10); }
+    function toast(m, bad) { try { if (typeof showToast === 'function') { showToast(m, !!bad); return; } } catch (e) { /* fall through */ } }
+    function has(p) { return !!(S.who && (S.who.admin || (S.who.perms || []).indexOf(p) !== -1)); }
+    function anyPerm() { return !!(S.who && (S.who.admin || (S.who.perms || []).length)); }
+    function canSeeMoney() { return anyPerm(); }
+    function sidNow() { try { return typeof currentServer !== 'undefined' && currentServer && currentServer.id ? String(currentServer.id) : 'admin'; } catch (e) { return 'admin'; } }
+    function apiUrlOf(p) { return typeof apiUrl === 'function' ? apiUrl(p) : p; }
+    function isOffline() { try { return typeof window.posNetOffline === 'function' ? !!window.posNetOffline() : navigator.onLine === false; } catch (e) { return false; } }
+
+    /* ---------------- server calls ---------------- */
+    function PErr(code, msg, problems) { var e = new Error(msg); e.code = code; e.problems = problems; return e; }
+    async function api(action, body) {
+        var res;
+        try { res = await fetch(apiUrlOf('/api/payroll'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ action: action }, body || {})) }); }
+        catch (e) { throw PErr('offline', 'No internet. Payroll needs a connection — salaries and ID copies are never stored on this device.'); }
+        if (action === 'doc.file' && res.ok) return res;
+        var d = await res.json().catch(function () { return {}; });
+        if (!res.ok || d.ok === false) throw PErr(d.code || ('http_' + res.status), d.error || 'Something went wrong. Nothing was changed.', d.problems);
+        return d;
+    }
+    async function sessionReady() {
+        var s = typeof window.staffSessionFor === 'function' ? window.staffSessionFor(sidNow()) : null;
+        return !!(s && s.token);
+    }
+
+    /* ---------------- who am I / button visibility ---------------- */
+    async function loadWho() {
+        S.who = (await api('whoami')); S.me = null;
+        try { S.me = await api('me'); } catch (e) { S.me = { employee: null, payslips: [] }; }
+        try { localStorage.setItem('pr_vis_' + sidNow(), (anyPerm() || (S.me && S.me.employee)) ? '1' : '0'); } catch (e) { /* not remembered */ }
+        paintBtn();
+    }
+    function paintBtn() {
+        var b = $('payroll-tab-btn'); if (!b) return;
+        var sid = sidNow(), show;
+        if (S.who && S.who.sid === sid) show = anyPerm() || !!(S.me && S.me.employee);
+        else { var c = null; try { c = localStorage.getItem('pr_vis_' + sid); } catch (e) { /* none */ } show = sid === 'admin' ? c !== '0' : c === '1'; }
+        b.style.display = show ? '' : 'none';
+    }
+    async function refreshAccess() {
+        try { if (!(await sessionReady()) || isOffline()) { paintBtn(); return; } await loadWho(); } catch (e) { paintBtn(); }
+    }
+
+    /* ---------------- shell ---------------- */
+    function nav() {
+        var items = [];
+        if (anyPerm()) items.push(['overview', '🏠 Overview'], ['staff', '👥 Staff'], ['runs', '🧾 Payroll']);
+        if (S.me && S.me.employee) items.push(['mine', '🧾 My payslips']);
+        if (has('settings') || has('view') || has('staff')) items.push(['settings', '⚙️ Settings']);
+        return '<div class="prl-nav">' + items.map(function (i) { return '<button type="button" class="' + (S.view === i[0] ? 'on' : '') + '" onclick="Payroll.go(\'' + i[0] + '\')">' + i[1] + '</button>'; }).join('') + '</div>';
+    }
+    function body(html) { $('prl-body').innerHTML = html; }
+    function errBox(e) {
+        var msg = esc(e && e.message || 'Something went wrong.');
+        var probs = e && e.problems ? '<ul>' + e.problems.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul>' : '';
+        return '<div class="prl-err">⚠️ ' + msg + probs + '</div>';
+    }
+    function unlockCard(why) {
+        var admin = sidNow() === 'admin';
+        return '<div class="prl-box"><h4>🔐 Sign in to open payroll</h4><div class="prl-tip">Payroll holds salaries and ID copies, so it opens only after the server has checked who you are. ' + esc(why || '') + '</div>' +
+            '<div class="prl-form"><div><label>' + (admin ? 'Admin / management password' : 'Your PIN') + '</label><input id="prl-unlock" type="password" autocomplete="current-password" inputmode="' + (admin ? 'text' : 'numeric') + '"></div></div>' +
+            '<div class="prl-actions"><button type="button" onclick="Payroll.unlock()">Unlock payroll</button></div><div id="prl-unlock-msg" class="prl-muted"></div></div>';
+    }
+    async function unlock() {
+        var el = $('prl-unlock'), msg = $('prl-unlock-msg'); if (!el || !el.value) return;
+        try {
+            if (isOffline()) { msg.textContent = 'You are offline. Connect to the internet first.'; return; }
+            msg.textContent = 'Checking…';
+            var proof = typeof hashPassword === 'function' ? await hashPassword(el.value) : '';
+            var sid = sidNow(), body2 = sid === 'admin' ? { admin: true, proof: proof } : { staffId: sid, proof: proof };
+            var res = await fetch(apiUrlOf('/api/staff-session'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body2) });
+            var d = await res.json().catch(function () { return {}; });
+            if (!res.ok || !d.ok) { msg.textContent = d.error || 'That did not work.'; return; }
+            if (typeof window.staffSessionStart === 'function') { window.staffSessionStart(sid, proof); await new Promise(function (r) { setTimeout(r, 900); }); }
+            if (!(await sessionReady())) { msg.textContent = 'Could not start the session. Try again.'; return; }
+            open();
+        } catch (e) { msg.textContent = e.message; }
+    }
+
+    async function open() {
+        if (isOffline()) { body('<div class="prl-warnbox">📴 You are offline. Payroll needs the internet — salaries, ID copies and payslips are never kept on this device.</div>'); return; }
+        if (!(await sessionReady())) { body(unlockCard('(Signing in offline does not give the server a session.)')); return; }
+        body('<p class="prl-muted">Loading…</p>');
+        try {
+            await loadWho();
+            if (!anyPerm() && !(S.me && S.me.employee)) { body('<div class="prl-empty"><b>🔒 No payroll access</b>You have not been given access to payroll. Ask the Admin.</div>'); return; }
+            if (!anyPerm()) S.view = 'mine'; else if (S.view === 'mine' && !(S.me && S.me.employee)) S.view = 'overview';
+            S.ready = true; render();
+        } catch (e) {
+            if (e.code === 'staff_session_required') body(unlockCard(e.message)); else body(errBox(e));
+        }
+        $('prl-who').textContent = S.who ? S.who.name + (S.who.admin ? ' · Admin' : '') : '';
+    }
+    function go(v) { S.view = v; S.empId = null; S.runId = null; S.sub = 'overview'; render(); }
+    async function render() {
+        try {
+            var v = S.view, html = '';
+            if (v === 'overview') html = await vOverview();
+            else if (v === 'staff') html = S.empId ? await vEmployee() : await vStaff();
+            else if (v === 'runs') html = S.runId ? await vRun() : await vRuns();
+            else if (v === 'mine') html = vMine();
+            else if (v === 'settings') html = await vSettings();
+            body(nav() + html);
+        } catch (e) {
+            if (e.code === 'staff_session_required') { body(unlockCard(e.message)); return; }
+            body((S.who ? nav() : '') + errBox(e));
+        }
+    }
+    function empty(t, s) { return '<div class="prl-empty"><b>' + t + '</b>' + (s || '') + '</div>'; }
+
+    async function ensureTypes() { if (!S.types) { try { S.types = (await api('types.list')).types || []; } catch (e) { S.types = []; } } return S.types; }
+
+    /* ---------------- overview ---------------- */
+    async function vOverview() {
+        var d = (await api('dashboard', {}));
+        var exp = (d.expiring || []).map(function (x) { var late = x.expiry_date < today(); return '<div class="prl-row" onclick="Payroll.openEmp(\'' + x.emp_id + '\')"><div class="l"><b>' + esc(x.title) + '</b><span>' + esc(x.name) + '</span></div><div class="r"><span class="prl-chip ' + (late ? 'late' : 'reviewed') + '">' + (late ? 'Expired ' : 'Expires ') + dshow(x.expiry_date) + '</span></div></div>'; }).join('');
+        return '<div class="prl-cards">' +
+            '<div class="prl-card info"><small>Employees</small><b>' + d.employees + '</b></div>' +
+            '<div class="prl-card good"><small>This month\'s payroll</small><b>' + kes(d.monthTotal) + '</b></div>' +
+            '<div class="prl-card warn"><small>Pending approval</small><b>' + d.pendingApproval + '</b></div>' +
+            '<div class="prl-card good"><small>Paid</small><b>' + d.paid + '</b></div>' +
+            '<div class="prl-card info"><small>Upcoming payroll</small><b style="font-size:17px">' + dshow(d.upcoming) + '</b></div></div>' +
+            '<div class="prl-actions">' + (has('staff') ? '<button type="button" onclick="Payroll.newEmp()">➕ Add staff</button>' : '') + (has('run') ? '<button type="button" class="sec" onclick="Payroll.go(\'runs\');Payroll.newRun()">▶ Run payroll</button>' : '') + '</div>' +
+            (d.awaitingPayment ? '<div class="prl-warnbox">💳 ' + d.awaitingPayment + ' employee(s) are approved and waiting to be marked <b>paid</b>.</div>' : '') +
+            (exp ? '<div class="prl-box"><h4>📄 Documents expiring soon (' + d.alertDays + ' days)</h4><div class="prl-list">' + exp + '</div></div>' : '') +
+            (!d.employees ? '<div class="prl-tip"><b>Start here:</b> Add staff → add their salary → Run payroll → Approve → give them a payslip.</div>' : '');
+    }
+
+    /* ---------------- staff register ---------------- */
+    async function vStaff() {
+        var d = await api('employee.list', { q: S.q }); S.emps = d.employees || [];
+        var money = canSeeMoney();
+        var rows = S.emps.map(function (e) {
+            return '<div class="prl-row" onclick="Payroll.openEmp(\'' + e.emp_id + '\')"><div class="l"><b>' + esc(e.name) + '</b><span>' + esc(e.emp_no) + ' · ' + esc(e.job_title || 'No position yet') + (e.branch_name ? ' · ' + esc(e.branch_name) : '') + '</span></div>' +
+                '<div class="r"><span class="prl-chip ' + e.status + '">' + (ESTAT[e.status] || e.status) + '</span>' + (money && e.basic_pay != null ? '<div><b>' + kes(e.basic_pay) + '</b> <span class="prl-muted">' + (e.rate_unit === 'day' ? '/day' : e.rate_unit === 'hour' ? '/hour' : '/' + (FREQ[e.pay_frequency] || e.pay_frequency).toLowerCase()) + '</span></div>' : '') + '</div></div>';
+        }).join('');
+        return '<div class="prl-actions"><input id="prl-q" placeholder="🔍 Search name, number, position…" value="' + esc(S.q) + '" oninput="Payroll.search(this.value)" style="flex:1 1 220px;margin:0">' + (has('staff') ? '<button type="button" onclick="Payroll.newEmp()">➕ Add staff</button><button type="button" class="sec" onclick="Payroll.importPos()">⬇ Add my POS staff</button>' : '') + '</div>' +
+            (rows ? '<div class="prl-list">' + rows + '</div>' : empty('No staff yet', has('staff') ? 'Press “Add staff” to create the first employee.' : ''));
+    }
+    var qTimer = 0;
+    function search(v) { S.q = v; clearTimeout(qTimer); qTimer = setTimeout(function () { render().then(function () { var el = $('prl-q'); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); } }); }, 300); }
+    async function importPos() {
+        var list = []; try { list = (typeof staff !== 'undefined' && Array.isArray(staff)) ? staff.filter(function (x) { return x && !x.removed; }) : []; } catch (e) { list = []; }
+        var have = {}; (S.emps || []).forEach(function (e) { if (e.pos_staff_id) have[String(e.pos_staff_id)] = 1; });
+        var todo = list.filter(function (x) { return !have[String(x.id)]; });
+        if (!todo.length) { toast('Every POS staff member is already in the register.'); return; }
+        if (!confirm('Add ' + todo.length + ' POS staff member(s) to the payroll register? You will add their salaries next.')) return;
+        var ok = 0; for (var i = 0; i < todo.length; i++) { try { await api('employee.save', { employee: { name: todo[i].name, pos_staff_id: todo[i].id, basic_pay: 0, branch_name: branchDefault() } }); ok++; } catch (e) { toast(todo[i].name + ': ' + e.message, true); } }
+        toast(ok + ' added — open each person to set their salary.'); render();
+    }
+    async function openEmp(id) { S.empId = id; S.sub = 'overview'; S.view = 'staff'; render(); }
+
+    function posStaffOptions(cur) {
+        var list = []; try { list = (typeof staff !== 'undefined' && Array.isArray(staff)) ? staff.filter(function (s) { return s && !s.removed; }) : []; } catch (e) { list = []; }
+        return '<option value="">— not linked —</option>' + list.map(function (s) { return '<option value="' + esc(s.id) + '"' + (String(s.id) === String(cur) ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join('');
+    }
+    function branchDefault() { try { return (typeof businessName !== 'undefined' && businessName) ? businessName : ''; } catch (e) { return ''; } }
+    function empForm(e) {
+        e = e || {}; var f = function (id, label, val, type, extra) { return '<div><label for="pe-' + id + '">' + label + '</label><input id="pe-' + id + '" type="' + (type || 'text') + '" value="' + esc(val == null ? '' : val) + '" ' + (extra || '') + '></div>'; };
+        var sel = function (id, label, opts, cur) { return '<div><label for="pe-' + id + '">' + label + '</label><select id="pe-' + id + '">' + opts.map(function (o) { return '<option value="' + o[0] + '"' + (String(o[0]) === String(cur) ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></div>'; };
+        var personal = has('staff');
+        return '<div class="prl-box"><h4>👤 Personal details</h4><div class="prl-form">' + f('name', 'Full name *', e.name) + f('phone', 'Phone number', e.phone, 'tel') + f('email', 'Email', e.email, 'email') +
+            (personal ? f('id_number', 'ID / passport number', e.id_number) + f('dob', 'Date of birth', e.dob, 'date') + f('address', 'Address / location', e.address) + f('emergency_name', 'Emergency contact name', e.emergency_name) + f('emergency_phone', 'Emergency contact phone', e.emergency_phone, 'tel') : '') + '</div></div>' +
+            '<div class="prl-box"><h4>💼 Employment</h4><div class="prl-form">' + f('job_title', 'Job title / position', e.job_title) + f('department', 'Department', e.department) + f('branch_name', 'Branch', e.branch_name != null ? e.branch_name : branchDefault()) + f('start_date', 'Start date', e.start_date, 'date') +
+            sel('employment_type', 'Employment type', [['permanent', 'Permanent'], ['contract', 'Contract'], ['casual', 'Casual / daily'], ['part_time', 'Part-time'], ['intern', 'Intern / attachment']], e.employment_type || 'permanent') +
+            sel('status', 'Status', Object.keys(ESTAT).map(function (k) { return [k, ESTAT[k]]; }), e.status || 'active') +
+            (e.emp_id ? f('emp_no', 'Employee number', e.emp_no, 'text', 'disabled') : f('emp_no', 'Employee number (leave blank for automatic)', '')) +
+            '<div><label for="pe-pos">Linked POS sign-in (so they can open their own payslips)</label><select id="pe-pos">' + posStaffOptions(e.pos_staff_id) + '</select></div></div></div>' +
+            '<div class="prl-box"><h4>💰 Pay</h4><div class="prl-form">' + sel('pay_frequency', 'How often paid', Object.keys(FREQ).map(function (k) { return [k, FREQ[k]]; }), e.pay_frequency || 'monthly') +
+            sel('rate_unit', 'The amount below is…', [['period', 'Per pay period (e.g. a monthly salary)'], ['day', 'Per day worked'], ['hour', 'Per hour worked']], e.rate_unit || 'period') + f('basic_pay', 'Basic / gross pay (KES)', e.basic_pay != null ? e.basic_pay : '', 'number', 'min="0" step="0.01" inputmode="decimal"') +
+            sel('pay_method', 'Usually paid by', [['', '—'], ['cash', 'Cash'], ['mpesa', 'M-Pesa'], ['bank', 'Bank'], ['cheque', 'Cheque']], e.pay_method || '') + (personal ? f('pay_account', 'M-Pesa number / bank account', e.pay_account) : '') + '</div></div>';
+    }
+    function readEmpForm(base) {
+        var g = function (id) { var el = $('pe-' + id); return el ? el.value : undefined; };
+        var o = Object.assign({}, base || {});
+        ['name', 'phone', 'email', 'id_number', 'dob', 'address', 'emergency_name', 'emergency_phone', 'job_title', 'department', 'branch_name', 'start_date', 'employment_type', 'status', 'pay_frequency', 'rate_unit', 'pay_method', 'pay_account'].forEach(function (k) { var v = g(k); if (v !== undefined) o[k] = v; });
+        o.basic_pay = num(g('basic_pay')); o.pos_staff_id = g('pos') || ''; if (!(base && base.emp_id) && g('emp_no')) o.emp_no = g('emp_no');
+        if (base && base.emp_id) { if (g('id_number') === undefined) { delete o.id_number; } }
+        return o;
+    }
+    function newEmp() { S.view = 'staff'; S.empId = null; body(nav() + '<div class="prl-box"><h4>➕ Add staff</h4><p class="prl-muted">Fill what you know now — you can add the rest later.</p></div>' + empForm({}) + '<div id="prl-msg"></div><div class="prl-actions"><button type="button" onclick="Payroll.saveNew()">💾 Save employee</button><button type="button" class="sec" onclick="Payroll.go(\'staff\')">Cancel</button></div>'); }
+    async function saveNew() {
+        try { var d = await api('employee.save', { employee: readEmpForm({}) }); toast('Employee saved'); S.empId = d.employee.emp_id; S.sub = 'pay'; render(); }
+        catch (e) { var m = $('prl-msg'); if (m) m.innerHTML = errBox(e); }
+    }
+    async function vEmployee() {
+        var d = await api('employee.get', { empId: S.empId }), e = d.employee, money = canSeeMoney();
+        S.cur = d;
+        var tabs = [['overview', 'Overview'], ['employment', 'Employment'], ['docs', 'Documents'], ['pay', 'Payroll'], ['slips', 'Payslips']].filter(function (t) { return t[0] !== 'docs' || has('staff'); });
+        var h = '<div class="prl-actions"><button type="button" class="sec" onclick="Payroll.go(\'staff\')">← All staff</button></div>' +
+            '<div class="prl-box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><h3 style="margin:0">' + esc(e.name) + '</h3><div class="prl-muted">Employee No: ' + esc(e.emp_no) + '</div></div><div><span class="prl-chip ' + e.status + '">' + (ESTAT[e.status] || e.status) + '</span></div></div></div>' +
+            '<div class="prl-sub">' + tabs.map(function (t) { return '<button type="button" class="' + (S.sub === t[0] ? 'on' : '') + '" onclick="Payroll.sub(\'' + t[0] + '\')">' + t[1] + '</button>'; }).join('') + '</div>';
+        if (S.sub === 'overview') {
+            var kv = function (k, v) { return '<div class="prl-card"><small>' + k + '</small><b style="font-size:16px">' + (v == null || v === '' ? '—' : esc(v)) + '</b></div>'; };
+            h += '<div class="prl-cards">' + kv('Position', e.job_title) + kv('Branch', e.branch_name) + kv('Phone', e.phone) + kv('Employment status', ESTAT[e.status]) + (money && e.basic_pay != null ? kv('Salary', kes(e.basic_pay)) : '') + kv('Pay frequency', FREQ[e.pay_frequency] || e.pay_frequency) + '</div>' + (has('staff') ? '<div class="prl-actions"><button type="button" onclick="Payroll.sub(\'employment\')">✏️ Edit details</button></div>' : '');
+        } else if (S.sub === 'employment') {
+            h += has('staff') ? empForm(e) + '<div id="prl-msg"></div><div class="prl-actions"><button type="button" onclick="Payroll.saveEmp()">💾 Save changes</button></div>' : '<div class="prl-warnbox">You can view but not edit staff.</div>';
+        } else if (S.sub === 'docs') h += await vDocs(e);
+        else if (S.sub === 'pay') { await ensureTypes(); h += vPayLines(e, d.payLines); }
+        else if (S.sub === 'slips') h += vHistory(d.history);
+        return h;
+    }
+    function sub(s) { S.sub = s; render(); }
+    async function saveEmp() {
+        try { var cur = S.cur.employee; await api('employee.save', { employee: Object.assign(readEmpForm(cur), { emp_id: cur.emp_id }) }); toast('Saved'); S.sub = 'overview'; render(); }
+        catch (e) { var m = $('prl-msg'); if (m) m.innerHTML = errBox(e); }
+    }
+
+    /* ---- recurring pay lines (allowances, loans …) ---- */
+    function vPayLines(e, lines) {
+        var money = canSeeMoney(); if (!money) return empty('Hidden', 'You do not have permission to see pay details.');
+        var rows = (lines || []).map(function (l) {
+            var what = l.calc === 'fixed' ? kes(l.amount) : l.calc === 'bands' ? 'by tax bands' : l.rate + '% of ' + (l.calc === 'percent_basic' ? 'basic' : 'gross');
+            return '<div class="prl-row" style="cursor:default"><div class="l"><b>' + (l.kind === 'earning' ? '➕ ' : '➖ ') + esc(l.label) + (l.active ? '' : ' <span class="prl-chip draft">off</span>') + '</b><span>' + (l.kind === 'earning' ? 'Added to pay' : 'Taken from pay') + ' every period' + (l.balance != null ? ' · balance left ' + kes(l.balance) : '') + '</span></div><div class="r"><b>' + what + '</b>' + (has('staff') ? '<div><a href="#" onclick="Payroll.delLine(\'' + l.line_id + '\');return false">remove</a></div>' : '') + '</div></div>';
+        }).join('');
+        var types = (S.types || []);
+        return '<div class="prl-box"><h4>💰 Pay every ' + (FREQ[e.pay_frequency] || e.pay_frequency).toLowerCase() + '</h4><div class="prl-calc"><div>Basic / gross pay</div><div class="r">' + kes(e.basic_pay) + (e.rate_unit === 'day' ? ' / day' : e.rate_unit === 'hour' ? ' / hour' : '') + '</div></div></div>' +
+            '<div class="prl-box"><h4>Allowances &amp; deductions that repeat</h4><p class="prl-muted">Only what you add here (and what you switch on for everyone in Settings) is ever applied. Nothing is added or deducted on its own.</p>' + (rows ? '<div class="prl-list">' + rows + '</div>' : '<p class="prl-muted">None yet.</p>') + '</div>' +
+            (has('staff') ? '<div class="prl-box"><h4>➕ Add one</h4><div class="prl-form"><div><label>Type</label><select id="pl-kind"><option value="earning">Allowance / extra pay (adds)</option><option value="deduction">Deduction (takes off)</option></select></div>' +
+                '<div><label>Name</label><input id="pl-label" placeholder="e.g. House allowance, Staff loan" list="pl-names"></div><div><label>Amount (KES)</label><input id="pl-amount" type="number" min="0" step="0.01" inputmode="decimal"></div>' +
+                '<div><label>Loan / advance balance owed (optional)</label><input id="pl-balance" type="number" min="0" step="0.01" inputmode="decimal" placeholder="stops by itself at zero"></div></div>' +
+                '<datalist id="pl-names">' + types.map(function (t) { return '<option value="' + esc(t.label) + '">'; }).join('') + '</datalist><div id="prl-msg"></div><div class="prl-actions"><button type="button" onclick="Payroll.addLine()">Add</button></div></div>' : '');
+    }
+    async function addLine() {
+        try { await api('payline.save', { empId: S.empId, line: { kind: $('pl-kind').value, label: $('pl-label').value, amount: num($('pl-amount').value), balance: $('pl-balance').value } }); toast('Added'); render(); }
+        catch (e) { $('prl-msg').innerHTML = errBox(e); }
+    }
+    async function delLine(id) { if (!confirm('Remove this line?')) return; try { await api('payline.delete', { empId: S.empId, lineId: id }); render(); } catch (e) { toast(e.message, true); } }
+
+    function vHistory(hist) {
+        if (!canSeeMoney()) return empty('Hidden', 'You do not have permission to see payslips.');
+        if (!hist || !hist.length) return empty('No payroll yet', 'Their payslips appear here once a payroll run includes them.');
+        return '<div class="prl-list">' + hist.map(function (h) {
+            return '<div class="prl-row" onclick="Payroll.slip(\'' + h.run_id + '\',\'' + S.empId + '\')"><div class="l"><b>' + esc(h.label) + '</b><span>' + esc(h.ref) + ' · ' + dshow(h.period_start) + ' – ' + dshow(h.period_end) + '</span></div><div class="r"><span class="prl-chip ' + (h.kind === 'adjustment' ? 'adj' : h.status) + '">' + (h.kind === 'adjustment' ? 'Adjustment · ' : '') + h.status + '</span><div>Gross ' + kes(h.basic + h.additions) + ' · Ded. ' + kes(h.deductions) + '</div><div><b>Net ' + kes(h.net) + '</b> · 📄 Payslip</div></div></div>';
+        }).join('') + '</div>';
+    }
+
+    /* ---- documents ---- */
+    async function vDocs(e) {
+        var d = await api('doc.list', { empId: e.emp_id }), docs = d.documents || [], t = today();
+        var rows = docs.map(function (x) {
+            var late = x.expiry_date && x.expiry_date < t, soon = x.expiry_date && !late && x.expiry_date <= new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+            return '<div class="prl-row" style="cursor:default;flex-wrap:wrap"><div class="l"><b>' + esc(x.title) + (x.status === 'archived' ? ' <span class="prl-chip draft">archived</span>' : '') + '</b><span>' + esc(CATS[x.category] || x.category) + (x.doc_date ? ' · dated ' + dshow(x.doc_date) : '') + ' · ' + Math.max(1, Math.round(x.size / 1024)) + ' KB</span>' + (x.expiry_date ? '<div><span class="prl-chip ' + (late ? 'late' : soon ? 'reviewed' : 'active') + '">' + (late ? 'Expired ' : 'Expires ') + dshow(x.expiry_date) + '</span></div>' : '') + '</div>' +
+                '<div class="prl-actions" style="margin:0"><button type="button" class="sec" onclick="Payroll.docView(\'' + x.doc_id + '\',false)">👁 Preview</button><button type="button" class="sec" onclick="Payroll.docView(\'' + x.doc_id + '\',true)">⬇ Download</button><button type="button" class="sec" onclick="Payroll.docReplace(\'' + x.doc_id + '\')">🔄 Replace</button><button type="button" class="sec" onclick="Payroll.docArchive(\'' + x.doc_id + '\',' + (x.status === 'archived' ? 'false' : 'true') + ')">' + (x.status === 'archived' ? '↩ Restore' : '🗄 Archive') + '</button><button type="button" class="dng" onclick="Payroll.docDelete(\'' + x.doc_id + '\')">🗑</button></div></div>';
+        }).join('');
+        return '<div class="prl-box"><h4>📄 Documents</h4><div class="prl-tip">Upload → name it → Save. PDF, a phone photo or a Word file, up to 2.5 MB. Only people with staff-record permission can open these.</div>' +
+            '<div class="prl-form"><div><label>File</label><input id="pd-file" type="file" accept="application/pdf,image/*,.docx" onchange="Payroll.docPicked(this)"></div><div><label>Document name</label><input id="pd-title" placeholder="e.g. National ID copy"></div>' +
+            '<div><label>Kind</label><select id="pd-cat">' + Object.keys(CATS).map(function (k) { return '<option value="' + k + '">' + CATS[k] + '</option>'; }).join('') + '</select></div><div><label>Document date (optional)</label><input id="pd-date" type="date"></div><div><label>Expires on (optional)</label><input id="pd-exp" type="date"></div></div>' +
+            '<div id="prl-msg"></div><div class="prl-actions"><button type="button" onclick="Payroll.docUpload()">⬆ Save document</button></div></div>' +
+            (rows ? '<div class="prl-list">' + rows + '</div>' : empty('No documents yet', 'Upload the ID copy, certificates and contract here.'));
+    }
+    function fileToDataUrl(file) {
+        return new Promise(function (resolve, reject) {
+            if (!file) { reject(PErr('no_file', 'Choose a file first.')); return; }
+            var rd = new FileReader();
+            rd.onerror = function () { reject(PErr('bad_file', 'That file could not be read.')); };
+            rd.onload = function () {
+                var url = String(rd.result || '');
+                if (file.type.indexOf('image/') === 0 && file.size > 1.8 * 1024 * 1024) {              // a big phone photo: shrink it (the limit is 2.5 MB)
+                    var im = new Image();
+                    im.onload = function () { try { var k = Math.min(1, 1800 / Math.max(im.width, im.height)), c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); resolve(c.toDataURL('image/jpeg', 0.82)); } catch (e) { resolve(url); } };
+                    im.onerror = function () { resolve(url); }; im.src = url;
+                } else resolve(url);
+            };
+            rd.readAsDataURL(file);
+        });
+    }
+    function docPicked(inp) { var f = inp.files && inp.files[0], t = $('pd-title'); if (f && t && !t.value) t.value = f.name.replace(/\.[^.]+$/, ''); }
+    async function docUpload() {
+        var inp = $('pd-file'), msg = $('prl-msg');
+        try {
+            var f = inp.files && inp.files[0]; if (!f) throw PErr('no_file', 'Choose a file first.');
+            msg.innerHTML = '<div class="prl-tip">Uploading…</div>';
+            await api('doc.upload', { empId: S.empId, title: $('pd-title').value, category: $('pd-cat').value, docDate: $('pd-date').value, expiryDate: $('pd-exp').value, fileName: f.name, dataUrl: await fileToDataUrl(f) });
+            toast('Document saved'); render();
+        } catch (e) { msg.innerHTML = errBox(e); }
+    }
+    async function docView(id, download) {
+        try {
+            var res = await api('doc.file', { docId: id }), blob = await res.blob(), url = URL.createObjectURL(blob), name = (res.headers.get('content-disposition') || '').replace(/.*filename="?([^"]*)"?.*/, '$1') || 'document';
+            if (download) { var a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 4000); return; }
+            var isImg = blob.type.indexOf('image/') === 0, isPdf = blob.type === 'application/pdf';
+            modal('<h4>' + esc(name) + '</h4>' + (isImg ? '<img src="' + url + '" style="max-width:100%;border-radius:8px">' : isPdf ? '<iframe src="' + url + '" style="width:100%;height:calc(70vh / var(--pos-z,1));border:0"></iframe>' : '<div class="prl-tip">This file type cannot be previewed here — use Download.</div>') +
+                '<div class="prl-actions"><button type="button" class="sec" onclick="Payroll.docView(\'' + id + '\',true)">⬇ Download</button><button type="button" onclick="Payroll.closeModal()">Close</button></div>');
+        } catch (e) { toast(e.message, true); }
+    }
+    function docReplace(id) {
+        modal('<h4>🔄 Replace document</h4><div class="prl-form"><div><label>New file</label><input id="pr-file" type="file" accept="application/pdf,image/*,.docx"></div><div><label>New expiry date (optional)</label><input id="pr-exp" type="date"></div></div><div id="prl-mmsg"></div>' +
+            '<div class="prl-actions"><button type="button" onclick="Payroll.docReplaceGo(\'' + id + '\')">Replace</button><button type="button" class="sec" onclick="Payroll.closeModal()">Cancel</button></div>');
+    }
+    async function docReplaceGo(id) {
+        try { var f = $('pr-file').files[0]; if (!f) throw PErr('no_file', 'Choose a file first.'); await api('doc.replace', { docId: id, fileName: f.name, expiryDate: $('pr-exp').value, dataUrl: await fileToDataUrl(f) }); closeModal(); toast('Replaced'); render(); }
+        catch (e) { $('prl-mmsg').innerHTML = errBox(e); }
+    }
+    async function docArchive(id, a) { try { await api('doc.archive', { docId: id, archive: a }); render(); } catch (e) { toast(e.message, true); } }
+    async function docDelete(id) { if (!confirm('Delete this document for good? This is recorded in the audit log.')) return; try { await api('doc.delete', { docId: id }); render(); } catch (e) { toast(e.message, true); } }
+    function modal(html) { $('prl-modal-in').innerHTML = html; $('prl-modal').classList.add('on'); }
+    function closeModal() { $('prl-modal').classList.remove('on'); $('prl-modal-in').innerHTML = ''; }
+
+    /* ---------------- payroll runs ---------------- */
+    function chip(r) { return '<span class="prl-chip ' + (r.kind === 'adjustment' ? 'adj' : r.status) + '">' + (r.kind === 'adjustment' ? 'Adjustment · ' : '') + r.status + '</span>'; }
+    async function vRuns() {
+        var d = await api('run.list'), runs = d.runs || [];
+        return '<div class="prl-actions">' + (has('run') ? '<button type="button" onclick="Payroll.newRun()">▶ Run payroll</button>' : '') + '</div><div id="prl-newrun"></div>' +
+            (runs.length ? '<div class="prl-list">' + runs.map(function (r) { return '<div class="prl-row" onclick="Payroll.openRun(\'' + r.run_id + '\')"><div class="l"><b>' + esc(r.label) + '</b><span>' + esc(r.ref) + ' · ' + dshow(r.period_start) + ' – ' + dshow(r.period_end) + ' · ' + r.employee_count + ' staff</span></div><div class="r">' + chip(r) + '<div><b>' + kes(r.total_net) + '</b> <span class="prl-muted">net</span></div></div></div>'; }).join('') + '</div>' : empty('No payroll runs yet', 'Press “Run payroll” to prepare your first one.'));
+    }
+    function openRun(id) { S.runId = id; S.view = 'runs'; render(); }
+    function monthEnd(ym) { var p = ym.split('-'); return new Date(Date.UTC(+p[0], +p[1], 0)).toISOString().slice(0, 10); }
+    function newRun() {
+        var ym = today().slice(0, 7);
+        var html = '<div class="prl-box"><h4>▶ New payroll</h4><div class="prl-form"><div><label>Who is paid</label><select id="nr-freq" onchange="Payroll.nrFreq()">' + Object.keys(FREQ).map(function (k) { return '<option value="' + k + '">' + FREQ[k] + ' staff</option>'; }).join('') + '</select></div>' +
+            '<div id="nr-month"><label>Month</label><input id="nr-ym" type="month" value="' + ym + '"></div><div id="nr-start" style="display:none"><label>First day of the period</label><input id="nr-from" type="date" value="' + today() + '"></div></div><div id="prl-msg"></div>' +
+            '<div class="prl-actions"><button type="button" onclick="Payroll.createRun()">Create draft payroll</button><button type="button" class="sec" onclick="Payroll.go(\'runs\')">Cancel</button></div><p class="prl-muted">Everyone active with that pay frequency is added with their usual pay. You can still change anything while it is a draft.</p></div>';
+        var host = $('prl-newrun'); if (host) host.innerHTML = html; else { S.view = 'runs'; S.runId = null; body(nav() + '<div id="prl-newrun">' + html + '</div>'); }
+    }
+    function nrFreq() { var f = $('nr-freq').value; $('nr-month').style.display = f === 'monthly' ? '' : 'none'; $('nr-start').style.display = f === 'monthly' ? 'none' : ''; }
+    async function createRun() {
+        try {
+            var f = $('nr-freq').value, from, to;
+            if (f === 'monthly') { var ym = $('nr-ym').value; if (!ym) throw PErr('bad_period', 'Choose the month.'); from = ym + '-01'; to = monthEnd(ym); }
+            else { from = $('nr-from').value; if (!from) throw PErr('bad_period', 'Choose the first day.'); var d = new Date(from + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + ({ weekly: 6, biweekly: 13, daily: 0 })[f]); to = d.toISOString().slice(0, 10); }
+            var r = await api('run.create', { frequency: f, periodStart: from, periodEnd: to }); toast('Draft payroll ' + r.ref + ' created'); S.runId = r.runId; render();
+        } catch (e) { var m = $('prl-msg'); if (m) m.innerHTML = errBox(e); }
+    }
+    function runSteps(run) {
+        var i = STEPS.indexOf(run.status);
+        return '<div class="prl-steps">' + ['Draft', 'Reviewed', 'Approved', 'Paid'].map(function (n, k) { return '<span class="' + (k < i ? 'done' : k === i ? 'now' : '') + '">' + (k < i ? '✓ ' : '') + n + '</span>'; }).join('') + '</div>';
+    }
+    async function vRun() {
+        var d = await api('run.get', { runId: S.runId }), run = d.run, items = d.items || []; S.run = d;
+        var draft = run.status === 'draft', adj = run.kind === 'adjustment';
+        var cards = items.map(function (it) {
+            var ded = it.deductions, add = it.additions;
+            return '<div class="prl-row" ' + (draft && has('run') ? 'onclick="Payroll.editItem(\'' + it.emp_id + '\')"' : 'onclick="Payroll.slip(\'' + run.run_id + '\',\'' + it.emp_id + '\')"') + '><div class="l"><b>' + esc(it.emp_name) + '</b><span>' + esc(it.emp_no || '') + ' · ' + esc(it.job_title || '') + (it.rate_unit !== 'period' && !adj ? ' · ' + it.units + (it.rate_unit === 'day' ? ' days' : ' hrs') : '') + '</span>' +
+                '<div class="prl-muted">Gross ' + kes(it.basic) + ' + Additions ' + kes(add) + ' − Deductions ' + kes(ded) + '</div></div><div class="r"><b style="font-size:17px">' + kes(it.net) + '</b><div class="prl-muted">' + (draft && has('run') ? '✏️ edit' : '📄 payslip') + '</div></div></div>';
+        }).join('');
+        var btns = '';
+        if (draft && has('run')) btns += '<button type="button" onclick="Payroll.step(\'review\')">✔ Review &amp; lock</button><button type="button" class="sec" onclick="Payroll.addEmpToRun()">➕ Add employee</button><button type="button" class="dng" onclick="Payroll.delRun()">🗑 Delete draft</button>';
+        if (run.status === 'reviewed') { if (has('approve')) btns += '<button type="button" onclick="Payroll.step(\'approve\')">✅ Approve payroll</button>'; if (has('run')) btns += '<button type="button" class="sec" onclick="Payroll.step(\'reopen\')">↩ Send back to draft</button>'; }
+        if (run.status === 'approved' && has('approve')) btns += '<button type="button" onclick="Payroll.payForm()">💳 Mark as paid</button>';
+        if ((run.status === 'approved' || run.status === 'paid') && !adj && (has('approve') || has('run'))) btns += '<button type="button" class="sec" onclick="Payroll.adjustForm()">🛠 Correct / reverse</button>';
+        if (run.status !== 'draft') btns += '<button type="button" class="sec" onclick="Payroll.printAll()">🖨 Print all payslips</button>';
+        btns += '<button type="button" class="sec" onclick="Payroll.csv()">⬇ Excel (CSV)</button>';
+        return '<div class="prl-actions"><button type="button" class="sec" onclick="Payroll.go(\'runs\')">← All payrolls</button></div>' +
+            '<div class="prl-box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><h3 style="margin:0">' + esc(run.label) + '</h3><div class="prl-muted">' + esc(run.ref) + ' · ' + dshow(run.period_start) + ' – ' + dshow(run.period_end) + (adj ? ' · corrects an earlier payroll' : '') + '</div></div><div>' + chip(run) + '</div></div>' + runSteps(run) +
+            '<div class="prl-calc"><div>Gross (basic) pay</div><div class="r">' + kes(run.total_basic) + '</div><div>+ Additions (allowances, overtime…)</div><div class="r">' + kes(run.total_additions) + '</div><div>− Deductions</div><div class="r">' + kes(run.total_deductions) + '</div><div class="tot">= Net pay (' + run.employee_count + ' staff)</div><div class="r tot">' + kes(run.total_net) + '</div></div>' +
+            (run.status === 'paid' ? '<p class="prl-muted">Paid ' + dshow(run.pay_date) + ' · ' + esc(run.pay_method || '') + (run.pay_reference ? ' · ref ' + esc(run.pay_reference) : '') + '</p>' : '') + '</div>' +
+            (draft ? '<div class="prl-tip">Tap a person to enter days worked, add overtime or a deduction. The calculation is shown plainly — nothing is added or taken off that you did not set up.</div>' : '') +
+            '<div class="prl-actions">' + btns + '</div><div id="prl-msg"></div><div class="prl-list">' + (cards || empty('Nobody in this payroll', '')) + '</div>';
+    }
+    async function step(a) {
+        var q = { review: 'Lock this payroll for review? You can still send it back to draft.', approve: 'Approve this payroll? After approval it can never be edited — only corrected with an adjustment.', reopen: 'Send it back to draft?' }[a];
+        if (!confirm(q)) return;
+        try { await api('run.' + a, { runId: S.runId }); toast('Done'); render(); } catch (e) { $('prl-msg').innerHTML = errBox(e); }
+    }
+    async function delRun() { if (!confirm('Delete this draft payroll?')) return; try { await api('run.delete', { runId: S.runId }); S.runId = null; render(); } catch (e) { $('prl-msg').innerHTML = errBox(e); } }
+    async function addEmpToRun() {
+        var d = await api('employee.list', {}), inRun = {}; (S.run.items || []).forEach(function (i) { inRun[i.emp_id] = 1; });
+        var opts = (d.employees || []).filter(function (e) { return !inRun[e.emp_id] && (S.run.run.kind === 'adjustment' || e.status === 'active'); });
+        modal('<h4>➕ Add employee to this payroll</h4>' + (opts.length ? '<select id="ae-emp">' + opts.map(function (e) { return '<option value="' + e.emp_id + '">' + esc(e.name) + ' (' + esc(e.emp_no) + ')</option>'; }).join('') + '</select>' : '<p class="prl-muted">Everyone is already in.</p>') + '<div id="prl-mmsg"></div><div class="prl-actions"><button type="button" onclick="Payroll.addEmpGo()">Add</button><button type="button" class="sec" onclick="Payroll.closeModal()">Cancel</button></div>');
+    }
+    async function addEmpGo() { try { await api('run.addEmployee', { runId: S.runId, empId: $('ae-emp').value }); closeModal(); render(); } catch (e) { $('prl-mmsg').innerHTML = errBox(e); } }
+    function payForm() {
+        modal('<h4>💳 Mark payroll as paid</h4><div class="prl-form"><div><label>How were staff paid?</label><select id="pp-m"><option value="mpesa">M-Pesa</option><option value="cash">Cash</option><option value="bank">Bank</option><option value="cheque">Cheque</option><option value="other">Other</option></select></div><div><label>Payment date</label><input id="pp-d" type="date" value="' + today() + '"></div><div><label>Reference (optional)</label><input id="pp-r" placeholder="batch / transaction reference"></div></div><div id="prl-mmsg"></div>' +
+            '<div class="prl-actions"><button type="button" onclick="Payroll.payGo()">Confirm paid</button><button type="button" class="sec" onclick="Payroll.closeModal()">Cancel</button></div>');
+    }
+    async function payGo() { try { await api('run.pay', { runId: S.runId, method: $('pp-m').value, payDate: $('pp-d').value, reference: $('pp-r').value }); closeModal(); toast('Payroll marked paid'); render(); } catch (e) { $('prl-mmsg').innerHTML = errBox(e); } }
+    function adjustForm() {
+        modal('<h4>🛠 Correct a finished payroll</h4><div class="prl-tip">An approved or paid payroll is never changed. A correction is a new, separate payroll that points at it, so the history stays honest.</div>' +
+            '<div class="prl-actions" style="flex-direction:column;align-items:stretch"><button type="button" onclick="Payroll.adjustGo(\'reverse\')">↩ Reverse the whole payroll (cancel everyone\'s net)</button><button type="button" class="sec" onclick="Payroll.adjustPick()">✏️ Adjust specific people (add a missing bonus / recover an overpayment)</button><button type="button" class="sec" onclick="Payroll.closeModal()">Cancel</button></div><div id="prl-mmsg"></div>');
+    }
+    function adjustPick() {
+        modal('<h4>✏️ Who is the adjustment for?</h4>' + (S.run.items || []).map(function (i) { return '<label style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" class="adj-pick" value="' + i.emp_id + '" style="width:auto"> ' + esc(i.emp_name) + '</label>'; }).join('') + '<div id="prl-mmsg"></div><div class="prl-actions"><button type="button" onclick="Payroll.adjustGo(\'blank\')">Create adjustment</button><button type="button" class="sec" onclick="Payroll.closeModal()">Cancel</button></div>');
+    }
+    async function adjustGo(mode) {
+        try { var ids = [].slice.call(document.querySelectorAll('.adj-pick:checked')).map(function (x) { return x.value; }); var r = await api('run.adjust', { runId: S.runId, mode: mode, empIds: ids }); closeModal(); toast('Adjustment ' + r.ref + ' created (draft)'); S.runId = r.runId; render(); }
+        catch (e) { var m = $('prl-mmsg'); if (m) m.innerHTML = errBox(e); }
+    }
+
+    /* ---- editing one person in a draft ---- */
+    async function editItem(empId) {
+        await ensureTypes();
+        var it = S.run.items.filter(function (x) { return x.emp_id === empId; })[0], run = S.run.run, adj = run.kind === 'adjustment';
+        S.edit = { empId: empId, lines: it.lines.map(function (l) { return { kind: l.kind, label: l.label, amount: l.amount, calc: l.calc, rate: l.rate, cfg: l.cfg, type_id: l.type_id, pay_line_id: l.pay_line_id, manual: l.manual, orig: l.amount }; }) };
+        var unitsBox = !adj && it.rate_unit !== 'period' ? '<div class="prl-form"><div><label>' + (it.rate_unit === 'day' ? 'Days worked' : 'Hours worked') + ' (at ' + kes(it.rate) + ' each)</label><input id="ei-units" type="number" min="0" step="0.5" value="' + it.units + '"></div></div>' : '';
+        modal('<h4>✏️ ' + esc(it.emp_name) + '</h4>' + unitsBox + '<div id="ei-lines"></div><div class="prl-actions"><button type="button" class="sec" onclick="Payroll.eiAdd(\'earning\')">➕ Add pay (allowance, overtime…)</button><button type="button" class="sec" onclick="Payroll.eiAdd(\'deduction\')">➖ Add deduction</button></div>' +
+            '<div class="prl-form"><div><label>Note on the payslip (optional)</label><input id="ei-note" value="' + esc(it.note || '') + '"></div></div><div id="ei-sum" class="prl-box"></div><div id="prl-mmsg"></div>' +
+            '<div class="prl-actions"><button type="button" onclick="Payroll.eiSave()">💾 Save</button><button type="button" class="sec" onclick="Payroll.closeModal()">Cancel</button>' + (!adj ? '<button type="button" class="dng" onclick="Payroll.eiRemove()">Remove from payroll</button>' : '') + '</div>');
+        eiPaint(it);
+    }
+    function eiPaint(it) {
+        var L = S.edit.lines, types = (S.types || []);
+        $('ei-lines').innerHTML = L.length ? L.map(function (l, i) {
+            var calcd = l.calc && l.calc !== 'fixed' && !l.manual;
+            return '<div class="prl-line"><select onchange="Payroll.eiSet(' + i + ',\'kind\',this.value)"><option value="earning"' + (l.kind === 'earning' ? ' selected' : '') + '>Adds</option><option value="deduction"' + (l.kind === 'deduction' ? ' selected' : '') + '>Takes off</option></select><input value="' + esc(l.label) + '" list="ei-names" placeholder="Name" oninput="Payroll.eiSet(' + i + ',\'label\',this.value)"><input type="number" min="0" step="0.01" inputmode="decimal" value="' + l.amount + '" oninput="Payroll.eiSet(' + i + ',\'amount\',this.value)" title="' + (calcd ? 'Calculated automatically — typing here overrides it' : '') + '"><button type="button" class="x" onclick="Payroll.eiDel(' + i + ')">✕</button></div>' + (calcd ? '<div class="prl-muted" style="margin:-4px 0 6px 4px">calculated: ' + (l.calc === 'bands' ? 'by tax bands' : l.rate + '% of ' + (l.calc === 'percent_basic' ? 'basic' : 'gross')) + '</div>' : '');
+        }).join('') + '<datalist id="ei-names">' + types.map(function (t) { return '<option value="' + esc(t.label) + '">'; }).join('') + '</datalist>' : '<p class="prl-muted">No extra lines.</p>';
+        eiSum(it);
+    }
+    function eiSum(it) {
+        var L = S.edit.lines, basic = it.basic, units = $('ei-units') ? num($('ei-units').value) : it.units;
+        if (it.rate_unit !== 'period' && S.run.run.kind !== 'adjustment') basic = Math.round(it.rate * units * 100) / 100; else if (S.run.run.kind === 'adjustment') basic = 0;
+        var add = 0, ded = 0; L.forEach(function (l) { if (l.kind === 'earning') add += num(l.amount); else ded += num(l.amount); });
+        $('ei-sum').innerHTML = '<div class="prl-calc"><div>Gross (basic) pay</div><div class="r">' + kes(basic) + '</div><div>+ Additions</div><div class="r">' + kes(add) + '</div><div>− Deductions</div><div class="r">' + kes(ded) + '</div><div class="tot">= Net pay <span class="prl-muted">(the server re-checks this when you save)</span></div><div class="r tot">' + kes(basic + add - ded) + '</div></div>';
+    }
+    function eiSet(i, k, v) { var l = S.edit.lines[i]; if (k === 'amount') { l.amount = num(v); if (l.calc && l.calc !== 'fixed' && l.amount !== l.orig) { l.manual = 1; } } else l[k] = v; var it = S.run.items.filter(function (x) { return x.emp_id === S.edit.empId; })[0]; eiSum(it); }
+    function eiAdd(kind) { S.edit.lines.push({ kind: kind, label: '', amount: 0, calc: 'fixed', manual: 1 }); var it = S.run.items.filter(function (x) { return x.emp_id === S.edit.empId; })[0]; eiPaint(it); }
+    function eiDel(i) { S.edit.lines.splice(i, 1); var it = S.run.items.filter(function (x) { return x.emp_id === S.edit.empId; })[0]; eiPaint(it); }
+    async function eiSave() {
+        try {
+            var lines = S.edit.lines.map(function (l) { var man = l.manual || l.calc === 'fixed' || !l.calc; return { kind: l.kind, label: l.label, amount: num(l.amount), calc: man ? 'fixed' : l.calc, rate: l.rate, cfg: l.cfg, type_id: l.type_id, pay_line_id: l.pay_line_id, manual: man ? 1 : 0 }; });
+            await api('item.save', { runId: S.runId, empId: S.edit.empId, units: $('ei-units') ? num($('ei-units').value) : undefined, note: $('ei-note').value, lines: lines });
+            closeModal(); toast('Saved'); render();
+        } catch (e) { $('prl-mmsg').innerHTML = errBox(e); }
+    }
+    async function eiRemove() { if (!confirm('Take this person out of this payroll?')) return; try { await api('run.removeEmployee', { runId: S.runId, empId: S.edit.empId }); closeModal(); render(); } catch (e) { $('prl-mmsg').innerHTML = errBox(e); } }
+
+    /* ---------------- my payslips ---------------- */
+    function vMine() {
+        var me = S.me || {}, e = me.employee; if (!e) return empty('No payslips', 'Your account is not linked to an employee record yet. Ask the Admin.');
+        var rows = (me.payslips || []).map(function (p) { return '<div class="prl-row" onclick="Payroll.slip(\'' + p.run_id + '\',\'' + p.emp_id + '\')"><div class="l"><b>' + esc(p.label) + '</b><span>' + dshow(p.period_start) + ' – ' + dshow(p.period_end) + ' · paid ' + dshow(p.pay_date) + '</span></div><div class="r"><b>' + kes(p.net) + '</b><div class="prl-muted">📄 Open payslip</div></div></div>'; }).join('');
+        return '<div class="prl-box"><h4>' + esc(e.name) + '</h4><div class="prl-muted">' + esc(e.job_title || '') + (e.branch_name ? ' · ' + esc(e.branch_name) : '') + ' · ' + (ESTAT[e.status] || e.status) + '</div></div>' + (rows ? '<div class="prl-list">' + rows + '</div>' : empty('No payslips yet', 'They appear here once a payroll that includes you has been paid.'));
+    }
+
+    /* ---------------- payslips: view, print, PDF, share ---------------- */
+    function bizInfo() {
+        var g = function (n, d) { try { return typeof window[n] !== 'undefined' ? window[n] : d; } catch (e) { return d; } };
+        var name = ''; try { name = typeof businessName !== 'undefined' ? businessName : ''; } catch (e) { name = ''; }
+        var email = '', contact = '', extra = '', logo = '', showLogo = false;
+        try { email = typeof receiptEmail !== 'undefined' ? receiptEmail : ''; } catch (e) { /* none */ } try { contact = typeof receiptContact !== 'undefined' ? receiptContact : ''; } catch (e) { /* none */ }
+        try { extra = typeof receiptExtraInfo !== 'undefined' ? receiptExtraInfo : ''; } catch (e) { /* none */ } try { logo = typeof receiptLogoData !== 'undefined' ? receiptLogoData : ''; } catch (e) { /* none */ }
+        void g; return { name: name || 'Business', email: email, contact: contact, extra: extra, logo: logo };
+    }
+    function slipModel(d) {
+        var it = d.item, run = d.run, earn = [], ded = [];
+        if (run.kind !== 'adjustment') earn.push(['Basic / gross pay' + (it.rate_unit !== 'period' ? ' (' + it.units + (it.rate_unit === 'day' ? ' days × ' : ' hrs × ') + kes(it.rate) + ')' : ''), it.basic]);
+        d.lines.forEach(function (l) { var r = [l.label + (l.note ? ' — ' + l.note : ''), l.amount]; if (l.kind === 'earning') earn.push(r); else ded.push([l.label + (l.calc && l.calc !== 'fixed' && !l.manual ? (l.calc === 'bands' ? ' (tax bands)' : ' (' + l.rate + '%)') : ''), l.amount]); });
+        var b = bizInfo();
+        return { biz: b, branch: (it.branch_name && it.branch_name !== b.name) ? it.branch_name : '', title: run.kind === 'adjustment' ? 'ADJUSTMENT SLIP' : 'PAYSLIP', slipNo: it.payslip_no, ref: run.ref, period: dshow(run.period_start) + ' – ' + dshow(run.period_end), freq: FREQ[run.frequency] || run.frequency, name: it.emp_name, empNo: it.emp_no || '', position: it.job_title || '', dept: it.department || '', earn: earn, ded: ded, totalEarn: it.basic + it.additions, totalDed: it.deductions, net: it.net, status: run.status, payDate: run.pay_date ? dshow(run.pay_date) : '', method: run.pay_method || '', payRef: run.pay_reference || '', note: it.note || '' };
+    }
+    function slipHtml(m) {
+        var rows = function (a) { return a.length ? a.map(function (r) { return '<tr><td>' + esc(r[0]) + '</td><td class="n">' + kes(r[1]) + '</td></tr>'; }).join('') : '<tr><td class="mu" colspan="2">None</td></tr>'; };
+        return '<div class="ps"><div class="ps-h"><div class="ps-b">' + (m.biz.logo ? '<img src="' + esc(m.biz.logo) + '" class="ps-logo">' : '') + '<div><div class="ps-bn">' + esc(m.biz.name) + '</div><div class="mu">' + [m.branch, m.biz.contact, m.biz.email].filter(Boolean).map(esc).join(' · ') + '</div></div></div><div class="ps-t"><div class="ps-title">' + m.title + '</div><div class="mu">' + esc(m.slipNo) + '</div>' + (m.status !== 'paid' ? '<div class="ps-draft">' + m.status.toUpperCase() + ' — not final</div>' : '') + '</div></div>' +
+            '<div class="ps-emp"><div><span class="mu">Employee</span><b>' + esc(m.name) + '</b></div><div><span class="mu">Employee No</span><b>' + esc(m.empNo || '—') + '</b></div><div><span class="mu">Position</span><b>' + esc(m.position || '—') + '</b></div><div><span class="mu">Pay period</span><b>' + esc(m.period) + '</b></div></div>' +
+            '<div class="ps-cols"><table><thead><tr><th>EARNINGS</th><th class="n">KES</th></tr></thead><tbody>' + rows(m.earn) + '</tbody><tfoot><tr><td>Total earnings</td><td class="n">' + kes(m.totalEarn) + '</td></tr></tfoot></table>' +
+            '<table><thead><tr><th>DEDUCTIONS</th><th class="n">KES</th></tr></thead><tbody>' + rows(m.ded) + '</tbody><tfoot><tr><td>Total deductions</td><td class="n">' + kes(m.totalDed) + '</td></tr></tfoot></table></div>' +
+            '<div class="ps-net"><span>NET PAY</span><b>' + kes(m.net) + '</b></div>' + (m.note ? '<div class="mu" style="margin-top:8px">Note: ' + esc(m.note) + '</div>' : '') +
+            '<div class="ps-f"><div><span class="mu">Payment date</span><b>' + esc(m.payDate || '—') + '</b></div><div><span class="mu">Payment method</span><b>' + esc(m.method ? m.method.toUpperCase() : '—') + '</b></div><div><span class="mu">Payroll reference</span><b>' + esc(m.payRef || m.ref) + '</b></div></div>' +
+            '<div class="ps-sig"><div>Employee signature</div><div>Approved by</div></div></div>';
+    }
+    var SLIP_CSS = '.ps{font-family:Arial,Helvetica,sans-serif;color:#1d2b36;max-width:760px;margin:0 auto;padding:18px;border:1px solid #cfd6dc;border-radius:10px;font-size:13px}.mu{color:#7a8791;font-size:11px}.n{text-align:right;white-space:nowrap}.ps-h{display:flex;justify-content:space-between;gap:14px;border-bottom:3px solid #1f8a70;padding-bottom:10px}.ps-b{display:flex;gap:10px;align-items:center}.ps-logo{height:46px;max-width:120px;object-fit:contain}.ps-bn{font-size:20px;font-weight:800}.ps-t{text-align:right}.ps-title{font-size:20px;font-weight:800;color:#1f8a70;letter-spacing:.06em}.ps-draft{display:inline-block;margin-top:4px;padding:2px 8px;border:2px solid #e67e22;color:#e67e22;font-weight:800;font-size:11px;transform:rotate(-3deg)}.ps-emp{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0;background:#f4f8f7;border-radius:8px;padding:10px}.ps-emp div,.ps-f div{display:flex;flex-direction:column}.ps-emp b,.ps-f b{font-size:13px}.ps-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}table{width:100%;border-collapse:collapse}th{background:#1f8a70;color:#fff;text-align:left;padding:6px 8px;font-size:12px}td{padding:6px 8px;border-bottom:1px solid #e6ebee}tfoot td{font-weight:800;border-top:2px solid #1f8a70;border-bottom:0}.ps-net{display:flex;justify-content:space-between;align-items:center;background:#1f8a70;color:#fff;border-radius:10px;padding:12px 16px;margin-top:14px}.ps-net span{font-weight:800;letter-spacing:.08em}.ps-net b{font-size:26px}.ps-f{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}.ps-sig{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:34px;color:#7a8791;font-size:11px}.ps-sig div{border-top:1px solid #9aa6ae;padding-top:4px}@media(max-width:600px){.ps-emp,.ps-f{grid-template-columns:1fr 1fr}.ps-cols{grid-template-columns:1fr}}';
+    async function slip(runId, empId) {
+        try {
+            var d = await api('payslip.get', { runId: runId, empId: empId }); S.slipData = d; var m = slipModel(d); S.slipModel = m;
+            modal('<style>' + SLIP_CSS + '</style>' + slipHtml(m) + '<div class="prl-actions"><button type="button" onclick="Payroll.slipPrint()">🖨 Print</button><button type="button" onclick="Payroll.slipPdf()">⬇ Download PDF</button><button type="button" class="sec" onclick="Payroll.slipShare()">📤 Share</button><button type="button" class="sec" onclick="Payroll.closeModal()">Close</button></div><div id="prl-mmsg"></div>');
+        } catch (e) { toast(e.message, true); }
+    }
+    function audit(how) { try { var d = S.slipData; api('payslip.get', { runId: d.run.run_id, empId: d.item.emp_id, audit: true, how: how }); } catch (e) { /* the slip is already open */ } }
+    function printHtml(html) {
+        var f = document.createElement('iframe'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'; document.body.appendChild(f);
+        var doc = f.contentWindow.document; doc.open(); doc.write('<!doctype html><html><head><meta charset="utf-8"><title>Payslip</title><style>@page{size:A4;margin:12mm}body{margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}.pg{page-break-after:always;padding:6px}' + SLIP_CSS + '</style></head><body>' + html + '</body></html>'); doc.close();
+        setTimeout(function () { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { toast('Printing is not available here — use Download PDF.', true); } setTimeout(function () { f.remove(); }, 60000); }, 400);
+    }
+    function slipPrint() { audit('print'); printHtml('<div class="pg">' + slipHtml(S.slipModel) + '</div>'); }
+    async function printAll() {
+        try {
+            var items = S.run.items, out = [];
+            for (var i = 0; i < items.length; i++) { var d = await api('payslip.get', { runId: S.runId, empId: items[i].emp_id, audit: true, how: 'print-all' }); out.push('<div class="pg">' + slipHtml(slipModel(d)) + '</div>'); }
+            printHtml(out.join(''));
+        } catch (e) { toast(e.message, true); }
+    }
+
+    /* ---- a real PDF, built here (no library, works offline once the slip is loaded) ---- */
+    var HW = [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584];
+    var BW = [278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611, 975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556, 333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584];
+    function tw(s, size, bold) { var t = bold ? BW : HW, w = 0; for (var i = 0; i < s.length; i++) { var c = s.charCodeAt(i) - 32; w += (c >= 0 && c < t.length ? t[c] : 556); } return w * size / 1000; }
+    function pdfText(s) { return String(s == null ? '' : s).replace(/[–—]/g, '-').replace(/[×]/g, 'x').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[^\x20-\x7E]/g, '?'); }
+    function pdfEsc(s) { return pdfText(s).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)'); }
+    function jpegSize(bytes) { var i = 2; while (i < bytes.length) { if (bytes[i] !== 0xFF) { i++; continue; } var mk = bytes[i + 1]; if (mk >= 0xC0 && mk <= 0xCF && mk !== 0xC4 && mk !== 0xC8 && mk !== 0xCC) return { h: bytes[i + 5] * 256 + bytes[i + 6], w: bytes[i + 7] * 256 + bytes[i + 8], comps: bytes[i + 9] }; i += 2 + bytes[i + 2] * 256 + bytes[i + 3]; } return null; }
+    function logoJpeg(src) {
+        return new Promise(function (resolve) {
+            if (!src) { resolve(null); return; }
+            var im = new Image(); im.onload = function () { try { var k = Math.min(1, 300 / Math.max(im.width, im.height)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(im.width * k)); c.height = Math.max(1, Math.round(im.height * k)); var x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(im, 0, 0, c.width, c.height); var u = c.toDataURL('image/jpeg', 0.85), bin = atob(u.split(',')[1]), b = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i); var sz = jpegSize(b); resolve(sz ? { bytes: b, w: sz.w, h: sz.h, comps: sz.comps } : null); } catch (e) { resolve(null); } };
+            im.onerror = function () { resolve(null); }; im.src = src;
+        });
+    }
+    async function slipPdfBlob(m) {
+        var W = 595, H = 842, M = 40, ops = [], y = H - M;
+        var G = [0.122, 0.541, 0.439];
+        function fill(c) { ops.push(c[0] + ' ' + c[1] + ' ' + c[2] + ' rg'); }
+        function rect(x, yy, w, h, c) { fill(c); ops.push(x + ' ' + yy + ' ' + w + ' ' + h + ' re f'); }
+        function line(x1, y1, x2, y2, c, wd) { ops.push((c || [0.8, 0.82, 0.85]).join(' ') + ' RG ' + (wd || 0.6) + ' w ' + x1 + ' ' + y1 + ' m ' + x2 + ' ' + y2 + ' l S'); }
+        function text(s, x, yy, size, bold, c, align) { s = pdfText(s); var w = tw(s, size, bold), px = align === 'r' ? x - w : align === 'c' ? x - w / 2 : x; fill(c || [0.11, 0.17, 0.21]); ops.push('BT /' + (bold ? 'F2' : 'F1') + ' ' + size + ' Tf ' + px.toFixed(2) + ' ' + yy.toFixed(2) + ' Td (' + pdfEsc(s) + ') Tj ET'); }
+        var logo = await logoJpeg(m.biz.logo), lx = M;
+        if (logo) { var lh = 42, lw = Math.min(110, lh * logo.w / logo.h); lh = lw * logo.h / logo.w; ops.push('q ' + lw.toFixed(1) + ' 0 0 ' + lh.toFixed(1) + ' ' + M + ' ' + (y - lh).toFixed(1) + ' cm /Im1 Do Q'); lx = M + lw + 10; }
+        text(m.biz.name, lx, y - 14, 17, true); text([m.branch, m.biz.contact].filter(Boolean).join('  |  '), lx, y - 28, 8.5, false, [0.48, 0.53, 0.57]); if (m.biz.email) text(m.biz.email, lx, y - 39, 8.5, false, [0.48, 0.53, 0.57]);
+        text(m.title, W - M, y - 14, 18, true, G, 'r'); text(m.slipNo, W - M, y - 28, 8.5, false, [0.48, 0.53, 0.57], 'r');
+        if (m.status !== 'paid') text(m.status.toUpperCase() + ' - NOT FINAL', W - M, y - 40, 9, true, [0.9, 0.49, 0.13], 'r');
+        y -= 54; rect(M, y, W - 2 * M, 3, G); y -= 16;
+        rect(M, y - 38, W - 2 * M, 44, [0.957, 0.973, 0.969]);
+        var cw = (W - 2 * M) / 4, f = [['Employee', m.name], ['Employee No', m.empNo || '-'], ['Position', m.position || '-'], ['Pay period', m.period]];
+        f.forEach(function (p, i) { text(p[0], M + 8 + i * cw, y - 4, 7.5, false, [0.48, 0.53, 0.57]); text(p[1], M + 8 + i * cw, y - 18, 9.5, true); });
+        text('Frequency: ' + m.freq + (m.dept ? '   Department: ' + m.dept : ''), M + 8, y - 33, 8, false, [0.48, 0.53, 0.57]);
+        y -= 58;
+        var colW = (W - 2 * M - 16) / 2, rowsMax = Math.max(m.earn.length, m.ded.length, 1);
+        function table(x, title, rows, total, label) {
+            rect(x, y - 14, colW, 18, G); text(title, x + 6, y - 9, 8.5, true, [1, 1, 1]); text('KES', x + colW - 6, y - 9, 8.5, true, [1, 1, 1], 'r');
+            var yy = y - 28;
+            if (!rows.length) { text('None', x + 6, yy, 9, false, [0.48, 0.53, 0.57]); yy -= 16; }
+            rows.forEach(function (r) { var lab = pdfText(r[0]); while (tw(lab, 9, false) > colW - 84 && lab.length > 4) lab = lab.slice(0, -2); if (lab !== pdfText(r[0])) lab += '..'; text(lab, x + 6, yy, 9, false); text(Number(r[1]).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), x + colW - 6, yy, 9, false, null, 'r'); line(x, yy - 5, x + colW, yy - 5); yy -= 16; });
+            var ty = y - 28 - Math.max(rowsMax, 1) * 16 - 2; line(x, ty + 11, x + colW, ty + 11, G, 1.2); text(label, x + 6, ty, 9.5, true); text(Number(total).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), x + colW - 6, ty, 9.5, true, null, 'r');
+        }
+        table(M, 'EARNINGS', m.earn, m.totalEarn, 'Total earnings'); table(M + colW + 16, 'DEDUCTIONS', m.ded, m.totalDed, 'Total deductions');
+        y -= 28 + Math.max(rowsMax, 1) * 16 + 22;
+        rect(M, y - 30, W - 2 * M, 38, G); text('NET PAY', M + 14, y - 17, 11, true, [1, 1, 1]); text('KES ' + Number(m.net).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), W - M - 14, y - 19, 18, true, [1, 1, 1], 'r');
+        y -= 54; if (m.note) { text('Note: ' + m.note, M, y, 8.5, false, [0.48, 0.53, 0.57]); y -= 16; }
+        var pf = [['Payment date', m.payDate || '-'], ['Payment method', m.method ? m.method.toUpperCase() : '-'], ['Payroll reference', m.payRef || m.ref]], pw = (W - 2 * M) / 3;
+        pf.forEach(function (p, i) { text(p[0], M + i * pw, y, 7.5, false, [0.48, 0.53, 0.57]); text(p[1], M + i * pw, y - 13, 10, true); });
+        y -= 70; line(M, y, M + 200, y, [0.6, 0.65, 0.68], 0.8); line(W - M - 200, y, W - M, y, [0.6, 0.65, 0.68], 0.8); text('Employee signature', M, y - 11, 8, false, [0.48, 0.53, 0.57]); text('Approved by', W - M - 200, y - 11, 8, false, [0.48, 0.53, 0.57]);
+        text('Generated by Create Payroll', W / 2, 24, 7.5, false, [0.65, 0.69, 0.72], 'c');
+        var content = ops.join('\n'), parts = [], len = 0, offs = [];
+        function push(x) { if (typeof x === 'string') { var b = new Uint8Array(x.length); for (var i = 0; i < x.length; i++) b[i] = x.charCodeAt(i) & 255; parts.push(b); len += b.length; } else { parts.push(x); len += x.length; } }
+        push('%PDF-1.4\n');
+        function obj(n, body) { offs[n] = len; push(n + ' 0 obj\n' + body + '\nendobj\n'); }
+        obj(1, '<< /Type /Catalog /Pages 2 0 R >>'); obj(2, '<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+        obj(3, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + W + ' ' + H + '] /Resources << /Font << /F1 4 0 R /F2 5 0 R >>' + (logo ? ' /XObject << /Im1 7 0 R >>' : '') + ' >> /Contents 6 0 R >>');
+        obj(4, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'); obj(5, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+        obj(6, '<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream');
+        if (logo) { offs[7] = len; push('7 0 obj\n<< /Type /XObject /Subtype /Image /Width ' + logo.w + ' /Height ' + logo.h + ' /ColorSpace ' + (logo.comps === 1 ? '/DeviceGray' : '/DeviceRGB') + ' /BitsPerComponent 8 /Filter /DCTDecode /Length ' + logo.bytes.length + ' >>\nstream\n'); push(logo.bytes); push('\nendstream\nendobj\n'); }
+        var n = logo ? 7 : 6, xr = len; push('xref\n0 ' + (n + 1) + '\n0000000000 65535 f \n'); for (var k = 1; k <= n; k++) push(('0000000000' + offs[k]).slice(-10) + ' 00000 n \n');
+        push('trailer\n<< /Size ' + (n + 1) + ' /Root 1 0 R >>\nstartxref\n' + xr + '\n%%EOF');
+        return new Blob(parts, { type: 'application/pdf' });
+    }
+    function fileName(m) { return ('payslip-' + m.name + '-' + m.period).replace(/[^\w\-]+/g, '_') + '.pdf'; }
+    async function slipPdf() {
+        try { audit('pdf'); var blob = await slipPdfBlob(S.slipModel), url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = fileName(S.slipModel); document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 5000); }
+        catch (e) { toast('Could not make the PDF: ' + e.message, true); }
+    }
+    async function slipShare() {
+        var m = S.slipModel;
+        try {
+            audit('share'); var blob = await slipPdfBlob(m), file = new File([blob], fileName(m), { type: 'application/pdf' });
+            if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Payslip - ' + m.period, text: 'Payslip for ' + m.name + ' (' + m.period + '). Net pay ' + kes(m.net) }); return; }
+            slipPdf(); toast('Sharing files is not supported here — the PDF was downloaded; attach it in WhatsApp or email.');
+        } catch (e) { if (e && e.name === 'AbortError') return; toast('Could not share: ' + e.message, true); }
+    }
+    function csv() {
+        var d = S.run, rows = [['Payslip', 'Employee No', 'Name', 'Position', 'Gross (basic)', 'Additions', 'Deductions', 'Net pay']];
+        d.items.forEach(function (i) { rows.push([i.payslip_no, i.emp_no, i.emp_name, i.job_title, i.basic, i.additions, i.deductions, i.net]); });
+        var txt = rows.map(function (r) { return r.map(function (c) { c = c == null ? '' : String(c); return /[",\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c; }).join(','); }).join('\n');
+        var url = URL.createObjectURL(new Blob([txt], { type: 'text/csv' })), a = document.createElement('a'); a.href = url; a.download = d.run.ref + '.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    }
+
+    /* ---------------- settings ---------------- */
+    async function vSettings() {
+        var h = '', t = await api('types.list'); S.types = t.types || [];
+        var calcTxt = function (x) { return x.calc === 'fixed' ? (x.amount ? kes(x.amount) : 'amount set per person') : x.calc === 'bands' ? 'tax bands' : x.rate + '% of ' + (x.calc === 'percent_basic' ? 'basic' : 'gross'); };
+        var list = function (kind) { return S.types.filter(function (x) { return x.kind === kind; }).map(function (x) { return '<div class="prl-row" ' + (has('settings') ? 'onclick="Payroll.typeEdit(\'' + x.type_id + '\')"' : 'style="cursor:default"') + '><div class="l"><b>' + esc(x.label) + (x.statutory ? ' <span class="prl-chip reviewed">statutory</span>' : '') + '</b><span>' + calcTxt(x) + (x.auto_apply ? ' · applied to everyone' : '') + '</span></div><div class="r">' + (x.active ? '<span class="prl-chip active">on</span>' : '<span class="prl-chip draft">off</span>') + '</div></div>'; }).join('') || '<p class="prl-muted">None.</p>'; };
+        h += '<div class="prl-box"><h4>➕ Pay types (allowances &amp; extras)</h4><div class="prl-list">' + list('earning') + '</div>' + (has('settings') ? '<div class="prl-actions"><button type="button" class="sec" onclick="Payroll.typeEdit(\'\',\'earning\')">Add a pay type</button></div>' : '') + '</div>' +
+            '<div class="prl-box"><h4>➖ Deduction types</h4><div class="prl-list">' + list('deduction') + '</div>' + (has('settings') ? '<div class="prl-actions"><button type="button" class="sec" onclick="Payroll.typeEdit(\'\',\'deduction\')">Add a deduction type</button><button type="button" class="sec" onclick="Payroll.template()">Add Kenyan statutory starting points</button></div><div class="prl-warnbox">⚠️ Statutory deductions (PAYE, NSSF, SHIF, Housing Levy) are <b>never applied on their own</b>. The starting points arrive switched <b>off</b> — check each rate and limit against the current KRA / NSSF / SHA notices, edit them, then switch them on. Rates change by law, so they live here as settings, not in the program.</div>' : '') + '</div>';
+        if (S.who.admin) {
+            var acc = (await api('access.get')).access || [], by = {}; acc.forEach(function (a) { by[a.staff_id] = a.perms; });
+            var list2 = []; try { list2 = (typeof staff !== 'undefined' && Array.isArray(staff)) ? staff.filter(function (s) { return s && !s.removed; }) : []; } catch (e) { list2 = []; }
+            h += '<div class="prl-box"><h4>🔑 Who may use payroll</h4><p class="prl-muted">Only you (the Admin) always can. Tick what each staff member may do. Everyone else can only open their own payslips. This is enforced by the server.</p>' + (list2.length ? list2.map(function (s) {
+                return '<div class="prl-box" style="margin:6px 0"><b>' + esc(s.name) + '</b><div>' + Object.keys(PERM_LABEL).map(function (p) { return '<label style="display:flex;gap:8px;align-items:center;margin:4px 0;font-weight:normal"><input type="checkbox" style="width:auto" ' + ((by[s.id] || []).indexOf(p) !== -1 ? 'checked' : '') + ' onchange="Payroll.perm(\'' + esc(s.id) + '\',\'' + esc(s.name).replace(/'/g, '') + '\')" data-sid="' + esc(s.id) + '" data-p="' + p + '"> ' + PERM_LABEL[p] + '</label>'; }).join('') + '</div></div>';
+            }).join('') : '<p class="prl-muted">No staff accounts yet.</p>') + '</div>';
+        }
+        if (has('settings')) h += '<div class="prl-box"><h4>🧾 Payroll audit log</h4><div class="prl-actions"><button type="button" class="sec" onclick="Payroll.auditShow()">Show recent activity</button></div><div id="prl-audit"></div></div>';
+        return h;
+    }
+    async function perm(sid, name) {
+        var ps = [].slice.call(document.querySelectorAll('input[data-sid="' + sid + '"]')).filter(function (x) { return x.checked; }).map(function (x) { return x.getAttribute('data-p'); });
+        try { await api('access.save', { staffId: sid, staffName: name, perms: ps }); toast('Saved'); } catch (e) { toast(e.message, true); }
+    }
+    async function template() { try { await api('types.template'); toast('Added — switched off until you review them'); render(); } catch (e) { toast(e.message, true); } }
+    function typeEdit(id, kind) {
+        var t = (S.types || []).filter(function (x) { return x.type_id === id; })[0] || { kind: kind || 'earning', calc: 'fixed', rate: 0, amount: 0, active: 1, cfg: {} }; S.typeCur = t;
+        var cfg = t.cfg || {};
+        modal('<h4>' + (id ? 'Edit' : 'New') + ' ' + (t.kind === 'earning' ? 'pay type' : 'deduction type') + '</h4><div class="prl-form"><div><label>Name</label><input id="ty-label" value="' + esc(t.label || '') + '"></div>' +
+            '<div><label>How it is worked out</label><select id="ty-calc" onchange="Payroll.tyCalc()"><option value="fixed"' + (t.calc === 'fixed' ? ' selected' : '') + '>A fixed amount</option><option value="percent_basic"' + (t.calc === 'percent_basic' ? ' selected' : '') + '>% of basic pay</option><option value="percent_gross"' + (t.calc === 'percent_gross' ? ' selected' : '') + '>% of total pay (basic + additions)</option><option value="bands"' + (t.calc === 'bands' ? ' selected' : '') + '>Tax bands (like PAYE)</option></select></div>' +
+            '<div id="ty-amt"><label>Amount (KES)</label><input id="ty-amount" type="number" min="0" step="0.01" value="' + (t.amount || 0) + '"></div><div id="ty-rate"><label>Percent (%)</label><input id="ty-r" type="number" min="0" max="100" step="0.01" value="' + (t.rate || 0) + '"></div>' +
+            '<div><label>Smallest amount (optional)</label><input id="ty-min" type="number" min="0" step="0.01" value="' + (cfg.min || '') + '"></div><div><label>Largest amount (optional)</label><input id="ty-max" type="number" min="0" step="0.01" value="' + (cfg.max || '') + '"></div><div><label>Only count pay up to (optional)</label><input id="ty-cap" type="number" min="0" step="0.01" value="' + (cfg.base_cap || '') + '"></div></div>' +
+            '<div id="ty-bands" style="display:none"><div class="prl-form"><div><label>Tax relief taken off (KES)</label><input id="ty-relief" type="number" min="0" step="0.01" value="' + (cfg.relief || 0) + '"></div><div><label>Pay before tax is reduced by these deduction types (their ids, comma separated)</label><input id="ty-less" value="' + esc((cfg.lessTypeIds || []).join(',')) + '"></div></div><label class="prl-muted">Bands — one per line as: upper limit, percent  (leave the limit empty for “everything above”)</label><textarea id="ty-b" rows="6" style="width:100%">' + esc((cfg.bands || []).map(function (b) { return (b.upTo == null ? '' : b.upTo) + ',' + b.rate; }).join('\n')) + '</textarea></div>' +
+            '<label style="display:flex;gap:8px;align-items:center;margin:10px 0;font-weight:normal"><input id="ty-auto" type="checkbox" style="width:auto"' + (t.auto_apply ? ' checked' : '') + '> Apply to <b>every</b> employee automatically in each new payroll</label>' +
+            '<label style="display:flex;gap:8px;align-items:center;margin:6px 0;font-weight:normal"><input id="ty-on" type="checkbox" style="width:auto"' + (t.active ? ' checked' : '') + '> Switched on</label><div id="prl-mmsg"></div><div class="prl-actions"><button type="button" onclick="Payroll.tySave()">Save</button><button type="button" class="sec" onclick="Payroll.closeModal()">Cancel</button></div>');
+        tyCalc();
+    }
+    function tyCalc() { var c = $('ty-calc').value; $('ty-amt').style.display = c === 'fixed' ? '' : 'none'; $('ty-rate').style.display = (c === 'percent_basic' || c === 'percent_gross') ? '' : 'none'; $('ty-bands').style.display = c === 'bands' ? '' : 'none'; }
+    async function tySave() {
+        try {
+            var t = S.typeCur, cfg = {}, g = function (id) { return $(id).value; };
+            if (g('ty-min')) cfg.min = num(g('ty-min')); if (g('ty-max')) cfg.max = num(g('ty-max')); if (g('ty-cap')) cfg.base_cap = num(g('ty-cap'));
+            if (g('ty-calc') === 'bands') { cfg.relief = num(g('ty-relief')); cfg.lessTypeIds = g('ty-less').split(',').map(function (x) { return x.trim(); }).filter(Boolean); cfg.bands = g('ty-b').split('\n').map(function (l) { var p = l.split(','); return p.length >= 2 ? { upTo: p[0].trim() === '' ? null : num(p[0]), rate: num(p[1]) } : null; }).filter(Boolean); }
+            await api('type.save', { type: { type_id: t.type_id, kind: t.kind, label: g('ty-label'), calc: g('ty-calc'), amount: num(g('ty-amount')), rate: num(g('ty-r')), cfg: cfg, statutory: t.statutory, auto_apply: $('ty-auto').checked, active: $('ty-on').checked } });
+            closeModal(); toast('Saved'); render();
+        } catch (e) { $('prl-mmsg').innerHTML = errBox(e); }
+    }
+    async function auditShow() {
+        try { var d = await api('audit.list', { limit: 100 }); $('prl-audit').innerHTML = '<div class="prl-list" style="margin-top:8px">' + d.audit.map(function (a) { return '<div class="prl-row" style="cursor:default"><div class="l"><b>' + esc(a.action.replace(/_/g, ' ')) + '</b><span>' + esc(a.actor_name || '') + ' · ' + new Date(a.ts).toLocaleString('en-GB') + (a.detail ? ' · ' + esc(String(a.detail).slice(0, 120)) : '') + '</span></div></div>'; }).join('') + '</div>'; }
+        catch (e) { toast(e.message, true); }
+    }
+
+    /* ---------------- a small payroll card on the Dashboard (only for people with payroll rights) ---------------- */
+    async function dashCard() {
+        try {
+            var host = $('dashboard-tab'); if (!host || !anyPerm() || isOffline() || !(await sessionReady())) { var old = $('prl-dash-card'); if (old && !anyPerm()) old.remove(); return; }
+            var d = await api('dashboard', {}), card = $('prl-dash-card');
+            if (!card) { card = document.createElement('div'); card.id = 'prl-dash-card'; card.className = 'panel'; card.style.cssText = 'margin-top:12px'; host.appendChild(card); }
+            card.innerHTML = '<h4 style="margin:0 0 8px">💼 Create Payroll</h4><div class="prl-cards" style="margin:0"><div class="prl-card info"><small>Employees</small><b>' + d.employees + '</b></div><div class="prl-card good"><small>This month</small><b style="font-size:18px">' + kes(d.monthTotal) + '</b></div><div class="prl-card warn"><small>Pending approval</small><b>' + d.pendingApproval + '</b></div><div class="prl-card good"><small>Paid</small><b>' + d.paid + '</b></div><div class="prl-card info"><small>Upcoming payroll</small><b style="font-size:16px">' + dshow(d.upcoming) + '</b></div></div><div class="prl-actions" style="margin-bottom:0"><button type="button" class="sec" onclick="var b=document.getElementById(\'payroll-tab-btn\');if(b)b.click()">Open payroll</button></div>';
+        } catch (e) { /* the dashboard simply has no payroll card */ }
+    }
+    var _refresh = refreshAccess; refreshAccess = async function () { await _refresh(); dashCard(); };
+
+    /* ---------------- wiring into the app ---------------- */
+    // Payroll is never "locked" by the tab-role list: the SERVER decides what each person may see inside it.
+    // (This block sits in the middle of the page, before the app's own script defines performTabSwitch / isTabLocked, so it hooks them once the page has loaded.)
+    var wiredLock = false, wiredSwitch = false;
+    function wire() {
+        try { if (!wiredLock && typeof isTabLocked === 'function') { var _lock = isTabLocked; isTabLocked = function (id) { return id === 'payroll-tab' ? false : _lock.apply(this, arguments); }; wiredLock = true; } } catch (e) { /* the app has its own tab rules */ }
+        try {
+            if (!wiredSwitch && typeof performTabSwitch === 'function') {
+                var _perf = performTabSwitch;
+                performTabSwitch = function (btn, id) { var r = _perf.apply(this, arguments); if (id === 'payroll-tab') { S.view = anyPerm() ? S.view : 'mine'; open(); } return r; };
+                wiredSwitch = true;
+            }
+        } catch (e) { /* the tab opens by its button anyway */ }
+    }
+    wire(); document.addEventListener('DOMContentLoaded', wire); window.addEventListener('load', function () { wire(); setTimeout(wire, 300); setTimeout(wire, 1500); });
+    window.addEventListener('online', function () { setTimeout(refreshAccess, 1500); });
+    setInterval(refreshAccess, 45000); setTimeout(refreshAccess, 2500); setTimeout(paintBtn, 600);
+    document.addEventListener('click', function (ev) { if (ev.target && ev.target.id === 'prl-modal') closeModal(); });
+
+    window.Payroll = { importPos: importPos, go: go, open: open, unlock: unlock, newEmp: newEmp, saveNew: saveNew, saveEmp: saveEmp, openEmp: openEmp, search: search, sub: sub, addLine: addLine, delLine: delLine,
+        docPicked: docPicked, docUpload: docUpload, docView: docView, docReplace: docReplace, docReplaceGo: docReplaceGo, docArchive: docArchive, docDelete: docDelete, closeModal: closeModal,
+        newRun: newRun, nrFreq: nrFreq, createRun: createRun, openRun: openRun, step: step, delRun: delRun, addEmpToRun: addEmpToRun, addEmpGo: addEmpGo, payForm: payForm, payGo: payGo, adjustForm: adjustForm, adjustPick: adjustPick, adjustGo: adjustGo,
+        editItem: editItem, eiAdd: eiAdd, eiDel: eiDel, eiSet: eiSet, eiSave: eiSave, eiRemove: eiRemove, slip: slip, slipPrint: slipPrint, slipPdf: slipPdf, slipShare: slipShare, printAll: printAll, csv: csv,
+        perm: perm, template: template, typeEdit: typeEdit, tyCalc: tyCalc, tySave: tySave, auditShow: auditShow, calc: { slipModel: slipModel, slipPdfBlob: slipPdfBlob, slipHtml: slipHtml, current: function () { return S.slipModel; } } };
+})();
+</script>

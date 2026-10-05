@@ -9,7 +9,7 @@ test('payment methods and receipt shortcuts are Settings tabs, not loose cards a
     const { d, close } = await boot(a, { wait: 3000 });
     try {
       const pay = d.getElementById('settings-section-paymethods'), keys = d.getElementById('settings-section-shortcuts');
-      assert.ok(pay && keys, a + ': both sections exist');
+      assert.ok(pay && keys, a + ': both sections exist ' + !!pay + !!keys);
       assert.ok(pay.contains(d.getElementById('pos-paymethods-panel')), a);
       assert.ok(keys.contains(d.getElementById('pos-receiptkeys-panel')), a);
       assert.ok(d.querySelector('.settings-subtab-btn[data-section="settings-section-paymethods"]'), a + ': tab button');

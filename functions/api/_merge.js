@@ -978,7 +978,7 @@ export const NEVER_BLANK_FIELDS = ['pwHash', 'adminPwHash', 'businessName'];
 export const SETTINGS_NEED_STAMP_FIELDS = [
   'receiptLogo', 'receiptQr', 'receiptQrCaption', 'receiptShowLogo', 'receiptShowQr', 'receiptItemAlign', 'receiptEmail', 'receiptContact',
   'receiptExtraInfo', 'receiptFooterNotes', 'receiptWidth', 'receiptCustomWidth', 'receiptLengthMode', 'receiptFixedLength', 'receiptFontPt',
-  'receiptShowRefNumber', 'receiptShowBarcode', 'receiptFooterNotesHire', 'receiptLogoData', 'receiptQrData', 'paymentDetails', 'receiptStampSrc', 'receiptStampAngle', 'receiptStampSize', 'receiptShowStamp', 'billsLocked',
+  'receiptShowRefNumber', 'receiptShowBarcode', 'receiptFooterNotesHire', 'receiptLogoData', 'receiptQrData', 'paymentDetails', 'receiptStampSrc', 'receiptStampAngle', 'receiptStampSize', 'receiptShowStamp', 'receiptStampPaid', 'billsLocked',
   'receiptAlign', 'lockedTabs', 'vatRateA', 'vatRateB', 'requireCartRemovePw', 'requireCartPricePw', 'lowStockThreshold', 'expiryWarningDays', 'qtyDisplayFormat',
 ];
 

@@ -789,6 +789,8 @@ If the sheet has multiple stock-like blocks, extract all of them together into t
   // so it's easy to tune later without touching the parsing/response logic
   // below.
   const MENU_HINT = body.mode === 'menu' ? `\n\nThe person uploading this file says it is a MENU / price list of dishes to sell — treat it as KIND 3 (document_type "menu") unless it plainly is not.` : '';
+  // zip 215: "📸 Capture Sales" (Daily Sales) - a photo of the shopkeeper's own SALES BOOK. Same reply shape as KIND 1; only the meaning of the numbers differs.
+  const SALES_HINT = body.mode === 'sales' ? `\n\nIMPORTANT - the person uploading this says the page is their handwritten SALES RECORD (a book of what they SOLD, not what they bought). Set document_type to "items". Every line is one item sold: put what was sold in "quantity" (a bare count is the number of units; "2x", "x2", "2pcs" all mean 2). Put the price PER ONE UNIT in "retail_price": if the book shows a unit price use it; if it only shows a line total (e.g. "Sugar 3 450") divide the total by the quantity. Leave unit_cost and wholesale_price at 0. Ignore running totals, page totals, dates, headings, "balance", "cash", "mpesa" and crossed-out lines. If the same item appears on several lines keep each line separately. Read the item name exactly as written - do not translate or "correct" brand names.` : '';
   const SYSTEM_PROMPT = `You are reading a shop document for a point-of-sale system's inventory intake — either a photograph/scan of a paper document, or the plain-text rows extracted from a spreadsheet file (columns separated by " | ", one row per line). First decide which of three kinds of document this is, then extract it accordingly.
 
 KIND 1 — an invoice, a handwritten stock note, a printed delivery sheet, or a receipt listing goods bought/delivered. Set document_type to "items".
@@ -818,7 +820,7 @@ KIND 3 — a MENU: a restaurant, hotel or cafe menu or price list of dishes, mea
 
 If a document is ambiguous between the kinds, prefer "recipe" only when there's a clear dish-name heading above an ingredient table with a Unit column; a list of foods/drinks with one selling price each and no quantities is a "menu"; anything else with quantities or buying costs is "items".
 
-Respond with a JSON object matching the schema exactly. For "items" lines, every entry must have at least one of detected_name or detected_code — omit or leave blank ("") whichever one genuinely isn't present, rather than guessing. confidence_score is your own confidence (0.0–1.0) that a line/ingredient was read correctly. If the document contains no readable item lines or recipe at all, respond with document_type "items" and an empty items array.` + MENU_HINT;
+Respond with a JSON object matching the schema exactly. For "items" lines, every entry must have at least one of detected_name or detected_code — omit or leave blank ("") whichever one genuinely isn't present, rather than guessing. confidence_score is your own confidence (0.0–1.0) that a line/ingredient was read correctly. If the document contains no readable item lines or recipe at all, respond with document_type "items" and an empty items array.` + MENU_HINT + SALES_HINT;
 
   // responseMimeType + responseSchema below force Gemini to return exactly
   // this shape as the text part — no markdown fences, no commentary — so

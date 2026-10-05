@@ -16,6 +16,8 @@
 //  * Money tables refuse DELETE and log every change in an append-only audit (database triggers — see _ledger-schema.js).
 //  * Webhooks (M-Pesa, cards) that cannot be retried by the sender are parked in a KV outbox if D1 is briefly down and replayed on
 //    the next request — the provider gets its answer, the money is still recorded exactly once.
+import { LPG_SCHEMA } from './_lpg-schema.js';
+import { lpgMovementStatements, lpgSaleStatements } from './_lpg.js';
 import { LEDGER_SCHEMA, LEDGER_SCHEMA_0007, LEDGER_SCHEMA_VERSION, VOLATILE_FIELDS, sqlStripVolatile } from './_ledger-schema.js';
 import { withRetry, isStorageFull } from './_retry.js';
 import { auditDb, writeAuditRows, detachMainAuditTriggers, snapshotOf } from './_audit-db.js';
@@ -34,7 +36,7 @@ export async function ensureLedgerSchema(db) {
   let ok = false;
   try { const r = await db.prepare(`SELECT v FROM ledger_meta WHERE k = 'schema'`).first(); ok = !!(r && Number(r.v) >= LEDGER_SCHEMA_VERSION); } catch (e) { ok = false; }
   if (!ok) {
-    await db.batch(LEDGER_SCHEMA.concat(LEDGER_SCHEMA_0007).map((s) => db.prepare(s)));      // zip 186: 0007 = quiet audit triggers, kill switch, guarded audit delete (same list as migrations/0007)
+    await db.batch(LEDGER_SCHEMA.concat(LEDGER_SCHEMA_0007, LPG_SCHEMA).map((s) => db.prepare(s)));      // zip 186: 0007 = quiet audit triggers, kill switch, guarded audit delete (same list as migrations/0007)
     await db.prepare(`INSERT INTO ledger_meta (k, v) VALUES ('schema', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).bind(String(LEDGER_SCHEMA_VERSION)).run();
   }
   ready.set(db, true);
@@ -192,6 +194,7 @@ export function buildGroups(db, clientId, body, opt = {}) {
       ON CONFLICT (client_id, sale_id, line_no) DO UPDATE SET code = excluded.code, name = excluded.name, qty = excluded.qty, price = excluded.price, cost = excluded.cost, station = excluded.station`)
       .bind(clientId, id, i, str(it.code, 60), str(it.name, 120), num(it.qty), num(it.price), num(it.wholesalePrice) * 1, str(it.station, 20), clientId, id, version)));
     st.push(db.prepare(`DELETE FROM ledger_sale_items WHERE client_id = ? AND sale_id = ? AND line_no >= ? AND EXISTS (SELECT 1 FROM ledger_sales WHERE client_id = ? AND sale_id = ? AND version = ?)`).bind(clientId, id, items.length, clientId, id, version));
+    if (items.some((it) => it && it.lpg)) lpgSaleStatements(db, clientId, id, items, { ts, date: bizDate(ts, off), app, version }).forEach((x) => st.push(x));       // zip 216: gas lines
     const payStatus = status === 'COMPLETED' ? 'CONFIRMED' : 'REVERSED';
     pays.forEach((p) => st.push(db.prepare(`INSERT INTO ledger_payments (client_id, payment_id, sale_id, bill_id, method, amount, mpesa_code, status, confirmed_by, source, ts, business_date, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -264,6 +267,7 @@ export function buildGroups(db, clientId, body, opt = {}) {
           VALUES (?, ?, NULL, ?, ?, ?, ?, 'CONFIRMED', ?, ?, ?, ?, ?) ON CONFLICT (client_id, payment_id) DO NOTHING`)
           .bind(clientId, `${spec.kind}:${id}:${p.id || i}`, `${spec.kind}:${id}`, m, amt, str(p.reference || p.code, 40), str(p.by || p.servedBy, 60), source, pts, bizDate(pts, off), now));
       });
+      if (field === 'stockMovementLog' && r.lpg) lpgMovementStatements(db, clientId, r, { ts, date: bizDate(ts, off), app }).forEach((x) => st.push(x));       // zip 216: gas movements
       groups.push(tag(st, spec.kind, id));
     }
   }

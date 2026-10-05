@@ -105,6 +105,9 @@ export const SHARED_BLOCKS = {
   'balance-sheet': { startMarker: '<!-- BALANCE SHEET', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html'] },   // Reports: Balance Sheet (zip 209)
   'gateway-more': { startMarker: '<!-- PAYMENT GATEWAYS: PESAPAL', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html', 'water/index.html'] },   // Pesapal + Co-op Bank (zip 210)
   'hide-adhoc': { startMarker: '<!-- HIDE UNLISTED', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html'] },   // Settings > General: hide the Sell Unlisted Item button (zip 208)
+  'hide-counter-btns': { startMarker: '<!-- HIDE COUNTER BUTTONS', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html'] },   // zip 217: Settings > General: hide the Bills / Sales buttons on the Sales Counter
+  'lpg-retail': { startMarker: '<!-- LPG RETAIL', only: ['index.html', 'production/index.html', 'services/index.html'] },   // zip 216: the gas chooser at the Sales Counter, bundles, damaged, stock take, history, reports (server: _lpg.js)
+  'tengeneza-payroll': { startMarker: '<!-- TENGENEZA PAYROLL' },   // zip 216: staff register, documents, pay runs, payslips (server: functions/api/payroll.js)
   'tap-rescue': { startMarker: '<!-- TAP RESCUE', owner: true },      // first-tap reliability when the screen redraws mid-tap (zip 122)
   'one-tab': { startMarker: '<!-- ONE TAB' },
   'sales-journal': { startMarker: '<!-- SALES JOURNAL' },

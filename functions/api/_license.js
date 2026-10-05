@@ -170,6 +170,7 @@ export const PRODUCTS = {
   pharmacy: { label: 'Pharmacy POS', path: '/pharmacy/' },
   services: { label: 'Services POS (Bookings)', path: '/services/' },
   water: { label: 'Water Refill Station POS (AquaPOS)', path: '/water/' },
+  chama: { label: 'Chama (savings group manager)', path: '/chama/' },
 };
 const DEFAULT_PRODUCT = 'shop';
 

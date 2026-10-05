@@ -12,7 +12,7 @@ const TRK = { code: 'TRK', category: 'bale', name: 'Tracked Bale', price: 500, w
 const MAT = { id: 'mat-1', siteId: PROD, name: 'Caps', unitCost: 1, stockQty: 5 };
 const J = (w, js) => JSON.parse(w.eval(`JSON.stringify(${js})`));
 async function app(extra = {}) {
-  const b = await boot('water/index.html', { storage: { aqua_products: JSON.stringify([BOTTLE, BALE, CAP, TRK]), aqua_raw_materials: JSON.stringify([MAT]), aqua_active_site_id: PROD, ...extra }, wait: 1200 });
+  const b = await boot('water/index.html', { url: 'https://demo.mydukapos.store/#production', storage: { aqua_products: JSON.stringify([BOTTLE, BALE, CAP, TRK]), aqua_raw_materials: JSON.stringify([MAT]), aqua_active_site_id: PROD, ...extra }, wait: 1200 });
   b.w.eval("showToast = function (m, e) { (window.__toasts = window.__toasts || []).push((e ? 'ERR ' : '') + m); }; window.confirm = () => true; activeSiteId = 'site-production'; syncQtyView(activeSiteId)");
   return b;
 }

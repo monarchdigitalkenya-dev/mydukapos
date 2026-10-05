@@ -45,7 +45,7 @@ test('💰 Sales shows the day total / cash / M-Pesa, leaves voided sales out, a
         const mine = document.getElementById('pos-sq-list').textContent.replace(/\\s+/g, ' ');
         return JSON.stringify({ all, mine });
       })()`));
-      assert.match(out.all, /Everyone/, a); assert.match(out.all, /600\.00/, a + ' admin total 500+100');
+      assert.match(out.all, /Today's Sales/, a); assert.match(out.all, /600\.00/, a + ' admin total 500+100');
       assert.doesNotMatch(out.all, /999/, a + ': voided left out');
       assert.match(out.mine, /Bob/, a + ': staff see every staff member (sales are universal)');
       assert.match(out.mine, /500\.00/, a);

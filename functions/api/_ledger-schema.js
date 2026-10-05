@@ -7,7 +7,7 @@
 //   * every insert or new version of a money record writes an audit row (trigger) — no code path can forget;
 //   * a payment is unique per (shop, payment id): a retried request is the same row, never a second one;
 //   * a QR order has at most ONE owner: the claim is a single conditional UPDATE, so two staff claiming at once cannot both win.
-export const LEDGER_SCHEMA_VERSION = 3;          // 3 = zip 186: LEDGER_SCHEMA_0007 (quiet audit triggers, audit kill switch, prune-guarded audit delete trigger)
+export const LEDGER_SCHEMA_VERSION = 4;          // 3 = zip 186: LEDGER_SCHEMA_0007 (quiet audit triggers, audit kill switch, prune-guarded audit delete trigger)
 
 export const LEDGER_SCHEMA = [
   // One row per financial document of ANY module: sale, return, expense, purchase, trade credit, debt, tab, patient charge,

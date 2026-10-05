@@ -33,4 +33,4 @@ WHEN NOT (COALESCE((SELECT v FROM ledger_meta WHERE k = 'audit_prune_open'), '0'
 BEGIN SELECT RAISE(ABORT, 'financial records are never deleted'); END;
 
 -- the runtime bootstrap (ensureLedgerSchema) skips its own re-run once this is recorded
-INSERT INTO ledger_meta (k, v) VALUES ('schema', '3') ON CONFLICT (k) DO UPDATE SET v = excluded.v;
+INSERT INTO ledger_meta (k, v) VALUES ('schema', '4') ON CONFLICT (k) DO UPDATE SET v = excluded.v;

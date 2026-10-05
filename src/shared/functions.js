@@ -2100,7 +2100,7 @@ function enrollAdminBiometric() {
 //@fn enrollManagerBiometric
 function enrollManagerBiometric() {
             const select = document.getElementById('biometric-manager-select');
-            const manager = staff.find(s => s.id === select.value && s.isManager);
+            const manager = staff.find(s => s.id === select.value && s.isManager && !s.removed);
             if (!manager) { showToast('Select a manager first.', true); return; }
             enrollBiometric('manager', manager.id, manager.name);
         }
@@ -2516,50 +2516,6 @@ function genGasCode(prefix) {
             return `${prefix}-${genSaleId()}`;
         }
 
-//@fn addGasLineToCart
-function addGasLineToCart() {
-            // Four ways to sell gas cylinders. Every one is an ordinary line in the Sales Counter cart; the stock moves when the sale is made:
-            //   exchange — full -1, empty +1 (the customer hands in an empty)      outright — full -1 (a full cylinder with gas, theirs to keep)
-            //   set      — full -1 plus the accessories ticked                     empty    — empty -1 (an empty cylinder on its own)
-            const msgEl = document.getElementById('gas-add-msg');
-            const fail = (m) => { msgEl.className = 'settings-msg error'; msgEl.textContent = m; };
-            const full = inventory.find(p => p.code === window.__gasSel);
-            const qty = Math.max(1, Math.round(parseFloat(document.getElementById('gas-tx-qty').value) || 1));
-            if (!full) { fail('Pick a cylinder size first.'); return; }
-            const empty = inventory.find(p => p.code === full.gasPairCode);
-            const label = gasLabelOf(full);
-            const type = gasTxType;
-            const needEmpty = type === 'empty';
-            const item = needEmpty ? empty : full;
-            const suffix = { exchange: 'gasrefill', outright: 'gasoutright', set: 'gasset', empty: 'gasempty' }[type] || 'gasrefill';
-            const key = `${item.code}::${suffix}`;
-            const existing = currentCart[key] ? currentCart[key].qty : 0;
-            const available = item.qty || 0;
-            if (existing + qty > available) { fail(`Only ${available} ${needEmpty ? 'empty' : 'full'} "${label}" in stock.`); return; }
-            const price = type === 'exchange' ? (full.gasRefillPrice || 0) : (needEmpty ? (empty.price || 0) : (full.price || 0));
-            if (!(price > 0)) { fail(`Set the ${type === 'exchange' ? 'refill' : (needEmpty ? 'empty cylinder' : 'full cylinder')} price for ${label} in the table above first.`); return; }
-            const names = { exchange: 'Refill/Exchange', outright: 'Full Cylinder', set: 'Complete Set', empty: 'Empty Cylinder' };
-            currentCart[key] = currentCart[key]
-                ? { ...currentCart[key], qty: existing + qty }
-                : {
-                    code: item.code, cartKey: key, name: `${label} — ${names[type]}`, price,
-                    wholesalePrice: type === 'exchange' ? (full.gasRefillWholesalePrice || 0) : (needEmpty ? 0 : (full.wholesaleSellingPrice || 0)),
-                    unit: 'pcs', isService: false, vatCategory: item.vatCategory || 'A', qty,
-                    ...(type === 'exchange' ? { gasReturnEmptyCode: full.gasPairCode } : {}),
-                };
-            if (type === 'set') {
-                document.querySelectorAll('#gas-set-accessories-list .gas-acc-row').forEach(row => {
-                    if (!row.querySelector('.gas-acc-check').checked) return;
-                    const per = Math.max(1, Math.round(parseFloat(row.querySelector('.gas-acc-qty').value) || 1));
-                    for (let i = 0; i < per * qty; i++) addToCart(row.dataset.code);
-                });
-            }
-            renderCart();
-            msgEl.className = 'settings-msg success';
-            msgEl.textContent = `Added ${qty} × ${label} — ${names[type]} to the sale. Go to 🛒 Sales Counter to take payment.`;
-            renderGasVariantStock();
-        }
-
 //@fn unmarkGasAccessory
 function unmarkGasAccessory(code) {
             const p = inventory.find(x => x.code === code);
@@ -2576,12 +2532,6 @@ function markGasAccessory() {
             p.isGasAccessory = true;
             if (!p.gasAccessoryType) p.gasAccessoryType = 'other';
             gasSaveInventory();
-        }
-
-//@fn selectGasSize
-function selectGasSize(code) {
-            window.__gasSel = code;
-            renderGasTab();
         }
 
 //@fn addGasSize
@@ -2622,6 +2572,9 @@ function gasBoardPrice(code, field, value) {
             if (!(n >= 0)) { showToast('Enter a price, 0 or more.', true); renderGasTab(); return; }
             if (field === 'refill') full.gasRefillPrice = n;
             else if (field === 'empty') { const e = inventory.find(p => p.code === full.gasPairCode); if (e) e.price = n; }
+            else if (field === 'cost') full.wholesalePrice = n;                          // what a full cylinder (with gas) costs you
+            else if (field === 'refillcost') full.gasRefillWholesalePrice = n;           // what an exchange costs you (the refill)
+            else if (field === 'emptycost') { const e = inventory.find(p => p.code === full.gasPairCode); if (e) e.wholesalePrice = n; }
             else full.price = n;
             gasSaveInventory();
         }
@@ -2651,14 +2604,15 @@ function gasSaveInventory() {
 //@fn gasTotals
 function gasTotals() {
             // Cylinders by state, across every size: Full, Empty, and Away (empties sent to the supplier and not back yet).
-            let full = 0, empty = 0, away = 0;
+            let full = 0, empty = 0, away = 0, damaged = 0;
             getGasFullVariants().forEach(f => {
                 full += f.qty || 0;
                 const e = inventory.find(p => p.code === f.gasPairCode);
                 empty += (e && e.qty) || 0;
                 away += f.gasAtSupplier || 0;
+                damaged += f.gasDamaged || 0;
             });
-            return { full, empty, away, total: full + empty + away };
+            return { full, empty, away, damaged, total: full + empty + away + damaged };
         }
 
 //@fn gasLabelOf
@@ -5145,7 +5099,8 @@ function performSupplierGasExchange() {
             const label = gasLabelOf(full);
             if (direction !== 'receive' && (empty.qty || 0) < qty) { fail(`Only ${empty.qty || 0} empty ${label} on hand.`); return; }
             if (direction === 'receive' && (full.gasAtSupplier || 0) < qty) { fail(`Only ${full.gasAtSupplier || 0} ${label} are with the supplier.`); return; }
-            if (direction === 'send') { empty.qty = (empty.qty || 0) - qty; full.gasAtSupplier = (full.gasAtSupplier || 0) + qty; }
+            if (typeof Lpg !== 'undefined') Lpg.supplier(full, empty, direction, qty);        // zip 216: every change is logged with before / after for the gas history
+            else if (direction === 'send') { empty.qty = (empty.qty || 0) - qty; full.gasAtSupplier = (full.gasAtSupplier || 0) + qty; }
             else if (direction === 'receive') { full.qty = (full.qty || 0) + qty; full.gasAtSupplier = (full.gasAtSupplier || 0) - qty; }
             else { empty.qty = (empty.qty || 0) - qty; full.qty = (full.qty || 0) + qty; }
             gasSupplierHistory.unshift({ id: genSaleId(), timestamp: new Date().toISOString(), label, direction, qty });
@@ -6406,7 +6361,7 @@ function renderBillNotifyStaffList() {
                 wrap.innerHTML = `<p class="settings-hint" style="margin:0;">No staff accounts yet — add some under 👥 Staff Accounts first.</p>`;
                 return;
             }
-            wrap.innerHTML = staff.map(s => `
+            wrap.innerHTML = staff.filter(s => !s.removed).map(s => `
                 <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:normal;">
                     <input type="checkbox" style="width:auto;" ${billNotifyStaffIds.includes(s.id) ? 'checked' : ''} onchange="toggleBillNotifyStaff('${escapeJsAttr(s.id)}', this.checked)">
                     ${escapeHtml(s.name)}
@@ -6597,41 +6552,35 @@ function renderGasSupplierHistory() {
 //@fn renderGasTab
 function renderGasTab() {
             const fulls = getGasFullVariants().slice().sort((a, b) => gasLabelOf(a).localeCompare(gasLabelOf(b), undefined, { numeric: true }));
-            if (!fulls.some(f => f.code === window.__gasSel)) window.__gasSel = fulls.length ? fulls[0].code : '';
             const n = (x) => (Math.round((Number(x) || 0) * 100) / 100).toString();
 
             // 1. how many cylinders, in what state
             const t = gasTotals();
             const totalsEl = document.getElementById('gas-totals');
-            if (totalsEl) totalsEl.innerHTML = `<span class="gas-chip gas-full">🟢 Full <b>${t.full}</b></span><span class="gas-chip gas-empty">⚪ Empty <b>${t.empty}</b></span>${t.away ? `<span class="gas-chip gas-away">🚚 With supplier <b>${t.away}</b></span>` : ''}<span class="gas-chip">🛢️ All cylinders <b>${t.total}</b></span>`;
+            if (totalsEl) totalsEl.innerHTML = `<span class="gas-chip gas-full">🟢 Full <b>${t.full}</b></span><span class="gas-chip gas-empty">⚪ Empty <b>${t.empty}</b></span>${t.away ? `<span class="gas-chip gas-away">🚚 With supplier <b>${t.away}</b></span>` : ''}${t.damaged ? `<span class="gas-chip" style="background:#fadbd8;">⚠️ Damaged <b>${t.damaged}</b></span>` : ''}<span class="gas-chip">🛢️ All cylinders <b>${t.total}</b></span>`;
 
-            // 2. the board: one row per size, counts and prices editable in place
+            // 2. the board: one row per size, counts, prices and costs editable in place
             const tbody = document.getElementById('gas-board-body');
             if (tbody) {
                 tbody.innerHTML = fulls.length === 0
-                    ? '<tr><td colspan="8" class="empty-state">No sizes yet — add your first size below (for example 13kg, with how many full and empty you have).</td></tr>'
+                    ? '<tr><td colspan="12" class="empty-state">No sizes yet — add your first size below (for example 13kg, with how many full and empty you have).</td></tr>'
                     : fulls.map(f => {
                         const e = inventory.find(p => p.code === f.gasPairCode) || {};
                         const c = escapeJsAttr(f.code);
                         const num = (v, cb) => `<input type="number" min="0" step="1" value="${Math.round(v || 0)}" onchange="${cb}(this.value)">`;
                         const price = (v, field) => `<input type="number" min="0" step="0.01" value="${v ? n(v) : ''}" placeholder="—" onchange="gasBoardPrice('${c}', '${field}', this.value)">`;
-                        return `<tr class="${f.code === window.__gasSel ? 'gas-row-selected' : ''}">
+                        return `<tr>
                             <td><strong>${escapeHtml(gasLabelOf(f))}</strong></td>
                             <td>${num(f.qty, `gasBoardSet.bind(null, '${c}', 'full')`)}</td>
                             <td>${num(e.qty, `gasBoardSet.bind(null, '${c}', 'empty')`)}</td>
                             <td>${f.gasAtSupplier || 0}</td>
-                            <td><strong>${(f.qty || 0) + (e.qty || 0) + (f.gasAtSupplier || 0)}</strong></td>
+                            <td>${f.gasDamaged || 0}</td>
+                            <td><strong>${(f.qty || 0) + (e.qty || 0) + (f.gasAtSupplier || 0) + (f.gasDamaged || 0)}</strong></td>
                             <td>${price(f.price, 'outright')}</td><td>${price(f.gasRefillPrice, 'refill')}</td><td>${price(e.price, 'empty')}</td>
+                            <td>${price(f.wholesalePrice, 'cost')}</td><td>${price(f.gasRefillWholesalePrice, 'refillcost')}</td><td>${price(e.wholesalePrice, 'emptycost')}</td>
                         </tr>`;
                     }).join('');
             }
-
-            // 3. pick a size to sell
-            const chips = document.getElementById('gas-size-chips');
-            if (chips) chips.innerHTML = fulls.map(f => {
-                const e = inventory.find(p => p.code === f.gasPairCode) || {};
-                return `<button type="button" class="gas-size-chip ${f.code === window.__gasSel ? 'active' : ''}" onclick="selectGasSize('${escapeJsAttr(f.code)}')">${escapeHtml(gasLabelOf(f))}<small>${f.qty || 0} full · ${e.qty || 0} empty</small></button>`;
-            }).join('') || '<span class="settings-hint">Add a size first.</span>';
 
             // 4. supplier form
             const supplierSelect = document.getElementById('gas-supplier-variant-select');
@@ -6639,36 +6588,13 @@ function renderGasTab() {
 
             // 5. accessories: ordinary inventory items that are marked as accessories
             const accs = getGasAccessories();
-            const checklist = document.getElementById('gas-set-accessories-list');
-            if (checklist) {
-                const ticked = new Set(Array.from(checklist.querySelectorAll('.gas-acc-check:checked')).map(x => x.closest('.gas-acc-row').dataset.code));
-                checklist.innerHTML = accs.length === 0 ? '<p class="settings-hint" style="margin:0;">No accessories marked yet — mark some in the Accessories box below.</p>'
-                    : accs.map(a => `<div class="gas-acc-row" data-code="${escapeHtml(a.code)}"><label><input type="checkbox" class="gas-acc-check" ${ticked.has(a.code) ? 'checked' : ''}> ${escapeHtml(a.name)} <span class="kitchen-sub">KES ${n(a.price)} · ${n(a.qty)} in stock</span></label><input type="number" class="gas-acc-qty" min="1" step="1" value="1" title="How many per set"></div>`).join('');
-            }
             const list = document.getElementById('gas-accessory-list');
             if (list) list.innerHTML = accs.map(a => `<span class="gas-chip">${escapeHtml(a.name)} <button type="button" title="Unmark" onclick="unmarkGasAccessory('${escapeJsAttr(a.code)}')">✕</button></span>`).join('') || '<span class="settings-hint">None yet.</span>';
             const pick = document.getElementById('gas-accessory-pick');
             if (pick) pick.innerHTML = '<option value="">— pick an inventory item —</option>' + inventory.filter(p => (p.type || 'item') === 'item' && !p.isGasCylinder && !p.isGasAccessory).sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(p => `<option value="${escapeHtml(p.code)}">${escapeHtml(p.name)}</option>`).join('');
 
-            setGasTxType(gasTxType || 'exchange');
             renderGasSupplierHistory();
-        }
-
-//@fn renderGasVariantStock
-function renderGasVariantStock() {
-            const info = document.getElementById('gas-variant-stock-info');
-            if (!info) return;
-            const full = inventory.find(p => p.code === window.__gasSel);
-            if (!full) { info.textContent = getGasFullVariants().length ? 'Pick a size.' : 'Add a cylinder size above to start.'; return; }
-            const empty = inventory.find(p => p.code === full.gasPairCode);
-            const kes = (n) => 'KES ' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            const line = {
-                exchange: `Refill / exchange: ${kes(full.gasRefillPrice)} — the customer hands in an empty, so Full goes down by 1 and Empty goes up by 1.`,
-                outright: `Full cylinder with gas: ${kes(full.price)} — Full goes down by 1 (the customer keeps the cylinder).`,
-                set: `Full cylinder ${kes(full.price)} plus the accessories you tick below. Full goes down by 1.`,
-                empty: `Empty cylinder on its own: ${kes(empty && empty.price)} — Empty goes down by 1.`,
-            }[gasTxType] || '';
-            info.innerHTML = `<strong>${escapeHtml(gasLabelOf(full))}</strong> — Full ${full.qty || 0} · Empty ${(empty && empty.qty) || 0}<br>${escapeHtml(line)}`;
+            if (typeof Lpg !== 'undefined') Lpg.render();
         }
 
 //@fn renderInvEditableCell
@@ -8262,7 +8188,7 @@ function selectLoginAdmin() {
 
 //@fn selectLoginStaff
 function selectLoginStaff(id) {
-            const member = staff.find(s => s.id === id);
+            const member = staff.find(s => s.id === id && !s.removed);   // zip 215: a removed (tombstoned) person can never be picked
             if (!member) return;
             pendingLoginStaffId = id;
             document.getElementById('login-staffpin-name').innerText = member.name;
@@ -8553,18 +8479,6 @@ function setFieldAndFireInput(id, value) {
             el.value = value;
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-
-//@fn setGasTxType
-function setGasTxType(type) {
-            gasTxType = type;
-            ['exchange', 'outright', 'set', 'empty'].forEach(t => {
-                const btn = document.getElementById(`gas-tx-${t}-btn`);
-                if (btn) btn.classList.toggle('active', t === type);
-            });
-            const accessoriesPanel = document.getElementById('gas-set-accessories');
-            if (accessoriesPanel) accessoriesPanel.style.display = type === 'set' ? 'block' : 'none';
-            renderGasVariantStock();
         }
 
 //@fn setImageSource
@@ -10586,6 +10500,7 @@ function logStockCount(item, displayName, unit, counted, before, stocktakeId) {
             };
             if (device) m.device = device;
             if (typeof item._sv === 'number') m.baseSv = item._sv;
+            if (typeof Lpg !== 'undefined' && item && item.isGasCylinder) { try { Lpg.tag(m, item); if (m.lpg) { m.lpg.k = 'count'; m.lpg.before = r3(before); m.lpg.after = r3(counted); m.lpg.d = r3(counted - before); } } catch (x) { /* recorded without the gas note */ } }
             stockMovementLog.push(m);
             return m;
         }
@@ -11405,7 +11320,7 @@ function checkoutGuardStart() {
                 const codes = new Set();
                 const add = (c) => { if (c != null && c !== '') codes.add(String(c)); };
                 const add2 = (set, c) => { if (c != null && c !== '') set.add(String(c)); };
-                cart.forEach((l) => { add(l.code); add(l.gasReturnEmptyCode); });
+                cart.forEach((l) => { add(l.code); add(l.gasReturnEmptyCode); if (l.lpg) { add(l.lpg.size); add(l.lpg.emptyCode); (Array.isArray(l.lpg.components) ? l.lpg.components : []).forEach((c) => add(c && c.code)); } });      // zip 216: a gas line also touches its Full item (Damaged counter), the empty's brand and a set's parts
                 inv.forEach((p) => {
                     if (!p || !codes.has(String(p.code))) return;
                     (Array.isArray(p.comboItems) ? p.comboItems : []).forEach((c) => add(c && c.code));
@@ -11415,7 +11330,7 @@ function checkoutGuardStart() {
                 });
                 inv.forEach((p) => {
                     if (!p || !codes.has(String(p.code))) return;
-                    g.rows[String(p.code)] = JSON.stringify({ qty: p.qty, pieceQty: p.pieceQty, variants: Array.isArray(p.variants) ? p.variants.map((v) => ({ id: v && v.id, qty: v && v.qty, pieceQty: v && v.pieceQty })) : null, batches: p.batches === undefined ? undefined : p.batches });
+                    g.rows[String(p.code)] = JSON.stringify({ gasDamaged: p.gasDamaged, gasAtSupplier: p.gasAtSupplier, qty: p.qty, pieceQty: p.pieceQty, variants: Array.isArray(p.variants) ? p.variants.map((v) => ({ id: v && v.id, qty: v && v.qty, pieceQty: v && v.pieceQty })) : null, batches: p.batches === undefined ? undefined : p.batches });
                 });
                 if (typeof kegs !== 'undefined' && Array.isArray(kegs)) g.kegs = JSON.stringify(kegs);
                 // zip 156 (audit 2): Aqua POS keeps its stock in products (per-site figures, bottle counts), tanks (litres) and rawMaterials
@@ -11462,6 +11377,8 @@ function checkoutGuardFailed(g, e) {
                             if (o.qty !== undefined) p.qty = o.qty;
                             if (o.pieceQty !== undefined) p.pieceQty = o.pieceQty;
                             if (o.batches !== undefined) p.batches = o.batches;
+                            if (o.gasDamaged !== undefined) p.gasDamaged = o.gasDamaged;
+                            if (o.gasAtSupplier !== undefined) p.gasAtSupplier = o.gasAtSupplier;
                             if (Array.isArray(o.variants) && Array.isArray(p.variants)) o.variants.forEach((sv) => { const v = p.variants.find((x) => x && x.id === sv.id); if (v) { if (sv.qty !== undefined) v.qty = sv.qty; if (sv.pieceQty !== undefined) v.pieceQty = sv.pieceQty; } });
                         });
                     }
@@ -11479,12 +11396,14 @@ function checkoutGuardFailed(g, e) {
                         try { safeSetItem('aqua_products', JSON.stringify(products)); safeSetItem('aqua_tanks', JSON.stringify(tanks)); safeSetItem('aqua_raw_materials', JSON.stringify(rawMaterials)); } catch (x) { /* saved by the next change */ }
                     }
                     if (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog)) {
-                        const made = stockMovementLog.slice(g.mv).filter((m) => m && m.delta && !m._deleted);
+                        const made = stockMovementLog.slice(g.mv).filter((m) => m && !m._deleted && (m.delta || (m.lpg && Number(m.lpg.d))));      // zip 216: a gas Away / Damaged move has delta 0 but still counts
                         made.forEach((m) => {
-                            stockMovementLog.push({
-                                id: genSaleId(), lg: m.lg, timestamp: new Date().toISOString(), code: m.code, name: m.name, delta: -m.delta,
-                                type: -m.delta > 0 ? 'added' : 'removed', reason: 'Sale did not complete - stock put back', unit: m.unit, by: m.by, reverses: m.id,
-                            });
+                            const back = {
+                                id: genSaleId(), lg: m.lg, timestamp: new Date().toISOString(), code: m.code, name: m.name, delta: m.delta ? -m.delta : 0,
+                                type: -(m.delta || (m.lpg && m.lpg.d) || 0) > 0 ? 'added' : 'removed', reason: 'Sale did not complete - stock put back', unit: m.unit, by: m.by, reverses: m.id,
+                            };
+                            if (m.lpg) back.lpg = { ...m.lpg, k: 'void', d: -(Number(m.lpg.d) || 0), before: m.lpg.after, after: m.lpg.before, rev: 1 };
+                            stockMovementLog.push(back);
                             restored++;
                         });
                         safeSetItem(appStoreKey('pos_stock_movement_log'), JSON.stringify(stockMovementLog));
@@ -11750,6 +11669,7 @@ function updateGasTabVisibility() {
                 goToFirstAllowedTab(); // zip 143: not the Sales Counter unless this person was given it
             }
             if (doGasRefills) renderGasTab();
+            if (typeof Lpg !== 'undefined') Lpg.showCounterBtn();
         }
 
 //@fn updateLicenseLockHintText
@@ -12001,7 +11921,7 @@ async function verifyManagerPin() {
             const errorEl = document.getElementById('admin-pw-error');
             const select = document.getElementById('manager-pin-select');
             const input = document.getElementById('manager-pin-input');
-            const manager = staff.find(s => s.id === select.value && s.isManager);
+            const manager = staff.find(s => s.id === select.value && s.isManager && !s.removed);
             if (!manager) {
                 errorEl.textContent = 'Select a manager.';
                 return null;
@@ -12780,7 +12700,7 @@ function buildReceiptDoc(sale, hooks) {
             }
             // zip 155: the receipt STAMP sits between the header and the item lines (thermal printers get the same picture as dots)
             let stampHtml = '';
-            try { if (typeof receiptStampBlockHtml === 'function') stampHtml = receiptStampBlockHtml(); } catch (e) { /* the stamp is an extra */ }
+            try { if (typeof receiptStampBlockHtml === 'function') stampHtml = receiptStampBlockHtml(sale); } catch (e) { /* the stamp is an extra */ }
             const html = receiptGridHtml([
                 { lines: headerLines, align: 'center', bold: headBold },
                 stampHtml ? { html: stampHtml } : null,

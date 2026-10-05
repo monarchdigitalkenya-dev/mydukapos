@@ -16,7 +16,7 @@ const STORE = { aqua_refill_sizes: JSON.stringify(SHOP_ONLY), aqua_tanks: JSON.s
 const cards = (d) => [...d.querySelectorAll('#all-items-grid .size-card .size-label')].map((e) => e.textContent.trim());
 
 test('production: refill cards are there and a refill can be sold', async () => {
-  const { w, d, errors, close } = await boot('water/index.html', { storage: STORE });
+  const { w, d, errors, close } = await boot('water/index.html', { url: 'https://demo.mydukapos.store/#production', storage: STORE });
   assert.equal(w.eval('activeSiteId'), 'site-production');
   w.eval('renderAllItemsGrid()');
   assert.deepEqual(cards(d).sort(), ['1L', '20L'], 'Production shows refill sizes');
@@ -34,7 +34,7 @@ test('production: refill cards are there and a refill can be sold', async () => 
 });
 
 test('production copies the Shop sizes and prices; the Shop is untouched; the Shop materials are not carried over', async () => {
-  const { w, close } = await boot('water/index.html', { storage: STORE });
+  const { w, close } = await boot('water/index.html', { url: 'https://demo.mydukapos.store/#production', storage: STORE });
   const sizes = JSON.parse(w.eval('JSON.stringify(refillSizes)'));
   const shop = sizes.filter((s) => s.siteId === 'site-shop-1'), prod = sizes.filter((s) => s.siteId === 'site-production');
   assert.equal(shop.length, 2); assert.equal(prod.length, 2);
@@ -46,7 +46,7 @@ test('production copies the Shop sizes and prices; the Shop is untouched; the Sh
 });
 
 test('each site prices from its own 1L rate', async () => {
-  const { w, close } = await boot('water/index.html', { storage: STORE });
+  const { w, close } = await boot('water/index.html', { url: 'https://demo.mydukapos.store/#production', storage: STORE });
   w.eval("refillSizes.push({ id:'p5', sizeML:5000, label:'5L', price:0, siteId:'site-production' }); refillSizes.push({ id:'s5', sizeML:5000, label:'5L', price:0, siteId:'site-shop-1' });");
   w.eval("refillSizes.find(s => s.sizeML===1000 && s.siteId==='site-production').price = 20; recomputeAutoRefillPrices();");
   assert.equal(w.eval("refillSizes.find(s => s.id==='p5').price"), 100, 'Production 5L = 5 x its own 1L');
@@ -55,7 +55,7 @@ test('each site prices from its own 1L rate', async () => {
 });
 
 test('a size added at Production shows at Production straight away and not at the Shop', async () => {
-  const { w, d, errors, close } = await boot('water/index.html', { storage: STORE });
+  const { w, d, errors, close } = await boot('water/index.html', { url: 'https://demo.mydukapos.store/#production', storage: STORE });
   d.getElementById('custom-size-label-input').value = '3L';
   d.getElementById('custom-size-ml-input').value = '3000';
   d.getElementById('custom-size-price-input').value = '40';
@@ -68,7 +68,7 @@ test('a size added at Production shows at Production straight away and not at th
 });
 
 test('a fresh install can sell refills at Production too, and a new branch gets sizes', async () => {
-  const { w, d, close } = await boot('water/index.html', { storage: { aqua_active_site_id: 'site-production' } });
+  const { w, d, close } = await boot('water/index.html', { url: 'https://demo.mydukapos.store/#production', storage: { aqua_active_site_id: 'site-production' } });
   w.eval('seedDefaultSizesIfEmpty(); renderAllItemsGrid()');   // what first-time setup runs
   assert.ok(cards(d).length >= 3, 'default sizes on Production');
   w.eval("window.prompt = () => 'Westlands'; addShopBranch();");
@@ -78,7 +78,7 @@ test('a fresh install can sell refills at Production too, and a new branch gets 
 });
 
 test('the bottle-size picker lists each size once', async () => {
-  const { w, d, close } = await boot('water/index.html', { storage: STORE });
+  const { w, d, close } = await boot('water/index.html', { url: 'https://demo.mydukapos.store/#production', storage: STORE });
   w.eval('renderProductSizeSelect()');
   const opts = [...d.querySelectorAll('#product-size-select option')].map((o) => o.value);
   assert.equal(new Set(opts).size, opts.length);
@@ -86,7 +86,7 @@ test('the bottle-size picker lists each size once', async () => {
 });
 
 test('a refill size can carry its own cost, editable in Settings, and it is used for COGS instead of the litre-rate fallback', async () => {
-  const { w, d, errors, close } = await boot('water/index.html', { storage: STORE });
+  const { w, d, errors, close } = await boot('water/index.html', { url: 'https://demo.mydukapos.store/#production', storage: STORE });
   w.eval("showToast = function () {};");
   // Editable in the settings list.
   w.eval('renderRefillPriceRows()');

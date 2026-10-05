@@ -40,6 +40,8 @@ const TAB = {
   'Contracts': 'Wholesale contracts and their outstanding balances.',
   'Staff': 'Add staff, choose which tabs each can use, send invite links, see who is serving.',
   'Attendance': 'Staff clock in / out and hours worked.',
+  'Materials': 'Raw materials and their suppliers: stock levels, costs and restocking.',
+  'Payroll': 'Create Payroll: staff register and documents, pay runs, payslips. Admin / payroll rights only; a worker sees just their own payslips. Needs internet and a staff PIN sign-in.',
   'Settings': 'Business details, receipts, tax, hardware, security, backups and more.',
   'More': 'The rest of the tabs that do not fit on the screen.',
 };
@@ -166,6 +168,7 @@ function people(M) {
       'Send the link to them. They open it, choose a **PIN** (4+ characters) and they are in — no shop password needed. The link then turns into their personal login link: they should bookmark it.',
       'A staff member is listed once: a double tap on "Create my account" cannot make two copies.',
       '**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.',
+      '**💼 Payroll** — add staff and their documents, run payroll (review ▸ approve ▸ pay) and give out payslips. Needs internet; a paid or approved run is never edited — corrections are a reversal run.',
       '**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.',
       '**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.',
       '**⬇️ Sync to this device** (Settings ▸ 🔐 Devices & Security) sends this device\'s unsent sales first, then fetches everything the shop has on the server — step by step, with nothing deleted or duplicated.',
@@ -286,7 +289,7 @@ const MODS = {};
 MODS.shop = {
   name: 'Shop POS', title: 'Shop POS — User Guide', tagline: 'Retail shops, supermarkets, hardware and general stores — selling, stock, bills and reports.',
   itemsPlural: 'items', itemWord: 'item', addTab: '📦 Add New Items', restockTab: '📥 Restock',
-  tabs: ['🛒 Sales Counter', '🔥 Gas Refill', '📊 Dashboard', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['🛒 Sales Counter', '🔥 Gas Refill', '📊 Dashboard', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '💼 Payroll', '⚙️ Settings', '☰ More'],
   custom: [
     ch('items', '📦', 'Adding items', {
       steps: [
@@ -336,7 +339,7 @@ MODS.shop = {
 MODS.hotel = {
   name: 'Hotel POS', title: 'Hotel POS — User Guide', tagline: 'Restaurants, bars, hotels and lodges — dishes, kitchen, tabs for tables and rooms, bills and reports.',
   itemsPlural: 'items and dishes', itemWord: 'item', addTab: '📦 Add New Items', restockTab: '📥 Restock',
-  tabs: ['🛒 Sales Counter', '🍳 Kitchen', '🧾 Tabs', '🍽️ Service Orders', '📺 Kitchen & Bar Display', '🍺 Bar & Kegs', '🎱 Facilities', '🏨 Hotel', '🎂 Custom Orders & Events', '📈 Hospitality Reports', '📊 Dashboard', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['🛒 Sales Counter', '🍳 Kitchen', '🧾 Tabs', '🍽️ Service Orders', '📺 Kitchen & Bar Display', '🍺 Bar & Kegs', '🎱 Facilities', '🏨 Hotel', '🎂 Custom Orders & Events', '📈 Hospitality Reports', '📊 Dashboard', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '💼 Payroll', '⚙️ Settings', '☰ More'],
   tabText: {
     'Kitchen': 'Dishes prepared and sold today: log portions prepared, see sold and left, shelf life.',
     'Tabs': 'Open tabs for a table, room or guest: add rounds of orders over time, settle at the end.',
@@ -444,7 +447,7 @@ MODS.hotel = {
 MODS.hospital = {
   name: 'Hospital POS', title: 'Hospital POS — User Guide', tagline: 'Clinics and hospitals — registration, queue, consultation charges, laboratory, pharmacy, wards and beds, insurance and reports.',
   itemsPlural: 'medications and supplies', itemWord: 'medication', addTab: '➕ Add Medication', restockTab: '📥 Restock',
-  tabs: ['📊 Dashboard', '🛎️ Reception', '📅 Appointments', '🚦 Triage', '🩺 Clinic / Consultation', '🚑 Emergency', '🤰 ANC / Maternity', '⏱️ Labour & Delivery', '🤱 Postnatal', '👶 Newborn / Child Health', '🧪 Laboratory', '🩻 Radiology', '🩹 Procedures / Theatre', '💳 Cashier / Counter', '💊 Pharmacy (Dispensing)', '📦 Pharmacy Stock', '➕ Add Medication', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🏥🛏️ Wards & Beds', '↩️ Returned Goods', '🚚 Deliveries', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Medication Demand', '🧾 Patient Bills', '📒 Debts', '📊 Hospital Report', '👤 My Customers', '🏥 Insurance / Institutions', '🗂️ Patient Records', '➡️ Referrals', '🏁 Discharge', '💵 Cashier Shift', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['📊 Dashboard', '🛎️ Reception', '📅 Appointments', '🚦 Triage', '🩺 Clinic / Consultation', '🚑 Emergency', '🤰 ANC / Maternity', '⏱️ Labour & Delivery', '🤱 Postnatal', '👶 Newborn / Child Health', '🧪 Laboratory', '🩻 Radiology', '🩹 Procedures / Theatre', '💳 Cashier / Counter', '💊 Pharmacy (Dispensing)', '📦 Pharmacy Stock', '➕ Add Medication', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🏥🛏️ Wards & Beds', '↩️ Returned Goods', '🚚 Deliveries', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Medication Demand', '🧾 Patient Bills', '📒 Debts', '📊 Hospital Report', '👤 My Customers', '🏥 Insurance / Institutions', '🗂️ Patient Records', '➡️ Referrals', '🏁 Discharge', '💵 Cashier Shift', '👥 Staff', '🕐 Attendance', '💼 Payroll', '⚙️ Settings', '☰ More'],
   tabText: {
     'Reception': 'Search for one patient (name, patient number or phone) or register a new one, then ask \u201cWhere are you going today?\u201d: tap the service (General Clinic, ANC, Maternity, Child Health, Immunization, Family Planning, TB, HIV/CCC, Dental, Eye, Lab, Pharmacy, Emergency\u2026) and the patient gets a ticket in THAT queue. No clinical history is shown here.',
     'Clinic / Consultation': 'The consulting clinics (General Clinic / OPD, Chronic, TB, HIV/CCC, Dental, Eye, Specialist, Family Planning and any you add), each with its own queue: NOW SERVING, the next 5, CALL NEXT PATIENT. Open the consultation, then send the patient on (lab, pharmacy, cashier, discharge). You can still search any patient below.',
@@ -523,7 +526,7 @@ MODS.hospital = {
 MODS.pharmacy = {
   name: 'Pharmacy POS', title: 'Pharmacy POS — User Guide', tagline: 'Pharmacies and chemists — dispensing with dosage instructions, batches and expiry, patients and laboratory.',
   itemsPlural: 'medicines', itemWord: 'medicine', addTab: '📦 Add New Items', restockTab: '📥 Restock',
-  tabs: ['🛒 Sales Counter', '🧑‍⚕️ Patients', '📊 Dashboard', '🧪 Laboratory', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['🛒 Sales Counter', '🧑‍⚕️ Patients', '📊 Dashboard', '🧪 Laboratory', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '💼 Payroll', '⚙️ Settings', '☰ More'],
   tabText: {
     'Patients': 'Optional patient registry: build a history of what each patient was sold.',
     'Laboratory': 'Lab test requests and results linked to the patient.',
@@ -555,7 +558,7 @@ MODS.pharmacy = {
 MODS.production = {
   name: 'Production POS', title: 'Production POS — User Guide', tagline: 'Workshops and manufacturers — build items from components, sell, hire items out, gas refills, stock and reports.',
   itemsPlural: 'items and components', itemWord: 'item', addTab: '📦 Add New Items', restockTab: '📥 Restock',
-  tabs: ['🛒 Sales Counter', '🔥 Gas Refill', '🔄 Hiring Counter', '📊 Dashboard', '🏭 Production', '📋 Build an Item', '🔄 Hires', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['🛒 Sales Counter', '🔥 Gas Refill', '🔄 Hiring Counter', '📊 Dashboard', '🏭 Production', '📋 Build an Item', '🔄 Hires', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '💼 Payroll', '⚙️ Settings', '☰ More'],
   tabText: {
     'Hiring Counter': 'Start a hire: search a hireable item, take the client\u2019s details, billing type, deposit and payment.',
     'Production': 'Assemble a batch of an item from its components; assembly history.',
@@ -595,7 +598,7 @@ const SVC_GUIDE_CHAPTERS = [];
 MODS.services = {
   name: 'Services POS', title: 'Services POS — User Guide', tagline: 'Repair shops, salons and service businesses — job intake, client registry, bookings, parts sales and reports.',
   itemsPlural: 'items and services', itemWord: 'item', addTab: '📦 Add New Items', restockTab: '📥 Restock',
-  tabs: ['🛒 Sales Counter', '🔧 Services Counter', '🔥 Gas Refill', '📊 Dashboard', '🗂️ Client Registry', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '📅 Bookings', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['🛒 Sales Counter', '🔧 Services Counter', '🔥 Gas Refill', '📊 Dashboard', '🗂️ Client Registry', '📋 Inventory', '📦 Add New Items', '📥 Restock', '🛍️ Orders', '📋 Stock Take', '📊 Reports', '🔍 Audit', '🏬 Store', '🔖 Barcode', '🍽️🛏️ Tables & Rooms', '↩️ Returned Goods', '🚚 Deliveries', '🔀 Cross-Branch Sales', '📅 Bookings', '🧾 Daily Sales', '📦 Stock Report', '💰 Profits & Expenses', '📊 Demand Trends', '🧾 Bills', '📒 Debts', '🤝 Trade Credits', '👤 My Customers', '📑 Contracts', '👥 Staff', '🕐 Attendance', '💼 Payroll', '⚙️ Settings', '☰ More'],
   tabText: {
     'Services Counter': 'Check in a client\u2019s job (item left, condition, quote, promised time), track its status, take payment when done.',
     'Client Registry': 'Every service job: what was left, what is being done, when it is due back.',
@@ -628,7 +631,7 @@ MODS.services = {
 MODS.water = {
   name: 'Aqua POS', title: 'Aqua POS — User Guide', tagline: 'Water refill stations, bottled-water producers and distributors — refills, sealed bottles, bales, bulk tanks, production and deliveries.',
   itemsPlural: 'products and materials', itemWord: 'product', addTab: '📋 Inventory', restockTab: '📥 Restocking',
-  tabs: ['🧾 Sales Counter', '📊 Dashboard', '📋 Inventory', '📥 Restocking', '📋 Stock Take', '🚰 Bulk Tank', '🏭 Production', '📅 Bulk Orders', '↩️ Returned Goods', '🚚 Deliveries', '📊 Daily Sales', '🔍 Audit', '📦 Stock Report', '💰 Profits & Expenses', '📈 Demand Trends', '🧾 Bills', '📒 Debts', '👤 My Customers', '👥 Staff', '🕐 Attendance', '⚙️ Settings', '☰ More'],
+  tabs: ['🧾 Sales Counter', '📊 Dashboard', '📋 Inventory', '➕ Add New Items', '🧩 Materials', '📥 Restocking', '📋 Stock Take', '🚰 Bulk Tank', '🏭 Production', '📅 Bulk Orders', '↩️ Returned Goods', '🚚 Deliveries', '📊 Daily Sales', '🔍 Audit', '📦 Stock Report', '💰 Profits & Expenses', '📈 Demand Trends', '🧾 Bills', '📒 Debts', '👤 My Customers', '👥 Staff', '🕐 Attendance', '💼 Payroll', '⚙️ Settings', '☰ More'],
   tabText: {
     'Sales Counter': 'New sale: refills by size or custom litres, sealed bottles, dispensers, bales; walk-in or delivery.',
     'Inventory': 'Products (bottled water, bales, accessories), materials and refill sizes with prices and recipes.',

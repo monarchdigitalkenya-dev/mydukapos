@@ -1,0 +1,762 @@
+<!-- LPG RETAIL (zip 216) ---------------------------------------------------------------------------------------------------------------
+     Gas cylinder retail, done in ONE place: the Sales Counter. A 🔥 Gas button opens a chooser — Buy Full / Exchange Empty / Buy Cylinder / Buy Set — and
+     the choice becomes an ordinary line of the ordinary cart (so a mixed cart is ONE sale and ONE payment). The 🔥 Gas tab keeps the stock: Full / Empty /
+     Away / Damaged per size and brand, bundles with cost and margin, damaged handling, cylinder stock takes (counted by anyone, approved by an admin),
+     the movement history (before / change / after / why / which sale), the brand-exchange rules and the gas reports.
+     Server: the movements and gas sale lines ride in the same atomic record group as the sale (functions/api/_lpg.js -> lpg_* tables).
+     This block only exists in the apps that sell gas (index.html, production, services). -->
+<style>
+    #lpg-modal { position: fixed; inset: 0; z-index: 9700; background: rgba(0, 0, 0, .55); display: none; align-items: flex-start; justify-content: center; overflow: auto; padding: 14px 10px; }
+    #lpg-modal.on { display: flex; }
+    #lpg-modal .lpg-in { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-radius: 16px; width: 100%; max-width: 640px; padding: 16px; box-sizing: border-box; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+    .lpg-x { float: right; border: 0; background: none; font-size: 22px; cursor: pointer; color: #7f8c8d; width: auto; margin: 0; padding: 0 6px; }
+    .lpg-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 10px 0 14px; }
+    .lpg-tile { text-align: left; border: 2px solid #dfe4ea; border-radius: 14px; padding: 12px; cursor: pointer; background: var(--bg-surface, #fff); color: inherit; font: inherit; width: auto; margin: 0; }
+    .lpg-tile b { display: block; font-size: 16px; } .lpg-tile small { display: block; color: #7f8c8d; font-size: 12px; margin-top: 3px; line-height: 1.35; }
+    .lpg-tile .em { font-size: 26px; display: block; margin-bottom: 4px; }
+    .lpg-tile.on { border-color: #e67e22; background: linear-gradient(135deg, #fff4e6, #ffe8cc); box-shadow: 0 0 0 3px rgba(230,126,34,.18); color: #2c3e50; }
+    .lpg-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 12px; }
+    .lpg-chip { border: 2px solid #dfe4ea; border-radius: 12px; padding: 8px 14px; cursor: pointer; background: var(--bg-surface, #fff); color: inherit; font: inherit; font-weight: 700; width: auto; margin: 0; text-align: left; }
+    .lpg-chip small { display: block; font-weight: 400; font-size: 11.5px; color: #7f8c8d; }
+    .lpg-chip.on { border-color: #e67e22; background: #fff4e6; color: #2c3e50; } .lpg-chip.out { opacity: .5; }
+    .lpg-price { display: flex; justify-content: space-between; align-items: center; gap: 10px; border-radius: 12px; padding: 10px 14px; background: linear-gradient(135deg, #1e8449, #27ae60); color: #fff; margin: 8px 0; flex-wrap: wrap; }
+    .lpg-price b { font-size: 22px; } .lpg-price span { font-size: 13px; opacity: .92; }
+    .lpg-note { border-radius: 10px; padding: 8px 12px; font-size: 13px; margin: 8px 0; background: #eaf4fc; color: #1b4f72; line-height: 1.4; }
+    .lpg-note.warn { background: #fff3d6; color: #7d5a00; } .lpg-note.bad { background: #fdecea; color: #922b21; } .lpg-note.ok { background: #e6f6ec; color: #1e6b3a; }
+    .lpg-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; margin: 0 0 14px; }
+    .lpg-card { border-radius: 14px; padding: 12px; color: #fff; position: relative; overflow: hidden; }
+    .lpg-card b { display: block; font-size: 24px; line-height: 1.1; } .lpg-card span { font-size: 12px; opacity: .95; }
+    .lpg-card.full { background: linear-gradient(135deg, #1e8449, #2ecc71); } .lpg-card.empty { background: linear-gradient(135deg, #5d6d7e, #85929e); }
+    .lpg-card.away { background: linear-gradient(135deg, #d68910, #f5b041); } .lpg-card.dmg { background: linear-gradient(135deg, #b03a2e, #e74c3c); }
+    .lpg-card.cash { background: linear-gradient(135deg, #1f618d, #3498db); } .lpg-card.ex { background: linear-gradient(135deg, #6c3483, #a569bd); }
+    .lpg-card.mar { background: linear-gradient(135deg, #117864, #1abc9c); } .lpg-card.take { background: linear-gradient(135deg, #7d6608, #d4ac0d); }
+    #lpg-panels .lpg-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; margin: 8px 0; }
+    #lpg-panels .lpg-row > div { min-width: 120px; } #lpg-panels input, #lpg-panels select { max-width: 100%; box-sizing: border-box; }
+    #lpg-panels table td, #lpg-panels table th { font-size: 13px; }
+    #lpg-panels .lpg-pill { display: inline-block; border-radius: 10px; padding: 1px 8px; font-size: 11.5px; font-weight: 700; background: #ecf0f1; color: #2c3e50; }
+    #lpg-panels .lpg-pill.ok { background: #d9f2e7; color: #146c4e; } #lpg-panels .lpg-pill.warn { background: #fdebd0; color: #935116; } #lpg-panels .lpg-pill.bad { background: #fadbd8; color: #922b21; }
+    #lpg-panels .lpg-sec > summary { cursor: pointer; font-weight: 700; font-size: 16px; padding: 4px 0; }
+    #lpg-panels .lpg-pos { color: #1e8449; font-weight: 700; } #lpg-panels .lpg-neg { color: #c0392b; font-weight: 700; }
+    @media (max-width: 520px) { .lpg-tiles { grid-template-columns: 1fr 1fr; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.Lpg) return;
+    var L = window.Lpg = {};
+    var CFG_KEY = 'pos_lpg_config';
+    var STATES = ['full', 'empty', 'away', 'damaged'];
+    var STATE_WORD = { full: 'Full', empty: 'Empty', away: 'Away', damaged: 'Damaged' };
+    var MODE_WORD = { full: 'Buy Full', exchange: 'Exchange Empty', cylinder: 'Buy Cylinder', set: 'Buy Set' };
+    var KIND_WORD = {
+        sale: 'Sale', exchange: 'Exchange — full given', exchange_in: 'Exchange — empty received', full: 'Sale — full cylinder', cylinder: 'Sale — empty cylinder', set: 'Sale — set',
+        set_component: 'Set — accessory', void: 'Sale voided', void_exchange: 'Exchange voided', void_full: 'Sale voided', void_cylinder: 'Sale voided', void_set: 'Sale voided',
+        supplier_send: 'Sent to supplier', supplier_receive: 'Received from supplier', supplier_swap: 'Swapped at depot', damage: 'Marked damaged', repair: 'Back from damaged',
+        writeoff: 'Written off', return_supplier: 'Returned to supplier', count: 'Stock count', stocktake: 'Stock take adjustment', adjust: 'Adjustment', purchase: 'Purchase received',
+        opening: 'Opening balance', reconcile: 'Reconciled',
+    };
+    var $ = function (id) { return document.getElementById(id); };
+    var esc = function (s) { return escapeHtml(String(s == null ? '' : s)); };
+    var r2 = function (x) { return Math.round((Number(x) || 0) * 100) / 100; };
+    var r3 = function (x) { return Math.round((Number(x) || 0) * 1000) / 1000; };
+    var kes = function (x) { return 'KES ' + (Number(x) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+    var admin = function () { try { return typeof isAdminServing === 'function' ? !!isAdminServing() : true; } catch (e) { return true; } };
+    var byCode = function (c) { return inventory.find(function (p) { return p && p.code === c; }); };
+    var uid = function () { return 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); };
+    var fullsList = function () { return getGasFullVariants().slice().sort(function (a, b) { return gasLabelOf(a).localeCompare(gasLabelOf(b), undefined, { numeric: true }); }); };
+    var emptyOf = function (f) { return byCode(f.gasPairCode); };
+    var brandOf = function (p) { return String((p && p.gasBrand) || '').trim(); };
+
+    // the gas movements of the log, found once per change of the log (the log can hold many thousands of entries; the gas screens read it often)
+    var _lg = { sig: '', rows: [] };
+    function lpgLog() {
+        var n = stockMovementLog.length, last = n ? stockMovementLog[n - 1] : null, sig = n + ':' + (last && last.id);
+        if (_lg.sig !== sig) { _lg.rows = stockMovementLog.filter(function (m) { return m && m.lpg && !m._deleted; }); _lg.sig = sig; }
+        return _lg.rows;
+    }
+    L.lpgLog = lpgLog;
+    // the inventory item a count / opening line is about: the Empty item for empties, otherwise the size's Full item
+    function holder(full, state) { return state === 'empty' ? (emptyOf(full) || full) : full; }
+
+    // ---------------------------------------------------------------- settings synced with the shop (bundles, accepted exchange brands)
+    function cfg() {
+        var c = safeJSONParse(CFG_KEY, null);
+        if (!c || typeof c !== 'object' || Array.isArray(c)) c = {};
+        c.bundles = Array.isArray(c.bundles) ? c.bundles : [];
+        c.partners = c.partners && typeof c.partners === 'object' && !Array.isArray(c.partners) ? c.partners : {};
+        return c;
+    }
+    function saveCfg(c) { c.at = Date.now(); safeSetItem(CFG_KEY, JSON.stringify(c)); try { queuePush(); } catch (e) { /* the poll sends it */ } }
+    L.cfg = cfg;
+    L.snapshot = function () { return cfg(); };
+    L.restore = function (o) {
+        if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+        if ((Number(o.at) || 0) >= (Number(cfg().at) || 0)) { safeSetItem(CFG_KEY, JSON.stringify(o)); if ($('lpg-panels')) L.render(); }
+    };
+
+    // ---------------------------------------------------------------- how a stock movement of a cylinder is described (called from logStockMovement)
+    function kindFromReason(reason) {
+        var s = String(reason || '').toLowerCase();
+        if (/void|put back|restor/.test(s)) return 'void';
+        if (/stock take/.test(s)) return 'stocktake';
+        if (/count/.test(s)) return 'count';
+        if (/purchas|receiv|supplier/.test(s)) return 'purchase';
+        if (/sale|sold/.test(s)) return 'sale';
+        return 'adjust';
+    }
+    L._ctx = null; L._line = null; L._lineAt = 0;
+    L.lineCtx = function (line) { L._line = line && line.lpg ? line : (line && line.gasReturnEmptyCode ? line : null); L._lineAt = Date.now(); };
+    function withCtx(ctx, fn) { var o = L._ctx; L._ctx = ctx; try { return fn(); } finally { L._ctx = o; } }
+    L.tag = function (m, item) {
+        try {
+            if (!m || !item || !item.isGasCylinder || m.unit === 'pieceQty') return;
+            var role = item.gasRole === 'empty' ? 'empty' : 'full';
+            var full = role === 'full' ? item : (byCode(item.gasPairCode) || item);
+            var after = Number(item.qty) || 0, d = Number(m.delta) || 0;
+            var ctx = L._ctx || {}, line = (L._line && Date.now() - L._lineAt < 1500) ? L._line : null;
+            var mode = line && line.lpg ? line.lpg.mode : (line ? 'exchange' : '');
+            var k = ctx.k || (line ? (/void|restor/i.test(String(m.reason)) ? 'void_' + mode : mode) : kindFromReason(m.reason));
+            m.lpg = { k: k, size: full.code, label: gasLabelOf(full), brand: brandOf(item), state: role, before: r3(after - d), after: after, d: d, ref: ctx.ref || (line && line.lpg && line.lpg.lid) || '' };
+        } catch (e) { /* the movement is still recorded, just without the gas note */ }
+    };
+    // a movement of the Away / Damaged counter: no change to a stocked quantity (delta 0, so the stock ledger ignores it), but it is part of the cylinder history
+    function stateMove(full, state, d, kind, reason, ref, id) {
+        var field = state === 'away' ? 'gasAtSupplier' : 'gasDamaged';
+        var before = Number(full[field]) || 0, after = r3(before + d);
+        full[field] = after;
+        stockMovementLog.push({
+            id: id || genSaleId(), lg: 1, gas: 1, timestamp: new Date().toISOString(), code: full.code, name: full.name, delta: 0, type: d > 0 ? 'added' : 'removed',
+            reason: reason, unit: 'qty', by: typeof activeServerName === 'function' ? activeServerName() : '',
+            lpg: { k: kind, size: full.code, label: gasLabelOf(full), brand: brandOf(full), state: state, before: before, after: after, d: d, ref: ref || '' },
+        });
+    }
+    // a real quantity change of Full / Empty (the stock ledger applies it): change the number, then log it with the gas note
+    function qtyMove(item, d, kind, reason, ref, id) {
+        if (!d) return;
+        item.qty = r3((Number(item.qty) || 0) + d);
+        withCtx({ k: kind, ref: ref || '' }, function () { logStockMovement(item.code, item.name, d, reason, 'qty'); });
+        if (id && stockMovementLog.length) stockMovementLog[stockMovementLog.length - 1].id = id;
+    }
+
+    // ---------------------------------------------------------------- the stock hooks (called from the sale / void code of the till)
+    // After a sale's stock has been taken: the empty an exchange brought in, the parts of a set. Held bills call this when released, so it is once per sale.
+    // a damaged empty handed in belongs to the size of the BRAND it is (a partner brand's cylinder is counted under that brand's own size)
+    function damagedHolder(g) { var e = g.emptyCode ? byCode(g.emptyCode) : null; return (e && byCode(e.gasPairCode)) || byCode(g.size); }
+    L.afterDeduct = function (entries) {
+        (entries || []).forEach(function (line) {
+            if (!line) return;
+            var g = line.lpg;
+            L.lineCtx(line);
+            if (!g) {                                                          // a line from before this upgrade (a held bill, an open cart)
+                if (line.gasReturnEmptyCode) { var e0 = byCode(line.gasReturnEmptyCode); if (e0) qtyMove(e0, Number(line.qty) || 0, 'exchange_in', 'Exchange — empty received', ''); }
+                return;
+            }
+            var n = Number(line.qty) || 0, full = byCode(g.size);
+            if (g.mode === 'exchange') {
+                if (g.emptyState === 'damaged') { var dh = damagedHolder(g); if (dh) stateMove(dh, 'damaged', n, 'exchange_in', 'Damaged empty handed in with an exchange', g.lid); }
+                else { var e = byCode(g.emptyCode || line.gasReturnEmptyCode); if (e) qtyMove(e, n, 'exchange_in', 'Exchange — empty received', g.lid); }
+            } else if (g.mode === 'set' && Array.isArray(g.components)) {
+                g.components.forEach(function (c) {
+                    var p = byCode(c.code); if (!p) return;
+                    withCtx({ k: 'set_component', ref: g.lid }, function () { deductStockForSaleUnit(p, (Number(c.qty) || 1) * n, 'box'); });
+                });
+            }
+        });
+        L._line = null;
+    };
+    L.afterRestore = function (entries) {
+        (entries || []).forEach(function (line) {
+            if (!line) return;
+            var g = line.lpg;
+            L.lineCtx(line);
+            if (!g) {
+                if (line.gasReturnEmptyCode) { var e0 = byCode(line.gasReturnEmptyCode); if (e0) qtyMove(e0, -Math.min(Number(line.qty) || 0, Number(e0.qty) || 0), 'void_exchange', 'Sale void — empty taken back', ''); }
+                return;
+            }
+            var n = Number(line.qty) || 0, full = byCode(g.size);
+            if (g.mode === 'exchange') {
+                if (g.emptyState === 'damaged') { var dh = damagedHolder(g); if (dh) stateMove(dh, 'damaged', -Math.min(n, Number(dh.gasDamaged) || 0), 'void_exchange', 'Sale void — damaged empty taken back', g.lid); }
+                else { var e = byCode(g.emptyCode || line.gasReturnEmptyCode); if (e) qtyMove(e, -Math.min(n, Number(e.qty) || 0), 'void_exchange', 'Sale void — empty taken back', g.lid); }
+            } else if (g.mode === 'set' && Array.isArray(g.components)) {
+                g.components.forEach(function (c) {
+                    var p = byCode(c.code); if (!p) return;
+                    withCtx({ k: 'void_set', ref: g.lid }, function () { restoreStockForSaleUnit(p, (Number(c.qty) || 1) * n, 'box'); });
+                });
+            }
+        });
+        L._line = null;
+    };
+
+    // ---------------------------------------------------------------- prices, costs, choices
+    function costOf(full, mode) {
+        var e = emptyOf(full);
+        if (mode === 'exchange') return Number(full.gasRefillWholesalePrice) || 0;
+        if (mode === 'cylinder') return Number(e && e.wholesalePrice) || 0;
+        return Number(full.wholesalePrice) || 0;
+    }
+    function priceOf(full, mode) {
+        var e = emptyOf(full);
+        if (mode === 'exchange') return Number(full.gasRefillPrice) || 0;
+        if (mode === 'cylinder') return Number(e && e.price) || 0;
+        return Number(full.price) || 0;
+    }
+    L.priceOf = priceOf; L.costOf = costOf;
+    function bundleCost(b) {
+        var full = byCode(b.size), c = full ? Number(full.wholesalePrice) || 0 : 0;
+        (b.comps || []).forEach(function (x) { var p = byCode(x.code); c += (p ? Number(p.wholesalePrice) || 0 : 0) * (Number(x.qty) || 1); });
+        return r2(c);
+    }
+    L.bundleCost = bundleCost;
+    // the empties a customer may hand in against this full cylinder: the same weight, and a brand the shop agreed to take (its own always)
+    function acceptedEmpties(full) {
+        var own = brandOf(full), ok = [own].concat(cfg().partners[own] || []);
+        return inventory.filter(function (p) { return p.isGasCylinder && p.gasRole === 'empty' && p.gasWeight === full.gasWeight && ok.indexOf(brandOf(p)) >= 0; })
+            .sort(function (a, b) { return (b.code === full.gasPairCode) - (a.code === full.gasPairCode); });
+    }
+    L.acceptedEmpties = acceptedEmpties;
+    function inCart(code, exceptKey) {
+        var n = 0; Object.keys(currentCart).forEach(function (k) { if (k !== exceptKey && currentCart[k] && currentCart[k].code === code) n += Number(currentCart[k].qty) || 0; });
+        return n;
+    }
+
+    // THE one way a gas sale enters the cart. o = { fullCode, mode: full|exchange|cylinder|set, qty, emptyCode, damaged, bundleId, accessories:[{code,qty}] }
+    L.cartAdd = function (o) {
+        var fail = function (m) { return { ok: false, msg: m }; };
+        var full = byCode(o.fullCode);
+        if (!full || !full.isGasCylinder || full.gasRole !== 'full') return fail('Pick a cylinder size first.');
+        var mode = o.mode, qty = Math.max(1, Math.round(Number(o.qty) || 1)), label = gasLabelOf(full), empty = emptyOf(full);
+        if (!MODE_WORD[mode]) return fail('Choose what the customer is buying.');
+        var price = priceOf(full, mode), unitCost = costOf(full, mode), name, g = { mode: mode, size: full.code, label: label, brand: brandOf(full), lid: uid() }, comps = null, bundle = null;
+        var stockItem = mode === 'cylinder' ? empty : full;
+        if (!stockItem) return fail('That size has no matching Empty item.');
+        if (mode === 'full') name = label + ' — Full Cylinder';
+        else if (mode === 'cylinder') name = label + ' — Empty Cylinder';
+        else if (mode === 'exchange') {
+            var list = acceptedEmpties(full), pick = o.emptyCode ? list.find(function (p) { return p.code === o.emptyCode; }) : list[0];
+            if (!pick) return fail('We only exchange against an accepted brand. Add that brand\'s Empty item under Sizes, or tick the brand under "Exchange rules".');
+            g.emptyCode = pick.code; g.emptyBrand = brandOf(pick); g.emptyState = o.damaged ? 'damaged' : 'empty';
+            name = label + ' — Exchange' + (g.emptyBrand && g.emptyBrand !== brandOf(full) ? ' (their ' + g.emptyBrand + ' empty)' : '') + (o.damaged ? ' (damaged empty)' : '');
+        } else if (mode === 'set') {
+            if (o.bundleId) {
+                bundle = cfg().bundles.find(function (b) { return b.id === o.bundleId && b.active !== false; });
+                if (!bundle) return fail('That bundle is not available any more.');
+                price = Number(bundle.price) || 0; unitCost = bundleCost(bundle);
+                comps = (bundle.comps || []).map(function (c) { var p = byCode(c.code); return { code: c.code, name: p ? p.name : c.code, qty: Number(c.qty) || 1, cost: p ? Number(p.wholesalePrice) || 0 : 0 }; });
+                g.bundle = bundle.id; name = label + ' — ' + bundle.name;
+            } else { name = label + ' — Complete Set'; }
+        }
+        if (!(price > 0)) return fail('Set the ' + (mode === 'exchange' ? 'refill price' : mode === 'cylinder' ? 'empty cylinder price' : mode === 'set' && bundle ? 'bundle price' : 'full cylinder price') + ' for ' + label + ' in the table first.');
+        var key = stockItem.code + '::gas-' + mode + '-' + (g.bundle || '') + '-' + (g.emptyCode || '') + (g.emptyState === 'damaged' ? '-d' : '');
+        var existing = currentCart[key] ? Number(currentCart[key].qty) || 0 : 0;
+        var avail = Number(stockItem.qty) || 0, other = inCart(stockItem.code, key);
+        if (existing + qty + other > avail) return fail('Only ' + Math.max(0, avail - other - existing) + ' more ' + (mode === 'cylinder' ? 'empty' : 'full') + ' "' + label + '" can be added (' + avail + ' in stock' + (other || existing ? ', ' + (other + existing) + ' already in this sale' : '') + ').');
+        if (comps) {
+            for (var i = 0; i < comps.length; i++) {
+                var cp = byCode(comps[i].code), need = comps[i].qty * (existing + qty), used = inCart(comps[i].code, key);
+                if (!cp || (Number(cp.qty) || 0) < need + used) return fail('Not enough "' + (cp ? cp.name : comps[i].code) + '" in stock for ' + (existing + qty) + ' set(s).');
+            }
+            g.components = comps;
+        }
+        g.cost = r2(unitCost);
+        var accessories = (mode === 'set' && !bundle && Array.isArray(o.accessories)) ? o.accessories : [];
+        for (var j = 0; j < accessories.length; j++) {
+            var ap = byCode(accessories[j].code), an = (Number(accessories[j].qty) || 1) * qty;
+            if (!ap || (Number(ap.qty) || 0) < an + inCart(ap.code)) return fail('Not enough "' + (ap ? ap.name : accessories[j].code) + '" in stock.');
+        }
+        if (currentCart[key]) { currentCart[key].qty = existing + qty; }
+        else {
+            currentCart[key] = { code: stockItem.code, cartKey: key, name: name, price: price, wholesalePrice: r2(unitCost), unit: 'pcs', isService: false, vatCategory: stockItem.vatCategory || 'A', qty: qty, lpg: g };
+            if (mode === 'exchange' && g.emptyState !== 'damaged') currentCart[key].gasReturnEmptyCode = g.emptyCode;
+        }
+        accessories.forEach(function (a) { for (var t = 0; t < (Number(a.qty) || 1) * qty; t++) addToCart(a.code); });
+        renderCart();
+        return { ok: true, msg: 'Added ' + qty + ' × ' + name + ' — ' + kes(price * qty) + '. Take payment in the cart below.', line: currentCart[key] };
+    };
+
+    // At the till: the stock steppers in the cart look at one line at a time, but an exchange and a full cylinder of the same size draw on the same Full count,
+    // and a set draws on its parts. Checked once more, together, when the sale is taken.
+    L.validateCart = function () {
+        var need = {}, gas = {};
+        Object.keys(currentCart).forEach(function (k) {
+            var l = currentCart[k]; if (!l || l.isService || l.isCrossBranch) return;
+            var n = Number(l.qty) || 0;
+            need[l.code] = (need[l.code] || 0) + n;
+            if (l.lpg) {
+                gas[l.code] = 1;
+                (l.lpg.components || []).forEach(function (c) { need[c.code] = (need[c.code] || 0) + (Number(c.qty) || 1) * n; gas[c.code] = 1; });
+            }
+        });
+        var bad = Object.keys(gas).filter(function (c) { var p = byCode(c); return !p || (Number(p.qty) || 0) < need[c]; });
+        if (!bad.length) return '';
+        var p = byCode(bad[0]);
+        return 'Not enough "' + (p ? p.name : bad[0]) + '" in stock for this sale: ' + (p ? (Number(p.qty) || 0) : 0) + ' in stock, the cart needs ' + need[bad[0]] + '. Lower the quantity or remove the line.';
+    };
+
+    // ---------------------------------------------------------------- the chooser (opens from the Sales Counter)
+    var ch = { mode: '', size: '', qty: 1, empty: '', damaged: false, bundle: '', acc: {} };
+    function modalEl() {
+        var m = $('lpg-modal');
+        if (!m) { m = document.createElement('div'); m.id = 'lpg-modal'; m.addEventListener('click', function (ev) { if (ev.target === m) L.close(); }); document.body.appendChild(m); }
+        return m;
+    }
+    L.open = function (mode) {
+        var f = fullsList();
+        if (!f.length) { showToast('Add a cylinder size first (🔥 Gas tab).', true); return; }
+        if (!f.some(function (x) { return x.code === ch.size; })) ch.size = f[0].code;
+        ch.mode = mode || ch.mode || ''; ch.qty = 1; ch.damaged = false; ch.bundle = ''; ch.empty = ''; ch.acc = {};
+        modalEl().classList.add('on'); drawChooser();
+    };
+    L.close = function () { var m = $('lpg-modal'); if (m) m.classList.remove('on'); };
+    L.pick = function (k, v) {
+        if (k === 'mode') { ch.mode = v; ch.bundle = ''; ch.damaged = false; ch.empty = ''; }
+        else if (k === 'size') { ch.size = v; ch.bundle = ''; ch.empty = ''; }
+        else if (k === 'qty') ch.qty = Math.max(1, Math.round(Number(v) || 1));
+        else if (k === 'damaged') ch.damaged = !!v;
+        else ch[k] = v;
+        drawChooser();
+    };
+    L.pickAcc = function (code, on, q) { if (on === null) { if (ch.acc[code]) ch.acc[code] = Math.max(1, Math.round(Number(q) || 1)); } else if (on) ch.acc[code] = ch.acc[code] || 1; else delete ch.acc[code]; drawChooser(); };
+    L.submit = function (stay) {
+        var o = { fullCode: ch.size, mode: ch.mode, qty: ch.qty, emptyCode: ch.empty, damaged: ch.damaged, bundleId: ch.bundle, accessories: Object.keys(ch.acc).map(function (c) { return { code: c, qty: ch.acc[c] }; }) };
+        var r = L.cartAdd(o);
+        var say = function (cls, text) { var mm = $('lpg-msg'); if (mm) { mm.className = 'lpg-note ' + cls; mm.textContent = text; mm.style.display = ''; } };
+        if (!r.ok) { say('bad', r.msg); return r; }
+        showToast(r.msg);
+        if (stay) { ch.qty = 1; drawChooser(); say('ok', r.msg); } else L.close();
+        return r;
+    };
+    function drawChooser() {
+        var m = modalEl(), fulls = fullsList(), full = byCode(ch.size), mode = ch.mode, h = [];
+        h.push('<div class="lpg-in"><button type="button" class="lpg-x" onclick="Lpg.close()" aria-label="Close">✕</button><h3 style="margin:0 0 2px;">🔥 Gas</h3><p class="settings-hint" style="margin:0;">What is the customer buying? It goes into the cart like any other item, so a mixed sale stays one sale with one payment.</p>');
+        h.push('<div class="lpg-tiles">' + [
+            ['full', '🛢️', 'Buy Full', 'A full cylinder with gas, theirs to keep'],
+            ['exchange', '🔄', 'Exchange Empty', 'They hand in an empty and take a full one'],
+            ['cylinder', '⚪', 'Buy Cylinder', 'An empty cylinder on its own'],
+            ['set', '📦', 'Buy Set', 'A full cylinder with burner, regulator… (a bundle)'],
+        ].map(function (t) { return '<button type="button" class="lpg-tile ' + (mode === t[0] ? 'on' : '') + '" onclick="Lpg.pick(\'mode\',\'' + t[0] + '\')"><span class="em">' + t[1] + '</span><b>' + t[2] + '</b><small>' + t[3] + '</small></button>'; }).join('') + '</div>');
+        if (mode && full) {
+            h.push('<label class="label">Which size?</label><div class="lpg-chips">' + fulls.map(function (f) {
+                var e = emptyOf(f), n = mode === 'cylinder' ? (e && e.qty) || 0 : f.qty || 0;
+                return '<button type="button" class="lpg-chip ' + (f.code === ch.size ? 'on' : '') + (n <= 0 ? ' out' : '') + '" onclick="Lpg.pick(\'size\',\'' + escapeJsAttr(f.code) + '\')">' + esc(gasLabelOf(f)) + '<small>' + (mode === 'cylinder' ? n + ' empty' : n + ' full') + '</small></button>';
+            }).join('') + '</div>');
+            var price = priceOf(full, mode), cost = costOf(full, mode), note = '';
+            if (mode === 'exchange') {
+                var list = acceptedEmpties(full);
+                if (list.length > 1 || (list[0] && list[0].code !== full.gasPairCode)) {
+                    h.push('<label class="label">Brand of the empty handed in</label><select onchange="Lpg.pick(\'empty\', this.value)">' + list.map(function (p) { return '<option value="' + esc(p.code) + '" ' + ((ch.empty || list[0].code) === p.code ? 'selected' : '') + '>' + esc(brandOf(p) || 'No brand') + ' ' + esc(p.gasWeight) + ' (' + (p.qty || 0) + ' in stock)</option>'; }).join('') + '</select>');
+                }
+                h.push('<label style="display:flex;gap:8px;align-items:center;margin:8px 0;font-size:14px;"><input type="checkbox" style="width:auto;margin:0;" ' + (ch.damaged ? 'checked' : '') + ' onchange="Lpg.pick(\'damaged\', this.checked)"> The empty they hand in is damaged (goes to Damaged, not Empty)</label>');
+                note = 'Full goes down by 1 and the customer\'s empty comes in. We exchange only against a brand we have agreed to take; we do not refill or re-brand customers\' cylinders.';
+            } else if (mode === 'full') note = 'Full goes down by 1. The customer keeps the cylinder.';
+            else if (mode === 'cylinder') note = 'Empty goes down by 1.';
+            else {
+                var bs = cfg().bundles.filter(function (b) { return b.active !== false && (!b.size || b.size === full.code); });
+                if (bs.length) {
+                    h.push('<label class="label">Which set?</label><div class="lpg-chips">' + bs.map(function (b) { return '<button type="button" class="lpg-chip ' + (ch.bundle === b.id ? 'on' : '') + '" onclick="Lpg.pick(\'bundle\',\'' + escapeJsAttr(b.id) + '\')">' + esc(b.name) + '<small>' + kes(b.price) + ' · ' + (b.comps || []).length + ' accessor' + ((b.comps || []).length === 1 ? 'y' : 'ies') + '</small></button>'; }).join('') +
+                        '<button type="button" class="lpg-chip ' + (!ch.bundle ? 'on' : '') + '" onclick="Lpg.pick(\'bundle\',\'\')">Pick my own<small>full cylinder + ticked accessories</small></button></div>');
+                }
+                var b = ch.bundle ? cfg().bundles.find(function (x) { return x.id === ch.bundle; }) : null;
+                if (b) { price = Number(b.price) || 0; cost = bundleCost(b); note = 'Includes: 1 × ' + gasLabelOf(full) + ' full' + (b.comps || []).map(function (c) { var p = byCode(c.code); return ', ' + (c.qty || 1) + ' × ' + (p ? p.name : c.code); }).join('') + '. Every part comes off the stock.'; }
+                else {
+                    var accs = getGasAccessories();
+                    h.push('<label class="label">Accessories <span style="font-weight:normal;color:#7f8c8d;">(tick, and how many per set — each is its own line at its own price)</span></label>' + (accs.length ? accs.map(function (a) {
+                        var on = !!ch.acc[a.code];
+                        return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #eee;"><label style="flex:1;"><input type="checkbox" style="width:auto;margin:0 6px 0 0;" ' + (on ? 'checked' : '') + ' onchange="Lpg.pickAcc(\'' + escapeJsAttr(a.code) + '\', this.checked)">' + esc(a.name) + ' <span class="kitchen-sub">' + kes(a.price) + ' · ' + (a.qty || 0) + ' in stock</span></label>' + (on ? '<input type="number" min="1" step="1" value="' + ch.acc[a.code] + '" style="width:64px;" onchange="Lpg.pickAcc(\'' + escapeJsAttr(a.code) + '\', null, this.value)">' : '') + '</div>';
+                    }).join('') : '<p class="settings-hint">No accessories marked yet (🔥 Gas tab ▸ Accessories) — or make a bundle there.</p>'));
+                    note = 'The full cylinder, plus every accessory you ticked (each at its own price).';
+                }
+            }
+            var q = ch.qty;
+            h.push('<div class="lpg-price"><div><span>' + esc(MODE_WORD[mode]) + ' · ' + esc(gasLabelOf(full)) + '</span><br><b>' + (price > 0 ? kes(price) : 'Price not set') + '</b></div><div style="text-align:right;"><span>× ' + q + '</span><br><b>' + kes(price * q) + '</b></div></div>');
+            if (admin() && price > 0 && cost > 0) h.push('<div class="settings-hint" style="margin:0 0 6px;">Cost ' + kes(cost) + ' · margin ' + kes(price - cost) + ' each (' + Math.round((price - cost) / price * 100) + '%) — only admins see this line.</div>');
+            h.push('<div class="lpg-note">' + esc(note) + '</div>');
+            h.push('<div class="lpg-row"><div><label class="label">How many?</label><div style="display:flex;gap:6px;align-items:center;"><button type="button" class="settings-small-btn" style="width:auto;margin:0;" onclick="Lpg.pick(\'qty\',' + (q - 1) + ')">−</button><input type="number" min="1" step="1" value="' + q + '" style="width:80px;margin:0;" onchange="Lpg.pick(\'qty\', this.value)"><button type="button" class="settings-small-btn" style="width:auto;margin:0;" onclick="Lpg.pick(\'qty\',' + (q + 1) + ')">+</button></div></div>' +
+                '<button type="button" class="btn-main" style="width:auto;margin:0;padding:10px 22px;" onclick="Lpg.submit(false)">Add to sale</button><button type="button" class="settings-small-btn" style="width:auto;margin:0;" onclick="Lpg.submit(true)">Add &amp; add another</button></div>');
+            h.push('<div id="lpg-msg" class="lpg-note" style="display:none;"></div>');
+        }
+        h.push('</div>');
+        m.innerHTML = h.join('');
+    }
+    // ---------------------------------------------------------------- the 🔥 Gas button in the Sales Counter
+    L.showCounterBtn = function () {
+        var btn = $('lpg-counter-btn');
+        var on = (typeof doGasRefills !== 'undefined') && !!doGasRefills;
+        if (!btn) {
+            var anchor = document.querySelector('button[onclick="openAdhocSaleModal()"]');
+            if (!anchor || !anchor.parentNode) return;
+            btn = document.createElement('button');
+            btn.type = 'button'; btn.id = 'lpg-counter-btn'; btn.className = 'settings-small-btn';
+            btn.style.cssText = 'margin:6px 6px 0 0; font-weight:700; background:linear-gradient(135deg,#e67e22,#d35400); color:#fff; border:0;';
+            btn.textContent = '🔥 Gas'; btn.setAttribute('onclick', 'Lpg.open()');
+            anchor.parentNode.insertBefore(btn, anchor);
+        }
+        btn.style.display = on ? '' : 'none';
+    };
+
+    // ---------------------------------------------------------------- supplier moves (empties out, full ones back)
+    L.supplier = function (full, empty, direction, qty) {
+        var label = gasLabelOf(full);
+        if (direction === 'send') { qtyMove(empty, -qty, 'supplier_send', 'Empties sent to the supplier', ''); stateMove(full, 'away', qty, 'supplier_send', 'Empties sent to the supplier', ''); }
+        else if (direction === 'receive') { qtyMove(full, qty, 'supplier_receive', 'Refilled cylinders received', ''); stateMove(full, 'away', -qty, 'supplier_receive', 'Refilled cylinders received', ''); }
+        else { qtyMove(empty, -qty, 'supplier_swap', 'Empties swapped for full ones at the depot', ''); qtyMove(full, qty, 'supplier_swap', 'Empties swapped for full ones at the depot', ''); }
+        void label;
+    };
+
+    // ---------------------------------------------------------------- damaged cylinders
+    L.damage = function (fullCode, action, qty, reason) {
+        var full = byCode(fullCode), empty = full && emptyOf(full), n = Math.max(1, Math.round(Number(qty) || 1)), why = String(reason || '').trim();
+        if (!full || !empty) return { ok: false, msg: 'Pick a size.' };
+        if (!why) return { ok: false, msg: 'Say why (for example "leaking valve", "failed test").' };
+        var dmg = Number(full.gasDamaged) || 0;
+        if (action === 'empty_to_damaged') { if ((empty.qty || 0) < n) return { ok: false, msg: 'Only ' + (empty.qty || 0) + ' empty ' + gasLabelOf(full) + ' on hand.' }; qtyMove(empty, -n, 'damage', 'Marked damaged: ' + why, ''); stateMove(full, 'damaged', n, 'damage', 'Marked damaged: ' + why, ''); }
+        else if (action === 'full_to_damaged') { if ((full.qty || 0) < n) return { ok: false, msg: 'Only ' + (full.qty || 0) + ' full ' + gasLabelOf(full) + ' on hand.' }; qtyMove(full, -n, 'damage', 'Marked damaged: ' + why, ''); stateMove(full, 'damaged', n, 'damage', 'Marked damaged: ' + why, ''); }
+        else if (action === 'damaged_to_empty') { if (dmg < n) return { ok: false, msg: 'Only ' + dmg + ' damaged ' + gasLabelOf(full) + '.' }; stateMove(full, 'damaged', -n, 'repair', 'Repaired / re-tested: ' + why, ''); qtyMove(empty, n, 'repair', 'Back from damaged: ' + why, ''); }
+        else if (action === 'damaged_writeoff') { if (dmg < n) return { ok: false, msg: 'Only ' + dmg + ' damaged ' + gasLabelOf(full) + '.' }; stateMove(full, 'damaged', -n, 'writeoff', 'Written off: ' + why, ''); }
+        else if (action === 'damaged_to_supplier') { if (dmg < n) return { ok: false, msg: 'Only ' + dmg + ' damaged ' + gasLabelOf(full) + '.' }; stateMove(full, 'damaged', -n, 'return_supplier', 'Returned to supplier: ' + why, ''); }
+        else return { ok: false, msg: 'Choose what happened.' };
+        gasSaveInventory();
+        return { ok: true, msg: 'Recorded: ' + n + ' × ' + gasLabelOf(full) + ' — ' + why + '.' };
+    };
+
+    // ---------------------------------------------------------------- cylinder stock take (count -> admin approves -> counts adjust)
+    function takeId(m) { return m && m.lpg && m.lpg.st && m.lpg.st.id; }
+    L.stockTakes = function () {
+        var map = {};
+        lpgLog().forEach(function (m) {
+            var id = takeId(m); if (!id) return;
+            var t = map[id] = map[id] || { id: id, at: m.timestamp, by: (m.lpg.st.by || m.by || ''), note: m.lpg.st.note || '', lines: {}, decidedBy: '' };
+            var key = m.lpg.size + '|' + m.lpg.state, ln = t.lines[key] = t.lines[key] || { size: m.lpg.size, state: m.lpg.state, label: m.lpg.label, expected: Number(m.lpg.st.expected) || 0, counted: Number(m.lpg.st.counted) || 0, status: 'pending' };
+            if (m.lpg.st.status === 'approved' || m.lpg.st.status === 'rejected') { ln.status = m.lpg.st.status; t.decidedBy = m.lpg.st.decidedBy || m.by || ''; }
+        });
+        return Object.keys(map).map(function (k) { var t = map[k]; t.list = Object.keys(t.lines).map(function (x) { return t.lines[x]; }); t.status = t.list.every(function (l) { return l.status === 'approved'; }) ? 'approved' : t.list.every(function (l) { return l.status === 'rejected'; }) ? 'rejected' : t.list.some(function (l) { return l.status === 'pending'; }) ? 'pending' : 'decided'; return t; })
+            .sort(function (a, b) { return String(b.at).localeCompare(String(a.at)); });
+    };
+    function expectedOf(full, state) {
+        if (state === 'full') return Number(full.qty) || 0;
+        if (state === 'empty') return Number((emptyOf(full) || {}).qty) || 0;
+        return Number(full[state === 'away' ? 'gasAtSupplier' : 'gasDamaged']) || 0;
+    }
+    L.expectedOf = expectedOf;
+    L.takeSubmit = function (rows, note) {
+        var lines = (rows || []).filter(function (r) { return r && r.counted !== '' && r.counted != null && Number.isFinite(Number(r.counted)) && Number(r.counted) >= 0 && STATES.indexOf(r.state) >= 0 && byCode(r.size); });
+        if (!lines.length) return { ok: false, msg: 'Type at least one counted number.' };
+        var id = 'ST' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + Math.random().toString(36).slice(2, 6).toUpperCase(), by = typeof activeServerName === 'function' ? activeServerName() : '';
+        lines.forEach(function (r) {
+            var full = byCode(r.size), exp = expectedOf(full, r.state), cnt = Math.round(Number(r.counted));
+            stockMovementLog.push({
+                id: id + ':' + full.code + ':' + r.state + ':sub', lg: 1, gas: 1, timestamp: new Date().toISOString(), code: holder(full, r.state).code, name: holder(full, r.state).name, delta: 0, type: 'added', reason: 'Cylinder stock take counted', unit: 'qty', by: by,
+                lpg: { k: 'count', size: full.code, label: gasLabelOf(full), brand: brandOf(full), state: r.state, before: exp, after: exp, d: 0, ref: id, st: { id: id, expected: exp, counted: cnt, status: 'pending', note: String(note || '').slice(0, 200), by: by } },
+            });
+        });
+        gasSaveInventory();
+        return { ok: true, id: id, msg: 'Count ' + id + ' sent for approval (' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ').' };
+    };
+    L.takeDecide = function (id, approve) {
+        if (!admin()) return { ok: false, msg: 'Only an admin can approve or reject a stock take.' };
+        var t = L.stockTakes().find(function (x) { return x.id === id; });
+        if (!t) return { ok: false, msg: 'That stock take was not found.' };
+        var pending = t.list.filter(function (l) { return l.status === 'pending'; });
+        if (!pending.length) return { ok: false, msg: 'That stock take has already been decided.' };
+        var by = typeof activeServerName === 'function' ? activeServerName() : 'admin';
+        pending.forEach(function (l) {
+            var full = byCode(l.size); if (!full) return;
+            var adj = approve ? r3(l.counted - l.expected) : 0;       // the variance found at the count: sales made since are never overwritten
+            if (adj < 0) adj = Math.max(adj, -expectedOf(full, l.state));      // never below zero (cylinders went out since the count)
+            if (adj) {
+                var reason = 'Stock take ' + id + ' approved';
+                if (l.state === 'full' || l.state === 'empty') qtyMove(l.state === 'full' ? full : emptyOf(full), adj, 'stocktake', reason, id, id + ':' + l.size + ':' + l.state + ':adj');
+                else stateMove(full, l.state, adj, 'stocktake', reason, id, id + ':' + l.size + ':' + l.state + ':adj');
+            }
+            stockMovementLog.push({
+                id: id + ':' + l.size + ':' + l.state + ':dec', lg: 1, gas: 1, timestamp: new Date().toISOString(), code: holder(full, l.state).code, name: holder(full, l.state).name, delta: 0, type: 'added', reason: 'Cylinder stock take ' + (approve ? 'approved' : 'rejected'), unit: 'qty', by: by,
+                lpg: { k: 'count', size: full.code, label: gasLabelOf(full), brand: brandOf(full), state: l.state, before: l.expected, after: expectedOf(full, l.state), d: 0, ref: id, st: { id: id, expected: l.expected, counted: l.counted, status: approve ? 'approved' : 'rejected', decidedBy: by } },
+            });
+        });
+        gasSaveInventory();
+        return { ok: true, msg: approve ? 'Approved — the counts were adjusted by the variance found.' : 'Rejected — nothing was changed.' };
+    };
+
+    // ---------------------------------------------------------------- numbers for the dashboard and reports (from this till's own sales, so they work offline)
+    function gasLines(from, to) {
+        var out = [];
+        (typeof salesLog !== 'undefined' ? salesLog : []).forEach(function (s) {
+            if (!s || s.voided || s.refunded || s._deleted) return;
+            var t = new Date(s.timestamp).getTime();
+            if (from && t < from) return; if (to && t >= to) return;
+            (s.items || []).forEach(function (it) { if (it && it.lpg) out.push({ s: s, it: it, g: it.lpg, qty: Number(it.qty) || 0, rev: (Number(it.price) || 0) * (Number(it.qty) || 0), cost: (it.lpg.cost != null ? Number(it.lpg.cost) : Number(it.wholesalePrice) || 0) * (Number(it.qty) || 0) }); });
+        });
+        return out;
+    }
+    L.gasLines = gasLines;
+    function dayStart(d) { var x = new Date(d || Date.now()); x.setHours(0, 0, 0, 0); return x.getTime(); }
+    L.summary = function (from, to) {
+        var rows = gasLines(from, to), by = { full: [0, 0, 0], exchange: [0, 0, 0], cylinder: [0, 0, 0], set: [0, 0, 0] }, tot = { qty: 0, rev: 0, cost: 0 };
+        rows.forEach(function (r) { var b = by[r.g.mode] || (by[r.g.mode] = [0, 0, 0]); b[0] += r.qty; b[1] += r.rev; b[2] += r.cost; tot.qty += r.qty; tot.rev += r.rev; tot.cost += r.cost; });
+        return { by: by, tot: { qty: tot.qty, rev: r2(tot.rev), cost: r2(tot.cost), margin: r2(tot.rev - tot.cost) }, rows: rows };
+    };
+
+    // ---------------------------------------------------------------- first run: the opening balance of every size (so the history starts from the counts you had)
+    L.migrate = function () {
+        var have = null, added = 0, by = typeof activeServerName === 'function' ? activeServerName() : '';
+        fullsList().forEach(function (f) {
+            if (typeof f.gasDamaged !== 'number') f.gasDamaged = 0;
+            if (!have) { have = {}; lpgLog().forEach(function (m) { have[m.lpg.size] = 1; }); }
+            if (have[f.code]) return;
+            STATES.forEach(function (st) {
+                var q = expectedOf(f, st);
+                var hold = holder(f, st);
+                stockMovementLog.push({ id: 'lpg-open:' + f.code + ':' + st, lg: 1, gas: 1, timestamp: new Date().toISOString(), code: hold.code, name: hold.name, delta: 0, type: 'added', reason: 'Opening balance', unit: 'qty', by: by,
+                    lpg: { k: 'opening', size: f.code, label: gasLabelOf(f), brand: brandOf(f), state: st, before: q, after: q, d: 0, ref: '' } });
+                added++;
+            });
+        });
+        if (added) { safeSetItem('pos_inventory', JSON.stringify(inventory)); try { queuePush(); } catch (e) { /* later */ } }
+        return added;
+    };
+
+    // ---------------------------------------------------------------- the 🔥 Gas tab
+    function mountPanels() {
+        var tab = $('gas-tab'); if (!tab) return null;
+        var box = $('lpg-panels');
+        if (!box) { box = document.createElement('div'); box.id = 'lpg-panels'; tab.insertBefore(box, tab.querySelector('.panel') || null); }
+        return box;
+    }
+    function statePill(s) { return '<span class="lpg-pill ' + (s === 'approved' ? 'ok' : s === 'rejected' ? 'bad' : 'warn') + '">' + esc(s) + '</span>'; }
+    function sizeOptions(sel) { return fullsList().map(function (f) { return '<option value="' + esc(f.code) + '" ' + (f.code === sel ? 'selected' : '') + '>' + esc(gasLabelOf(f)) + '</option>'; }).join(''); }
+    var UI = { hist: { size: '', state: '', kind: '', page: 0 }, rep: { range: 'today', from: '', to: '' }, takeDraft: {}, bundle: null };
+
+    L.render = function () {
+        var box = mountPanels(); if (!box) return;
+        L.migrate();
+        var t = gasTotals(), dmg = 0; fullsList().forEach(function (f) { dmg += Number(f.gasDamaged) || 0; });
+        var today = L.summary(dayStart(), dayStart() + 86400000), pend = L.stockTakes().filter(function (x) { return x.status === 'pending'; }).length;
+        var h = [];
+        h.push('<div class="lpg-cards">' +
+            '<div class="lpg-card full"><b>' + t.full + '</b><span>🟢 Full cylinders</span></div><div class="lpg-card empty"><b>' + t.empty + '</b><span>⚪ Empty</span></div>' +
+            '<div class="lpg-card away"><b>' + (t.away || 0) + '</b><span>🚚 With supplier</span></div><div class="lpg-card dmg"><b>' + dmg + '</b><span>⚠️ Damaged</span></div>' +
+            '<div class="lpg-card cash"><b>' + kes(today.tot.rev).replace('KES ', '') + '</b><span>💰 Gas sales today (KES)</span></div><div class="lpg-card ex"><b>' + (today.by.exchange[0] || 0) + '</b><span>🔄 Exchanges today</span></div>' +
+            (admin() ? '<div class="lpg-card mar"><b>' + kes(today.tot.margin).replace('KES ', '') + '</b><span>📈 Margin today (KES)</span></div>' : '') +
+            '<div class="lpg-card take"><b>' + pend + '</b><span>📝 Stock takes to approve</span></div></div>');
+        h.push('<div class="panel" style="border-left:5px solid #e67e22;"><h3 style="margin:0 0 4px;">🛒 Selling gas</h3><p class="settings-hint" style="margin:0 0 10px;">Gas is sold at the <strong>🛒 Sales Counter</strong>, with everything else in the same cart. Tap <strong>🔥 Gas</strong> there, or start here:</p>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' + ['full', 'exchange', 'cylinder', 'set'].map(function (m) { return '<button type="button" class="btn-main" style="width:auto;margin:0;padding:9px 16px;" onclick="Lpg.open(\'' + m + '\')">' + ({ full: '🛢️', exchange: '🔄', cylinder: '⚪', set: '📦' })[m] + ' ' + MODE_WORD[m] + '</button>'; }).join('') + '</div>' +
+            '<p class="settings-hint" style="margin:8px 0 0;">Then open the Sales Counter to take payment.</p></div>');
+        h.push(bundlesHtml()); h.push(damagedHtml()); h.push(stockTakeHtml()); h.push(rulesHtml()); h.push(historyHtml()); h.push(reportsHtml());
+        // keep which <details> were open while the panel redraws
+        var open = {}; box.querySelectorAll('details[data-k]').forEach(function (d) { if (d.open) open[d.getAttribute('data-k')] = 1; });
+        box.innerHTML = h.join('');
+        box.querySelectorAll('details[data-k]').forEach(function (d) { if (open[d.getAttribute('data-k')]) d.open = true; });
+        L.showCounterBtn();
+    };
+
+    // ---- bundles
+    function bundlesHtml() {
+        var c = cfg(), isA = admin(), b = UI.bundle;
+        var rows = c.bundles.map(function (x) {
+            var cost = bundleCost(x), m = (Number(x.price) || 0) - cost, full = byCode(x.size);
+            return '<tr><td><strong>' + esc(x.name) + '</strong><br><span class="kitchen-sub">' + esc(full ? gasLabelOf(full) : 'Any size') + ' + ' + ((x.comps || []).map(function (k) { var p = byCode(k.code); return (k.qty || 1) + '× ' + esc(p ? p.name : k.code); }).join(', ') || 'no accessories') + '</span></td>' +
+                '<td>' + kes(x.price) + '</td>' + (isA ? '<td>' + kes(cost) + '</td><td class="' + (m >= 0 ? 'lpg-pos' : 'lpg-neg') + '">' + kes(m) + '</td>' : '') + '<td>' + (x.active === false ? '<span class="lpg-pill">hidden</span>' : '<span class="lpg-pill ok">on sale</span>') + '</td>' +
+                '<td>' + (isA ? '<button type="button" class="settings-small-btn" style="width:auto;margin:0;" onclick="Lpg.uiBundleEdit(\'' + escapeJsAttr(x.id) + '\')">Edit</button> <button type="button" class="settings-small-btn" style="width:auto;margin:0;" onclick="Lpg.uiBundleToggle(\'' + escapeJsAttr(x.id) + '\')">' + (x.active === false ? 'Show' : 'Hide') + '</button> <button type="button" class="settings-small-btn" style="width:auto;margin:0;color:#c0392b;" onclick="Lpg.uiBundleDelete(\'' + escapeJsAttr(x.id) + '\')">Delete</button>' : '') + '</td></tr>';
+        }).join('');
+        var form = '';
+        if (b && isA) {
+            var accs = inventory.filter(function (p) { return (p.type || 'item') === 'item' && !p.isGasCylinder && !p.removed; }).sort(function (x, y) { return (x.name || '').localeCompare(y.name || ''); });
+            var full = byCode(b.size), cost = bundleCost(b), m = (Number(b.price) || 0) - cost;
+            form = '<div class="lpg-note" style="padding:12px;"><div class="lpg-row"><div style="flex:1;"><label class="label">Set name</label><input id="lpg-b-name" value="' + esc(b.name) + '" placeholder="e.g. Starter set 6kg" oninput="Lpg.uiBundleField(\'name\', this.value)"></div>' +
+                '<div><label class="label">Cylinder size</label><select id="lpg-b-size" onchange="Lpg.uiBundleField(\'size\', this.value)">' + sizeOptions(b.size) + '</select></div>' +
+                '<div><label class="label">Promo price (KES)</label><input id="lpg-b-price" type="number" min="0" step="0.01" value="' + (b.price || '') + '" oninput="Lpg.uiBundleField(\'price\', this.value)"></div></div>' +
+                '<label class="label">What is in it besides the cylinder</label>' + b.comps.map(function (k, i) {
+                    return '<div class="lpg-row" style="margin:4px 0;"><select onchange="Lpg.uiBundleComp(' + i + ',\'code\', this.value)" style="flex:1;"><option value="">— pick an item —</option>' + accs.map(function (p) { return '<option value="' + esc(p.code) + '" ' + (p.code === k.code ? 'selected' : '') + '>' + esc(p.name) + ' (' + kes(p.wholesalePrice) + ' cost)</option>'; }).join('') + '</select><input type="number" min="1" step="1" value="' + (k.qty || 1) + '" style="width:70px;" onchange="Lpg.uiBundleComp(' + i + ',\'qty\', this.value)"><button type="button" class="settings-small-btn" style="width:auto;margin:0;" onclick="Lpg.uiBundleComp(' + i + ',\'del\')">✕</button></div>';
+                }).join('') + '<button type="button" class="settings-small-btn" style="width:auto;margin:4px 0;" onclick="Lpg.uiBundleComp(-1,\'add\')">➕ Add an item</button>' +
+                '<div style="margin:6px 0;font-weight:700;">Cost ' + kes(cost) + ' &nbsp;·&nbsp; Promo ' + kes(b.price) + ' &nbsp;·&nbsp; <span class="' + (m >= 0 ? 'lpg-pos' : 'lpg-neg') + '">Margin ' + kes(m) + (b.price > 0 ? ' (' + Math.round(m / b.price * 100) + '%)' : '') + '</span></div>' +
+                (m < 0 ? '<div class="lpg-note bad">This promo price is below cost — every set sold loses money.</div>' : '') +
+                '<button type="button" class="btn-main" style="width:auto;margin:0 6px 0 0;padding:8px 18px;" onclick="Lpg.uiBundleSave()">Save set</button><button type="button" class="settings-small-btn" style="width:auto;margin:0;" onclick="Lpg.uiBundleCancel()">Cancel</button><p id="lpg-b-msg" class="settings-msg"></p></div>';
+            void full;
+        }
+        return '<details class="panel lpg-sec" data-k="bundles"><summary>🎁 Bundles / sets <span class="kitchen-sub">(' + c.bundles.length + ')</span></summary><p class="settings-hint" style="margin:6px 0;">A set sells as one line at a promo price. The cylinder and every part come off the stock, and the cost and margin are worked out from your cost prices.</p>' +
+            (c.bundles.length ? '<div class="table-scroll"><table><thead><tr><th>Set</th><th>Price</th>' + (isA ? '<th>Cost</th><th>Margin</th>' : '') + '<th></th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' : '<p class="empty-state" style="padding:10px;">No sets yet.</p>') +
+            (isA && !b ? '<button type="button" class="btn-main" style="width:auto;margin:8px 0 0;padding:8px 16px;" onclick="Lpg.uiBundleEdit(\'\')">➕ New set</button>' : '') + (!isA ? '<p class="settings-hint">An admin makes and changes sets.</p>' : '') + form + '</details>';
+    }
+    L.uiBundleEdit = function (id) {
+        var x = id ? cfg().bundles.find(function (y) { return y.id === id; }) : null;
+        UI.bundle = x ? JSON.parse(JSON.stringify(x)) : { id: '', name: '', size: (fullsList()[0] || {}).code || '', comps: [{ code: '', qty: 1 }], price: 0, active: true };
+        L.render(); var d = document.querySelector('#lpg-panels details[data-k="bundles"]'); if (d) d.open = true;
+    };
+    L.uiBundleField = function (k, v) { if (!UI.bundle) return; UI.bundle[k] = k === 'price' ? Math.max(0, Number(v) || 0) : v; if (k !== 'name' && k !== 'price') L.render(); else refreshBundleLine(); };
+    function refreshBundleLine() { var d = document.querySelector('#lpg-panels details[data-k="bundles"]'); if (!d) return; var pos = d.scrollTop; L.render(); var d2 = document.querySelector('#lpg-panels details[data-k="bundles"]'); if (d2) { d2.open = true; d2.scrollTop = pos; } var el = $('lpg-b-price'); if (el && document.activeElement !== el) { /* focus stays put */ } }
+    L.uiBundleComp = function (i, k, v) {
+        if (!UI.bundle) return;
+        if (k === 'add') UI.bundle.comps.push({ code: '', qty: 1 }); else if (k === 'del') UI.bundle.comps.splice(i, 1);
+        else if (k === 'qty') UI.bundle.comps[i].qty = Math.max(1, Math.round(Number(v) || 1)); else UI.bundle.comps[i].code = v;
+        L.render(); var d = document.querySelector('#lpg-panels details[data-k="bundles"]'); if (d) d.open = true;
+    };
+    L.uiBundleSave = function () {
+        var b = UI.bundle, msg = $('lpg-b-msg'), bad = function (m) { if (msg) { msg.className = 'settings-msg error'; msg.textContent = m; } };
+        if (!b || !admin()) return;
+        b.name = String(b.name || '').trim(); b.comps = (b.comps || []).filter(function (k) { return k.code; });
+        if (!b.name) return bad('Give the set a name.'); if (!byCode(b.size)) return bad('Pick the cylinder size.'); if (!(b.price > 0)) return bad('Enter the promo price.');
+        var c = cfg();
+        if (b.id) { var i = c.bundles.findIndex(function (y) { return y.id === b.id; }); if (i >= 0) c.bundles[i] = b; else c.bundles.push(b); } else { b.id = 'B' + Date.now().toString(36); c.bundles.push(b); }
+        saveCfg(c); UI.bundle = null; L.render(); showToast('Set saved.');
+    };
+    L.uiBundleCancel = function () { UI.bundle = null; L.render(); };
+    L.uiBundleToggle = function (id) { if (!admin()) return; var c = cfg(), b = c.bundles.find(function (y) { return y.id === id; }); if (b) { b.active = b.active === false; saveCfg(c); L.render(); } };
+    L.uiBundleDelete = function (id) { if (!admin() || !confirm('Delete this set? Past sales are not affected.')) return; var c = cfg(); c.bundles = c.bundles.filter(function (y) { return y.id !== id; }); saveCfg(c); L.render(); };
+
+    // ---- damaged
+    function damagedHtml() {
+        var f = fullsList(), rows = f.map(function (x) { return '<tr><td>' + esc(gasLabelOf(x)) + '</td><td>' + (x.qty || 0) + '</td><td>' + ((emptyOf(x) || {}).qty || 0) + '</td><td>' + (x.gasAtSupplier || 0) + '</td><td><strong>' + (x.gasDamaged || 0) + '</strong></td></tr>'; }).join('');
+        return '<details class="panel lpg-sec" data-k="damaged"><summary>⚠️ Damaged cylinders</summary><p class="settings-hint" style="margin:6px 0;">A leaking valve or a failed test? Move it out of the stock you sell, with a reason — and keep the history.</p>' +
+            '<div class="table-scroll"><table><thead><tr><th>Size</th><th>Full</th><th>Empty</th><th>Away</th><th>Damaged</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5" class="empty-state">No sizes yet.</td></tr>') + '</tbody></table></div>' +
+            '<div class="lpg-row"><div><label class="label">Size</label><select id="lpg-d-size">' + sizeOptions('') + '</select></div><div><label class="label">What happened</label><select id="lpg-d-act"><option value="empty_to_damaged">Empty → Damaged</option><option value="full_to_damaged">Full → Damaged</option><option value="damaged_to_empty">Damaged → Empty (repaired / re-tested)</option><option value="damaged_to_supplier">Damaged → Returned to supplier</option><option value="damaged_writeoff">Damaged → Written off</option></select></div>' +
+            '<div><label class="label">How many</label><input id="lpg-d-qty" type="number" min="1" step="1" value="1" style="width:80px;"></div><div style="flex:1;"><label class="label">Why (required)</label><input id="lpg-d-why" placeholder="e.g. leaking valve"></div>' +
+            '<button type="button" class="btn-main" style="width:auto;margin:0;padding:9px 18px;" onclick="Lpg.uiDamage()">Record</button></div><p id="lpg-d-msg" class="settings-msg"></p></details>';
+    }
+    L.uiDamage = function () {
+        var r = L.damage($('lpg-d-size').value, $('lpg-d-act').value, $('lpg-d-qty').value, $('lpg-d-why').value);
+        var open = document.querySelector('#lpg-panels details[data-k="damaged"]'); if (open) open.open = true;
+        var msg = $('lpg-d-msg'); if (msg) { msg.className = 'settings-msg ' + (r.ok ? 'success' : 'error'); msg.textContent = r.msg; }
+        if (r.ok) { var d = document.querySelector('#lpg-panels details[data-k="damaged"]'); if (d) d.open = true; var m2 = $('lpg-d-msg'); if (m2) { m2.className = 'settings-msg success'; m2.textContent = r.msg; } }
+    };
+
+    // ---- stock take
+    function stockTakeHtml() {
+        var f = fullsList(), isA = admin(), takes = L.stockTakes();
+        var rows = [];
+        f.forEach(function (x) { STATES.forEach(function (st) { var k = x.code + '|' + st; rows.push('<tr><td>' + esc(gasLabelOf(x)) + '</td><td>' + STATE_WORD[st] + '</td><td>' + expectedOf(x, st) + '</td><td><input type="number" min="0" step="1" style="width:84px;" data-k="' + esc(k) + '" value="' + esc(UI.takeDraft[k] == null ? '' : UI.takeDraft[k]) + '" oninput="Lpg.uiTakeType(this)"></td><td id="lpg-tv-' + esc(k.replace(/[^\w]/g, '_')) + '"></td></tr>'); }); });
+        var list = takes.slice(0, 12).map(function (t) {
+            return '<div style="border:1px solid #e3e7ea;border-radius:12px;padding:10px;margin:8px 0;"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><strong>' + esc(t.id) + '</strong> ' + statePill(t.status) + '</div><div class="kitchen-sub">Counted by ' + esc(t.by || '—') + ' · ' + esc(new Date(t.at).toLocaleString('en-GB')) + (t.decidedBy ? ' · decided by ' + esc(t.decidedBy) : '') + (t.note ? ' · “' + esc(t.note) + '”' : '') + '</div>' +
+                '<table style="margin-top:6px;"><thead><tr><th>Size</th><th>State</th><th>Expected</th><th>Counted</th><th>Variance</th><th></th></tr></thead><tbody>' + t.list.map(function (l) { var v = l.counted - l.expected; return '<tr><td>' + esc(l.label) + '</td><td>' + STATE_WORD[l.state] + '</td><td>' + l.expected + '</td><td>' + l.counted + '</td><td class="' + (v === 0 ? '' : v > 0 ? 'lpg-pos' : 'lpg-neg') + '">' + (v > 0 ? '+' : '') + v + '</td><td>' + statePill(l.status) + '</td></tr>'; }).join('') + '</tbody></table>' +
+                (t.status === 'pending' ? (isA ? '<div style="margin-top:8px;display:flex;gap:8px;"><button type="button" class="btn-main" style="width:auto;margin:0;padding:7px 16px;" onclick="Lpg.uiTakeDecide(\'' + escapeJsAttr(t.id) + '\', true)">✅ Approve &amp; adjust</button><button type="button" class="settings-small-btn" style="width:auto;margin:0;color:#c0392b;" onclick="Lpg.uiTakeDecide(\'' + escapeJsAttr(t.id) + '\', false)">Reject</button></div>' : '<div class="lpg-note warn">Waiting for an admin to approve.</div>') : '') + '</div>';
+        }).join('');
+        return '<details class="panel lpg-sec" data-k="take"><summary>📝 Cylinder stock take <span class="kitchen-sub">(' + takes.filter(function (t) { return t.status === 'pending'; }).length + ' to approve)</span></summary>' +
+            '<p class="settings-hint" style="margin:6px 0;">Count the cylinders you can see and type the numbers. Nothing changes yet: an admin approves the count, and then each figure is adjusted by the <strong>variance</strong> found (so sales made since are never overwritten).</p>' +
+            '<div class="table-scroll"><table><thead><tr><th>Size</th><th>State</th><th>Expected</th><th>Counted</th><th>Variance</th></tr></thead><tbody>' + (rows.join('') || '<tr><td colspan="5" class="empty-state">No sizes yet.</td></tr>') + '</tbody></table></div>' +
+            '<div class="lpg-row"><div style="flex:1;"><label class="label">Note (optional)</label><input id="lpg-t-note" placeholder="e.g. month-end count"></div><button type="button" class="btn-main" style="width:auto;margin:0;padding:9px 18px;" onclick="Lpg.uiTakeSubmit()">Send for approval</button></div><p id="lpg-t-msg" class="settings-msg"></p>' +
+            (list ? '<h4 style="margin:10px 0 0;">Counts</h4>' + list : '') + '</details>';
+    }
+    L.uiTakeType = function (el) {
+        var k = el.getAttribute('data-k'); UI.takeDraft[k] = el.value;
+        var p = k.split('|'), f = byCode(p[0]), cell = $('lpg-tv-' + k.replace(/[^\w]/g, '_'));
+        if (cell && f) { if (el.value === '') cell.textContent = ''; else { var v = Math.round(Number(el.value)) - expectedOf(f, p[1]); cell.textContent = (v > 0 ? '+' : '') + v; cell.className = v === 0 ? '' : v > 0 ? 'lpg-pos' : 'lpg-neg'; } }
+    };
+    L.uiTakeSubmit = function () {
+        var rows = Object.keys(UI.takeDraft).filter(function (k) { return UI.takeDraft[k] !== ''; }).map(function (k) { var p = k.split('|'); return { size: p[0], state: p[1], counted: UI.takeDraft[k] }; });
+        var r = L.takeSubmit(rows, ($('lpg-t-note') || {}).value);
+        if (r.ok) UI.takeDraft = {};
+        L.render(); var d = document.querySelector('#lpg-panels details[data-k="take"]'); if (d) d.open = true;
+        var msg = $('lpg-t-msg'); if (msg) { msg.className = 'settings-msg ' + (r.ok ? 'success' : 'error'); msg.textContent = r.msg; }
+    };
+    L.uiTakeDecide = function (id, ok) {
+        if (!ok && !confirm('Reject this count? Nothing will be adjusted.')) return;
+        var r = L.takeDecide(id, ok); showToast(r.msg, !r.ok);
+        L.render(); var d = document.querySelector('#lpg-panels details[data-k="take"]'); if (d) d.open = true;
+    };
+
+    // ---- exchange rules
+    function rulesHtml() {
+        var c = cfg(), isA = admin(), brands = {}, ownBrands = {};
+        inventory.forEach(function (p) { if (p.isGasCylinder) { brands[brandOf(p)] = 1; if (p.gasRole === 'full') ownBrands[brandOf(p)] = 1; } });
+        var all = Object.keys(brands), own = Object.keys(ownBrands);
+        var body = own.map(function (o) {
+            var others = all.filter(function (b) { return b !== o; });
+            return '<div style="padding:8px 0;border-bottom:1px solid #eee;"><strong>' + esc(o || 'No brand') + '</strong> full cylinders are exchanged against empties of: <span class="lpg-pill ok">' + esc(o || 'No brand') + ' (always)</span> ' + (others.length ? others.map(function (b) { return '<label style="margin-left:10px;white-space:nowrap;"><input type="checkbox" style="width:auto;margin:0 4px 0 0;" ' + ((c.partners[o] || []).indexOf(b) >= 0 ? 'checked' : '') + (isA ? '' : ' disabled') + ' onchange="Lpg.uiPartner(\'' + escapeJsAttr(o) + '\',\'' + escapeJsAttr(b) + '\', this.checked)">' + esc(b || 'No brand') + '</label>'; }).join('') : '<span class="kitchen-sub">(no other brand in your list)</span>') + '</div>';
+        }).join('');
+        return '<details class="panel lpg-sec" data-k="rules"><summary>🤝 Exchange rules (brands)</summary><p class="settings-hint" style="margin:6px 0;">Your own brand is always accepted. Tick another brand only if you have an exchange agreement for it — the Exchange Empty chooser then offers it, and nothing else. This shop sells full cylinders and exchanges them; it does not refill or re-brand customers\' cylinders.</p>' + (body || '<p class="empty-state" style="padding:10px;">Add a size first.</p>') + (isA ? '' : '<p class="settings-hint">An admin changes the rules.</p>') + '</details>';
+    }
+    L.uiPartner = function (own, other, on) {
+        if (!admin()) return; var c = cfg(), a = c.partners[own] || [];
+        a = a.filter(function (b) { return b !== other; }); if (on) a.push(other); c.partners[own] = a; saveCfg(c);
+    };
+
+    // ---- history
+    function histRows() {
+        var f = UI.hist, out = [];
+        lpgLog().forEach(function (m) {
+            var g = m.lpg;
+            if (f.size && g.size !== f.size) return; if (f.state && g.state !== f.state) return; if (f.kind && String(g.k).indexOf(f.kind) !== 0) return;
+            out.push(m);
+        });
+        return out.sort(function (a, b) { return String(b.timestamp).localeCompare(String(a.timestamp)); });
+    }
+    function refLabel(ref) {
+        if (!ref) return '';
+        var sale = (typeof salesLog !== 'undefined' ? salesLog : []).find(function (s) { return (s.items || []).some(function (it) { return it.lpg && it.lpg.lid === ref; }); });
+        if (sale) return 'Sale ' + esc(sale.refNumber || String(sale.id).slice(-6));
+        return /^ST/.test(ref) ? esc(ref) : '';
+    }
+    function historyHtml() {
+        var f = UI.hist, rows = histRows(), per = 25, pages = Math.max(1, Math.ceil(rows.length / per)); f.page = Math.min(f.page, pages - 1);
+        var kinds = ['sale', 'full', 'exchange', 'cylinder', 'set', 'void', 'supplier', 'damage', 'repair', 'writeoff', 'count', 'stocktake', 'opening', 'adjust', 'purchase'];
+        var body = rows.slice(f.page * per, (f.page + 1) * per).map(function (m) {
+            var g = m.lpg, d = g.d !== undefined && g.d !== null ? Number(g.d) : Number(m.delta) || 0;
+            return '<tr><td>' + esc(new Date(m.timestamp).toLocaleString('en-GB')) + '</td><td>' + esc(g.label || m.name) + '</td><td>' + STATE_WORD[g.state] + '</td><td>' + esc(KIND_WORD[g.k] || g.k) + '</td><td>' + (g.before == null ? '' : g.before) + '</td><td class="' + (d > 0 ? 'lpg-pos' : d < 0 ? 'lpg-neg' : '') + '">' + (d > 0 ? '+' : '') + d + '</td><td>' + (g.after == null ? '' : g.after) + '</td><td>' + esc(m.reason || '') + '</td><td>' + refLabel(g.ref) + '</td><td>' + esc(m.by || '') + '</td></tr>';
+        }).join('');
+        return '<details class="panel lpg-sec" data-k="hist"><summary>📜 Movement history <span class="kitchen-sub">(' + rows.length + ')</span></summary>' +
+            '<div class="lpg-row"><div><label class="label">Size</label><select onchange="Lpg.uiHist(\'size\', this.value)"><option value="">All</option>' + sizeOptions(f.size) + '</select></div>' +
+            '<div><label class="label">State</label><select onchange="Lpg.uiHist(\'state\', this.value)"><option value="">All</option>' + STATES.map(function (s) { return '<option value="' + s + '" ' + (f.state === s ? 'selected' : '') + '>' + STATE_WORD[s] + '</option>'; }).join('') + '</select></div>' +
+            '<div><label class="label">What</label><select onchange="Lpg.uiHist(\'kind\', this.value)"><option value="">Everything</option>' + kinds.map(function (k) { return '<option value="' + k + '" ' + (f.kind === k ? 'selected' : '') + '>' + esc(KIND_WORD[k] || k) + '</option>'; }).join('') + '</select></div></div>' +
+            '<div class="table-scroll"><table><thead><tr><th>When</th><th>Size</th><th>State</th><th>What</th><th>Before</th><th>Change</th><th>After</th><th>Why</th><th>Sale / count</th><th>By</th></tr></thead><tbody>' + (body || '<tr><td colspan="10" class="empty-state">Nothing recorded yet.</td></tr>') + '</tbody></table></div>' +
+            '<div style="display:flex;gap:8px;align-items:center;margin-top:8px;"><button type="button" class="settings-small-btn" style="width:auto;margin:0;" ' + (f.page <= 0 ? 'disabled' : '') + ' onclick="Lpg.uiHist(\'page\',' + (f.page - 1) + ')">‹ Newer</button><span class="kitchen-sub">Page ' + (f.page + 1) + ' of ' + pages + '</span><button type="button" class="settings-small-btn" style="width:auto;margin:0;" ' + (f.page >= pages - 1 ? 'disabled' : '') + ' onclick="Lpg.uiHist(\'page\',' + (f.page + 1) + ')">Older ›</button></div></details>';
+    }
+    L.uiHist = function (k, v) { UI.hist[k] = k === 'page' ? Math.max(0, Number(v) || 0) : v; if (k !== 'page') UI.hist.page = 0; L.render(); var d = document.querySelector('#lpg-panels details[data-k="hist"]'); if (d) d.open = true; };
+
+    // ---- reports
+    function repRange() {
+        var r = UI.rep, now = Date.now(), t0 = dayStart();
+        if (r.range === 'today') return [t0, t0 + 86400000, 'Today'];
+        if (r.range === 'yesterday') return [t0 - 86400000, t0, 'Yesterday'];
+        if (r.range === '7') return [t0 - 6 * 86400000, t0 + 86400000, 'Last 7 days'];
+        if (r.range === '30') return [t0 - 29 * 86400000, t0 + 86400000, 'Last 30 days'];
+        if (r.range === 'custom' && r.from) { var a = new Date(r.from + 'T00:00:00').getTime(), b = (r.to ? new Date(r.to + 'T00:00:00').getTime() : a) + 86400000; return [a, b, r.from + ' to ' + (r.to || r.from)]; }
+        void now; return [t0, t0 + 86400000, 'Today'];
+    }
+    function reportsHtml() {
+        var isA = admin(), rg = repRange(), s = L.summary(rg[0], rg[1]), bySize = {};
+        s.rows.forEach(function (r) { var k = r.g.size, b = bySize[k] = bySize[k] || { label: r.g.label, full: 0, exchange: 0, cylinder: 0, set: 0, rev: 0, cost: 0 }; b[r.g.mode] = (b[r.g.mode] || 0) + r.qty; b.rev += r.rev; b.cost += r.cost; });
+        var sizeRows = Object.keys(bySize).map(function (k) { var b = bySize[k]; return '<tr><td>' + esc(b.label) + '</td><td>' + b.full + '</td><td>' + b.exchange + '</td><td>' + b.cylinder + '</td><td>' + b.set + '</td><td>' + kes(b.rev) + '</td>' + (isA ? '<td>' + kes(b.cost) + '</td><td class="' + (b.rev - b.cost >= 0 ? 'lpg-pos' : 'lpg-neg') + '">' + kes(b.rev - b.cost) + '</td>' : '') + '</tr>'; }).join('');
+        var modeRows = ['full', 'exchange', 'cylinder', 'set'].map(function (m) { var b = s.by[m]; return '<tr><td>' + MODE_WORD[m] + '</td><td>' + b[0] + '</td><td>' + kes(b[1]) + '</td>' + (isA ? '<td>' + kes(b[1] - b[2]) + '</td>' : '') + '</tr>'; }).join('');
+        // stock by brand and state, and whether the history agrees with the counts
+        var brandRows = {}, drift = [];
+        fullsList().forEach(function (x) {
+            var e = emptyOf(x) || {}, b = brandRows[brandOf(x) || 'No brand'] = brandRows[brandOf(x) || 'No brand'] || { full: 0, empty: 0, away: 0, damaged: 0 };
+            b.full += x.qty || 0; b.empty += e.qty || 0; b.away += x.gasAtSupplier || 0; b.damaged += x.gasDamaged || 0;
+            STATES.forEach(function (st) {
+                var last = null; lpgLog().forEach(function (m) { if (m.lpg.size === x.code && m.lpg.state === st && !m.lpg.st && m.lpg.after != null && (!last || String(m.timestamp) >= String(last.timestamp))) last = m; });
+                if (last && r3(last.lpg.after) !== r3(expectedOf(x, st))) drift.push({ label: gasLabelOf(x), state: st, hist: last.lpg.after, now: expectedOf(x, st) });
+            });
+        });
+        var rangeSel = '<select onchange="Lpg.uiRep(\'range\', this.value)">' + [['today', 'Today'], ['yesterday', 'Yesterday'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['custom', 'Pick dates']].map(function (o) { return '<option value="' + o[0] + '" ' + (UI.rep.range === o[0] ? 'selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>';
+        return '<details class="panel lpg-sec" data-k="rep"><summary>📊 Gas reports</summary>' +
+            '<div class="lpg-row"><div><label class="label">Period</label>' + rangeSel + '</div>' + (UI.rep.range === 'custom' ? '<div><label class="label">From</label><input type="date" value="' + esc(UI.rep.from) + '" onchange="Lpg.uiRep(\'from\', this.value)"></div><div><label class="label">To</label><input type="date" value="' + esc(UI.rep.to) + '" onchange="Lpg.uiRep(\'to\', this.value)"></div>' : '') + '</div>' +
+            '<div class="lpg-cards"><div class="lpg-card cash"><b>' + s.tot.qty + '</b><span>Cylinders & sets sold · ' + esc(rg[2]) + '</span></div><div class="lpg-card ex"><b>' + kes(s.tot.rev).replace('KES ', '') + '</b><span>Revenue (KES)</span></div>' + (isA ? '<div class="lpg-card mar"><b>' + kes(s.tot.margin).replace('KES ', '') + '</b><span>Margin (KES)</span></div>' : '') + '</div>' +
+            '<h4 style="margin:6px 0;">By kind of sale</h4><div class="table-scroll"><table><thead><tr><th>Kind</th><th>Qty</th><th>Revenue</th>' + (isA ? '<th>Margin</th>' : '') + '</tr></thead><tbody>' + modeRows + '</tbody></table></div>' +
+            '<h4 style="margin:10px 0 6px;">By size</h4><div class="table-scroll"><table><thead><tr><th>Size</th><th>Full</th><th>Exchange</th><th>Cylinder</th><th>Set</th><th>Revenue</th>' + (isA ? '<th>Cost</th><th>Margin</th>' : '') + '</tr></thead><tbody>' + (sizeRows || '<tr><td colspan="8" class="empty-state">No gas sales in this period.</td></tr>') + '</tbody></table></div>' +
+            '<h4 style="margin:10px 0 6px;">Stock by brand</h4><div class="table-scroll"><table><thead><tr><th>Brand</th><th>Full</th><th>Empty</th><th>Away</th><th>Damaged</th><th>Total</th></tr></thead><tbody>' + Object.keys(brandRows).map(function (k) { var b = brandRows[k]; return '<tr><td>' + esc(k) + '</td><td>' + b.full + '</td><td>' + b.empty + '</td><td>' + b.away + '</td><td>' + b.damaged + '</td><td><strong>' + (b.full + b.empty + b.away + b.damaged) + '</strong></td></tr>'; }).join('') + '</tbody></table></div>' +
+            (drift.length ? '<div class="lpg-note warn"><strong>The history and the counts differ for:</strong> ' + drift.map(function (d) { return esc(d.label) + ' ' + STATE_WORD[d.state] + ' (history ' + d.hist + ', count ' + d.now + ')'; }).join('; ') + '. A correction typed straight into the table, or a till that was offline, can cause this. <button type="button" class="settings-small-btn" style="width:auto;margin:0;" onclick="Lpg.uiReconcile()">Record the current counts</button></div>' : '<div class="lpg-note ok">✅ The movement history agrees with the counts.</div>') + '</details>';
+    }
+    L.uiRep = function (k, v) { UI.rep[k] = v; L.render(); var d = document.querySelector('#lpg-panels details[data-k="rep"]'); if (d) d.open = true; };
+    L.uiReconcile = function () {
+        fullsList().forEach(function (x) { STATES.forEach(function (st) { var q = expectedOf(x, st); stockMovementLog.push({ id: genSaleId(), lg: 1, gas: 1, timestamp: new Date().toISOString(), code: holder(x, st).code, name: holder(x, st).name, delta: 0, type: 'added', reason: 'Counts recorded as the new starting point', unit: 'qty', by: typeof activeServerName === 'function' ? activeServerName() : '', lpg: { k: 'reconcile', size: x.code, label: gasLabelOf(x), brand: brandOf(x), state: st, before: q, after: q, d: 0, ref: '' } }); }); });
+        gasSaveInventory(); L.render(); var d = document.querySelector('#lpg-panels details[data-k="rep"]'); if (d) d.open = true;
+    };
+
+    // ---------------------------------------------------------------- wiring (the block sits mid-page: everything it hooks is only touched once the page has loaded)
+    function wrapCheckout() {
+        if (typeof checkoutCart !== 'function' || checkoutCart.__lpg) return;
+        var orig = checkoutCart;
+        var wrapped = function () {
+            var bad = ''; try { bad = L.validateCart(); } catch (e) { bad = ''; }
+            if (bad) { showToast(bad, true); return Promise.resolve(); }
+            return orig.apply(this, arguments);
+        };
+        wrapped.__lpg = true;
+        window.checkoutCart = wrapped;
+    }
+    function start() {
+        try { wrapCheckout(); } catch (e) { /* the till's own checks still run */ }
+        try { L.showCounterBtn(); if ((typeof doGasRefills !== 'undefined') && doGasRefills) { L.migrate(); } if ($('gas-tab')) mountPanels(); } catch (e) { /* the gas tab draws itself when opened */ }
+    }
+    if (document.readyState === 'complete') start(); else window.addEventListener('load', start);
+    document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') L.close(); });
+})();
+</script>

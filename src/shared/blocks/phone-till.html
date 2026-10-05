@@ -169,6 +169,14 @@
             /* tiles */
             #sales-tab #item-image-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; max-height: none !important; overflow: visible !important; margin-top: 8px !important; padding-top: 0 !important; border-top: 0 !important; }
             #sales-tab .ptl-prod > .hcat-bar + #item-image-grid { margin-top: 4px !important; }
+            /* zip 218: Photos per row = 3 (Settings > Phone till). Applies to the item photos AND the category / sub-category picture tiles */
+            html.ptl-cols3 #sales-tab #item-image-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 6px !important; }
+            html.ptl-cols3 #sales-tab #item-image-grid .item-grid-cell .igc-name { font-size: 12px; padding: 5px 5px 0; }
+            html.ptl-cols3 #sales-tab #item-image-grid .item-grid-cell .igc-price { font-size: 12px; padding: 1px 5px 6px; }
+            html.ptl-cols3 #sales-tab #item-image-grid .item-grid-cell .igc-stock { font-size: 10px; }
+            html.ptl-cols3 #ctl-host .ctl-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+            html.ptl-cols3 #ctl-host .ctl-name { font-size: 12px; padding: 5px 4px 7px; }
+            html.ptl-cols3 #ctl-host .ctl-badge { top: 4px; right: 4px; min-width: 20px; padding: 1px 6px; font-size: 11px; }
             #sales-tab #item-image-grid .item-grid-cell { border-radius: 12px; }
             #sales-tab #item-image-grid .item-grid-cell img, #sales-tab #item-image-grid .item-grid-cell .igc-noimg { aspect-ratio: 1 / 1; width: 100%; height: auto; font-size: 42px; }
             #sales-tab #item-image-grid .item-grid-cell .igc-name { font-size: 14px; line-height: 1.25; padding: 7px 8px 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -178,6 +186,10 @@
             nav.tabs > .tab-link.ptl-tab-off:not(.active) { display: none !important; }
         }
     </style>
+    <style>
+        /* zip 215: a tab the owner hid on this device is REMOVED - from the tab bar, the "More" list and the side menu - until it is ticked again in Settings */
+        .tab-link.ptl-tab-off:not(.active) { display: none !important; }
+    </style>
     <script>
     (function () {
         'use strict';
@@ -185,8 +197,8 @@
         window.__phoneTill = true;
 
         var MQ = '(max-width: 700px)';
-        var K_SHOP = 'pos_ptl_shop', K_SEARCH = 'pos_ptl_search', K_TABS = 'pos_ptl_tabs_off';
-        var NEVER_HIDE = { 'sales-tab': 1, 'settings-tab': 1 };
+        var K_SHOP = 'pos_ptl_shop', K_SEARCH = 'pos_ptl_search', K_TABS = 'pos_ptl_tabs_off', K_COLS = 'pos_ptl_cols';
+        var NEVER_HIDE = { 'settings-tab': 1 };      // zip 215: Sales Counter and Bills can be hidden too; only Settings stays (it is where a hidden tab is brought back)
         var PH_BAR = '🔍 Search products…', PH_ICON = '🔍 Search product by name or code…';
 
         function $(id) { return document.getElementById(id); }
@@ -203,6 +215,7 @@
         /* ---------------- settings ---------------- */
         function normShop(o) { o = o && typeof o === 'object' ? o : {}; return { phone: o.phone !== false && o.phone !== 0, delivery: o.delivery !== false && o.delivery !== 0, tables: o.tables !== false && o.tables !== 0 }; }
         function shop() { var o = null; try { o = JSON.parse(lsGet(K_SHOP) || 'null'); } catch (e) { o = null; } return normShop(o); }
+        function photoCols() { return lsGet(K_COLS) === '3' ? 3 : 2; }
         function searchStyle() { return lsGet(K_SEARCH) === 'icon' ? 'icon' : 'bar'; }
         function tabsOff() { var a = []; try { a = JSON.parse(lsGet(K_TABS) || '[]'); } catch (e) { a = []; } return (Array.isArray(a) ? a : []).filter(function (id) { return typeof id === 'string' && !NEVER_HIDE[id]; }); }
         function shopSave(o, fromSync) {
@@ -251,6 +264,7 @@
                 var lh = locHidden();
                 html.classList.toggle('ptl-no-loc', lh);
                 if (lh) { var sel = $('sales-location-select'); if (sel && sel.value) { sel.value = ''; safe(function () { sel.dispatchEvent(new Event('change', { bubbles: true })); }); } }
+                html.classList.toggle('ptl-cols3', photoCols() === 3);
                 html.classList.toggle('ptl-search-icon', searchStyle() === 'icon' && !!$('sales-search'));
                 if (searchStyle() !== 'icon') html.classList.remove('ptl-search-open');
                 tabsApply();
@@ -269,22 +283,41 @@
         function tabsApply() {
             var off = tabsOff();
             tabButtons().forEach(function (b) { b.classList.toggle('ptl-tab-off', off.indexOf(b.getAttribute('data-tab')) !== -1); });
-            tabsToMore();
+            ensureActiveVisible();
+            safe(function () { if (window.sidebarNav && typeof window.sidebarNav.rebuild === 'function') window.sidebarNav.rebuild(); });
         }
-        /* hidden tabs are taken out of the bar and put in the "More" list, where they stay reachable (a tab the roles hide has an inline display:none: it stays hidden there too) */
-        function tabsToMore() {
+        /* a hidden tab is gone, not parked: if it is the one on screen (or the app is about to open it, e.g. Sales Counter right after login) go to the first tab still shown */
+        function firstShownTab() {
+            var off = tabsOff(), pick = null;
+            tabButtons().some(function (b) {
+                var id = b.getAttribute('data-tab');
+                if (!id || off.indexOf(id) !== -1 || b.style.display === 'none' || b.hidden || !$(id)) return false;
+                if (id === 'dashboard-tab' || !pick) pick = b;
+                return id === 'dashboard-tab';
+            });
+            return pick;
+        }
+        function ensureActiveVisible() {
             safe(function () {
-                var nav = document.querySelector('nav.tabs'), more = $('tabs-more-btn'), menu = $('tabs-more-menu');
-                if (!nav || !more || !menu || !isPhone()) return;
-                var moved = 0;
-                Array.prototype.slice.call(nav.children).forEach(function (b) {
-                    if (!b.classList || !b.classList.contains('ptl-tab-off') || b.classList.contains('active')) return;
-                    menu.appendChild(b);
-                });
-                Array.prototype.forEach.call(menu.querySelectorAll('.tab-link[data-tab]'), function (b) { if (b.style.display !== 'none') moved++; });
-                if (moved) more.style.display = 'inline-flex';
+                var off = tabsOff(); if (!off.length) return;
+                var cur = document.querySelector('.tab-content.active, .tab-pane.active, [id$="-tab"].active');
+                var id = cur && cur.id; if (!id || off.indexOf(id) === -1) return;
+                var go = firstShownTab();
+                if (go && typeof performTabSwitch === 'function') performTabSwitch(go, go.getAttribute('data-tab'));
             });
         }
+        var ptsWrapped = false;
+        function wrapTabSwitch() {
+            if (ptsWrapped || typeof window.performTabSwitch !== 'function') return;
+            var orig = window.performTabSwitch;
+            window.performTabSwitch = function (btn, id) {
+                var r = safe(function () { return tabsOff().indexOf(id) !== -1 ? firstShownTab() : null; });
+                if (r) return orig.call(this, r, r.getAttribute('data-tab'));
+                return orig.apply(this, arguments);
+            };
+            ptsWrapped = true;
+        }
+        function tabsToMore() { /* zip 215: hidden tabs are no longer parked in "More" - they are removed */ }
         function wrapCollapse() {
             var o = window.collapseTabsIfNeeded;
             if (typeof o !== 'function' || o.__ptl) return;
@@ -379,10 +412,19 @@
                 var pa = window.posApplyPayMethods;
                 if (typeof pa === 'function' && !pa.__ptl) { var w4 = function () { var r = pa.apply(this, arguments); safe(function () { apply(); renderPanel(); }); return r; }; w4.__ptl = true; window.posApplyPayMethods = w4; }
                 var ec = window.extraSettingsCollect;
-                if (typeof ec === 'function' && !ec.__ptl) { var w5 = function () { var r = ec.apply(this, arguments) || {}; if (lsGet(K_SHOP) !== null) { var q = shop(); r.phoneTill = { phone: q.phone, delivery: q.delivery, tables: q.tables }; } return r; }; w5.__ptl = true; window.extraSettingsCollect = w5; }
+                if (typeof ec === 'function' && !ec.__ptl) { var w5 = function () { var r = ec.apply(this, arguments) || {}; var q = shop(), pt = {}, any = false; if (lsGet(K_SHOP) !== null) { pt.phone = q.phone; pt.delivery = q.delivery; pt.tables = q.tables; any = true; } if (lsGet(K_TABS) !== null) { pt.tabsOff = tabsOff(); any = true; } if (lsGet(K_SEARCH) !== null) { pt.search = searchStyle(); any = true; } if (lsGet(K_COLS) !== null) { pt.cols = photoCols(); any = true; } if (any) r.phoneTill = pt; return r; };   /* zip 217: the hidden tabs and the search style now travel to every device too */ w5.__ptl = true; window.extraSettingsCollect = w5; }
                 var ea = window.extraSettingsApply;
-                if (typeof ea === 'function' && !ea.__ptl) { var w6 = function (data) { var r = ea.apply(this, arguments); safe(function () { if (data && data.phoneTill && typeof data.phoneTill === 'object') { var n = normShop(data.phoneTill); if (JSON.stringify(n) !== JSON.stringify(shop())) shopSave(n, true); } }); return r; }; w6.__ptl = true; window.extraSettingsApply = w6; }
-                wrapCollapse();
+                if (typeof ea === 'function' && !ea.__ptl) { var w6 = function (data) { var r = ea.apply(this, arguments); safe(function () {
+                    if (!(data && data.phoneTill && typeof data.phoneTill === 'object')) return;
+                    var pt = data.phoneTill;
+                    if (pt.phone !== undefined || pt.delivery !== undefined || pt.tables !== undefined) { var n = normShop(pt); if (JSON.stringify(n) !== JSON.stringify(shop())) shopSave(n, true); }
+                    var redo = false;
+                    if (Array.isArray(pt.tabsOff)) { var list = pt.tabsOff.filter(function (id) { return typeof id === 'string'; }); if (JSON.stringify(list) !== JSON.stringify(tabsOff()) || lsGet(K_TABS) === null) { lsSet(K_TABS, JSON.stringify(list)); redo = true; } }
+                    if (pt.search === 'icon' || pt.search === 'bar') { if (searchStyle() !== pt.search || lsGet(K_SEARCH) === null) { lsSet(K_SEARCH, pt.search); redo = true; } }
+                    if (pt.cols === 2 || pt.cols === 3) { if (photoCols() !== pt.cols || lsGet(K_COLS) === null) { lsSet(K_COLS, String(pt.cols)); redo = true; } }
+                    if (redo) { apply(); renderPanel(); safe(function () { if (typeof collapseTabsIfNeeded === 'function') collapseTabsIfNeeded(); }); }
+                }); return r; }; w6.__ptl = true; window.extraSettingsApply = w6; }
+                wrapCollapse(); wrapTabSwitch();
             });
         }
 
@@ -461,14 +503,18 @@
                     haveRows = true;
                 }
                 if (!haveRows) out += '<div class="ptl-note">Nothing to switch in this app.</div>';
-                out += '<div class="ptl-sub">This phone only</div>';
+                if ($('item-image-grid')) {
+                    var pc = photoCols();
+                    out += '<div class="ptl-note" style="margin-top:6px;">Photos per row on the phone (item photos and category / sub-category pictures) — every device of the shop</div><div class="ptl-seg"><label><input type="radio" name="ptl-cols" value="2"' + (pc === 2 ? ' checked' : '') + '> 2 big photos</label><label><input type="radio" name="ptl-cols" value="3"' + (pc === 3 ? ' checked' : '') + '> 3 smaller photos</label></div>';
+                }
+                out += '<div class="ptl-sub">This device only</div>';
                 if ($('sales-search')) {
                     var st = searchStyle();
                     out += '<div class="ptl-note" style="margin-top:6px;">Product search on the phone</div><div class="ptl-seg"><label><input type="radio" name="ptl-search" value="bar"' + (st === 'bar' ? ' checked' : '') + '> Search bar</label><label><input type="radio" name="ptl-search" value="icon"' + (st === 'icon' ? ' checked' : '') + '> 🔍 Icon</label></div>';
                 }
                 var off = tabsOff(), list = tabButtons().filter(function (b) { var id = b.getAttribute('data-tab'); return !NEVER_HIDE[id] && (b.style.display !== 'none' || off.indexOf(id) !== -1); });
                 if (list.length) {
-                    out += '<div class="ptl-note" style="margin-top:8px;">Tabs shown on this phone (the rest wait under “More”). Sales Counter and Settings always show.</div><div class="ptl-tabs">';
+                    out += '<div class="ptl-note" style="margin-top:8px;">Tabs shown on this device. Untick one to remove it completely (tab bar, “More” and side menu) — tick it again to bring it back. Settings always shows.</div><div class="ptl-tabs">';
                     list.forEach(function (b) { var id = b.getAttribute('data-tab'), label = (b.textContent || '').replace(/\s+/g, ' ').trim(); out += '<label><input type="checkbox" class="ptl-tab-cb" value="' + esc(id) + '"' + (off.indexOf(id) === -1 ? ' checked' : '') + '> ' + esc(label) + '</label>'; });
                     out += '</div>';
                 }
@@ -483,16 +529,19 @@
                     var s = shop();
                     if (t.id === 'ptl-sw-phone') s.phone = t.checked; else if (t.id === 'ptl-sw-delivery') s.delivery = t.checked; else s.tables = t.checked;
                     shopSave(s, false); toast('Saved.');
+                } else if (t.name === 'ptl-cols') {
+                    lsSet(K_COLS, t.value === '3' ? '3' : '2');
+                    apply(); push(); toast('Saved for every device.');
                 } else if (t.name === 'ptl-search') {
-                    if (t.value === 'icon') lsSet(K_SEARCH, 'icon'); else lsDel(K_SEARCH);
-                    apply(); toast('Saved.');
+                    lsSet(K_SEARCH, t.value === 'icon' ? 'icon' : 'bar');
+                    apply(); push(); toast('Saved.');
                 } else if (t.classList.contains('ptl-tab-cb')) {
                     var offNow = Array.prototype.filter.call(el.querySelectorAll('.ptl-tab-cb'), function (c) { return !c.checked; }).map(function (c) { return c.value; });
                     var keepOthers = tabsOff().filter(function (id) { return !el.querySelector('.ptl-tab-cb[value="' + id + '"]'); });   /* tabs not listed (role-hidden) keep their old state */
                     var all = offNow.concat(keepOthers);
-                    if (all.length) lsSet(K_TABS, JSON.stringify(all)); else lsDel(K_TABS);
+                    lsSet(K_TABS, JSON.stringify(all));   /* '[]' (not deleted) so "show everything" also reaches the other devices */
                     tabsApply(); safe(function () { if (typeof collapseTabsIfNeeded === 'function') collapseTabsIfNeeded(); });
-                    toast('Saved.');
+                    push(); toast('Saved.');
                 }
             });
         }
