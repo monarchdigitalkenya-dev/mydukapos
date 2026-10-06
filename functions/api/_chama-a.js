@@ -2,7 +2,7 @@
 // payment reports (the M-Pesa paste -> verify flow) and the ledger. Every action is { p, fn }: p = 'public' | 'member' | a permission.
 import {
   fail, text, toCents, kes, normPhone, showPhone, uid, todayKey, isDate, rows, niceDate, time12, parseMpesa,
-  loadGroup, auditStmt, noteStmt, fundFor, ensureCycles, currentCycle, cyclePosition, arrears, totalContributed, allocateContribution, statusOf,
+  loadGroup, auditStmt, noteStmt, fundFor, ensureCycles, currentCycle, cyclePosition, readLogoV, arrears, totalContributed, allocateContribution, statusOf,
   pinProblem, hashPin, checkPin, openDevice, can, ROLE_PERMS, ALL_PERMS, rolesOf, splitRoles, permsForRoles, canMgr, ROLE_NAMES, MAX_FAILS, LOCK_MS, cleanSettings, readSettings, FREQS, addMonths, FUND_NAMES,
 } from './_chama-core.js';
 
@@ -44,9 +44,8 @@ export const A = {};
 
 // ---------- the front door ----------
 A.status = { p: 'public', fn: async (ctx) => {
-  const g = await loadGroup(ctx);
-  const n = await ctx.db.prepare('SELECT COUNT(*) AS n FROM chama_member WHERE client_id = ?').bind(ctx.c).first();
-  return { hasGroup: !!g, name: g ? g.name : '', setupNeeded: !n || n.n === 0 };
+  const [g, n, logoV] = await Promise.all([loadGroup(ctx), ctx.db.prepare('SELECT COUNT(*) AS n FROM chama_member WHERE client_id = ?').bind(ctx.c).first(), readLogoV(ctx)]);
+  return { hasGroup: !!g, name: g ? g.name : '', setupNeeded: !n || n.n === 0, logoV };
 } };
 
 A.setup = { p: 'public', fn: async (ctx) => {
@@ -127,7 +126,8 @@ A['settings.get'] = { p: 'member', fn: async (ctx) => {
 } };
 A['settings.save'] = { p: '*', fn: async (ctx) => {
   const g = await loadGroup(ctx), b = ctx.body, before = g.settings;
-  const next = cleanSettings(b.settings || {}, before);
+  const incoming = { ...(b.settings || {}), terms: before.terms };   // the terms are saved only through terms.save, never by an old settings screen
+  const next = cleanSettings(incoming, before);
   const name = strOf(b, 'name', 80) || g.name;
   const stmts = [ctx.db.prepare('UPDATE chama_group SET name = ?, settings = ? WHERE client_id = ?').bind(name, JSON.stringify(next), ctx.c)];
   const diff = [];
@@ -315,13 +315,30 @@ A['report.submit'] = { p: 'member', fn: async (ctx) => {
 A['report.mine'] = { p: 'member', fn: async (ctx) => ({ reports: rows(await ctx.db.prepare('SELECT id, kind, amount_cents, reported_cents, method, mpesa_code, tx_date, tx_time, status, reported_at, note FROM chama_report WHERE client_id = ? AND member_id = ? ORDER BY reported_at DESC LIMIT 30').bind(ctx.c, ctx.me.id).all()).map((r) => ({ id: r.id, kind: r.kind, method: r.method, reportedCents: r.reported_cents, amountCents: r.amount_cents, code: r.mpesa_code, date: r.tx_date, time: time12(r.tx_time), status: r.status, reportedAt: r.reported_at, note: r.status === 'rejected' ? r.note : undefined })) }) };
 
 // what the secretary sees: the member, amount, code, date and status — never the SMS, a balance, a limit or a link
+// zip 234: is this M-Pesa code REAL? A pasted SMS proves nothing (anyone can type one). When the chama's Paybill / Till is connected to Safaricom (Daraja),
+// Safaricom itself tells us about every payment (mpesa-c2b-confirmation.js stores it under the chama's link); the code is then looked up there.
+//   confirmed = Safaricom reported this code for the same amount | amount_differs = reported, but for another amount | not_found = a till IS connected and has no such payment
+//   unavailable = no till connected: the message can not be proven, an official must check the statement
+export async function safaricomCheck(ctx, code, cents) {
+  const kv = ctx.env && ctx.env.mydukapos_kv; if (!kv || !code) return { state: 'unavailable' };
+  try {
+    const raw = await kv.get(`till-payment:${ctx.c}:${String(code).toUpperCase()}`);
+    if (raw) {
+      const t = JSON.parse(raw), paid = Math.round((Number(t.amount) || 0) * 100);
+      return { state: t.trusted === false ? 'not_found' : paid === cents ? 'confirmed' : 'amount_differs', paidCents: paid, name: t.customerName || '' };
+    }
+    const idx = await kv.get(`till-payment-index:${ctx.c}`);
+    return { state: idx ? 'not_found' : 'unavailable' };
+  } catch (e) { return { state: 'unavailable' }; }
+}
 A['report.inbox'] = { p: 'payments', fn: async (ctx) => {
   const b = ctx.body, status = ['pending', 'verified', 'rejected'].includes(b.status) ? b.status : 'pending', off = Math.max(0, Number(b.offset) || 0), lim = Math.min(50, Math.max(1, Number(b.limit) || 25));
   const g = await loadGroup(ctx), hint = (g.settings.paymentTo || '').toLowerCase();
   const total = await ctx.db.prepare('SELECT COUNT(*) AS n FROM chama_report WHERE client_id = ? AND status = ?').bind(ctx.c, status).first();
   const r = rows(await ctx.db.prepare(`SELECT r.id, r.kind, r.target_id, r.amount_cents, r.reported_cents, r.method, r.received_by, r.note, r.mpesa_code, r.tx_date, r.tx_time, r.recipient, r.status, r.reported_at, r.source, r.anonymous, m.name, rb.name AS receiver_name FROM chama_report r JOIN chama_member m ON m.client_id = r.client_id AND m.id = r.member_id LEFT JOIN chama_member rb ON rb.client_id = r.client_id AND rb.id = r.received_by
     WHERE r.client_id = ? AND r.status = ? ORDER BY r.reported_at ${status === 'pending' ? 'ASC' : 'DESC'} LIMIT ? OFFSET ?`).bind(ctx.c, status, lim, off).all());
-  return { total: total.n, items: r.map((x) => ({ id: x.id, memberName: x.name, kind: x.kind, kindText: KIND_TEXT[x.kind], amountCents: x.amount_cents, code: x.mpesa_code, date: x.tx_date, dateText: x.tx_date ? niceDate(x.tx_date, true) : '', timeText: time12(x.tx_time), status: x.status, reportedAt: x.reported_at, source: x.source, method: x.method, reportedCents: x.reported_cents, receiverName: x.receiver_name || null, forMe: x.received_by === ctx.me.id, canConfirm: !x.received_by || x.received_by === ctx.me.id || can(ctx.me, '*'), note: x.note || null, recipientMismatch: !!(hint && x.recipient && !x.recipient.toLowerCase().includes(hint)) })) };
+  const checks = {}; for (const x of r) if (x.method === 'mpesa' && x.mpesa_code && x.status === 'pending') checks[x.id] = await safaricomCheck(ctx, x.mpesa_code, x.amount_cents);
+  return { total: total.n, items: r.map((x) => ({ check: checks[x.id] || null, id: x.id, memberName: x.name, kind: x.kind, kindText: KIND_TEXT[x.kind], amountCents: x.amount_cents, code: x.mpesa_code, date: x.tx_date, dateText: x.tx_date ? niceDate(x.tx_date, true) : '', timeText: time12(x.tx_time), status: x.status, reportedAt: x.reported_at, source: x.source, method: x.method, reportedCents: x.reported_cents, receiverName: x.receiver_name || null, forMe: x.received_by === ctx.me.id, canConfirm: !x.received_by || x.received_by === ctx.me.id || can(ctx.me, '*'), note: x.note || null, recipientMismatch: !!(hint && x.recipient && !x.recipient.toLowerCase().includes(hint)) })) };
 } };
 
 // the ledger parts a verified report turns into: [{ kind, fundId, refType, refId, cents }]
@@ -506,7 +523,7 @@ A['expense.add'] = { p: 'money', fn: async (ctx) => {
   await ctx.db.batch([ctx.db.prepare("INSERT INTO chama_ledger (client_id, id, ts, entry_date, kind, fund_id, member_id, amount_cents, ref_type, method, reference, note, created_by, idem_key) VALUES (?,?,?,?, 'expense', ?, NULL, ?, 'expense', ?, ?, ?, ?, ?)").bind(ctx.c, uid(), Date.now(), date, fundId, -cents, strOf(b, 'method', 20) || null, strOf(b, 'reference', 60) || null, desc, ctx.me.id, 'exp:' + id), auditStmt(ctx, `${ctx.me.name} recorded an expense of ${kes(cents)}: ${desc}`, 'expense')]);
   return {};
 } };
-A['ledger.reverse'] = { p: 'money', fn: async (ctx) => {
+A['ledger.reverse'] = { p: '*', fn: async (ctx) => {
   const id = String(ctx.body.id || ''), reason = strOf(ctx.body, 'reason', 200);
   if (!reason) fail('Say why this entry is being reversed.');
   const o = await ctx.db.prepare('SELECT * FROM chama_ledger WHERE client_id = ? AND id = ?').bind(ctx.c, id).first();

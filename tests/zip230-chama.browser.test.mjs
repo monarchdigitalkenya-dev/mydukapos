@@ -77,6 +77,17 @@ test('Chama in a phone browser: set-up, sign-in, report an M-Pesa payment, confi
     assert.ok(await page.isVisible('text=Next payout calculated'));
     await page.click('text=Save the current position'); await page.waitForSelector('text=NEXT RECIPIENT');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
+    // zip 232: terms and conditions — admin types them, a member reads them; logo shows beside the name
+    await page.click('.nav >> text=More'); await page.click('text=Terms & conditions'); await page.waitForSelector('#tc-t');
+    await page.fill('#tc-t', '1. Pay on time.\n2. Be respectful.'); await page.click('text=Save terms'); await page.waitForSelector('.toast');
+    await page.evaluate(() => api('logo.save', { logo: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' }));
+    await page.evaluate(() => { S.home = null; return syncLogo(Date.now()); }); await page.waitForTimeout(800);
+    await page.click('.nav >> text=Staff'); await page.click('text=Settings'); await page.waitForSelector('#sp-l'); assert.ok(await page.isVisible('text=Chama logo'));
+    await page.click('.nav >> text=More'); await page.click('text=Sign out'); await page.waitForSelector('text=Who is logging in?');
+    assert.ok(await page.isVisible('.login img[src^="data:image/png"]'), 'logo is shown beside the chama name on the sign-in screen');
+    await page.click('.login button:has-text("Peter Otieno")'); await page.fill('#l-pin', '4321'); await page.click('#l-b'); await page.waitForSelector('text=Hello Peter');
+    await page.click('.nav >> text=More'); await page.click('text=Terms & conditions'); await page.waitForSelector('text=Pay on time');
+    assert.equal(await page.isVisible('#tc-t'), false);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); srv.close(); }
 });

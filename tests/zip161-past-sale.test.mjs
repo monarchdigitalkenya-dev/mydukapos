@@ -78,13 +78,14 @@ for (const app of APPS) {
     b.close();
   });
 
-  test(`${app}: total is rounded to 2 dp, the sale/receipt show the fraction, and the movement log has one exact entry`, async () => {
+  test(`${app}: total is rounded UP to a whole shilling (zip 232), the sale/receipt show the fraction, and the movement log has one exact entry`, async () => {
     const b = await session(app, INV(10, { price: 33.33 }));
     const { w, errors } = b;
     assert.equal(record(b, '0.125', 33.33), '');
     const s = lastSale(w);
     assert.equal(s.items[0].qty, 0.125);
-    assert.equal(s.cashAmount, 4.17, '33.33 x 0.125 = 4.16625 -> 4.17');
+    assert.equal(s.cashAmount, 5, '33.33 x 0.125 = 4.16625 -> 4.17 -> rounded up to a whole shilling: 5 (zip 232)');
+    assert.equal(s.items.at(-1).name, 'Rounding'); assert.equal(s.items.at(-1).price, 0.83);
     assert.equal(w.eval('formatQtyDisplay(0.125, "kg")'), '0.125', 'shown as 0.125, not 0.13');
     assert.equal(w.eval('formatQtyDisplay(0.5, "kg")'), '0.5');
     assert.equal(w.eval('formatQtyDisplay(0.3333333, "kg")'), '0.33', 'longer figures still show 2 dp');

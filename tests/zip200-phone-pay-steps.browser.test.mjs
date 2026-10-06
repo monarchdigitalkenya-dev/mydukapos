@@ -58,7 +58,7 @@ async function open(browser, base, app, { width = 390, height = 844, reuse = nul
   const errors = []; page.on('pageerror', (e) => errors.push(String(e && e.message || e)));
   if (!reuse) {
     await ctx.route('**/api/**', (r) => r.abort());
-    await ctx.addInitScript(([h, inv, water, shop]) => {
+    await ctx.addInitScript(([h, inv, water, shop]) => { localStorage.setItem('pos_cash_reg_on', '0');
       if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1');
       const pre = water ? 'aqua_' : 'pos_';
       localStorage.setItem(pre + 'pw_hash', h); localStorage.setItem(pre + 'biz_name', 'Test Shop');

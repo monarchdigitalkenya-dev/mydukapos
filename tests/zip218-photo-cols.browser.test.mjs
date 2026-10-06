@@ -23,7 +23,7 @@ const cols = (page, sel) => page.evaluate((s) => { const e = document.querySelec
 async function open(browser, base, file, storage) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   await ctx.route('**/api/**', (r) => r.abort());
-  await ctx.addInitScript(([h, inv, extra]) => {
+  await ctx.addInitScript(([h, inv, extra]) => { localStorage.setItem('pos_cash_reg_on', '0');
     if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1');
     localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'Test Shop'); localStorage.setItem('pos_inventory', JSON.stringify(inv));
     for (const k of ['pos_notif_prompt_last', 'pos_cd_detect_last']) localStorage.setItem(k, String(Date.now()));

@@ -22,7 +22,7 @@ test('hidden tabs are removed everywhere; Aqua has separate Inventory / Add New 
   try {
     const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     await ctx.route('**/api/**', r => r.abort());
-    await ctx.addInitScript((h) => { if (sessionStorage.getItem('s')) return; sessionStorage.setItem('s', '1'); localStorage.setItem('aqua_pw_hash', h); localStorage.setItem('aqua_business_name', 'T'); localStorage.setItem('pos_ptl_tabs_off', JSON.stringify(['sales-tab', 'bills-tab'])); }, H);
+    await ctx.addInitScript((h) => { localStorage.setItem('pos_cash_reg_on', '0'); if (sessionStorage.getItem('s')) return; sessionStorage.setItem('s', '1'); localStorage.setItem('aqua_pw_hash', h); localStorage.setItem('aqua_business_name', 'T'); localStorage.setItem('pos_ptl_tabs_off', JSON.stringify(['sales-tab', 'bills-tab'])); }, H);
     const page = await ctx.newPage();
     await page.goto(base + '/water/index.html#shop'); await page.waitForTimeout(1500);
     await page.evaluate(() => { for (const id of ['login-screen', 'registration-screen']) { const e = document.getElementById(id); if (e) e.style.display = 'none'; } const a = document.getElementById('app-container'); if (a) a.style.display = 'block'; });

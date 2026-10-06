@@ -203,12 +203,13 @@ test('C8: the ledger is append-only; a mistake is a REVERSAL (once), the member 
   await assert.rejects(() => u.env.LEDGER_DB.prepare('DELETE FROM chama_ledger').run(), /append-only/);
   await assert.rejects(() => u.env.LEDGER_DB.prepare('DELETE FROM chama_audit').run(), /append-only/);
   assert.equal((await u.call(sec, { action: 'ledger.reverse', id: led[0].id, reason: 'x' })).status, 403, 'the secretary cannot reverse');
-  assert.equal((await u.call(tre, { action: 'ledger.reverse', id: led[0].id, reason: '' })).ok, false, 'a reason is required');
-  assert.ok((await u.call(tre, { action: 'ledger.reverse', id: led[0].id, reason: 'Wrong member' })).ok);
-  assert.equal((await u.call(tre, { action: 'ledger.reverse', id: led[0].id, reason: 'again' })).code, 'already_done');
+  assert.equal((await u.call(tre, { action: 'ledger.reverse', id: led[0].id, reason: 'x' })).status, 403, 'zip 234: even the treasurer cannot — only the admin');
+  assert.equal((await u.call(u.admin, { action: 'ledger.reverse', id: led[0].id, reason: '' })).ok, false, 'a reason is required');
+  assert.ok((await u.call(u.admin, { action: 'ledger.reverse', id: led[0].id, reason: 'Wrong member' })).ok);
+  assert.equal((await u.call(u.admin, { action: 'ledger.reverse', id: led[0].id, reason: 'again' })).code, 'already_done');
   assert.equal((await u.call(mary, { action: 'home' })).member.cycle.paidCents, 0);
   const after = (await u.call(tre, { action: 'ledger.list' })).items; assert.equal(after.length, 2); assert.ok(after.some((x) => x.reversalOf) && after.find((x) => x.id === led[0].id).reversed);
-  assert.equal((await u.call(tre, { action: 'ledger.reverse', id: after.find((x) => x.reversalOf).id, reason: 'y' })).ok, false, 'a reversal is not reversed');
+  assert.equal((await u.call(u.admin, { action: 'ledger.reverse', id: after.find((x) => x.reversalOf).id, reason: 'y' })).ok, false, 'a reversal is not reversed');
   // the correct entry follows (treasurer records it directly, a code can be reused once its report was reversed)
   const rec = await u.call(sec, { action: 'payment.record', memberId: u.people.John.id, amount: 1000, method: 'cash', requestId: 'rec-cash-0001' });
   assert.ok(rec.ok, JSON.stringify(rec)); assert.equal((await u.call(sec, { action: 'payment.record', memberId: u.people.John.id, amount: 1000, method: 'cash', requestId: 'rec-cash-0001' })).already, true, 'same request twice = once');

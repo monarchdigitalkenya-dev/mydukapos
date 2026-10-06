@@ -1,0 +1,38 @@
+<!-- ROUND UP (zip 232) ------------------------------------------------------------------------------------------------------------
+         Settings > View: "Round every sale up to a whole shilling". ON by default. A sale of KES 100.30 or 100.60 becomes 101: the cart gets one
+         extra line "Rounding" (the few cents) so the total, the receipt, the payment and every report add up exactly. Off = nothing is added.
+         Shop-wide: every device follows. Past sales (Record a Past Sale) always round up. -->
+<script>
+(function () {
+    var KEY = 'pos_round_up', RK = '__rounding';
+    function on() { try { var v = localStorage.getItem(KEY); return v === null ? true : v === '1'; } catch (e) { return true; } }
+    window.__shopSwitches = window.__shopSwitches || {};
+    window.__shopSwitches.roundUp = { get: function () { var r = null; try { r = localStorage.getItem(KEY); } catch (e) { /* none */ } return r === null ? undefined : r === '1'; }, set: function (v) { try { localStorage.setItem(KEY, v ? '1' : '0'); } catch (e) { /* this visit only */ } var c = document.getElementById('round-up-toggle'); if (c) c.checked = !!v; } };
+    window.setRoundUp = function (v) { try { localStorage.setItem(KEY, v ? '1' : '0'); } catch (e) { /* kept for this visit only */ } try { if (typeof rxPush === 'function') rxPush(); } catch (e) { /* the next change sends it */ } try { renderCart(); } catch (e) { /* no cart on screen */ } try { showToast(v ? 'Sales now round up to a whole shilling.' : 'Sales keep their cents.'); } catch (e) { /* cosmetic */ } };
+    // keep ONE "Rounding" line in the cart that lifts the total to the next whole shilling (an unlisted-item line: no stock, no code)
+    function sync() {
+        if (typeof currentCart === 'undefined' || !currentCart || typeof cartTotal !== 'function') return;
+        delete currentCart[RK];
+        if (!on() || !Object.keys(currentCart).length) return;
+        var total = cartTotal(), up = Math.ceil(Math.round(total * 100) / 100 - 1e-9), diff = Math.round((up - total) * 100) / 100;
+        if (diff > 0.004) currentCart[RK] = { code: null, cartKey: RK, name: 'Rounding', price: diff, wholesalePrice: 0, unit: 'pcs', isService: false, vatCategory: 'A', qty: 1, isAdhoc: true, isRounding: true, borrowedFrom: null, amountOwed: null };
+    }
+    var base = window.renderCart;
+    if (typeof base === 'function') window.renderCart = function () { try { sync(); } catch (e) { /* the cart still draws */ } return base.apply(this, arguments); };
+    function mount() {
+        var sec = (window.__viewSection && window.__viewSection()) || document.getElementById('settings-section-general');
+        if (!sec) return;
+        var ex = document.getElementById('round-up-card');
+        if (ex) { if (ex.parentNode !== sec) sec.insertBefore(ex, sec.children[1] || null); return; }
+        var d = document.createElement('div');
+        d.id = 'round-up-card'; d.className = 'settings-row';
+        d.style.cssText = 'flex-direction:column; align-items:stretch; gap:6px; margin:12px 0; padding:12px 14px; border-radius:12px; background:rgba(127,140,141,.12);';
+        d.innerHTML = '<label style="display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; cursor:pointer;"><input type="checkbox" id="round-up-toggle" style="width:auto;" onchange="setRoundUp(this.checked)"> 🔢 Round every sale up to a whole shilling</label>'
+            + '<p class="settings-hint" style="margin:0;">KES 100.30 or 100.60 becomes 101. The few cents show as a "Rounding" line on the receipt so everything adds up. Applies to every device of this shop; untick to keep cents.</p>';
+        sec.insertBefore(d, sec.children[1] || null);
+        document.getElementById('round-up-toggle').checked = on();
+    }
+    function go() { mount(); setTimeout(mount, 900); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
+})();
+</script>

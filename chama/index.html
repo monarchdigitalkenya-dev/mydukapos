@@ -15,7 +15,7 @@
 html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 #app{max-width:640px;margin:0 auto;min-height:100vh;padding:0 14px calc(84px + env(safe-area-inset-bottom))}
 .top{position:sticky;top:0;z-index:5;background:var(--g);color:#fff;margin:0 -14px 14px;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;display:flex;align-items:center;gap:10px}
-.top h1{font-size:18px;margin:0;flex:1}.top .sub{font-size:12px;opacity:.85}
+.top .clogo{width:36px;height:36px;border-radius:50%;object-fit:cover;background:#fff;flex:0 0 auto}.top h1{font-size:18px;margin:0;flex:1}.top .sub{font-size:12px;opacity:.85}
 .top button{background:rgba(255,255,255,.18);color:#fff;border:0;border-radius:10px;padding:8px 11px;font-size:15px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;margin:0 0 12px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
 .card h3{margin:0 0 8px;font-size:15px}.hero{background:linear-gradient(135deg,var(--g),#0a5c3a);color:#fff;border:0}
@@ -93,7 +93,7 @@ function csv(name, columns, rows) { const q = (v) => '"' + String(v == null ? ''
 function shell(title, inner, opts) {
   opts = opts || {};
   const back = S.stack.length ? '<button onclick="back()" aria-label="Back">←</button>' : '';
-  return `<div class="top">${back}<div style="flex:1"><h1>${esc(title)}</h1>${S.home && S.home.group.name !== title ? `<div class="sub">${esc(S.home.group.name)}</div>` : ''}</div>${opts.right || ''}</div>${inner}`;
+  return `<div class="top">${back}${logoImg('clogo')}<div style="flex:1"><h1>${esc(title)}</h1>${S.home && S.home.group.name !== title ? `<div class="sub">${esc(S.home.group.name)}</div>` : ''}</div>${opts.right || ''}</div>${inner}`;
 }
 function back() { const p = S.stack.pop(); if (p) { S.tab = p.tab; S.sub = p.sub; } render(); window.scrollTo(0, 0); }
 function push(sub, data) { S.stack.push({ tab: S.tab, sub: S.sub }); S.sub = sub; S.data = data; render(); window.scrollTo(0, 0); }
@@ -106,11 +106,21 @@ function navHTML() {
   items.push(['more', '☰', 'More']);
   return '<div class="nav"><div>' + items.map(([k, i, l]) => `<button class="${S.tab === k ? 'on' : ''}" onclick="go('${k}')"><b>${i}</b>${l}${k === 'more' && n.unread ? `<span class="dot">${n.unread}</span>` : ''}${k === 'staff' && st && st.pendingReports ? `<span class="dot">${st.pendingReports}</span>` : ''}</button>`).join('') + '</div></div>';
 }
-async function loadHome() { S.home = await api('home'); return S.home; }
+// zip 232: SPEED — the home figures are kept for 20 s (every tap used to download them again) and the last copy is saved on the phone, so the app paints at once and refreshes behind the scenes. A save sets S.home = null, which forces a fresh read.
+const homeKey = () => 'chama_home_' + CID + '_' + String(TOKEN).slice(-10);
+async function loadHome(force) {
+  if (!force && S.home && Date.now() - (S.homeAt || 0) < 20000) return S.home;
+  S.home = await api('home'); S.homeAt = Date.now(); S.fromCache = false;
+  if (!S.home.me.mustChangePin) store.set(homeKey(), JSON.stringify(S.home));
+  syncLogo(S.home.group.logoV);
+  return S.home;
+}
 async function render() {
   const app = $('#app');
   if (!CID) { app.innerHTML = '<div class="login card center"><h3>Open your chama link</h3><p class="mut">Use the link your chama admin sent you. It looks like <b>/chama/?c=…</b></p></div>'; return; }
   if (!TOKEN) return renderLogin();
+  if (!S.home) { const c = store.get(homeKey()); if (c) { try { S.home = JSON.parse(c); S.homeAt = Date.now(); S.fromCache = true; } catch (e) { S.home = null; } } }
+  if (S.fromCache) { S.fromCache = false; loadHome(true).then(() => { if (!document.getElementById('sheet') && document.activeElement && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) render(); }).catch(() => {}); }
   if (!S.home) { app.innerHTML = '<div class="empty">Loading…</div>'; try { await loadHome(); } catch (e) { if (e.auth) return; app.innerHTML = `<div class="card"><div class="err">${esc(e.message)}</div><button class="btn" onclick="render()">Try again</button></div>`; return; } }
   if (S.home.me.mustChangePin) return renderPinChange(true);
   const v = VIEWS[S.sub] || VIEWS[S.tab] || VIEWS.home;
@@ -138,7 +148,7 @@ function renderPinChange(forced) {
   $('#app').innerHTML = `<div class="login"><h2 class="center">${forced ? 'Choose your own PIN' : 'Change PIN'}</h2><p class="center mut">${forced ? 'The PIN your admin gave you was temporary.' : ''}</p><div class="card">${field('p-o', 'Current PIN', '', 'password', 'inputmode="numeric" maxlength="6"')}${field('p-n', 'New PIN (4–6 digits)', '', 'password', 'inputmode="numeric" maxlength="6"')}<div id="p-e"></div><br><button class="btn" onclick="doPin(this)">Save PIN</button>${forced ? '' : '<br><button class="btn sec" onclick="render()">Cancel</button>'}</div></div>`;
 }
 async function doPin(b) { showErr('p-e', ''); b.disabled = true; try { await api('pin.change', { oldPin: val('p-o'), newPin: val('p-n') }); toast('PIN changed'); S.home = null; S.tab = 'home'; S.sub = ''; render(); } catch (e) { showErr('p-e', e.message); } b.disabled = false; }
-async function signOut() { try { await api('logout'); } catch (e) {} TOKEN = ''; store.del('chama_t'); S.home = null; render(); }
+async function signOut() { store.del(homeKey()); try { await api('logout'); } catch (e) {} TOKEN = ''; store.del('chama_t'); S.home = null; render(); }
 
 /* ---------- member views ---------- */
 const VIEWS = {};
@@ -236,6 +246,7 @@ VIEWS.more = async () => {
   if (feat('fundraising')) x += tile('❤️', 'Fundraisers', 'Welfare, funeral, projects', "push('fund')");
   if (feat('penalties')) x += tile('⚠️', 'My penalties', 'Fines and waivers', "push('penalties')");
   if (feat('meetings')) x += tile('✅', 'My attendance', 'Meetings attended', "push('attendance')");
+  x += tile('📜', 'Terms & conditions', 'Rules everyone agreed to', "push('terms')");
   x += tile('🔑', 'Change PIN', '', 'renderPinChange(false)') + `<button class="btn sec" onclick="signOut()">Sign out</button><p class="center mut">Signed in as ${esc(S.home.me.name)} (${esc(S.home.me.role)})</p>`;
   return shell('More', x);
 };
@@ -329,9 +340,9 @@ async function revokeDev(id) { const r = await guard(() => api('devices.revoke',
 async function stmtOf(id) { const s = await guard(() => api('statement.member', { memberId: id })); if (s) sheet(statementHTML(s) + '<button class="btn noprint" onclick="memberFull(\''+id+'\')">📋 Full report</button><br><button class="btn noprint" onclick="printSheet()">🖨️ Print</button><br><button class="btn sec" onclick="closeSheet()">Close</button>'); }
 VIEWS.ledger = async () => {
   const r = await api('ledger.list', { limit: 50, offset: S.lOff || 0 });
-  return shell('Ledger', `<div class="card noprint"><div class="row wrap"><button class="btn" onclick="runReport('cashbook')">🖨️ Print full ledger</button><button class="btn sec" onclick="runReport('ledger')">⬇ Export / list</button></div><div class="mut">Pick dates on the Reports page to print a period.</div></div><div class="card">${r.items.map((i) => `<div class="item"><div class="row sp"><div class="b">${esc(i.kind.replace(/_/g, ' '))}${i.reversalOf ? ' (reversal)' : ''}${i.reversed ? ' — reversed' : ''}</div><b style="color:${i.amountCents < 0 ? 'var(--red)' : 'var(--g)'}">${kes(i.amountCents)}</b></div><div class="mut">${esc(i.dateText)} · ${esc(i.memberName)} ${esc(i.reference)} ${esc(i.note)}</div>${has('money') && !i.reversalOf && !i.reversed ? `<button class="btn sec sm" style="margin-top:6px" onclick="reverse('${i.id}')">Reverse</button>` : ''}</div>`).join('') || '<div class="empty">Empty.</div>'}</div><div class="row">${(S.lOff || 0) > 0 ? '<button class="btn sec" onclick="S.lOff=Math.max(0,(S.lOff||0)-50);render()">← Newer</button>' : ''}${r.total > (S.lOff || 0) + 50 ? '<button class="btn sec" onclick="S.lOff=(S.lOff||0)+50;render()">Older →</button>' : ''}</div>`);
+  return shell('Ledger', `<div class="card noprint"><div class="row wrap"><button class="btn" onclick="runReport('cashbook')">🖨️ Print full ledger</button><button class="btn sec" onclick="runReport('ledger')">⬇ Export / list</button></div><div class="mut">Pick dates on the Reports page to print a period.</div></div><div class="card">${r.items.map((i) => `<div class="item"><div class="row sp"><div class="b">${esc(i.kind.replace(/_/g, ' '))}${i.reversalOf ? ' (reversal)' : ''}${i.reversed ? ' — reversed' : ''}</div><b style="color:${i.amountCents < 0 ? 'var(--red)' : 'var(--g)'}">${kes(i.amountCents)}</b></div><div class="mut">${esc(i.dateText)} · ${esc(i.memberName)} ${esc(i.reference)} ${esc(i.note)}</div>${has('*') && !i.reversalOf && !i.reversed ? `<button class="btn sec sm" style="margin-top:6px" onclick="reverse('${i.id}')">↩ Undo this entry (admin)</button>` : ''}</div>`).join('') || '<div class="empty">Empty.</div>'}</div><div class="row">${(S.lOff || 0) > 0 ? '<button class="btn sec" onclick="S.lOff=Math.max(0,(S.lOff||0)-50);render()">← Newer</button>' : ''}${r.total > (S.lOff || 0) + 50 ? '<button class="btn sec" onclick="S.lOff=(S.lOff||0)+50;render()">Older →</button>' : ''}</div>`);
 };
-async function reverse(id) { const reason = prompt('Reason for the reversal (required). The original stays in the ledger.'); if (!reason) return; const r = await guard(() => api('ledger.reverse', { id, reason })); if (r) { toast('Reversed'); render(); } }
+async function reverse(id) { const reason = prompt('Undo this entry — e.g. it was recorded twice. Type the reason (required). The original stays in the ledger and a matching reversal is added, so nothing is erased.'); if (!reason) return; const r = await guard(() => api('ledger.reverse', { id, reason })); if (r) { toast('Reversed'); render(); } }
 VIEWS.funds = async () => {
   const r = await api('fund.list');
   return shell('Funds & expenses', `<div class="card">${r.funds.map((f) => `<div class="item row sp"><span>${esc(f.name)}</span><b>${kes(f.balanceCents)}</b></div>`).join('')}</div><button class="btn" onclick="expenseForm()">➖ Record an expense</button><br><button class="btn sec" onclick="transferForm()">Move money between funds</button><br><button class="btn sec" onclick="refundForm()">Refund a member</button>${has('*') ? '<br><button class="btn sec" onclick="fundNew()">Add a fund</button>' : ''}`);
@@ -398,12 +409,14 @@ async function runReport(kind, extra) {
 VIEWS.settings = async () => {
   const r = await api('settings.get'); const s = r.settings; S.set = s; const c = s.contribution, f = s.features;
   const sw = (id, l, v) => `<label class="row" style="font-weight:500;color:var(--ink)"><input type="checkbox" id="${id}" ${v ? 'checked' : ''} style="width:auto"> ${l}</label>`;
-  return shell('Settings', `<div class="card"><h3>Contributions</h3>${field('st-a', 'Amount per member per period (KES)', c.amountCents / 100, 'number')}<label>How often</label><select id="st-f">${r.freqs.map((k) => `<option value="${k}" ${c.freq === k ? 'selected' : ''}>${({ daily: 'Daily', weekly: 'Weekly', biweekly: 'Every 2 weeks', monthly: 'Monthly', bimonthly: 'Every 2 months', quarterly: 'Every 3 months', none: 'No fixed schedule' })[k] || k}</option>`).join('')}</select>${field('st-d', 'First period starts', c.startDate, 'date')}${field('st-i', 'Payment instructions shown to members', s.payInstructions || '')}</div><div class="card"><h3>Features</h3>${sw('sf-m', 'Meetings', f.meetings)}${sw('sf-g', 'Merry-go-round', f.mgr)}${sw('sf-l', 'Loans', f.loans)}${sw('sf-f', 'Fundraisers', f.fundraising)}${sw('sf-p', 'Penalties', f.penalties)}</div><div class="card"><h3>Penalties</h3>${sw('sp-m', 'Fine members who miss a meeting', s.penalties.missedMeeting.enabled)}${field('sp-a', 'Missed-meeting fine (KES)', s.penalties.missedMeeting.amountCents / 100, 'number')}</div><div class="card"><h3>Loans</h3>${field('sl-i', 'Interest (%)', s.loans.interestPct, 'number')}${field('sl-g', 'Guarantors required', s.loans.guarantors, 'number')}</div><div class="card"><h3>Privacy</h3>${sw('sv-r', 'Members can see who receives the merry-go-round', s.privacy.showRecipient)}${sw('sv-n', 'Show member names on the sign-in screen (“Who is logging in?”)', s.privacy.showSignInNames !== false)}</div><button class="btn" onclick="saveSettings(this)">Save settings</button><br><p class="mut center">Changing the amount affects future periods only. Every change is written to the audit log.</p>`);
+  return shell('Settings', `<div class="card"><h3>Contributions</h3>${field('st-a', 'Amount per member per period (KES)', c.amountCents / 100, 'number')}<label>How often</label><select id="st-f">${r.freqs.map((k) => `<option value="${k}" ${c.freq === k ? 'selected' : ''}>${({ daily: 'Daily', weekly: 'Weekly', biweekly: 'Every 2 weeks', monthly: 'Monthly', bimonthly: 'Every 2 months', quarterly: 'Every 3 months', none: 'No fixed schedule' })[k] || k}</option>`).join('')}</select>${field('st-d', 'First period starts', c.startDate, 'date')}${field('st-i', 'Payment instructions shown to members', s.payInstructions || '')}</div><div class="card"><h3>Features</h3>${sw('sf-m', 'Meetings', f.meetings)}${sw('sf-g', 'Merry-go-round', f.mgr)}${sw('sf-l', 'Loans', f.loans)}${sw('sf-f', 'Fundraisers', f.fundraising)}${sw('sf-p', 'Penalties', f.penalties)}</div><div class="card"><h3>Penalties</h3>${sw('sp-m', 'Fine members who miss a meeting', s.penalties.missedMeeting.enabled)}${field('sp-a', 'Missed-meeting fine (KES)', s.penalties.missedMeeting.amountCents / 100, 'number')}<hr style="border:0;border-top:1px solid var(--line);margin:12px 0">${sw('sp-l', 'Fine members who pay late (applied automatically)', s.penalties.lateContribution.enabled)}<label for="sp-lm">How much is the late fine?</label><select id="sp-lm"><option value="fixed" ${s.penalties.lateContribution.mode !== 'percent' ? 'selected' : ''}>A fixed amount</option><option value="percent" ${s.penalties.lateContribution.mode === 'percent' ? 'selected' : ''}>A % of what was missing</option></select>${field('sp-la', 'Fixed fine (KES)', s.penalties.lateContribution.amountCents / 100, 'number')}${field('sp-lp', 'Or percent (%)', s.penalties.lateContribution.percent || 0, 'number')}${field('sp-lg', 'Grace days after the period ends', s.penalties.lateContribution.graceDays || 0, 'number')}<div class="mut">A member is late when their contribution for a period is not complete by its last day (plus grace days). The fine is added once per period, only for periods that start after you switch this on. Also needs "Penalties" ticked under Features.</div><br><button class="btn sec" onclick="runLate(this)">Apply late fines now</button></div><div class="card"><h3>Chama logo</h3><div class="row" style="gap:12px">${logoImg('') || '<div class="mut">No logo yet.</div>'}<div style="flex:1"><button class="btn sec sm" onclick="document.getElementById('logo-in').click()">Choose a picture</button> ${logoCache() ? '<button class="btn sec sm" onclick="removeLogo()">Remove</button>' : ''}</div></div><input type="file" id="logo-in" accept="image/*" style="display:none" onchange="pickLogo(this)"><div class="mut">It shows next to the chama name. Any picture works; it is shrunk automatically.</div></div><div class="card"><h3>Loans</h3>${field('sl-i', 'Interest (%)', s.loans.interestPct, 'number')}${field('sl-g', 'Guarantors required', s.loans.guarantors, 'number')}</div><div class="card"><h3>Privacy</h3>${sw('sv-r', 'Members can see who receives the merry-go-round', s.privacy.showRecipient)}${sw('sv-n', 'Show member names on the sign-in screen (“Who is logging in?”)', s.privacy.showSignInNames !== false)}</div><button class="btn" onclick="saveSettings(this)">Save settings</button><br><p class="mut center">Changing the amount affects future periods only. Every change is written to the audit log.</p>`);
 };
+async function runLate(b) { const r = await guard(() => api('penalty.runLate'), b); if (r) toast(r.raised ? r.raised + ' late fine(s) added' : 'Nobody is late right now ✅'); }
 async function saveSettings(b) {
   const s = JSON.parse(JSON.stringify(S.set)); const ch = (id) => $('#' + id).checked;
   s.contribution.amountCents = Math.round(Number(val('st-a') || 0) * 100); s.contribution.freq = val('st-f'); s.contribution.startDate = val('st-d') || s.contribution.startDate; s.payInstructions = val('st-i');
   s.features = { meetings: ch('sf-m'), mgr: ch('sf-g'), loans: ch('sf-l'), fundraising: ch('sf-f'), penalties: ch('sf-p') };
+  s.penalties.lateContribution = { ...s.penalties.lateContribution, enabled: ch('sp-l'), mode: val('sp-lm'), amountCents: Math.round(Number(val('sp-la') || 0) * 100), percent: Number(val('sp-lp') || 0), graceDays: Number(val('sp-lg') || 0) };
   s.penalties.missedMeeting.enabled = ch('sp-m'); s.penalties.missedMeeting.amountCents = Math.round(Number(val('sp-a') || 0) * 100);
   s.loans.interestPct = Number(val('sl-i') || 0); s.loans.guarantors = Number(val('sl-g') || 0); s.privacy.showRecipient = ch('sv-r'); s.privacy.showSignInNames = ch('sv-n');
   const r = await guard(() => api('settings.save', { settings: s }), b); if (r) { toast('Saved ✅'); S.home = null; render(); }
@@ -513,6 +526,7 @@ VIEWS.inbox = async () => {
       <div class="mut">${cash ? `💵 Cash · given to ${i.forMe ? '<b>you</b>' : esc(i.receiverName || 'an official')}` : `📱 ${esc(i.code || '')} · ${esc(i.dateText)} ${esc(i.timeText)}`} · ${esc(i.kindText || '')}</div>
       ${cash && i.status === 'pending' ? `<div class="ok" style="margin:8px 0">${esc(i.memberName.split(' ')[0])} says they gave ${i.forMe ? 'you' : esc(i.receiverName || 'an official')} ${kes(i.amountCents)} cash.</div>` : ''}
       ${changed ? `<div class="warn" style="margin:8px 0">Reported ${kes(i.reportedCents)} · confirmed ${kes(i.amountCents)}${i.note ? '<br>' + esc(i.note) : ''}</div>` : ''}
+      ${i.check ? (i.check.state === 'confirmed' ? `<div class="ok" style="margin:8px 0">✅ Confirmed by Safaricom${i.check.name ? ' — paid by ' + esc(i.check.name) : ''}</div>` : i.check.state === 'amount_differs' ? `<div class="warn" style="margin:8px 0">⚠ Safaricom has this code but for ${kes(i.check.paidCents)}, not ${kes(i.amountCents)}.</div>` : i.check.state === 'not_found' ? '<div class="warn" style="margin:8px 0">⚠ Safaricom has no record of this code. It may be fake or not arrived yet — do not confirm until you see it on your statement.</div>' : '<div class="mut" style="margin:8px 0">ℹ Not checked with Safaricom: a pasted message can be faked. Compare the code on your M-Pesa statement before confirming.</div>') : ''}
       ${i.recipientMismatch ? '<div class="warn" style="margin:8px 0">This M-Pesa went to a different name than your chama’s account.</div>' : ''}
       ${i.status === 'pending' ? (i.canConfirm ? `<br><div class="row"><button class="btn" onclick="${cash ? `confirmCash('${i.id}',${i.amountCents},'${esc(i.memberName.replace(/'/g, ''))}')` : `verify('${i.id}',this)`}">✅ Confirm</button><button class="btn sec" onclick="rejectRep('${i.id}')">Reject</button></div>` : `<div class="mut" style="margin-top:8px">Waiting for ${esc(i.receiverName || 'the receiver')} to confirm.</div>`) : ''}</div>`;
   };
@@ -686,6 +700,68 @@ function wzAddMember() {
 async function wzSaveMember(b) {
   b.disabled = true; try { const nm = val('wm-n'), r = await api('members.add', { name: nm, phone: val('wm-p'), roles: pickedRoles() }); WZ.members.push({ id: r.id, name: nm }); S.mgrMembers = WZ.members; WZ.created.push({ name: nm, pin: r.pin }); wzDraw(); } catch (e) { showErr('wm-e', e.message); b.disabled = false; }
 }
+
+
+/* ===================================================================================================================================
+   zip 232 — the chama logo next to the name, terms and conditions, automatic late-payment fines, and a faster app.
+   =================================================================================================================================== */
+const logoCache = () => { try { return JSON.parse(store.get('chama_logo_' + CID) || 'null'); } catch (e) { return null; } };
+function logoImg(cls) { const l = logoCache(); return l && l.data ? `<img class="${cls || 'clogo'}" src="${l.data}" alt="" style="${cls === 'clogo' ? '' : 'width:40px;height:40px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:10px'}">` : ''; }
+// fetch the picture only when its version stamp changed (the stamp comes with every status / home answer, the picture is a one-off download)
+async function syncLogo(v) {
+  v = Number(v) || 0; const have = logoCache();
+  if (!v) { if (have) { store.del('chama_logo_' + CID); if (TOKEN) render(); } return; }
+  if (have && have.v === v) return;
+  try { const r = await api('logo.get'); if (r.logo) { store.set('chama_logo_' + CID, JSON.stringify({ v: r.v, data: r.logo })); if (!document.getElementById('sheet')) render(); } } catch (e) { /* the name shows without it */ }
+}
+// shrink a chosen picture to a small square (kept sharp, under ~40 KB) before it is sent
+function shrinkLogo(file) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader(); fr.onerror = () => rej(new Error('Could not read that picture.'));
+    fr.onload = () => { const im = new Image(); im.onerror = () => rej(new Error('That is not a picture.')); im.onload = () => {
+      const n = 192, c = document.createElement('canvas'); c.width = n; c.height = n; const x = c.getContext('2d'), k = Math.max(n / im.width, n / im.height), w = im.width * k, h = im.height * k;
+      x.drawImage(im, (n - w) / 2, (n - h) / 2, w, h); res(c.toDataURL('image/png')); }; im.src = fr.result; };
+    fr.readAsDataURL(file);
+  });
+}
+async function pickLogo(input) {
+  const f = input.files && input.files[0]; input.value = ''; if (!f) return;
+  const r = await guard(async () => api('logo.save', { logo: await shrinkLogo(f) }));
+  if (r) { store.del('chama_logo_' + CID); await syncLogo(r.v); toast('Logo saved ✅'); render(); }
+}
+async function removeLogo() { const r = await guard(() => api('logo.remove')); if (r) { store.del('chama_logo_' + CID); toast('Logo removed'); render(); } }
+
+/* sign-in: the status and the names are asked together (they used to be asked one after the other) */
+async function renderLogin() {
+  const app = $('#app'); if (!app.innerHTML.trim()) app.innerHTML = '<div class="empty">Loading…</div>';
+  let st, t = { tiles: [] };
+  try { [st, t] = await Promise.all([api('status'), api('members.tiles').catch(() => ({ tiles: [] }))]); } catch (e) { app.innerHTML = `<div class="login card"><div class="err">${esc(e.message)}</div><button class="btn" onclick="render()">Try again</button></div>`; return; }
+  syncLogo(st.logoV);
+  const lg = logoCache(), mark = lg && lg.data ? `<img src="${lg.data}" alt="" style="width:44px;height:44px;border-radius:50%;object-fit:cover">` : '<img src="icons/icon-192.png" alt="" style="width:44px;height:44px;border-radius:12px">';
+  const head = (sub) => `<div class="row" style="justify-content:center;gap:10px;margin:0 0 4px">${mark}<h2 style="margin:0">${esc(st.name || 'Chama')}</h2></div>${sub}`;
+  if (st.setupNeeded) {
+    app.innerHTML = `<div class="login"><h2 class="center" style="margin:0 0 4px">Set up your chama</h2><p class="center mut">You will be the first member and the admin. Everything else can be changed later.</p><div class="card">${field('s-g', 'Chama name', '', 'text', 'placeholder="e.g. Umoja Chama" autocomplete="off"')}${field('s-n', 'Your name', '', 'text', 'autocomplete="name"')}${field('s-p', 'Your phone number', '', 'tel', 'placeholder="0712 345 678" autocomplete="tel"')}${pinBox('s-pin', 'Choose a PIN (4–6 digits)')}<div id="s-e"></div><br><button class="btn" onclick="doSetup(this)">Create my chama</button></div></div>`;
+    return;
+  }
+  S.tiles = t.tiles; S.stName = st.name; S.loginHead = head;
+  if (!t.tiles.length) return renderPhoneLogin(st, '');
+  const last = store.get('chama_last'), tiles = t.tiles.slice().sort((a, b) => (a.id === last ? -1 : b.id === last ? 1 : 0));
+  app.innerHTML = `<div class="login">${head('<h3 class="center" style="margin:0 0 12px;color:var(--mut)">Who is logging in?</h3>')}
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">${tiles.map((m) => `<button class="card center" style="margin:0;padding:14px 8px;border:1.5px solid ${m.id === last ? 'var(--g)' : 'var(--line)'};background:var(--card);color:var(--ink)" onclick="pickProfile('${m.id}')">${avatar(m.name, 56)}<div class="b" style="font-size:14px;line-height:1.2">${esc(m.name)}</div>${m.needsSetup ? '<span class="chip amb" style="margin-top:4px">First time</span>' : (m.id === last ? '<span class="chip" style="margin-top:4px">This phone</span>' : '')}</button>`).join('')}</div>
+    <p class="center mut" style="margin-top:16px">Forgot your PIN? Ask your admin to reset your sign-in.</p><p class="center"><a href="#" class="mut" onclick="renderPhoneLogin(null);return false">Not on the list? Sign in with your phone number</a></p></div>`;
+}
+
+/* ---------- terms and conditions ---------- */
+VIEWS.terms = async () => {
+  const r = await api('terms.get');
+  let x = '';
+  if (r.rules && r.rules.length) x += `<div class="card"><h3>📋 The rules in force</h3>${r.rules.map((u) => `<div class="item"><div class="b">${esc(u.title)}</div><div class="mut">${esc(u.text)}</div></div>`).join('')}<div class="mut" style="margin-top:6px">These come from the chama's settings and change when the admin changes them.</div></div>`;
+  x += r.canEdit
+    ? `<div class="card"><h3>📜 Terms and conditions</h3><p class="mut">Type your chama's rules and agreements. Every member can read this.</p><textarea id="tc-t" rows="14" style="width:100%;box-sizing:border-box;font-size:15px" placeholder="1. Contributions are due by the last day of each month.&#10;2. A late payment is fined as shown above.&#10;3. Members attend meetings on time…">${esc(r.text || '')}</textarea><div id="tc-e"></div><br><button class="btn" onclick="saveTerms(this)">Save terms</button>${r.updatedAt ? `<p class="mut center">Last changed ${new Date(r.updatedAt).toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' })} by ${esc(r.updatedBy || '')}</p>` : ''}</div>`
+    : `<div class="card"><h3>📜 Terms and conditions</h3>${r.text ? `<div style="white-space:pre-wrap;line-height:1.5">${esc(r.text)}</div>${r.updatedAt ? `<p class="mut" style="margin-top:10px">Last changed ${new Date(r.updatedAt).toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' })}</p>` : ''}` : '<div class="empty">Your admin has not typed the terms yet.</div>'}</div>`;
+  return shell('Terms & conditions', x);
+};
+async function saveTerms(b) { const r = await guard(() => api('terms.save', { text: $('#tc-t').value }), b); if (r) toast('Terms saved ✅'); }
 
 /* ---------- start ---------- */
 if ('serviceWorker' in navigator) { window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); }); }

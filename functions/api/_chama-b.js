@@ -2,7 +2,7 @@
 // guarantors, the merry-go-round, fundraisers, member statements and the group reports.
 import {
   fail, text, toCents, kes, uid, todayKey, isDate, rows, niceDate, time12, addDays, loadGroup, auditStmt, noteStmt, fundFor, ensureCycles, currentCycle,
-  cyclePosition, arrears, totalContributed, statusOf, can, showPhone,
+  cyclePosition, arrears, totalContributed, statusOf, can, showPhone, applyLatePenalties, readLogoV,
 } from './_chama-core.js';
 import { A, strOf, reqId, runBatches, loanCalc, repaidByLoan, loanOut, memberById, KIND_TEXT } from './_chama-a.js';
 
@@ -41,60 +41,88 @@ async function fundraiserList(ctx) {
 }
 
 A.home = { p: 'member', fn: async (ctx) => {
+  // zip 232: SPEED. This used to ask the database about 30 things one after another (each a network round trip); the independent ones now run together.
   await ensureCycles(ctx);
-  const g = await loadGroup(ctx), s = g.settings, me = ctx.me, today = todayKey();
-  const mrow = await ctx.db.prepare('SELECT joined_at FROM chama_member WHERE client_id = ? AND id = ?').bind(ctx.c, me.id).first(); me.joinedAt = mrow ? mrow.joined_at : 0;
-  const cur = await currentCycle(ctx), pos = cur ? await cyclePosition(ctx, cur.id, me.id) : null;
-  const total = await totalContributed(ctx, me.id), arr = await arrears(ctx, me.id), pen = await owedPenalties(ctx, me.id);
-  const rep = await repaidByLoan(ctx, me.id);
-  const loans = rows(await ctx.db.prepare("SELECT * FROM chama_loan WHERE client_id = ? AND member_id = ? AND status IN ('active','requested','changes','approved') ORDER BY requested_at DESC LIMIT 5").bind(ctx.c, me.id).all()).map((l) => loanOut(l, rep[l.id]));
-  const pendingN = await ctx.db.prepare("SELECT COUNT(*) AS n FROM chama_report WHERE client_id = ? AND member_id = ? AND status = 'pending'").bind(ctx.c, me.id).first();
-  const gr = await ctx.db.prepare("SELECT COUNT(*) AS n FROM chama_guarantor WHERE client_id = ? AND member_id = ? AND status = 'pending'").bind(ctx.c, me.id).first();
-  const turn = s.features.mgr ? await nextTurn(ctx) : null;
+  await applyLatePenalties(ctx);   // zip 232: a late contribution is fined automatically (once a day at most)
+  const g = await loadGroup(ctx), s = g.settings, me = ctx.me;
+  const q = (sql, ...a) => ctx.db.prepare(sql).bind(ctx.c, ...a).first();
+  const [mrow, cp, total, arr, pen, rep, loanRows, pendingN, gr, tp, nextMtg, unreadN, frs, logoV] = await Promise.all([
+    q('SELECT joined_at FROM chama_member WHERE client_id = ? AND id = ?', me.id),
+    currentCycle(ctx).then(async (c) => [c, c ? await cyclePosition(ctx, c.id, me.id) : null]),
+    totalContributed(ctx, me.id), arrears(ctx, me.id), owedPenalties(ctx, me.id), repaidByLoan(ctx, me.id),
+    ctx.db.prepare("SELECT * FROM chama_loan WHERE client_id = ? AND member_id = ? AND status IN ('active','requested','changes','approved') ORDER BY requested_at DESC LIMIT 5").bind(ctx.c, me.id).all(),
+    q("SELECT COUNT(*) AS n FROM chama_report WHERE client_id = ? AND member_id = ? AND status = 'pending'", me.id),
+    q("SELECT COUNT(*) AS n FROM chama_guarantor WHERE client_id = ? AND member_id = ? AND status = 'pending'", me.id),
+    s.features.mgr ? nextTurn(ctx).then(async (t) => [t, t ? (await q("SELECT COALESCE(SUM(amount_cents),0) AS t FROM chama_ledger WHERE client_id = ? AND kind = 'mgr_contribution' AND ref_id = ? AND member_id = ?", t.id, me.id)).t : 0]) : [null, 0],
+    s.features.meetings ? nextMeeting(ctx) : null,
+    unread(ctx),
+    s.features.fundraising ? fundraiserList(ctx) : [],
+    readLogoV(ctx),
+  ]);
+  me.joinedAt = mrow ? mrow.joined_at : 0;
+  const [cur, pos] = cp, [turn, myTurnPaid] = tp;
+  const loans = rows(loanRows).map((l) => loanOut(l, rep[l.id]));
   const member = {
     name: me.name, firstName: me.name.split(' ')[0],
     totalContributedCents: total, arrearsCents: arr, penaltiesCents: pen,
     cycle: cur ? { id: cur.id, label: cur.label, start: cur.start_date, end: cur.end_date, dueText: niceDate(cur.end_date, true), ...pos } : null,
-    loans, nextMeeting: s.features.meetings ? await nextMeeting(ctx) : null,
+    loans, nextMeeting: nextMtg,
     nextRecipient: turn && (s.privacy.showRecipient || turn.member_id === me.id) ? { name: turn.name, isMe: turn.member_id === me.id, expectedCents: turn.expected_cents, dueDate: turn.due_date, dueText: niceDate(turn.due_date, true), mgrName: turn.mgr_name } : null,
-    myTurnPaidCents: turn ? (await ctx.db.prepare("SELECT COALESCE(SUM(amount_cents),0) AS t FROM chama_ledger WHERE client_id = ? AND kind = 'mgr_contribution' AND ref_id = ? AND member_id = ?").bind(ctx.c, turn.id, me.id).first()).t : 0,
+    myTurnPaidCents: myTurnPaid,
     myTurnPerMemberCents: turn ? turn.per_member_cents : 0,
-    unread: await unread(ctx), pendingReports: pendingN.n, guarantorRequests: gr.n,
-    fundraisers: s.features.fundraising ? (await fundraiserList(ctx)).filter((f) => f.status === 'active') : [],
+    unread: unreadN, pendingReports: pendingN.n, guarantorRequests: gr.n,
+    fundraisers: frs.filter((f) => f.status === 'active'),
   };
-  const group = { name: g.name, features: s.features, payInstructions: s.payInstructions, privacy: s.privacy, hasContribution: !!(s.contribution.enabled && s.contribution.amountCents), freq: s.contribution.freq };
+  const group = { name: g.name, logoV, features: s.features, payInstructions: s.payInstructions, privacy: s.privacy, hasContribution: !!(s.contribution.enabled && s.contribution.amountCents), freq: s.contribution.freq };
   const out = { me: { id: me.id, name: me.name, role: me.role, roles: me.roles || [], perms: me.perms, mustChangePin: me.mustChangePin }, group, member, staff: null };
-  const isStaff = me.perms.length > 0;
-  if (!isStaff) return out;
+  if (!(me.perms.length > 0)) return out;
 
-  const st = {};
-  const n = (sql, ...a) => ctx.db.prepare(sql).bind(ctx.c, ...a).first();
-  st.members = (await n("SELECT COUNT(*) AS n FROM chama_member WHERE client_id = ? AND status = 'active'")).n;
-  if (can(me, 'payments') || can(me, 'reports')) st.pendingReports = (await n("SELECT COUNT(*) AS n FROM chama_report WHERE client_id = ? AND status = 'pending'")).n;
-  if (can(me, 'reports') || can(me, 'money') || can(me, 'payments')) {
-    st.totalContributionsCents = (await n("SELECT COALESCE(SUM(amount_cents),0) AS t FROM chama_ledger WHERE client_id = ? AND kind = 'contribution'")).t;
-    if (cur) {
-      const c = await ctx.db.prepare(`SELECT COALESCE(SUM(x.req),0) AS req, COALESCE(SUM(x.paid),0) AS paid, COALESCE(SUM(MAX(x.req - x.paid,0)),0) AS owed, COALESCE(SUM(CASE WHEN x.paid >= x.req THEN 1 ELSE 0 END),0) AS done, COUNT(*) AS n FROM (
+  const st = {}, T = {}, jobs = [];
+  const job = (k, p) => { jobs.push(Promise.resolve(p).then((v) => { T[k] = v; })); };
+  const sum = (kind) => q(`SELECT COALESCE(SUM(amount_cents),0) AS t FROM chama_ledger WHERE client_id = ? AND kind = '${kind}'`);
+  const cnt = (table, where) => q(`SELECT COUNT(*) AS n FROM ${table} WHERE client_id = ? AND ${where}`);
+  const pay = can(me, 'payments'), rep2 = can(me, 'reports'), mon = can(me, 'money'), lo = can(me, 'loans'), mt = can(me, 'meetings') || can(me, '*');
+  job('members', cnt('chama_member', "status = 'active'"));
+  if (pay || rep2) job('pendingReports', cnt('chama_report', "status = 'pending'"));
+  if (rep2 || mon || pay) {
+    job('totalContributions', sum('contribution'));
+    if (cur) job('cycle', ctx.db.prepare(`SELECT COALESCE(SUM(x.req),0) AS req, COALESCE(SUM(x.paid),0) AS paid, COALESCE(SUM(MAX(x.req - x.paid,0)),0) AS owed, COALESCE(SUM(CASE WHEN x.paid >= x.req THEN 1 ELSE 0 END),0) AS done, COUNT(*) AS n FROM (
         SELECT o.required_cents AS req, COALESCE((SELECT SUM(l.amount_cents) FROM chama_ledger l WHERE l.client_id = o.client_id AND l.kind = 'contribution' AND l.ref_type = 'cycle' AND l.ref_id = o.cycle_id AND l.member_id = o.member_id), 0) AS paid
-        FROM chama_obligation o JOIN chama_member m ON m.client_id = o.client_id AND m.id = o.member_id AND m.status = 'active' WHERE o.client_id = ? AND o.cycle_id = ?) x`).bind(ctx.c, cur.id).first();
-      st.cycle = { id: cur.id, label: cur.label, requiredCents: c.req, collectedCents: c.paid, outstandingCents: c.owed, completeCount: c.done, memberCount: c.n };
-    }
-    st.recent = (await A['ledger.list'].fn({ ...ctx, body: { limit: 8 } })).items;
+        FROM chama_obligation o JOIN chama_member m ON m.client_id = o.client_id AND m.id = o.member_id AND m.status = 'active' WHERE o.client_id = ? AND o.cycle_id = ?) x`).bind(ctx.c, cur.id).first());
+    job('recent', A['ledger.list'].fn({ ...ctx, body: { limit: 8 } }));
   }
-  if (can(me, 'money') || can(me, 'loans') || can(me, 'reports')) {
-    const all = await repaidByLoan(ctx, null), act = rows(await ctx.db.prepare("SELECT * FROM chama_loan WHERE client_id = ? AND status = 'active'").bind(ctx.c).all()).map((l) => loanOut(l, all[l.id]));
+  if (mon || lo || rep2) {
+    job('allRepaid', repaidByLoan(ctx, null));
+    job('activeLoans', ctx.db.prepare("SELECT * FROM chama_loan WHERE client_id = ? AND status = 'active'").bind(ctx.c).all());
+    job('disbursed', sum('loan_disbursement')); job('repayments', sum('loan_repayment')); job('expenses', sum('expense'));
+    job('pendingRequests', cnt('chama_loan', "status IN ('requested','changes')")); job('toDisburse', cnt('chama_loan', "status = 'approved'"));
+    job('funds', A['fund.list'].fn(ctx));
+  }
+  job('activeFundraisers', cnt('chama_fundraiser', "status = 'active'"));
+  if (mt) {
+    job('lastMeeting', ctx.db.prepare("SELECT id, title, meet_date FROM chama_meeting WHERE client_id = ? AND status = 'held' ORDER BY meet_date DESC LIMIT 1").bind(ctx.c).first().then(async (last) => last ? [last, await q("SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN status IN ('present','late') THEN 1 ELSE 0 END),0) AS p FROM chama_attendance WHERE client_id = ? AND meeting_id = ?", last.id)] : null));
+    job('draftMinutes', cnt('chama_minutes', "status = 'draft'"));
+  }
+  await Promise.all(jobs);
+  st.members = T.members.n;
+  if (T.pendingReports) st.pendingReports = T.pendingReports.n;
+  if (T.totalContributions) {
+    st.totalContributionsCents = T.totalContributions.t;
+    if (T.cycle) st.cycle = { id: cur.id, label: cur.label, requiredCents: T.cycle.req, collectedCents: T.cycle.paid, outstandingCents: T.cycle.owed, completeCount: T.cycle.done, memberCount: T.cycle.n };
+    st.recent = T.recent.items;
+  }
+  if (T.activeLoans) {
+    const act = rows(T.activeLoans).map((l) => loanOut(l, T.allRepaid[l.id]));
     st.loans = { activeCount: act.length, outstandingCents: act.reduce((a, l) => a + l.outstandingCents, 0), overdueCents: act.reduce((a, l) => a + l.overdueCents, 0), overdueCount: act.filter((l) => l.overdueCents > 0).length,
-      disbursedCents: -(await n("SELECT COALESCE(SUM(amount_cents),0) AS t FROM chama_ledger WHERE client_id = ? AND kind = 'loan_disbursement'")).t, repaymentsCents: (await n("SELECT COALESCE(SUM(amount_cents),0) AS t FROM chama_ledger WHERE client_id = ? AND kind = 'loan_repayment'")).t,
-      pendingRequests: (await n("SELECT COUNT(*) AS n FROM chama_loan WHERE client_id = ? AND status IN ('requested','changes')")).n, toDisburse: (await n("SELECT COUNT(*) AS n FROM chama_loan WHERE client_id = ? AND status = 'approved'")).n };
-    st.expensesCents = -(await n("SELECT COALESCE(SUM(amount_cents),0) AS t FROM chama_ledger WHERE client_id = ? AND kind = 'expense'")).t;
-    st.funds = (await A['fund.list'].fn(ctx)).funds;
+      disbursedCents: -T.disbursed.t, repaymentsCents: T.repayments.t, pendingRequests: T.pendingRequests.n, toDisburse: T.toDisburse.n };
+    st.expensesCents = -T.expenses.t;
+    st.funds = T.funds.funds;
   }
-  st.activeFundraisers = (await n("SELECT COUNT(*) AS n FROM chama_fundraiser WHERE client_id = ? AND status = 'active'")).n;
-  if (turn && (can(me, 'money') || can(me, 'payments') || can(me, '*'))) st.mgr = { recipient: turn.name, dueText: niceDate(turn.due_date, true), expectedCents: turn.expected_cents, collectedCents: turn.collected, outstandingCents: Math.max(0, turn.expected_cents - turn.collected), turnId: turn.id };
-  if (can(me, 'meetings') || can(me, '*')) {
-    const last = await ctx.db.prepare("SELECT id, title, meet_date FROM chama_meeting WHERE client_id = ? AND status = 'held' ORDER BY meet_date DESC LIMIT 1").bind(ctx.c).first();
-    if (last) { const a = await ctx.db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN status IN ('present','late') THEN 1 ELSE 0 END),0) AS p FROM chama_attendance WHERE client_id = ? AND meeting_id = ?").bind(ctx.c, last.id).first(); st.lastAttendance = { title: last.title, dateText: niceDate(last.meet_date, true), present: a.p, marked: a.n, percent: a.n ? Math.round(a.p / a.n * 100) : 0 }; }
-    st.draftMinutes = (await n("SELECT COUNT(*) AS n FROM chama_minutes WHERE client_id = ? AND status = 'draft'")).n;
+  st.activeFundraisers = T.activeFundraisers.n;
+  if (turn && (mon || pay || can(me, '*'))) st.mgr = { recipient: turn.name, dueText: niceDate(turn.due_date, true), expectedCents: turn.expected_cents, collectedCents: turn.collected, outstandingCents: Math.max(0, turn.expected_cents - turn.collected), turnId: turn.id };
+  if (mt) {
+    if (T.lastMeeting) { const [last, a] = T.lastMeeting; st.lastAttendance = { title: last.title, dateText: niceDate(last.meet_date, true), present: a.p, marked: a.n, percent: a.n ? Math.round(a.p / a.n * 100) : 0 }; }
+    st.draftMinutes = T.draftMinutes.n;
   }
   out.staff = st;
   return out;

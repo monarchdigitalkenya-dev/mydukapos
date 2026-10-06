@@ -113,11 +113,12 @@ export const DEFAULTS = {
   contribution: { enabled: true, amountCents: 0, freq: 'monthly', every: 1, unit: 'month', startDate: '', fundId: '' },
   features: { meetings: true, mgr: false, loans: false, fundraising: true, penalties: false },
   meeting: { everyDays: 0 },
-  penalties: { missedMeeting: { enabled: false, amountCents: 0, repeatAmountCents: 0, repeatAfter: 0 }, lateContribution: { enabled: false, amountCents: 0 } },
+  penalties: { missedMeeting: { enabled: false, amountCents: 0, repeatAmountCents: 0, repeatAfter: 0 }, lateContribution: { enabled: false, amountCents: 0, mode: 'fixed', percent: 0, graceDays: 0, since: '' } },
   loans: { interestPct: 0, maxMultiple: 0, guarantors: 0, defaultMonths: 3 },
   privacy: { membersSeeTotals: false, showRecipient: true, showSignInNames: true },
   payInstructions: '',
   paymentTo: '',
+  terms: { text: '', updatedAt: 0, updatedBy: '' },   // zip 232: the chama's terms and conditions, typed by the admin, readable by everyone
   chama: { startedOn: '', description: '', ongoing: false, trackedFrom: '' },   // zip 230: when the chama really began, and the day it started being tracked here
 };
 export const FREQS = { daily: [1, 'day'], weekly: [1, 'week'], biweekly: [2, 'week'], monthly: [1, 'month'], bimonthly: [2, 'month'], quarterly: [3, 'month'], none: [0, 'none'] };
@@ -144,6 +145,13 @@ export function cleanSettings(input, current) {
   const p = s.penalties;
   p.missedMeeting.amountCents = Math.max(0, Math.round(Number(p.missedMeeting.amountCents) || 0)); p.missedMeeting.repeatAmountCents = Math.max(0, Math.round(Number(p.missedMeeting.repeatAmountCents) || 0)); p.missedMeeting.repeatAfter = Math.max(0, Math.round(Number(p.missedMeeting.repeatAfter) || 0));
   p.lateContribution.amountCents = Math.max(0, Math.round(Number(p.lateContribution.amountCents) || 0));
+  p.lateContribution.mode = p.lateContribution.mode === 'percent' ? 'percent' : 'fixed';
+  p.lateContribution.percent = Math.max(0, Math.min(100, Number(p.lateContribution.percent) || 0));
+  p.lateContribution.graceDays = Math.max(0, Math.min(60, Math.round(Number(p.lateContribution.graceDays) || 0)));
+  // the rule only judges periods that START on or after the day it was switched on (an existing chama never gets fined for its past)
+  if (p.lateContribution.enabled && !isDate(p.lateContribution.since)) p.lateContribution.since = todayKey();
+  if (!p.lateContribution.enabled && !isDate(p.lateContribution.since)) p.lateContribution.since = '';
+  s.terms = { text: text(s.terms && s.terms.text, 20000), updatedAt: Number(s.terms && s.terms.updatedAt) || 0, updatedBy: text(s.terms && s.terms.updatedBy, 80) };
   s.loans.interestPct = Math.max(0, Math.min(100, Number(s.loans.interestPct) || 0)); s.loans.guarantors = Math.max(0, Math.min(10, Math.round(Number(s.loans.guarantors) || 0)));
   s.loans.maxMultiple = Math.max(0, Math.min(100, Number(s.loans.maxMultiple) || 0)); s.loans.defaultMonths = Math.max(1, Math.min(60, Math.round(Number(s.loans.defaultMonths) || 3)));
   s.payInstructions = text(s.payInstructions, 400); s.paymentTo = text(s.paymentTo, 80);
@@ -295,3 +303,40 @@ export function splitRoles(list) {
 export const permsForRoles = (roles) => [...new Set(roles.flatMap((r) => (ROLE_PERMS[r] || []).filter((x) => x !== '*')))];
 // who may run the merry-go-round (secretary, treasurer, chairperson, admin - or anyone given the permission)
 export const canMgr = (me) => can(me, 'mgr') || can(me, 'money') || can(me, 'payments');
+
+
+// ---------- zip 232: late-payment penalties, applied by the system ----------
+// A member is LATE for a period when what they had paid by (period end + grace days) is less than what the period required. Money counted
+// as on time: contributions dated on or before that day, and opening balances. The penalty is raised ONCE per member per period (unique index),
+// as a fixed amount or a % of what was missing on time, with a message to the member. Runs at most once a day per chama (marker in chama_meta).
+export async function applyLatePenalties(ctx, force = false) {
+  const g = await loadGroup(ctx); if (!g) return { raised: 0 };
+  const rule = g.settings.penalties.lateContribution;
+  if (!g.settings.features.penalties || !rule.enabled || !(rule.mode === 'percent' ? rule.percent > 0 : rule.amountCents > 0)) return { raised: 0, off: true };
+  const today = todayKey(), mk = 'latepen:' + ctx.c;
+  if (!force) { const m = await ctx.db.prepare('SELECT v FROM chama_meta WHERE k = ?').bind(mk).first(); if (m && m.v === today) return { raised: 0, skipped: true }; }
+  const grace = rule.graceDays || 0, since = rule.since || today;
+  const late = rows(await ctx.db.prepare(`SELECT x.cycle_id, x.member_id, x.label, x.end_date, x.req, x.ontime FROM (
+      SELECT o.cycle_id, o.member_id, cy.label, cy.end_date, o.required_cents AS req,
+        COALESCE((SELECT SUM(l.amount_cents) FROM chama_ledger l WHERE l.client_id = o.client_id AND l.kind = 'contribution' AND l.ref_type = 'cycle' AND l.ref_id = o.cycle_id AND l.member_id = o.member_id AND (l.method = 'opening' OR l.entry_date <= date(cy.end_date, '+' || ? || ' days'))), 0) AS ontime
+      FROM chama_obligation o JOIN chama_cycle cy ON cy.client_id = o.client_id AND cy.id = o.cycle_id
+      JOIN chama_member m ON m.client_id = o.client_id AND m.id = o.member_id AND m.status = 'active'
+      WHERE o.client_id = ? AND o.required_cents > 0 AND cy.start_date >= ? AND date(cy.end_date, '+' || ? || ' days') < ?) x
+    WHERE x.ontime < x.req ORDER BY x.end_date LIMIT 500`).bind(grace, ctx.c, since, grace, today).all());
+  const have = new Set(rows(await ctx.db.prepare("SELECT member_id, ref_id FROM chama_penalty WHERE client_id = ? AND kind = 'late_contribution'").bind(ctx.c).all()).map((r) => r.member_id + '|' + r.ref_id));
+  const stmts = []; let raised = 0;
+  for (const l of late) {
+    if (have.has(l.member_id + '|' + l.cycle_id)) continue;
+    const cents = rule.mode === 'percent' ? Math.max(1, Math.round((l.req - l.ontime) * rule.percent / 100)) : rule.amountCents;
+    stmts.push(ctx.db.prepare("INSERT OR IGNORE INTO chama_penalty (client_id, id, member_id, kind, amount_cents, reason, ref_type, ref_id, status, created_by, created_at) VALUES (?,?,?, 'late_contribution', ?, ?, 'cycle', ?, 'open', ?, ?)")
+      .bind(ctx.c, uid(), l.member_id, cents, `Late contribution for ${l.label} (due ${l.end_date}${grace ? ' + ' + grace + ' days' : ''})`, l.cycle_id, ctx.me ? ctx.me.id : null, Date.now()));
+    stmts.push(noteStmt(ctx, l.member_id, 'penalty', 'Late contribution penalty', `Your contribution for ${l.label} was not complete by ${niceDate(l.end_date, true)}${grace ? ' (plus ' + grace + ' grace days)' : ''}. A penalty of ${kes(cents)} was added. See the chama terms and conditions.`));
+    raised++;
+  }
+  stmts.push(ctx.db.prepare("INSERT INTO chama_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").bind(mk, today));
+  for (let i = 0; i < stmts.length; i += 80) await ctx.db.batch(stmts.slice(i, i + 80));
+  return { raised };
+}
+
+// the version stamp of the chama logo (the picture itself is read only when the stamp changes - see logo.get)
+export async function readLogoV(ctx) { const r = await ctx.db.prepare('SELECT v FROM chama_meta WHERE k = ?').bind('logov:' + ctx.c).first(); return r ? Number(r.v) || 0 : 0; }

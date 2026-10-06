@@ -731,7 +731,7 @@ If the sheet has multiple stock-like blocks, extract all of them together into t
       systemPrompt: SYSTEM_PROMPT,
       userParts,
       responseSchema: RESPONSE_SCHEMA,
-      maxOutputTokens: 8192,
+      maxOutputTokens: body.mode === 'pastSales' ? 16384 : 8192,
       contextLabel: 'spreadsheet',
     });
     if (!result.ok) return result.response;
@@ -796,6 +796,8 @@ If the sheet has multiple stock-like blocks, extract all of them together into t
   const MENU_HINT = body.mode === 'menu' ? `\n\nThe person uploading this file says it is a MENU / price list of dishes to sell — treat it as KIND 3 (document_type "menu") unless it plainly is not.` : '';
   // zip 215: "📸 Capture Sales" (Daily Sales) - a photo of the shopkeeper's own SALES BOOK. Same reply shape as KIND 1; only the meaning of the numbers differs.
   const SALES_HINT = body.mode === 'sales' ? `\n\nIMPORTANT - the person uploading this says the page is their handwritten SALES RECORD (a book of what they SOLD, not what they bought). Set document_type to "items". Every line is one item sold: put what was sold in "quantity" (a bare count is the number of units; "2x", "x2", "2pcs" all mean 2). Put the price PER ONE UNIT in "retail_price": if the book shows a unit price use it; if it only shows a line total (e.g. "Sugar 3 450") divide the total by the quantity. Leave unit_cost and wholesale_price at 0. Ignore running totals, page totals, dates, headings, "balance", "cash", "mpesa" and crossed-out lines. If the same item appears on several lines keep each line separately. Read the item name exactly as written - do not translate or "correct" brand names.` : '';
+  // zip 232: "📸 Capture list" inside Record a Past Sale (every POS app) - a photo of a sales book / receipts / a list of what was sold, with TIMES.
+  const PAST_HINT = body.mode === 'pastSales' ? `\n\nIMPORTANT - the person uploading this says the page is a record of PAST SALES (what they SOLD, not bought). Set document_type to "items". Read EVERY line - do not stop early, do not merge lines, do not skip a line because it is faint; if the same item appears on several lines keep each line separately. For each line: detected_name = the item as written (do not translate or "correct" it; keep sizes such as "2kg", "500ml"); detected_code = a separate code only if one is printed; quantity = the number of units sold (a bare count; "2x", "x2", "2pcs" mean 2; decimals such as 0.5 or 1.25 are real quantities for weighed or measured goods - keep them); retail_price = the price PER ONE UNIT (if the page only shows a line total, put that total in line_total and ALSO divide it by the quantity for retail_price); line_total = the total written for that line if shown, else 0. TIME: if a time of day is written for the line (or for a group of lines under a time heading, e.g. "9:30am", "14:05", "2.15 pm"), put it in sold_time as 24-hour "HH:MM" and repeat it for every line it applies to; if a date is written (any format, day first as used in Kenya, e.g. 5/10/26 or 5 Oct) put it in sold_date as "YYYY-MM-DD"; otherwise leave both empty - never invent a time or date. Ignore running totals, page totals, "balance", "cash", "mpesa", headings and crossed-out lines. unit_cost and wholesale_price must be 0.` : '';
   const SYSTEM_PROMPT = `You are reading a shop document for a point-of-sale system's inventory intake — either a photograph/scan of a paper document, or the plain-text rows extracted from a spreadsheet file (columns separated by " | ", one row per line). First decide which of three kinds of document this is, then extract it accordingly.
 
 KIND 1 — an invoice, a handwritten stock note, a printed delivery sheet, or a receipt listing goods bought/delivered. Set document_type to "items".
@@ -825,7 +827,7 @@ KIND 3 — a MENU: a restaurant, hotel or cafe menu or price list of dishes, mea
 
 If a document is ambiguous between the kinds, prefer "recipe" only when there's a clear dish-name heading above an ingredient table with a Unit column; a list of foods/drinks with one selling price each and no quantities is a "menu"; anything else with quantities or buying costs is "items".
 
-Respond with a JSON object matching the schema exactly. For "items" lines, every entry must have at least one of detected_name or detected_code — omit or leave blank ("") whichever one genuinely isn't present, rather than guessing. confidence_score is your own confidence (0.0–1.0) that a line/ingredient was read correctly. If the document contains no readable item lines or recipe at all, respond with document_type "items" and an empty items array.` + MENU_HINT + SALES_HINT;
+Respond with a JSON object matching the schema exactly. For "items" lines, every entry must have at least one of detected_name or detected_code — omit or leave blank ("") whichever one genuinely isn't present, rather than guessing. confidence_score is your own confidence (0.0–1.0) that a line/ingredient was read correctly. If the document contains no readable item lines or recipe at all, respond with document_type "items" and an empty items array.` + MENU_HINT + SALES_HINT + PAST_HINT;
 
   // responseMimeType + responseSchema below force Gemini to return exactly
   // this shape as the text part — no markdown fences, no commentary — so
@@ -846,6 +848,9 @@ Respond with a JSON object matching the schema exactly. For "items" lines, every
             unit_cost: { type: 'NUMBER' },
             retail_price: { type: 'NUMBER' },
             wholesale_price: { type: 'NUMBER' },
+            line_total: { type: 'NUMBER' },
+            sold_time: { type: 'STRING' },
+            sold_date: { type: 'STRING' },
             confidence_score: { type: 'NUMBER' },
           },
           required: ['quantity', 'unit_cost', 'confidence_score'],
@@ -901,7 +906,7 @@ Respond with a JSON object matching the schema exactly. For "items" lines, every
     });
     if (!result.ok) return result.response;
     // The rules that turn the AI's answer into the reply live in _capture-shape.js (menus, recipes, plain item lists).
-    return jsonResponse(shapeCaptureResult(result.data, { menu: body.mode === 'menu' }));
+    return jsonResponse(shapeCaptureResult(result.data, { menu: body.mode === 'menu', pastSales: body.mode === 'pastSales' }));
   } catch (err) {
     return jsonResponse({ error: err.message || 'Unexpected error contacting the AI service.' }, 500);
   }

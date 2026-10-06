@@ -7,6 +7,22 @@
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const conf = (v) => (Number.isFinite(Number(v)) ? Math.max(0, Math.min(1, Number(v))) : 0.5);
 
+// zip 232: a time written on a sales sheet -> "HH:MM" (24 h) or "" when it is not a real time; a date -> "YYYY-MM-DD" or "".
+function cleanTime(v) {
+  const m = /^\s*(\d{1,2})[:.](\d{2})\s*(am|pm|AM|PM)?\s*$/.exec(String(v || ''));
+  if (!m) return '';
+  let h = Number(m[1]); const mi = Number(m[2]); const ap = (m[3] || '').toLowerCase();
+  if (ap === 'pm' && h < 12) h += 12; if (ap === 'am' && h === 12) h = 0;
+  if (h > 23 || mi > 59) return '';
+  return String(h).padStart(2, '0') + ':' + String(mi).padStart(2, '0');
+}
+function cleanDate(v) {
+  const m = /^\s*(\d{4})-(\d{2})-(\d{2})\s*$/.exec(String(v || ''));
+  if (!m) return '';
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? m[1] + '-' + m[2] + '-' + m[3] : '';
+}
+
 export function shapeCaptureResult(parsed, opts = {}) {
   parsed = parsed || {};
   // A line is usable as long as it has a name OR a code — a delivery sheet that only lists SKUs is just as valid as one with only a name.
@@ -21,6 +37,7 @@ export function shapeCaptureResult(parsed, opts = {}) {
       retail_price: num(it.retail_price),
       wholesale_price: num(it.wholesale_price),
       confidence_score: conf(it.confidence_score),
+      ...(opts.pastSales ? { line_total: num(it.line_total), sold_time: cleanTime(it.sold_time), sold_date: cleanDate(it.sold_date) } : {}),
     })) : [];
 
   // An ingredient line with no name at all isn't usable (unlike an items line, which can lean on a code).
