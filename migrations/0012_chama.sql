@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS chama_member (
   failed_pins INTEGER NOT NULL DEFAULT 0,
   locked_until INTEGER NOT NULL DEFAULT 0,
   joined_at INTEGER NOT NULL,
+  roles TEXT NOT NULL DEFAULT '[]',
   PRIMARY KEY (client_id, id)
 );
 
@@ -98,6 +99,8 @@ CREATE TABLE IF NOT EXISTS chama_report (
   reviewed_by TEXT,
   reviewed_at INTEGER,
   note TEXT,
+  reported_cents INTEGER,
+  received_by TEXT,
   PRIMARY KEY (client_id, id)
 );
 
@@ -183,6 +186,9 @@ CREATE TABLE IF NOT EXISTS chama_mgr (
   order_mode TEXT NOT NULL DEFAULT 'admin',
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed')),
   created_at INTEGER NOT NULL,
+  every_months INTEGER NOT NULL DEFAULT 0,
+  last_payout_date TEXT,
+  ongoing INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (client_id, id)
 );
 
@@ -195,6 +201,9 @@ CREATE TABLE IF NOT EXISTS chama_mgr_turn (
   due_date TEXT NOT NULL,
   expected_cents INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','paid_out')),
+  opening INTEGER NOT NULL DEFAULT 0,
+  due_original TEXT,
+  paid_date TEXT,
   PRIMARY KEY (client_id, id)
 );
 

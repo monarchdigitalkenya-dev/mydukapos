@@ -3088,8 +3088,15 @@
                                 <input type="text" id="new-material-name-input" placeholder="e.g. Cap / Crown Seal">
                             </div>
                             <div class="form-group">
-                                <label class="label">Cost per Unit (KES) <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
-                                <input type="number" id="new-material-cost-input" min="0" step="0.01" placeholder="Leave blank if you don't track this">
+                                <label class="label">Price paid (KES) <span style="font-weight:normal; color:#7f8c8d;">(optional)</span></label>
+                                <div style="display:flex; gap:6px;">
+                                    <input type="number" id="new-material-cost-input" min="0" step="0.01" placeholder="Leave blank if you don't track this" oninput="matBuyPreview()" style="flex:1; min-width:0;">
+                                    <select id="new-material-buy-select" onchange="matBuyPreview()" style="flex:0 0 auto;"><option value="piece">per piece</option><option value="bag">per bag / pack</option></select>
+                                </div>
+                                <div id="new-material-perbag-wrap" style="display:none; margin-top:6px;">
+                                    <input type="number" id="new-material-perbag-input" min="1" step="1" placeholder="Pieces in one bag / pack, e.g. 1000" oninput="matBuyPreview()">
+                                </div>
+                                <small id="new-material-buy-preview" style="color:#16a085; font-weight:600;"></small>
                             </div>
                         </div>
                         <div class="form-group">
@@ -3116,7 +3123,7 @@
                     <div>
                         <div class="table-scroll">
                         <table id="raw-materials-table">
-                            <thead><tr><th>Material</th><th>Cost/Unit</th><th>Selling Price</th><th>Stock</th><th>Supplier</th><th>Production Component</th><th></th></tr></thead>
+                            <thead><tr><th>Material</th><th>Cost (bought as)</th><th>Selling Price</th><th>Stock</th><th>Supplier</th><th>Production Component</th><th></th></tr></thead>
                             <tbody></tbody>
                         </table>
                         </div>
@@ -17959,6 +17966,15 @@ async function zReportPreflight() {
         // stockAt(p, siteId). Kept for any future caller; the site's actual
         // qty for display always goes through stockAt()/the qty mirror.
         function siteProducts(siteId) { return products; }
+        // zip 228: Shop and Production each keep their OWN materials, so an item's materials list (bom) and a produced item's recipe only ever count the
+        // materials that belong to the site being worked in. Before, one list pointed at the Shop's records and a Production sale took the Shop's stock.
+        function matSiteId(m) { return (m && m.siteId) || shopSiteId(); }
+        function workSiteId() { return activeSiteId === 'both' ? shopSiteId() : activeSiteId; }
+        function rowsForSite(rows, siteId) {
+            if (!Array.isArray(rows)) return [];
+            const sid = siteId || workSiteId();
+            return rows.filter(r => { const m = rawMaterials.find(x => x.id === r.materialId); return m && matSiteId(m) === sid; });
+        }
         function siteRawMaterials(siteId) { return rawMaterials.filter(m => m.siteId === (siteId || activeSiteId)); }
         function siteRefillSizes(siteId) { return refillSizes.filter(s => s.siteId === (siteId || activeSiteId)); }
         function setActiveSite(siteId) {
@@ -20103,7 +20119,7 @@ async function zReportPreflight() {
             const product = products.find(p => p.code === brandedBaleModalCode);
             const hintEl = document.getElementById('branded-bale-source-hint');
             if (product && hintEl) {
-                const hasRecipe = Array.isArray(product.productionRecipe) && product.productionRecipe.length > 0;
+                const hasRecipe = rowsForSite(product.productionRecipe).length > 0;
                 hintEl.textContent = hasRecipe
                     ? `Deducts this item's own Production Recipe × qty from raw materials (set in Inventory → 🏭 Recipe).`
                     : `No Production Recipe set for this item — the run is recorded but no materials are deducted. Set one in Inventory → 🏭 Recipe to auto-deduct.`;
@@ -20139,7 +20155,7 @@ async function zReportPreflight() {
             if (!logoSpecs) { errEl.textContent = 'Customization / Label Specs is required for a custom bale order.'; return; }
             const orderNotes = (document.getElementById('branded-bale-notes-input').value || '').trim();
             const bottlesPerBale = product.bottlesPerBale || defaultBottlesPerBale;
-            const hasRecipe = Array.isArray(product.productionRecipe) && product.productionRecipe.length > 0;
+            const hasRecipe = rowsForSite(product.productionRecipe).length > 0;
             const useRecipe = hasRecipe;
 
             // Custom bales are produced fresh: only the item's own Production
@@ -20148,7 +20164,7 @@ async function zReportPreflight() {
             // shortfall never leaves a half-applied run.
             const componentsUsed = [];
             if (useRecipe) {
-                for (const row of product.productionRecipe) {
+                for (const row of rowsForSite(product.productionRecipe)) {
                     const material = rawMaterials.find(m => m.id === row.materialId);
                     if (!material) continue;
                     const qtyUsed = round2(row.qtyPerUnit * qty);
@@ -20968,7 +20984,7 @@ async function zReportPreflight() {
                     const totalCellHtml = offer
                         ? `${money(lineTotal)}<div class="offer-line-discounted-total">${money(round2(lineTotal - offer.amount))}</div>`
                         : money(lineTotal);
-                    const materialsRowHtml = (rawMaterials.length > 0 || accessoryMaterialProducts().length > 0)
+                    const materialsRowHtml = (rawMaterials.some(m => matchesActiveSite(m.siteId)) || accessoryMaterialProducts().length > 0)
                         ? `<tr class="cart-materials-row"><td colspan="5">${materialsChipsHtml(l)}${accessoryMaterialsChipsHtml(l)}</td></tr>`
                         : '';
                     return `
@@ -21077,7 +21093,7 @@ async function zReportPreflight() {
             const source = line.type === 'refill'
                 ? refillSizes.find(s => s.id === line.refillSizeId)
                 : products.find(p => p.code === line.code);
-            return (source && Array.isArray(source.bom)) ? source.bom : [];
+            return source ? rowsForSite(source.bom) : [];
         }
 
         // The interactive strip shown above each cart line: every raw
@@ -21114,7 +21130,7 @@ async function zReportPreflight() {
                 const source = line.type === 'refill'
                     ? refillSizes.find(s => s.id === line.refillSizeId)
                     : products.find(p => p.code === line.code);
-                const defaultRow = source && Array.isArray(source.bom) ? source.bom.find(r => r.materialId === materialId) : null;
+                const defaultRow = source ? rowsForSite(source.bom).find(r => r.materialId === materialId) : null;
                 current.push({ materialId, qty: defaultRow ? defaultRow.qty : 1 });
             }
             line.materialsOverride = current;
@@ -21373,14 +21389,14 @@ async function zReportPreflight() {
                 if (line.type === 'refill') {
                     deductFromTanks((line.sizeML / 1000) * line.qty, siteId);
                     const rsz = refillSizes.find(s => s.id === line.refillSizeId);
-                    line.materialsUsed = deductBomForLine(rsz, line.qty, line.materialsOverride);
+                    line.materialsUsed = deductBomForLine(rsz, line.qty, line.materialsOverride, siteId);
                     line.fixedCostAtSale = (rsz && itemCostMode(rsz) === 'fixed') ? (Number(rsz.fixedCost) || 0) : null;
                 } else {
                     const product = products.find(p => p.code === line.code);
                     // A custom bale order was already produced (materials used, run logged)
                     // when the order was confirmed — deducting stock again here double-counted it.
                     if (product && !line.customBaleOrder) deductProductStockForSale(product, line.qty);
-                    line.materialsUsed = deductBomForLine(product, line.qty, line.materialsOverride);
+                    line.materialsUsed = deductBomForLine(product, line.qty, line.materialsOverride, siteId);
                     line.fixedCostAtSale = (product && itemCostMode(product) === 'fixed') ? (Number(product.fixedCost) || 0) : null;
                 }
                 // Toggled accessory materials are genuinely sold, chargeable
@@ -21742,6 +21758,7 @@ async function zReportPreflight() {
                 expenses.push({
                     id: genSaleId(),
                     timestamp: new Date().toISOString(),
+                    siteId: recordSiteId(),
                     category: 'Delivery',
                     description: `${freeDeliveryApplied ? 'Free delivery' : 'Delivery'} expense — ${deliveryClientName || 'delivery order'} (${saleRecord.refNumber})`,
                     amount: deliveryExpenseAmount,
@@ -22892,7 +22909,7 @@ async function zReportPreflight() {
             const sorted = [...siteScoped].sort((a, b) => (a.sizeML || 0) - (b.sizeML || 0));
             tbody.innerHTML = sorted.map(p => {
                 const imgSrc = p.image || "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23eee'/></svg>";
-                const bomCount = Array.isArray(p.bom) ? p.bom.length : 0;
+                const bomCount = rowsForSite(p.bom).length;
                 const vatCat = (p.vatCategory === 'C' ? 'Z' : p.vatCategory) || 'A';
                 const daysToExpiry = p.expiryDate ? Math.ceil((new Date(p.expiryDate) - new Date()) / 86400000) : null;
                 const expiryWarn = daysToExpiry !== null && daysToExpiry <= expiryWarningDays;
@@ -22927,7 +22944,7 @@ async function zReportPreflight() {
                         <input class="inv-edit-input" type="date" style="${expiryWarn ? 'border-color:var(--danger); color:var(--danger);' : ''}" value="${p.expiryDate || ''}" onchange="updateProductField('${escapeJsAttr(p.code)}', 'expiryDate', this.value)">
                     </td>
                     <td><button class="settings-small-btn" onclick="openBomModal('product', '${escapeJsAttr(p.code)}')">🧩 ${bomCount > 0 ? bomCount : ''}</button></td>
-                    <td><button class="settings-small-btn" onclick="openProductionRecipeModal('${escapeJsAttr(p.code)}')">🏭 ${Array.isArray(p.productionRecipe) && p.productionRecipe.length > 0 ? p.productionRecipe.length : ''}</button></td>
+                    <td><button class="settings-small-btn" onclick="openProductionRecipeModal('${escapeJsAttr(p.code)}')">🏭 ${rowsForSite(p.productionRecipe).length > 0 ? rowsForSite(p.productionRecipe).length : ''}</button></td>
                     <td><select class="inv-edit-input" onchange="updateProductField('${escapeJsAttr(p.code)}', 'supplierId', this.value)">${supplierOptionsHtml(p.supplierId || '')}</select></td>
                     <td>
                         <button class="settings-small-btn" style="margin-bottom:4px;" onclick="openEditProductModal('${escapeJsAttr(p.code)}')">✏️ Edit</button><br>
@@ -23153,7 +23170,7 @@ async function zReportPreflight() {
                         <option value="E" ${s.vatCategory === 'E' ? 'selected' : ''}>E</option>
                         <option value="N" ${s.vatCategory === 'N' ? 'selected' : ''}>N</option>
                     </select>
-                    <button class="settings-small-btn" onclick="openBomModal('refill', '${escapeJsAttr(s.id)}')">🧩 ${Array.isArray(s.bom) && s.bom.length > 0 ? s.bom.length : ''}</button>
+                    <button class="settings-small-btn" onclick="openBomModal('refill', '${escapeJsAttr(s.id)}')">🧩 ${rowsForSite(s.bom).length > 0 ? rowsForSite(s.bom).length : ''}</button>
                     <button class="remove-btn" onclick="removeRefillSize('${escapeJsAttr(s.id)}')">Remove</button>
                 </div>`;
             }).join('');
@@ -24084,16 +24101,19 @@ async function zReportPreflight() {
            accurate even after raw material costs or the water rate change
            later. */
 
+        // zip 228: every report follows the site you are in (Shop, Production or Admin's All Sites). Old expenses with no site count as the Shop's.
+        function siteSales() { return salesLog.filter(s => matchesActiveSite(s.siteId)); }
+        function siteExpenses() { return expenses.filter(e => matchesActiveSite(e.siteId || shopSiteId())); }
         function allTimeRevenue() {
-            return salesLog.filter(s => s.paid !== false).reduce((sum, s) => sum + s.total, 0);
+            return siteSales().filter(s => s.paid !== false).reduce((sum, s) => sum + s.total, 0);
         }
         function revenueForDate(dateStr) {
-            return salesLog
+            return siteSales()
                 .filter(s => s.paid !== false && dateKey(new Date(s.timestamp)) === dateStr)
                 .reduce((sum, s) => sum + s.total, 0);
         }
         function expensesForDate(dateStr) {
-            return expenses.filter(e => dateKey(new Date(e.timestamp)) === dateStr);
+            return siteExpenses().filter(e => dateKey(new Date(e.timestamp)) === dateStr);
         }
         function saveExpenses() {
             safeSetItem('aqua_expenses', JSON.stringify(expenses));
@@ -24118,6 +24138,7 @@ async function zReportPreflight() {
 
             expenses.push({
                 id: genSaleId(),
+                siteId: recordSiteId(),
                 timestamp: new Date().toISOString(),
                 category,
                 description,
@@ -24186,7 +24207,7 @@ async function zReportPreflight() {
             document.getElementById('exp-day-net').textContent = money(dayRevenue - dayTotal);
 
             const totalRevenue = allTimeRevenue();
-            const totalExpenses = expenses.reduce((sum, e) => sum + e.amount + (e.transactionCost || 0), 0);
+            const totalExpenses = siteExpenses().reduce((sum, e) => sum + e.amount + (e.transactionCost || 0), 0);
             document.getElementById('exp-alltime-revenue').textContent = money(totalRevenue);
             document.getElementById('exp-alltime-expenses').textContent = money(totalExpenses);
             document.getElementById('exp-alltime-net').textContent = money(totalRevenue - totalExpenses);
@@ -24280,6 +24301,7 @@ async function zReportPreflight() {
                 if (due) {
                     expenses.push({
                         id: genSaleId(),
+                        siteId: r.siteId || recordSiteId(),
                         timestamp: new Date().toISOString(),
                         category: r.category,
                         description: r.description ? `${r.description} (recurring)` : 'Recurring expense',
@@ -24319,7 +24341,7 @@ async function zReportPreflight() {
         // stays aligned with saleCogs() and with what Daily Sales shows for
         // each individual sale.
         function buildProfitBreakdown(rangeFrom, rangeTo) {
-            const rangeSales = salesLog.filter(sale => {
+            const rangeSales = siteSales().filter(sale => {
                 if (sale.voided) return false;
                 const key = dateKey(new Date(sale.timestamp));
                 return key >= rangeFrom && key <= rangeTo;
@@ -24373,7 +24395,7 @@ async function zReportPreflight() {
             }
 
             const totalProfit = totalRevenue - totalCost;
-            const rangeExpenses = expenses
+            const rangeExpenses = siteExpenses()
                 .filter(e => { const key = dateKey(new Date(e.timestamp)); return key >= rangeFrom && key <= rangeTo; })
                 .reduce((sum, e) => sum + e.amount + (e.transactionCost || 0), 0);
             const grossProfit = totalProfit - rangeExpenses;
@@ -24402,7 +24424,7 @@ async function zReportPreflight() {
             let totalRevenue = 0, totalCost = 0;
             rows.forEach(r => { totalRevenue += r.revenue; totalCost += r.cost; });
             const totalProfit = totalRevenue - totalCost;
-            const rangeExpenses = expenses
+            const rangeExpenses = siteExpenses()
                 .filter(e => { const key = dateKey(new Date(e.timestamp)); return key >= rangeFrom && key <= rangeTo; })
                 .reduce((sum, e) => sum + e.amount + (e.transactionCost || 0), 0);
             const grossProfit = totalProfit - rangeExpenses;
@@ -28196,7 +28218,7 @@ async function zReportPreflight() {
             applyExpensesOnlyRestriction();
             renderSiteComparisonDashboard();
             const today = todayDateString();
-            const validSales = salesLog.filter(s => s.paid !== false);
+            const validSales = siteSales().filter(s => s.paid !== false);
             const todaySales = validSales.filter(s => dayKeyOf(s.timestamp) === today);
             const todayRevenue = todaySales.reduce((sum, s) => sum + s.total, 0);
             document.getElementById('dash-today-revenue').textContent = money(todayRevenue);
@@ -28503,7 +28525,7 @@ async function zReportPreflight() {
                 : siteScoped.map(m => `
                     <tr>
                         <td>${escapeHtml(m.name)}</td>
-                        <td><input class="inv-edit-input" type="number" min="0" step="0.01" value="${m.unitCost.toFixed(2)}" onchange="updateRawMaterialField('${escapeJsAttr(m.id)}', 'unitCost', this.value)"></td>
+                        <td>${materialCostCellHtml(m)}</td>
                         <td><input class="inv-edit-input" type="number" min="0" step="0.01" value="${(m.sellingPrice || 0).toFixed(2)}" placeholder="0.00" title="0 = not charged to the customer; internal cost only" onchange="updateRawMaterialField('${escapeJsAttr(m.id)}', 'sellingPrice', this.value)"></td>
                         <td><input class="inv-edit-input" type="number" min="0" step="any" value="${m.stockQty}" onchange="updateRawMaterialField('${escapeJsAttr(m.id)}', 'stockQty', this.value)"></td>
                         <td><select class="inv-edit-input" onchange="updateRawMaterialField('${escapeJsAttr(m.id)}', 'supplierId', this.value)">${supplierOptionsHtml(m.supplierId || '')}</select></td>
@@ -28836,7 +28858,7 @@ async function zReportPreflight() {
         function captureMatchOptions(selectedId) {
             let html = `<option value="">✨ New Entry</option>`;
             products.forEach(p => { html += `<option value="item:${escapeQuotes(p.code)}" ${p.code === selectedId ? 'selected' : ''}>📦 ${escapeQuotes(p.name)}</option>`; });
-            rawMaterials.forEach(m => { html += `<option value="material:${escapeQuotes(m.id)}" ${m.id === selectedId ? 'selected' : ''}>🧪 ${escapeQuotes(m.name)}</option>`; });
+            rawMaterials.filter(m => matchesActiveSite(m.siteId)).forEach(m => { html += `<option value="material:${escapeQuotes(m.id)}" ${m.id === selectedId ? 'selected' : ''}>🧪 ${escapeQuotes(m.name)}</option>`; });
             return html;
         }
         function renderCaptureReviewTable() {
@@ -29170,7 +29192,7 @@ async function zReportPreflight() {
             if (!wrap) return;
             const target = kind === 'product' ? products.find(p => p.code === id) : null;
             if (!target) { wrap.innerHTML = ''; return; }
-            const recipe = Array.isArray(target.productionRecipe) ? target.productionRecipe : [];
+            const recipe = rowsForSite(target.productionRecipe);
             if (recipe.length === 0) {
                 wrap.innerHTML = `<p style="font-size:12px; color:#7f8c8d;">No Production Recipe set for "${escapeHtml(target.name)}" — this run will just add the quantity produced, nothing deducted. Set one in Inventory (🏭 Recipe) to auto-deduct materials on every run.</p>`;
                 return;
@@ -29202,7 +29224,7 @@ async function zReportPreflight() {
 
             const target = kind === 'product' ? products.find(p => p.code === id) : rawMaterials.find(m => m.id === id);
             if (!target) { errEl.textContent = 'Item not found.'; return; }
-            const recipe = (kind === 'product' && Array.isArray(target.productionRecipe)) ? target.productionRecipe : [];
+            const recipe = kind === 'product' ? rowsForSite(target.productionRecipe) : [];
 
             // Check every recipe material has enough stock BEFORE
             // deducting anything, so a shortfall never leaves a
@@ -29333,9 +29355,15 @@ async function zReportPreflight() {
             if (stock < 0) { errEl.textContent = 'Starting stock can’t be negative.'; return; }
             if (sellingPrice < 0) { errEl.textContent = 'Selling price can’t be negative.'; return; }
 
-            rawMaterials.push({ id: `mat-${genSaleId()}`, siteId: recordSiteId(), name, unitCost: cost, sellingPrice, stockQty: stock, supplierId: supplierId || null, isProductionComponent: false, componentRole: '' });
+            // zip 229: the price can be per piece or per bag/pack; the cost used everywhere is always PER PIECE (bag price / pieces in the bag).
+            const buyUnit = (document.getElementById('new-material-buy-select') || {}).value === 'bag' ? 'bag' : 'piece';
+            const perBag = Math.max(1, parseInt((document.getElementById('new-material-perbag-input') || {}).value, 10) || 0);
+            if (buyUnit === 'bag' && !((parseInt((document.getElementById('new-material-perbag-input') || {}).value, 10) || 0) >= 1)) { errEl.textContent = 'Enter how many pieces are in one bag / pack.'; return; }
+            const unitCostPiece = buyUnit === 'bag' ? Math.round((cost / perBag) * 10000) / 10000 : cost;
+            rawMaterials.push({ id: `mat-${genSaleId()}`, siteId: recordSiteId(), name, unitCost: unitCostPiece, buyUnit, perBag: buyUnit === 'bag' ? perBag : undefined, bagCost: buyUnit === 'bag' ? cost : undefined, sellingPrice, stockQty: stock, supplierId: supplierId || null, isProductionComponent: false, componentRole: '' });
             document.getElementById('new-material-name-input').value = '';
             document.getElementById('new-material-cost-input').value = '';
+            { const bs = document.getElementById('new-material-buy-select'), pb = document.getElementById('new-material-perbag-input'); if (bs) bs.value = 'piece'; if (pb) pb.value = ''; matBuyPreview(); }
             document.getElementById('new-material-stock-input').value = '';
             document.getElementById('new-material-selling-price-input').value = '';
             const materialSupplierSelectEl = document.getElementById('new-material-supplier-select');
@@ -29346,6 +29374,45 @@ async function zReportPreflight() {
             showToast(`"${name}" added.`);
         }
 
+        // zip 229: "bought as" - a material priced per piece or per bag/pack. unitCost stays the PER-PIECE cost every sale and recipe uses.
+        function matIsBag(m) { return !!m && m.buyUnit === 'bag' && Number(m.perBag) >= 1; }
+        function matPerPiece(m) { return matIsBag(m) ? (Number(m.bagCost) || 0) / Number(m.perBag) : (Number(m.unitCost) || 0); }
+        function materialCostCellHtml(m) {
+            const id = escapeJsAttr(m.id), bag = matIsBag(m);
+            const price = bag ? (Number(m.bagCost) || 0) : (Number(m.unitCost) || 0);
+            return `<div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
+                <input class="inv-edit-input" type="number" min="0" step="0.01" style="width:90px;" value="${price.toFixed(2)}" onchange="setMaterialBuy('${id}', 'price', this.value)">
+                <select class="inv-edit-input" style="width:auto;" onchange="setMaterialBuy('${id}', 'unit', this.value)"><option value="piece" ${bag ? '' : 'selected'}>per piece</option><option value="bag" ${bag ? 'selected' : ''}>per bag/pack</option></select>
+                ${bag ? `<input class="inv-edit-input" type="number" min="1" step="1" style="width:80px;" value="${Number(m.perBag)}" title="Pieces in one bag / pack" onchange="setMaterialBuy('${id}', 'perBag', this.value)"><small>pcs/bag</small>` : ''}
+            </div>
+            <small style="color:#16a085; font-weight:600;">= ${money(matPerPiece(m))} per piece</small>`;
+        }
+        function setMaterialBuy(id, part, value) {
+            const m = rawMaterials.find(x => x.id === id); if (!m) return;
+            const trimmed = String(value).trim(), num = trimmed === '' ? 0 : parseFloat(trimmed);
+            if (part !== 'unit' && (isNaN(num) || num < 0)) { showToast('Enter a valid number, or leave it blank for 0.', true); renderRawMaterialsTable(); return; }
+            if (part === 'unit') {
+                if (value === 'bag') {
+                    m.buyUnit = 'bag'; m.perBag = Number(m.perBag) >= 1 ? Number(m.perBag) : 1;
+                    m.bagCost = Math.round((Number(m.unitCost) || 0) * m.perBag * 100) / 100;
+                } else { m.buyUnit = 'piece'; delete m.perBag; delete m.bagCost; }
+            } else if (part === 'perBag') {
+                if (!(num >= 1)) { showToast('Pieces in a bag must be 1 or more.', true); renderRawMaterialsTable(); return; }
+                m.buyUnit = 'bag'; m.perBag = Math.round(num);
+            } else if (matIsBag(m)) { m.bagCost = num; }
+            else { m.buyUnit = 'piece'; m.unitCost = num; }
+            if (matIsBag(m)) m.unitCost = Math.round((Number(m.bagCost) || 0) / Number(m.perBag) * 10000) / 10000;
+            queuePush();
+            renderRawMaterialsTable();
+            try { renderBomRows(); } catch (e) { /* the recipe window is not open */ }
+        }
+        function matBuyPreview() {
+            const g = id => document.getElementById(id), bag = g('new-material-buy-select') && g('new-material-buy-select').value === 'bag';
+            const wrap = g('new-material-perbag-wrap'); if (wrap) wrap.style.display = bag ? '' : 'none';
+            const out = g('new-material-buy-preview'); if (!out) return;
+            const cost = parseFloat((g('new-material-cost-input') || {}).value), per = parseInt((g('new-material-perbag-input') || {}).value, 10);
+            out.textContent = (bag && cost >= 0 && per >= 1) ? `= ${money(cost / per)} per piece` : '';
+        }
         function updateRawMaterialField(id, field, value) {
             const material = rawMaterials.find(m => m.id === id);
             if (!material) return;
@@ -29369,6 +29436,7 @@ async function zReportPreflight() {
             // material) — only unitCost was ever meant to round to 2dp,
             // which toFixed already handles on display.
             material[field] = num;
+            if (field === 'unitCost' && matIsBag(material)) material.bagCost = Math.round(num * Number(material.perBag) * 100) / 100;
             queuePush();
             renderRawMaterialsTable();
         }
@@ -29423,7 +29491,7 @@ async function zReportPreflight() {
                 itemType === 'product' ? item.name : `${item.label} (Refill)`;
 
             const select = document.getElementById('bom-add-material-select');
-            const bomSiteMaterials = rawMaterials.filter(m => m.siteId === item.siteId);
+            const bomSiteMaterials = rawMaterials.filter(m => matSiteId(m) === workSiteId());
             select.innerHTML = bomSiteMaterials.length === 0
                 ? `<option value="">Add a raw material first</option>`
                 : bomSiteMaterials.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)} — KES ${(Number(m.unitCost) || 0).toFixed(2)} each</option>`).join('');
@@ -30313,9 +30381,10 @@ async function zReportPreflight() {
             const item = getBomItem();
             if (!item) return;
             const wrap = document.getElementById('bom-rows-list');
-            wrap.innerHTML = item.bom.length === 0
-                ? `<p style="color:#7f8c8d; font-size:13px;">No materials assigned yet — this item won’t deduct anything beyond its own stock/tank litres, and no material cost is added.</p>`
-                : item.bom.map((row, idx) => {
+            const visBom = item.bom.map((row, i) => ({ row, i })).filter(x => rowsForSite([x.row]).length === 1);   // zip 228: only this site's materials (idx stays the real position)
+            wrap.innerHTML = visBom.length === 0
+                ? `<p style="color:#7f8c8d; font-size:13px;">No materials assigned yet for ${escapeHtml(currentSite().name)} — this item won’t deduct anything beyond its own stock/tank litres, and no material cost is added here.</p>`
+                : visBom.map(({ row, i: idx }) => {
                     const material = rawMaterials.find(m => m.id === row.materialId);
                     // zip 215: the cost of every material is shown (and editable) right here, so a cost can never be applied without being seen.
                     const unit = material ? (Number(material.unitCost) || 0) : 0;
@@ -30329,7 +30398,7 @@ async function zReportPreflight() {
                     </div>`;
                 }).join('');
 
-            const matCost = bomMaterialsCostPerUnit(item.bom);
+            const matCost = bomMaterialsCostPerUnit(rowsForSite(item.bom));
             const fixed = itemCostMode(item) === 'fixed';
             const modeBox = document.getElementById('bom-cost-mode');
             if (modeBox) modeBox.innerHTML = `<div style="font-weight:700; font-size:14px; margin-bottom:6px;">💲 How is this item's cost worked out?</div>
@@ -30338,7 +30407,7 @@ async function zReportPreflight() {
                 ${fixed ? `<div style="margin-top:6px; display:flex; align-items:center; gap:8px; font-size:13px;">Cost per unit (KES) <input class="inv-edit-input" type="number" min="0" step="0.01" style="width:110px;" value="${(Number(item.fixedCost) || 0).toFixed(2)}" onchange="setBomFixedCost(this.value)"></div>` : ''}`;
             document.getElementById('bom-cost-summary').textContent = fixed
                 ? `Cost per unit: ${money(Number(item.fixedCost) || 0)} — the cost you typed. The materials above still come off stock on every sale, but their prices are not added to the cost.`
-                : `Materials cost per unit: ${money(matCost)}` + (item.bom.length > 0 && Number(item.wholesalePrice) > 0
+                : `Materials cost per unit: ${money(matCost)}` + (visBom.length > 0 && Number(item.wholesalePrice) > 0
                     ? ` — this is the item’s cost on every sale. Its own Cost Price (${money(Number(item.wholesalePrice))}) is NOT added on top while materials are listed; remove the materials to cost it by its Cost Price instead.` : '');
         }
 
@@ -30354,7 +30423,7 @@ async function zReportPreflight() {
             const item = getBomItem(); if (!item) return;
             if (mode === 'fixed') {
                 item.costMode = 'fixed';
-                if (!(Number(item.fixedCost) > 0)) item.fixedCost = Math.round(bomMaterialsCostPerUnit(item.bom) * 100) / 100;   // start from what the materials work out to
+                if (!(Number(item.fixedCost) > 0)) item.fixedCost = Math.round(bomMaterialsCostPerUnit(rowsForSite(item.bom)) * 100) / 100;   // start from what the materials work out to
             } else { item.costMode = 'materials'; }
             queuePush(); renderBomRows();
         }
@@ -30373,7 +30442,7 @@ async function zReportPreflight() {
             const trimmed = String(value).trim();
             const num = trimmed === '' ? 0 : parseFloat(trimmed);
             if (isNaN(num) || num < 0) { showToast('Enter a valid number, or leave it blank for 0.', true); renderBomRows(); return; }
-            material.unitCost = num;
+            if (matIsBag(material)) { material.bagCost = Math.round(num * Number(material.perBag) * 100) / 100; material.unitCost = Math.round(num * 10000) / 10000; } else { material.unitCost = num; }
             queuePush();
             renderBomRows();
             renderRawMaterialsTable();
@@ -30431,7 +30500,7 @@ async function zReportPreflight() {
             document.getElementById('production-recipe-modal-subtitle').textContent = product.name;
 
             const select = document.getElementById('production-recipe-add-material-select');
-            const recipeSiteMaterials = rawMaterials.filter(m => m.siteId === product.siteId);
+            const recipeSiteMaterials = rawMaterials.filter(m => matSiteId(m) === workSiteId());
             select.innerHTML = recipeSiteMaterials.length === 0
                 ? `<option value="">Add a raw material first</option>`
                 : recipeSiteMaterials.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
@@ -30459,9 +30528,10 @@ async function zReportPreflight() {
             const product = products.find(p => p.code === productionRecipeModalCode);
             if (!product) return;
             const wrap = document.getElementById('production-recipe-rows-list');
-            wrap.innerHTML = product.productionRecipe.length === 0
-                ? `<p style="color:#7f8c8d; font-size:13px;">No materials in this recipe yet — a production run of this item will just add the quantity produced, nothing deducted.</p>`
-                : product.productionRecipe.map((row, idx) => {
+            const visRec = product.productionRecipe.map((row, i) => ({ row, i })).filter(x => rowsForSite([x.row]).length === 1);   // zip 228: this site's materials only
+            wrap.innerHTML = visRec.length === 0
+                ? `<p style="color:#7f8c8d; font-size:13px;">No materials in this recipe yet for ${escapeHtml(currentSite().name)} — a production run of this item will just add the quantity produced, nothing deducted.</p>`
+                : visRec.map(({ row, i: idx }) => {
                     const material = rawMaterials.find(m => m.id === row.materialId);
                     return `
                     <div style="display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--light);">
@@ -30514,12 +30584,12 @@ async function zReportPreflight() {
         // stored on the sale record itself, since the BOM on the product
         // can be edited later, and a historical receipt should always show
         // what was genuinely used at the time, not what the recipe says today.
-        function deductBomForLine(item, qty, overrideRows) {
+        function deductBomForLine(item, qty, overrideRows, siteId) {
             // overrideRows, when the cashier has touched the per-line
             // materials picker in the cart, wins outright — including an
             // explicit empty array, which means "none of this item's usual
             // materials were actually used on this particular sale."
-            const rows = Array.isArray(overrideRows) ? overrideRows : ((item && Array.isArray(item.bom)) ? item.bom : []);
+            const rows = Array.isArray(overrideRows) ? overrideRows : (item ? rowsForSite(item.bom, siteId) : []);   // zip 228: only this site's materials
             if (rows.length === 0) return [];
             const used = [];
             rows.forEach(row => {
@@ -32185,7 +32255,7 @@ async function zReportPreflight() {
                 const product = products.find(p => p.code === line.code);
                 if (!product) return;
                 if (!product.customQuote) adjustProductStock(product, -line.qty, `Exchange (replacement) → ${product.name}`);
-                line.materialsUsed = deductBomForLine(product, line.qty);
+                line.materialsUsed = deductBomForLine(product, line.qty, undefined, workSiteId());
             });
 
             // 3) Sales & ledger integration. The sale's own items are the
@@ -32572,7 +32642,7 @@ async function zReportPreflight() {
             const container = document.getElementById('analytics-chart-container');
             const totals = {}; // key -> { name, qty }
 
-            salesLog.forEach(sale => sale.items.forEach(item => {
+            siteSales().forEach(sale => sale.items.forEach(item => {
                 const key = item.code || item.refillSizeId || item.name;
                 if (!totals[key]) totals[key] = { name: item.name, qty: 0 };
                 totals[key].qty += item.qty;
@@ -32652,7 +32722,7 @@ async function zReportPreflight() {
 
         function renderPaymentMethodPie() {
             let cash = 0, mpesa = 0, card = 0;
-            salesLog.forEach(sale => {
+            siteSales().forEach(sale => {
                 if (sale.paid === false) return;
                 cash += sale.cashAmount || 0;
                 mpesa += sale.mpesaAmount || 0;
@@ -32667,7 +32737,7 @@ async function zReportPreflight() {
 
         function renderTopItemsPie() {
             const totals = {};
-            salesLog.forEach(sale => sale.items.forEach(item => {
+            siteSales().forEach(sale => sale.items.forEach(item => {
                 const key = item.code || item.refillSizeId || item.name;
                 if (!totals[key]) totals[key] = { name: item.name, revenue: 0 };
                 totals[key].revenue += item.price * item.qty;
@@ -32678,8 +32748,8 @@ async function zReportPreflight() {
         }
 
         function renderSalesVsExpensesPie() {
-            const totalSales = salesLog.filter(s => s.paid !== false).reduce((sum, s) => sum + s.total, 0);
-            const totalExpenses = expenses.reduce((sum, e) => sum + (e.amount || 0) + (e.transactionCost || 0), 0);
+            const totalSales = siteSales().filter(s => s.paid !== false).reduce((sum, s) => sum + s.total, 0);
+            const totalExpenses = siteExpenses().reduce((sum, e) => sum + (e.amount || 0) + (e.transactionCost || 0), 0);
             renderPieChartSVG('sales-expenses-pie', [
                 { label: 'Sales Revenue', value: totalSales, color: '#27ae60' },
                 { label: 'Expenses', value: totalExpenses, color: '#e74c3c' },
@@ -32687,8 +32757,8 @@ async function zReportPreflight() {
         }
 
         function renderBillsStatusPie() {
-            const totalPaidRevenue = salesLog.filter(s => s.paid !== false).reduce((sum, s) => sum + s.total, 0);
-            const totalOutstanding = bills.reduce((sum, b) => sum + Math.max(0, (b.total || 0) - (b.amountPaid || 0)), 0);
+            const totalPaidRevenue = siteSales().filter(s => s.paid !== false).reduce((sum, s) => sum + s.total, 0);
+            const totalOutstanding = bills.filter(b => matchesActiveSite(b.siteId)).reduce((sum, b) => sum + Math.max(0, (b.total || 0) - (b.amountPaid || 0)), 0);
             renderPieChartSVG('bills-status-pie', [
                 { label: 'Collected', value: totalPaidRevenue, color: '#27ae60' },
                 { label: 'Outstanding', value: totalOutstanding, color: '#e67e22' },

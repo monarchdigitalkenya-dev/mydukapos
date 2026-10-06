@@ -45,10 +45,10 @@ test('Chama in a phone browser: set-up, sign-in, report an M-Pesa payment, confi
     await page.click('.nav >> text=Staff'); await page.click('text=Add, roles, devices'); await page.click('text=Add member'); await page.fill('#am-n', 'Mary Wanjiku'); await page.fill('#am-p', '0722000001'); await page.click('.sheet button:text-is("Add")');
     await page.waitForSelector('text=Member added'); const pin = (await page.textContent('.sheet .ok div')).trim(); assert.match(pin, /^\d{4}$/);
     await page.click('text=Done');
-    await page.click('.nav >> text=More'); await page.click('text=Sign out'); await page.waitForSelector('#l-p');
+    await page.click('.nav >> text=More'); await page.click('text=Sign out'); await page.waitForSelector('text=Who is logging in?');
     // Mary: first sign-in forces her own PIN
-    await page.fill('#l-p', '0722000001'); await page.fill('#l-pin', pin); await page.click('#l-b'); await page.waitForSelector('#p-o');
-    await page.fill('#p-o', pin); await page.fill('#p-n', '5678'); await page.click('text=Save PIN'); await page.waitForSelector('text=Hello Mary');
+    await page.click('.login button:has-text("Mary Wanjiku")'); await page.fill('#l-pin', pin); await page.click('#l-b'); await page.waitForSelector('#p-n2');
+    await page.fill('#p-n', '5678'); await page.fill('#p-n2', '5678'); await page.click('text=Save PIN'); await page.waitForSelector('text=Hello Mary');
     assert.ok(await page.isVisible('text=of KES 6,000'));
     // report the exact M-Pesa message
     await page.click('.nav >> text=Pay'); await page.fill('#pm', SMS); await page.waitForSelector('#pv .ok');
@@ -58,12 +58,12 @@ test('Chama in a phone browser: set-up, sign-in, report an M-Pesa payment, confi
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
     // a second try with the same code is refused on screen
     await page.fill('#pm', SMS); await page.waitForSelector('#pv .err');
-    await page.click('.nav >> text=More'); await page.click('text=Sign out');
+    await page.click('.nav >> text=More'); await page.click('text=Sign out'); await page.waitForSelector('text=Who is logging in?');
     // the admin confirms it
-    await page.fill('#l-p', '0711000001'); await page.fill('#l-pin', '1234'); await page.click('#l-b'); await page.waitForSelector('text=Hello Alice');
+    await page.click('.login button:has-text("Alice Admin")'); await page.fill('#l-pin', '1234'); await page.click('#l-b'); await page.waitForSelector('text=Hello Alice');
     await page.click('.nav >> text=Staff'); await page.click('text=Payment inbox'); await page.waitForSelector('text=Mary Wanjiku'); await page.click('.card button:has-text("Confirm")'); await page.waitForSelector('text=Nothing here');
     await page.click('.nav >> text=More'); await page.click('text=Sign out');
-    await page.fill('#l-p', '0722000001'); await page.fill('#l-pin', '5678'); await page.click('#l-b'); await page.waitForSelector('text=Hello Mary');
+    await page.click('.login button:has-text("Mary Wanjiku")'); await page.fill('#l-pin', '5678'); await page.click('#l-b'); await page.waitForSelector('text=Hello Mary');
     const hero = (await page.textContent('.hero')).replace(/\s+/g, ' '); assert.match(hero, /KES 100 of KES 6,000/, hero + JSON.stringify(await env.LEDGER_DB.query('select status,amount_cents from chama_report')) + JSON.stringify(await env.LEDGER_DB.query('select kind,amount_cents,ref_id from chama_ledger')));
     assert.ok(await page.isVisible('text=Remaining KES 5,900'));
     assert.deepEqual(errors, []);

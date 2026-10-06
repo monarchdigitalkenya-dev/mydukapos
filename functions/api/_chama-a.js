@@ -3,7 +3,7 @@
 import {
   fail, text, toCents, kes, normPhone, showPhone, uid, todayKey, isDate, rows, niceDate, time12, parseMpesa,
   loadGroup, auditStmt, noteStmt, fundFor, ensureCycles, currentCycle, cyclePosition, arrears, totalContributed, allocateContribution, statusOf,
-  pinProblem, hashPin, checkPin, openDevice, can, ROLE_PERMS, ALL_PERMS, MAX_FAILS, LOCK_MS, cleanSettings, readSettings, FREQS, addMonths, FUND_NAMES,
+  pinProblem, hashPin, checkPin, openDevice, can, ROLE_PERMS, ALL_PERMS, rolesOf, splitRoles, permsForRoles, canMgr, ROLE_NAMES, MAX_FAILS, LOCK_MS, cleanSettings, readSettings, FREQS, addMonths, FUND_NAMES,
 } from './_chama-core.js';
 
 const pick = (o, ...k) => k.reduce((a, x) => { a[x] = o[x]; return a; }, {});
@@ -71,11 +71,23 @@ A.setup = { p: 'public', fn: async (ctx) => {
   return { token: dev.token, remember: true };
 } };
 
+// zip 230: "Who is logging in?" - the names a person taps on the sign-in screen. Only names and whether the person still has to set up their PIN
+// (never a phone number, a role or a balance). The chama's admin can switch the list off (Settings -> privacy -> showSignInNames).
+A['members.tiles'] = { p: 'public', fn: async (ctx) => {
+  const g = await loadGroup(ctx);
+  if (g && g.settings.privacy.showSignInNames === false) return { tiles: [], hidden: true };
+  const r = rows(await ctx.db.prepare("SELECT id, name, must_change_pin FROM chama_member WHERE client_id = ? AND status = 'active' ORDER BY name").bind(ctx.c).all());
+  return { tiles: r.map((x) => ({ id: x.id, name: x.name, needsSetup: !!x.must_change_pin })) };
+} };
+
 A.login = { p: 'public', fn: async (ctx) => {
-  const b = ctx.body, phone = normPhone(b.phone), pin = String(b.pin || ''), now = Date.now();
-  const bad = () => fail('Wrong phone number or PIN.', 'bad_login', 401);
-  if (!phone || !pin) bad();
-  const m = await ctx.db.prepare('SELECT id, name, pin_hash, status, failed_pins, locked_until, must_change_pin FROM chama_member WHERE client_id = ? AND phone = ?').bind(ctx.c, phone).first();
+  const b = ctx.body, byId = !!b.memberId, phone = normPhone(b.phone), pin = String(b.pin || ''), now = Date.now();
+  const bad = () => fail(byId ? 'That PIN is not right.' : 'Wrong phone number or PIN.', 'bad_login', 401);
+  if ((!byId && !phone) || !pin) bad();
+  // selecting a name alone never signs anyone in: the PIN (or the temporary PIN for a new member) is always checked
+  const m = byId
+    ? await ctx.db.prepare('SELECT id, name, pin_hash, status, failed_pins, locked_until, must_change_pin FROM chama_member WHERE client_id = ? AND id = ?').bind(ctx.c, String(b.memberId)).first()
+    : await ctx.db.prepare('SELECT id, name, pin_hash, status, failed_pins, locked_until, must_change_pin FROM chama_member WHERE client_id = ? AND phone = ?').bind(ctx.c, phone).first();
   if (!m) bad();
   if (m.status !== 'active') fail('This account is switched off. Ask your admin.', 'disabled', 403);
   if (m.locked_until > now) fail(`Too many wrong PINs. Try again in ${Math.ceil((m.locked_until - now) / 60000)} minutes, or ask your admin to reset your PIN.`, 'locked', 429);
@@ -160,48 +172,49 @@ A['fund.save'] = { p: 'money', fn: async (ctx) => {
 } };
 
 // ---------- members ----------
-const memberOut = (r) => ({ id: r.id, name: r.name, phone: showPhone(r.phone), role: r.role, perms: r.role === 'admin' ? ['*'] : JSON.parse(r.perms || '[]'), status: r.status, mustChangePin: !!r.must_change_pin, joinedAt: r.joined_at });
+const memberOut = (r) => ({ id: r.id, name: r.name, phone: showPhone(r.phone), role: r.role, roles: rolesOf(r), perms: r.role === 'admin' ? ['*'] : JSON.parse(r.perms || '[]'), status: r.status, mustChangePin: !!r.must_change_pin, joinedAt: r.joined_at });
 A['members.list'] = { p: 'members', fn: async (ctx) => {
-  const r = rows(await ctx.db.prepare('SELECT id, name, phone, role, perms, status, must_change_pin, joined_at FROM chama_member WHERE client_id = ? ORDER BY name').bind(ctx.c).all());
-  return { members: r.map(memberOut), allPerms: ALL_PERMS, rolePerms: ROLE_PERMS };
+  const r = rows(await ctx.db.prepare('SELECT id, name, phone, role, roles, perms, status, must_change_pin, joined_at FROM chama_member WHERE client_id = ? ORDER BY name').bind(ctx.c).all());
+  return { members: r.map(memberOut), allPerms: ALL_PERMS, rolePerms: ROLE_PERMS, roleNames: ROLE_NAMES };
 } };
 // a short list of names for pickers (guarantors, assignees): names only, for any signed-in member
 A['members.names'] = { p: 'member', fn: async (ctx) => ({ members: rows(await ctx.db.prepare("SELECT id, name FROM chama_member WHERE client_id = ? AND status = 'active' ORDER BY name").bind(ctx.c).all()) }) };
 
 function tempPin() { const a = new Uint32Array(1); crypto.getRandomValues(a); return String(1000 + (a[0] % 9000)); }
 A['members.add'] = { p: 'members', fn: async (ctx) => {
-  const b = ctx.body, name = strOf(b, 'name', 80), phone = normPhone(b.phone), role = ['admin', 'secretary', 'treasurer', 'member'].includes(b.role) ? b.role : 'member';
+  const b = ctx.body, name = strOf(b, 'name', 80), phone = normPhone(b.phone), sp = splitRoles(Array.isArray(b.roles) ? b.roles : [b.role]), role = sp.role;
   if (!name) fail('Type the member\'s name.');
   if (!phone) fail('Type a Kenyan phone number, for example 0712345678.');
-  if (role !== 'member' && !can(ctx.me, '*')) fail('Only the admin can give a role.', 'forbidden', 403);
+  if (sp.all.length && !can(ctx.me, '*')) fail('Only the admin can give a role.', 'forbidden', 403);
   const pin = b.pin ? String(b.pin) : tempPin(); const pp = pinProblem(pin); if (pp) fail(pp);
-  const id = uid(), now = Date.now(), perms = JSON.stringify(ROLE_PERMS[role].filter((x) => x !== '*'));
+  const id = uid(), now = Date.now(), perms = JSON.stringify(permsForRoles(sp.all));
   const dup = await ctx.db.prepare('SELECT name FROM chama_member WHERE client_id = ? AND phone = ?').bind(ctx.c, phone).first();
   if (dup) fail(`${dup.name} already uses that phone number.`, 'duplicate', 409);
-  const stmts = [ctx.db.prepare("INSERT INTO chama_member (client_id, id, name, phone, pin_hash, role, perms, status, must_change_pin, joined_at) VALUES (?,?,?,?,?,?,?, 'active', 1, ?)").bind(ctx.c, id, name, phone, await hashPin(pin), role, perms, now)];
+  const stmts = [ctx.db.prepare("INSERT INTO chama_member (client_id, id, name, phone, pin_hash, role, roles, perms, status, must_change_pin, joined_at) VALUES (?,?,?,?,?,?,?,?, 'active', 1, ?)").bind(ctx.c, id, name, phone, await hashPin(pin), role, JSON.stringify(sp.roles), perms, now)];
   const cur = await currentCycle(ctx);   // the new member owes for the period that is running now
   if (cur) stmts.push(ctx.db.prepare('INSERT OR IGNORE INTO chama_obligation (client_id, cycle_id, member_id, required_cents) VALUES (?,?,?,?)').bind(ctx.c, cur.id, id, cur.required_cents));
   stmts.push(noteStmt(ctx, id, 'welcome', `Welcome, ${name.split(' ')[0]} 👋`, 'You have been added to the chama. Open Report payment whenever you pay.'), auditStmt(ctx, `Added member ${name}`, 'member:' + id));
   await ctx.db.batch(stmts);
   return { id, pin, note: 'Give the member this PIN. They will be asked to choose their own the first time they sign in.' };
 } };
-async function memberById(ctx, id) { const m = await ctx.db.prepare('SELECT id, name, phone, role, perms, status, must_change_pin, joined_at FROM chama_member WHERE client_id = ? AND id = ?').bind(ctx.c, String(id || '')).first(); if (!m) fail('That member was not found.', 'not_found', 404); return m; }
+async function memberById(ctx, id) { const m = await ctx.db.prepare('SELECT id, name, phone, role, roles, perms, status, must_change_pin, joined_at FROM chama_member WHERE client_id = ? AND id = ?').bind(ctx.c, String(id || '')).first(); if (!m) fail('That member was not found.', 'not_found', 404); return m; }
 async function otherAdmins(ctx, id) { const r = await ctx.db.prepare("SELECT COUNT(*) AS n FROM chama_member WHERE client_id = ? AND role = 'admin' AND status = 'active' AND id <> ?").bind(ctx.c, id).first(); return r ? r.n : 0; }
 A['members.update'] = { p: 'members', fn: async (ctx) => {
   const b = ctx.body, m = await memberById(ctx, b.id), isAdmin = can(ctx.me, '*');
   const name = b.name !== undefined ? strOf(b, 'name', 80) : m.name;
   const phone = b.phone !== undefined ? normPhone(b.phone) : m.phone;
   if (!name || !phone) fail('A member needs a name and a valid phone number.');
-  let role = m.role, perms = m.perms, status = m.status;
-  if ((b.role !== undefined && b.role !== m.role) || b.perms !== undefined || (b.status !== undefined && b.status !== m.status)) { if (!isAdmin) fail('Only the admin can change roles, permissions or switch a member off.', 'forbidden', 403); }
-  if (b.role !== undefined && ['admin', 'secretary', 'treasurer', 'member'].includes(b.role)) { role = b.role; if (role !== m.role) perms = JSON.stringify(ROLE_PERMS[role].filter((x) => x !== '*')); }
+  let role = m.role, perms = m.perms, status = m.status, rolesJson = m.roles || '[]';
+  const wantRoles = Array.isArray(b.roles) ? splitRoles(b.roles) : (b.role !== undefined && ROLE_NAMES.includes(b.role) ? splitRoles(b.role === 'member' ? [] : [b.role]) : null);
+  if ((wantRoles && JSON.stringify(wantRoles.all) !== JSON.stringify(rolesOf(m))) || b.perms !== undefined || (b.status !== undefined && b.status !== m.status)) { if (!isAdmin) fail('Only the admin can change roles, permissions or switch a member off.', 'forbidden', 403); }
+  if (wantRoles) { role = wantRoles.role; rolesJson = JSON.stringify(wantRoles.roles); if (JSON.stringify(wantRoles.all) !== JSON.stringify(rolesOf(m))) perms = JSON.stringify(permsForRoles(wantRoles.all)); }
   if (Array.isArray(b.perms) && role !== 'admin') perms = JSON.stringify(b.perms.filter((x) => ALL_PERMS.includes(x)));
   if (b.status === 'active' || b.status === 'disabled') status = b.status;
   if ((m.role === 'admin' && (role !== 'admin' || status !== 'active')) && !(await otherAdmins(ctx, m.id))) fail('There must always be one active admin.', 'last_admin', 409);
   if (phone !== m.phone) { const dup = await ctx.db.prepare('SELECT name FROM chama_member WHERE client_id = ? AND phone = ? AND id <> ?').bind(ctx.c, phone, m.id).first(); if (dup) fail(`${dup.name} already uses that phone number.`, 'duplicate', 409); }
-  const stmts = [ctx.db.prepare('UPDATE chama_member SET name = ?, phone = ?, role = ?, perms = ?, status = ? WHERE client_id = ? AND id = ?').bind(name, phone, role, perms, status, ctx.c, m.id)];
+  const stmts = [ctx.db.prepare('UPDATE chama_member SET name = ?, phone = ?, role = ?, roles = ?, perms = ?, status = ? WHERE client_id = ? AND id = ?').bind(name, phone, role, rolesJson, perms, status, ctx.c, m.id)];
   if (status === 'disabled' && m.status !== 'disabled') stmts.push(ctx.db.prepare('UPDATE chama_device SET revoked_at = ? WHERE client_id = ? AND member_id = ? AND revoked_at IS NULL').bind(Date.now(), ctx.c, m.id));
-  stmts.push(auditStmt(ctx, `Updated member ${name}${status !== m.status ? ' (' + status + ')' : ''}${role !== m.role ? ' (role ' + m.role + ' -> ' + role + ')' : ''}`, 'member:' + m.id, memberOut(m), { name, phone: showPhone(phone), role, status }));
+  stmts.push(auditStmt(ctx, `Updated member ${name}${status !== m.status ? ' (' + status + ')' : ''}${(role !== m.role || rolesJson !== (m.roles || '[]')) ? ' (roles ' + rolesOf(m).join('+') + ' -> ' + [role].concat(JSON.parse(rolesJson)).filter((x) => x !== 'member').join('+') + ')' : ''}`, 'member:' + m.id, memberOut(m), { name, phone: showPhone(phone), role, roles: JSON.parse(rolesJson), status }));
   await ctx.db.batch(stmts);
   return {};
 } };
@@ -215,6 +228,16 @@ A['members.resetPin'] = { p: 'members', fn: async (ctx) => {
     auditStmt(ctx, `Reset the PIN of ${m.name}`, 'member:' + m.id),
   ]);
   return { pin, note: 'Give the member this new PIN. All their remembered devices were signed out.' };
+} };
+A['members.signOutAll'] = { p: 'members', fn: async (ctx) => {
+  const m = await memberById(ctx, ctx.body.id);
+  if (m.role === 'admin' && !can(ctx.me, '*')) fail('Only the admin can sign out an admin.', 'forbidden', 403);
+  await ctx.db.batch([
+    ctx.db.prepare('UPDATE chama_device SET revoked_at = ? WHERE client_id = ? AND member_id = ? AND revoked_at IS NULL').bind(Date.now(), ctx.c, m.id),
+    ctx.db.prepare('UPDATE chama_member SET failed_pins = 0, locked_until = 0 WHERE client_id = ? AND id = ?').bind(ctx.c, m.id),
+    auditStmt(ctx, `Signed ${m.name} out of every device and cleared the PIN lock`, 'member:' + m.id),
+  ]);
+  return { note: 'Signed out everywhere. They sign in again with their usual PIN.' };
 } };
 A['devices.list'] = { p: 'members', fn: async (ctx) => ({ devices: rows(await ctx.db.prepare('SELECT id, label, created_at, last_seen, expires_at, revoked_at FROM chama_device WHERE client_id = ? AND member_id = ? ORDER BY created_at DESC LIMIT 20').bind(ctx.c, String(ctx.body.memberId || '')).all()).map((d) => ({ id: d.id, label: d.label, createdAt: d.created_at, lastSeen: d.last_seen, active: !d.revoked_at && d.expires_at > Date.now() })) }) };
 A['devices.revoke'] = { p: 'members', fn: async (ctx) => {
@@ -246,7 +269,29 @@ async function targetCheck(ctx, kind, targetId, memberId) {
   fail('Choose what this payment is for.');
 }
 
+// zip 230: a member reports CASH they handed to an official. It waits for that official, who confirms the amount they really received.
+async function submitCash(ctx) {
+  const b = ctx.body, cents = toCents(b.amount);
+  if (!isFinite(cents) || cents <= 0) fail('Type the amount you gave in cash.');
+  const kind = KIND_TEXT[b.kind] ? b.kind : 'contribution';
+  const target = await targetCheck(ctx, kind, b.targetId, ctx.me.id);
+  const rc = await ctx.db.prepare("SELECT id, name, role, roles, perms, status FROM chama_member WHERE client_id = ? AND id = ?").bind(ctx.c, String(b.receiverId || '')).first();
+  if (!rc || rc.status !== 'active') fail('Choose who you gave the cash to.');
+  let rperms = []; try { rperms = JSON.parse(rc.perms || '[]'); } catch (e) { rperms = []; }
+  if (!(rolesOf(rc).includes('admin') || rperms.includes('payments') || rperms.includes('*'))) fail('Choose the secretary, treasurer, chairperson or admin you gave the cash to.');
+  if (rc.id === ctx.me.id) fail('Choose the official you gave the cash to - not yourself.');
+  const id = reqId(b);
+  const existing = await ctx.db.prepare('SELECT id FROM chama_report WHERE client_id = ? AND id = ?').bind(ctx.c, id).first();
+  if (existing) return { id, already: true };
+  await ctx.db.batch([
+    ctx.db.prepare("INSERT INTO chama_report (client_id, id, member_id, kind, target_id, amount_cents, method, mpesa_code, tx_date, tx_time, recipient, anonymous, source, status, reported_at, reported_cents, received_by) VALUES (?,?,?,?,?,?, 'cash', NULL, ?, NULL, NULL, 0, 'member', 'pending', ?, ?, ?)")
+      .bind(ctx.c, id, ctx.me.id, kind, target, cents, todayKey(), Date.now(), cents, rc.id),
+    noteStmt(ctx, rc.id, 'payment', 'Cash waiting for you to confirm', `${ctx.me.name} says they gave you ${kes(cents)} cash. Open Staff to confirm or reject it.`),
+  ]);
+  return { id, amountCents: cents, receiverName: rc.name };
+}
 A['report.submit'] = { p: 'member', fn: async (ctx) => {
+  if (ctx.body && ctx.body.method === 'cash') return submitCash(ctx);
   const b = ctx.body, p = parseMpesa(b.text);
   if (!p.ok) fail(p.error);
   const kind = KIND_TEXT[b.kind] ? b.kind : 'contribution';
@@ -267,16 +312,16 @@ A['report.submit'] = { p: 'member', fn: async (ctx) => {
   return { id, amountCents: p.amountCents, code: p.code };
 } };
 
-A['report.mine'] = { p: 'member', fn: async (ctx) => ({ reports: rows(await ctx.db.prepare('SELECT id, kind, amount_cents, mpesa_code, tx_date, tx_time, status, reported_at, note FROM chama_report WHERE client_id = ? AND member_id = ? ORDER BY reported_at DESC LIMIT 30').bind(ctx.c, ctx.me.id).all()).map((r) => ({ id: r.id, kind: r.kind, amountCents: r.amount_cents, code: r.mpesa_code, date: r.tx_date, time: time12(r.tx_time), status: r.status, reportedAt: r.reported_at, note: r.status === 'rejected' ? r.note : undefined })) }) };
+A['report.mine'] = { p: 'member', fn: async (ctx) => ({ reports: rows(await ctx.db.prepare('SELECT id, kind, amount_cents, reported_cents, method, mpesa_code, tx_date, tx_time, status, reported_at, note FROM chama_report WHERE client_id = ? AND member_id = ? ORDER BY reported_at DESC LIMIT 30').bind(ctx.c, ctx.me.id).all()).map((r) => ({ id: r.id, kind: r.kind, method: r.method, reportedCents: r.reported_cents, amountCents: r.amount_cents, code: r.mpesa_code, date: r.tx_date, time: time12(r.tx_time), status: r.status, reportedAt: r.reported_at, note: r.status === 'rejected' ? r.note : undefined })) }) };
 
 // what the secretary sees: the member, amount, code, date and status — never the SMS, a balance, a limit or a link
 A['report.inbox'] = { p: 'payments', fn: async (ctx) => {
   const b = ctx.body, status = ['pending', 'verified', 'rejected'].includes(b.status) ? b.status : 'pending', off = Math.max(0, Number(b.offset) || 0), lim = Math.min(50, Math.max(1, Number(b.limit) || 25));
   const g = await loadGroup(ctx), hint = (g.settings.paymentTo || '').toLowerCase();
   const total = await ctx.db.prepare('SELECT COUNT(*) AS n FROM chama_report WHERE client_id = ? AND status = ?').bind(ctx.c, status).first();
-  const r = rows(await ctx.db.prepare(`SELECT r.id, r.kind, r.target_id, r.amount_cents, r.mpesa_code, r.tx_date, r.tx_time, r.recipient, r.status, r.reported_at, r.source, r.anonymous, m.name FROM chama_report r JOIN chama_member m ON m.client_id = r.client_id AND m.id = r.member_id
+  const r = rows(await ctx.db.prepare(`SELECT r.id, r.kind, r.target_id, r.amount_cents, r.reported_cents, r.method, r.received_by, r.note, r.mpesa_code, r.tx_date, r.tx_time, r.recipient, r.status, r.reported_at, r.source, r.anonymous, m.name, rb.name AS receiver_name FROM chama_report r JOIN chama_member m ON m.client_id = r.client_id AND m.id = r.member_id LEFT JOIN chama_member rb ON rb.client_id = r.client_id AND rb.id = r.received_by
     WHERE r.client_id = ? AND r.status = ? ORDER BY r.reported_at ${status === 'pending' ? 'ASC' : 'DESC'} LIMIT ? OFFSET ?`).bind(ctx.c, status, lim, off).all());
-  return { total: total.n, items: r.map((x) => ({ id: x.id, memberName: x.name, kind: x.kind, kindText: KIND_TEXT[x.kind], amountCents: x.amount_cents, code: x.mpesa_code, date: x.tx_date, dateText: x.tx_date ? niceDate(x.tx_date, true) : '', timeText: time12(x.tx_time), status: x.status, reportedAt: x.reported_at, source: x.source, recipientMismatch: !!(hint && x.recipient && !x.recipient.toLowerCase().includes(hint)) })) };
+  return { total: total.n, items: r.map((x) => ({ id: x.id, memberName: x.name, kind: x.kind, kindText: KIND_TEXT[x.kind], amountCents: x.amount_cents, code: x.mpesa_code, date: x.tx_date, dateText: x.tx_date ? niceDate(x.tx_date, true) : '', timeText: time12(x.tx_time), status: x.status, reportedAt: x.reported_at, source: x.source, method: x.method, reportedCents: x.reported_cents, receiverName: x.receiver_name || null, forMe: x.received_by === ctx.me.id, canConfirm: !x.received_by || x.received_by === ctx.me.id || can(ctx.me, '*'), note: x.note || null, recipientMismatch: !!(hint && x.recipient && !x.recipient.toLowerCase().includes(hint)) })) };
 } };
 
 // the ledger parts a verified report turns into: [{ kind, fundId, refType, refId, cents }]
@@ -313,20 +358,35 @@ const ledgerInsert = (ctx, id, p, r, i, who, by) => ctx.db.prepare(`INSERT INTO 
   .bind(ctx.c, uid(), Date.now(), r.tx_date || todayKey(), p.kind, p.fundId, r.member_id, p.cents, p.refType, p.refId || null, id, r.method, r.mpesa_code || null, r.note || null, by, `rep:${id}:${i}`, ctx.c, id);
 const DONE = { contribution: (c) => `✅ Payment confirmed — ${c} has been added to your contribution.`, loan_repayment: (c) => `✅ Payment confirmed — ${c} was added to your loan repayment.`, fundraising: (c) => `✅ Thank you — your ${c} fundraiser contribution was confirmed.`, penalty: (c) => `✅ Payment confirmed — ${c} was paid towards your penalty.`, mgr_contribution: (c) => `✅ Payment confirmed — ${c} was added to the merry-go-round.` };
 
-export async function verifyReport(ctx, id) {
+export async function verifyReport(ctx, id, opts = {}) {
   const r = await ctx.db.prepare('SELECT * FROM chama_report WHERE client_id = ? AND id = ?').bind(ctx.c, id).first();
   if (!r) fail('That payment report was not found.', 'not_found', 404);
   if (r.status !== 'pending') fail(r.status === 'verified' ? 'This payment was already verified.' : 'This payment report was already handled.', 'already_done', 409);
   if (r.member_id === ctx.me.id && !can(ctx.me, '*') && r.source === 'member') { /* a treasurer confirming their own payment is allowed: the audit trail shows who did it */ }
+  // cash can only be confirmed by the official it was handed to (or the admin)
+  if (r.received_by && r.received_by !== ctx.me.id && !can(ctx.me, '*')) fail('Only the official this cash was given to (or the admin) can confirm it.', 'forbidden', 403);
+  // zip 230: the receiver may correct the amount they really got; what the member said is kept (reported_cents) and the difference is audited
+  const reportedCents = r.reported_cents != null ? r.reported_cents : r.amount_cents;
+  let corrected = false;
+  if (opts.amountCents !== undefined && opts.amountCents !== null) {
+    const nc = Number(opts.amountCents);
+    if (!isFinite(nc) || nc <= 0) fail('Type the amount you really received.');
+    if (nc !== r.amount_cents) {
+      if (!opts.reason) fail('Say why the amount is different (for example: "only 900 was in the envelope").', 'reason_needed', 400);
+      corrected = true; r.amount_cents = nc;
+    }
+  }
   await ensureCycles(ctx);
   const parts = await partsFor(ctx, r);
   if (!parts.length) fail('Nothing to add for this payment.', 'bad_target', 409);
-  const stmts = parts.map((p, i) => ledgerInsert(ctx, id, p, r, i, null, ctx.me.id));
+  const stmts = [];
+  if (corrected) stmts.push(ctx.db.prepare("UPDATE chama_report SET amount_cents = ?, reported_cents = ?, note = ? WHERE client_id = ? AND id = ? AND status = 'pending'").bind(r.amount_cents, reportedCents, text(`Reported ${kes(reportedCents)}, received ${kes(r.amount_cents)}: ${opts.reason}`, 200), ctx.c, id));
+  parts.forEach((p, i) => stmts.push(ledgerInsert(ctx, id, p, r, i, null, ctx.me.id)));
   stmts.push(ctx.db.prepare("UPDATE chama_report SET status = 'verified', reviewed_by = ?, reviewed_at = ? WHERE client_id = ? AND id = ? AND status = 'pending'").bind(ctx.me.id, Date.now(), ctx.c, id));
   const who = await ctx.db.prepare('SELECT name FROM chama_member WHERE client_id = ? AND id = ?').bind(ctx.c, r.member_id).first();
   const total = r.amount_cents;
-  stmts.push(noteStmt(ctx, r.member_id, 'payment', 'Payment confirmed', (DONE[parts[0].kind] || DONE.contribution)(kes(total))));
-  stmts.push(auditStmt(ctx, `${ctx.me.name} verified ${kes(total)} ${KIND_TEXT[r.kind]} for ${who ? who.name : r.member_id}${r.mpesa_code ? ' (' + r.mpesa_code + ')' : ''}`, 'report:' + id, { status: 'pending' }, { status: 'verified', parts: parts.length }));
+  stmts.push(noteStmt(ctx, r.member_id, 'payment', 'Payment confirmed', (DONE[parts[0].kind] || DONE.contribution)(kes(total)) + (corrected ? ` You reported ${kes(reportedCents)}; ${kes(total)} was received (${opts.reason}).` : '')));
+  stmts.push(auditStmt(ctx, `${ctx.me.name} verified ${kes(total)} ${r.method === 'cash' ? 'cash ' : ''}${KIND_TEXT[r.kind]} for ${who ? who.name : r.member_id}${r.mpesa_code ? ' (' + r.mpesa_code + ')' : ''}${corrected ? ` - corrected from ${kes(reportedCents)}: ${opts.reason}` : ''}`, 'report:' + id, { status: 'pending', amountCents: reportedCents }, { status: 'verified', amountCents: total, parts: parts.length, ...(corrected ? { reason: opts.reason } : {}) }));
   await ctx.db.batch(stmts);
   const after = await ctx.db.prepare('SELECT status FROM chama_report WHERE client_id = ? AND id = ?').bind(ctx.c, id).first();
   const n = await ctx.db.prepare('SELECT COUNT(*) AS n FROM chama_ledger WHERE client_id = ? AND report_id = ?').bind(ctx.c, id).first();
@@ -334,11 +394,16 @@ export async function verifyReport(ctx, id) {
   if (r.kind === 'loan') { const l = await ctx.db.prepare("SELECT * FROM chama_loan WHERE client_id = ? AND id = ?").bind(ctx.c, r.target_id).first(); const rep = (await repaidByLoan(ctx, null))[r.target_id] || 0; if (l && rep >= l.principal_cents + l.interest_cents) await ctx.db.prepare("UPDATE chama_loan SET status = 'cleared' WHERE client_id = ? AND id = ? AND status = 'active'").bind(ctx.c, l.id).run(); }
   return { id, amountCents: total, parts: parts.map((p) => ({ cents: p.cents, cycleId: p.refType === 'cycle' ? p.refId : null })) };
 }
-A['report.verify'] = { p: 'payments', fn: async (ctx) => verifyReport(ctx, String(ctx.body.id || '')) };
+A['report.verify'] = { p: 'payments', fn: async (ctx) => {
+  const b = ctx.body, has = b.amount !== undefined && b.amount !== null && String(b.amount).trim() !== '';
+  return verifyReport(ctx, String(b.id || ''), has ? { amountCents: toCents(b.amount), reason: strOf(b, 'reason', 160) } : {});
+} };
 A['report.reject'] = { p: 'payments', fn: async (ctx) => {
   const id = String(ctx.body.id || ''), reason = strOf(ctx.body, 'reason', 200);
   const r = await ctx.db.prepare("SELECT member_id, amount_cents, mpesa_code, kind FROM chama_report WHERE client_id = ? AND id = ? AND status = 'pending'").bind(ctx.c, id).first();
   if (!r) fail('That payment report is not waiting any more.', 'already_done', 409);
+  const rcv = await ctx.db.prepare("SELECT received_by FROM chama_report WHERE client_id = ? AND id = ?").bind(ctx.c, id).first();
+  if (rcv && rcv.received_by && rcv.received_by !== ctx.me.id && !can(ctx.me, '*')) fail('Only the official this cash was given to (or the admin) can reject it.', 'forbidden', 403);
   await ctx.db.batch([
     ctx.db.prepare("UPDATE chama_report SET status = 'rejected', reviewed_by = ?, reviewed_at = ?, note = ? WHERE client_id = ? AND id = ? AND status = 'pending'").bind(ctx.me.id, Date.now(), reason || null, ctx.c, id),
     noteStmt(ctx, r.member_id, 'payment', 'Payment not confirmed', `Your ${kes(r.amount_cents)} report${r.mpesa_code ? ' (' + r.mpesa_code + ')' : ''} was not confirmed.${reason ? ' Reason: ' + reason : ''} Please speak to the treasurer.`),

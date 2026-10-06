@@ -63,7 +63,7 @@ A.home = { p: 'member', fn: async (ctx) => {
     fundraisers: s.features.fundraising ? (await fundraiserList(ctx)).filter((f) => f.status === 'active') : [],
   };
   const group = { name: g.name, features: s.features, payInstructions: s.payInstructions, privacy: s.privacy, hasContribution: !!(s.contribution.enabled && s.contribution.amountCents), freq: s.contribution.freq };
-  const out = { me: { id: me.id, name: me.name, role: me.role, perms: me.perms, mustChangePin: me.mustChangePin }, group, member, staff: null };
+  const out = { me: { id: me.id, name: me.name, role: me.role, roles: me.roles || [], perms: me.perms, mustChangePin: me.mustChangePin }, group, member, staff: null };
   const isStaff = me.perms.length > 0;
   if (!isStaff) return out;
 

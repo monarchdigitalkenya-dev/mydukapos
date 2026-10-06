@@ -1,6 +1,6 @@
 // functions/api/_chama-core.js — Chama (zip 217). The pure parts and the shared plumbing: the M-Pesa message reader, money and date helpers,
 // the group settings, contribution cycles, member positions (always re-derived from the ledger) and sign-in. The actions are in _chama.js.
-import { CHAMA_SCHEMA, CHAMA_SCHEMA_VERSION } from './_chama-schema.js';
+import { CHAMA_SCHEMA, CHAMA_SCHEMA_VERSION, CHAMA_UPGRADES } from './_chama-schema.js';
 import { hashPassword, checkPassword } from './_password.js';
 
 // ---------- errors ----------
@@ -18,6 +18,11 @@ export async function ensureChamaSchema(db) {
   try { const r = await db.prepare(`SELECT v FROM chama_meta WHERE k = 'schema'`).first(); ok = !!(r && Number(r.v) >= CHAMA_SCHEMA_VERSION); } catch (e) { ok = false; }
   if (!ok) {
     await db.batch(CHAMA_SCHEMA.map((s) => db.prepare(s)));
+    // zip 230: bring a database made by an older release up to date (add any missing column; harmless when it is already there)
+    for (const [table, col, def] of CHAMA_UPGRADES) {
+      const have = await db.prepare(`SELECT 1 AS x FROM pragma_table_info('${table}') WHERE name = ?`).bind(col).first();
+      if (!have) await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`).run();
+    }
     await db.prepare(`INSERT INTO chama_meta (k, v) VALUES ('schema', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`).bind(String(CHAMA_SCHEMA_VERSION)).run();
   }
   ready.set(db, true);
@@ -110,9 +115,10 @@ export const DEFAULTS = {
   meeting: { everyDays: 0 },
   penalties: { missedMeeting: { enabled: false, amountCents: 0, repeatAmountCents: 0, repeatAfter: 0 }, lateContribution: { enabled: false, amountCents: 0 } },
   loans: { interestPct: 0, maxMultiple: 0, guarantors: 0, defaultMonths: 3 },
-  privacy: { membersSeeTotals: false, showRecipient: true },
+  privacy: { membersSeeTotals: false, showRecipient: true, showSignInNames: true },
   payInstructions: '',
   paymentTo: '',
+  chama: { startedOn: '', description: '', ongoing: false, trackedFrom: '' },   // zip 230: when the chama really began, and the day it started being tracked here
 };
 export const FREQS = { daily: [1, 'day'], weekly: [1, 'week'], biweekly: [2, 'week'], monthly: [1, 'month'], bimonthly: [2, 'month'], quarterly: [3, 'month'], none: [0, 'none'] };
 function merge(base, extra) {
@@ -256,7 +262,7 @@ export async function openDevice(ctx, memberId, remember, label) {
 export async function memberFromToken(ctx, token) {
   if (!token || typeof token !== 'string' || token.length < 30) return null;
   const hash = await sha256Hex(token), now = Date.now();
-  const r = await ctx.db.prepare(`SELECT d.id AS device_id, d.expires_at, d.last_seen, d.created_at, m.id, m.name, m.phone, m.role, m.perms, m.status, m.must_change_pin
+  const r = await ctx.db.prepare(`SELECT d.id AS device_id, d.expires_at, d.last_seen, d.created_at, m.id, m.name, m.phone, m.role, m.roles, m.perms, m.status, m.must_change_pin
     FROM chama_device d JOIN chama_member m ON m.client_id = d.client_id AND m.id = d.member_id WHERE d.client_id = ? AND d.token_hash = ? AND d.revoked_at IS NULL`).bind(ctx.c, hash).first();
   if (!r || r.status !== 'active' || r.expires_at <= now) return null;
   if (now - r.last_seen > 3600000) {   // keep a remembered device alive while it is used (rolling): touch it at most once an hour
@@ -264,13 +270,28 @@ export async function memberFromToken(ctx, token) {
     await ctx.db.prepare('UPDATE chama_device SET last_seen = ?, expires_at = MAX(expires_at, ?) WHERE client_id = ? AND id = ?').bind(now, now + Math.min(span, DEVICE_DAYS * 86400000), ctx.c, r.device_id).run();
   }
   let perms = []; try { perms = JSON.parse(r.perms || '[]'); } catch (e) { perms = []; }
-  return { id: r.id, name: r.name, phone: r.phone, role: r.role, perms: r.role === 'admin' ? ['*'] : perms, mustChangePin: !!r.must_change_pin, deviceId: r.device_id };
+  const roles = rolesOf(r);
+  return { id: r.id, name: r.name, phone: r.phone, role: r.role, roles, perms: roles.includes('admin') ? ['*'] : perms, mustChangePin: !!r.must_change_pin, deviceId: r.device_id };
 }
 export const can = (me, perm) => !!me && (me.perms.includes('*') || me.perms.includes(perm));
 export const ROLE_PERMS = {
   admin: ['*'],
-  secretary: ['members', 'meetings', 'messages', 'payments', 'reports', 'penalties'],
-  treasurer: ['payments', 'money', 'loans', 'penalties', 'reports', 'messages'],
+  secretary: ['members', 'meetings', 'messages', 'payments', 'reports', 'penalties', 'mgr'],
+  treasurer: ['payments', 'money', 'loans', 'penalties', 'reports', 'messages', 'mgr'],
+  chairperson: ['members', 'meetings', 'messages', 'payments', 'loans', 'reports', 'mgr'],   // zip 230
   member: [],
 };
-export const ALL_PERMS = ['members', 'meetings', 'messages', 'payments', 'money', 'loans', 'penalties', 'reports', 'audit'];
+export const ALL_PERMS = ['members', 'meetings', 'messages', 'payments', 'money', 'loans', 'penalties', 'reports', 'audit', 'mgr'];
+// zip 230: one person can hold several roles (Member + Secretary + Chairperson...). The database column `role` keeps the main one
+// (admin / secretary / treasurer / member); `roles` (JSON) keeps the others, so Chairperson lives there. Permissions are the union of every role.
+export const ROLE_NAMES = ['admin', 'secretary', 'treasurer', 'chairperson', 'member'];
+export function parseRoles(json) { try { const a = JSON.parse(json || '[]'); return Array.isArray(a) ? a.filter((x) => ROLE_NAMES.includes(x) && x !== 'member') : []; } catch (e) { return []; } }
+export const rolesOf = (row) => { const out = []; [row && row.role].concat(parseRoles(row && row.roles)).forEach((r) => { if (r && r !== 'member' && !out.includes(r)) out.push(r); }); return out; };
+export function splitRoles(list) {
+  const want = (Array.isArray(list) ? list : [list]).map(String).filter((x, i, a) => ROLE_NAMES.includes(x) && x !== 'member' && a.indexOf(x) === i);
+  const main = ['admin', 'secretary', 'treasurer'].find((r) => want.includes(r)) || 'member';
+  return { role: main, roles: want.filter((r) => r !== main), all: want };
+}
+export const permsForRoles = (roles) => [...new Set(roles.flatMap((r) => (ROLE_PERMS[r] || []).filter((x) => x !== '*')))];
+// who may run the merry-go-round (secretary, treasurer, chairperson, admin - or anyone given the permission)
+export const canMgr = (me) => can(me, 'mgr') || can(me, 'money') || can(me, 'payments');

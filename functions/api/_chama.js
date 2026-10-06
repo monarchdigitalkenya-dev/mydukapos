@@ -2,6 +2,7 @@
 // The parts: _chama-schema.js (tables), _chama-core.js (money, dates, the M-Pesa reader, cycles, sign-in), _chama-a.js / _chama-b.js (the actions).
 import { A } from './_chama-a.js';
 import './_chama-b.js';   // adds its actions to A
+import './_chama-c.js';   // zip 230: chamas that are already running, the status card, cash confirmation helpers, the set-up wizard
 import { ChamaError, ensureChamaSchema, memberFromToken, can } from './_chama-core.js';
 
 export { ensureChamaSchema, ChamaError };

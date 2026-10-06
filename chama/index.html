@@ -82,7 +82,7 @@ function sheet(html, onMount) { closeSheet(); const d = document.createElement('
 function closeSheet() { const s = $('#sheet'); if (s) s.remove(); }
 const has = (p) => !!(S.home && S.home.me && (S.home.me.perms.includes('*') || S.home.me.perms.includes(p)));
 const feat = (f) => !!(S.home && S.home.group.features[f]);
-const chipFor = (st) => ({ complete: '<span class="chip">Complete</span>', partial: '<span class="chip amb">Partial</span>', not_started: '<span class="chip red">Not started</span>', pending: '<span class="chip amb">Waiting</span>', verified: '<span class="chip">Confirmed</span>', rejected: '<span class="chip red">Not confirmed</span>' }[st] || '<span class="chip gray">' + esc(st) + '</span>');
+const chipFor = (st) => ({ complete: '<span class="chip">Complete</span>', partial: '<span class="chip amb">Partial</span>', not_started: '<span class="chip red">Not started</span>', pending: '<span class="chip amb">Waiting</span>', verified: '<span class="chip">Confirmed</span>', rejected: '<span class="chip red">Not confirmed</span>', overdue: '<span class="chip red">Overdue</span>', reversed: '<span class="chip gray">Reversed</span>' }[st] || '<span class="chip gray">' + esc(st) + '</span>');
 const statusWord = (st) => ({ complete: 'Complete', partial: 'Partial', not_started: 'Not started', not_started_: '' }[st] || st);
 const pct = (a, b) => (b > 0 ? Math.max(0, Math.min(100, Math.round(a / b * 100))) : 0);
 const field = (id, label, val, type, extra) => `<label for="${id}">${esc(label)}</label><input id="${id}" type="${type || 'text'}" value="${esc(val == null ? '' : val)}" ${extra || ''}>`;
@@ -285,6 +285,7 @@ VIEWS.staff = async () => {
   x += `<div class="grid"><div class="card"><div class="lbl">Members</div><div class="stat">${st.members}</div></div>${st.totalContributionsCents != null ? `<div class="card"><div class="lbl">All contributions</div><div class="stat">${kes(st.totalContributionsCents)}</div></div>` : ''}${st.loans ? `<div class="card"><div class="lbl">Loans outstanding</div><div class="stat">${kes(st.loans.outstandingCents)}</div></div>` : ''}${st.expensesCents != null ? `<div class="card"><div class="lbl">Expenses</div><div class="stat">${kes(st.expensesCents)}</div></div>` : ''}</div><br>`;
   if (st.funds) x += `<div class="card"><h3>Funds</h3>${st.funds.map((f) => `<div class="item row sp"><span>${esc(f.name)}</span><b>${kes(f.balanceCents)}</b></div>`).join('')}</div>`;
   if (has('payments')) x += sub('✅', 'Payment inbox', 'Confirm or reject reported payments', "push('inbox')", st.pendingReports) + sub('💵', 'Record a payment', 'Cash, bank or M-Pesa', 'recordForm()') + sub('📋', 'Contributions this period', 'Who paid, who is partial', "push('cycle')");
+  if (has('*')) x += sub('🧭', 'Set up an existing chama', 'Step by step: details, members, merry-go-round, balances', 'wizard()');
   if (has('members')) x += sub('👥', 'Members', 'Add, roles, devices, PIN reset', "push('members')");
   if (has('meetings')) x += sub('📅', 'Meetings & minutes', 'Create, attendance, minutes', "go('meetings')", st.draftMinutes);
   if (has('messages')) x += sub('📢', 'Announcements & reminders', 'Message all members', 'announceForm()');
@@ -318,11 +319,12 @@ function memberForm() { sheet(`<h3>Add member</h3>${field('am-n', 'Full name', '
 async function addMember(b) { b.disabled = true; try { const r = await api('members.add', { name: val('am-n'), phone: val('am-p'), role: val('am-r') }); sheet(`<h3>Member added ✅</h3><div class="ok">Give ${esc(val('am-n') || 'them')} this temporary PIN:<div class="big" style="font-size:34px;font-weight:800;text-align:center">${esc(r.pin)}</div></div><p class="mut">They choose their own PIN when they first sign in.</p><button class="btn" onclick="closeSheet();render()">Done</button>`); } catch (e) { showErr('am-e', e.message); b.disabled = false; } }
 async function memberView(id) {
   const [ml, dv] = await Promise.all([api('members.list'), api('devices.list', { memberId: id })]); const m = ml.members.find((x) => x.id === id); if (!m) return;
-  sheet(`<h3>${esc(m.name)}</h3><div class="mut">${esc(m.phone)} · ${esc(m.role)}</div><div class="row wrap" style="margin:12px 0"><button class="btn sec sm" onclick="resetPin('${id}')">Reset PIN</button>${has('*') ? `<button class="btn sec sm" onclick="setRole('${id}')">Change role</button><button class="btn ${m.status === 'active' ? 'red' : ''} sm" onclick="toggleMember('${id}','${m.status === 'active' ? 'disabled' : 'active'}')">${m.status === 'active' ? 'Switch off' : 'Switch on'}</button>` : ''}<button class="btn sec sm" onclick="closeSheet();stmtOf('${id}')">Statement</button></div><h4>Signed-in devices</h4>${(dv.devices || []).map((d) => `<div class="item row sp"><span>${esc(d.label || 'Phone')}<div class="mut">${d.lastSeen ? 'Last used ' + new Date(d.lastSeen).toLocaleDateString('en-KE') : ''}</div></span>${!d.active ? '<span class="chip gray">Signed out</span>' : `<button class="btn sec sm" onclick="revokeDev('${d.id}')">Sign out</button>`}</div>`).join('') || '<div class="mut">None</div>'}<br><button class="btn sec" onclick="closeSheet()">Close</button>`);
+  sheet(`<h3>${esc(m.name)}</h3><div class="mut">${esc(m.phone)} · ${esc(m.role)}</div><div class="row wrap" style="margin:12px 0"><button class="btn sec sm" onclick="resetPin('${id}')">🔑 Reset sign-in (new PIN)</button><button class="btn sec sm" onclick="signOutAll('${id}')">📵 Sign out all devices</button>${has('*') ? `<button class="btn sec sm" onclick="setRole('${id}')">Change role</button><button class="btn ${m.status === 'active' ? 'red' : ''} sm" onclick="toggleMember('${id}','${m.status === 'active' ? 'disabled' : 'active'}')">${m.status === 'active' ? 'Switch off' : 'Switch on'}</button>` : ''}<button class="btn sec sm" onclick="closeSheet();stmtOf('${id}')">Statement</button></div><h4>Signed-in devices</h4>${(dv.devices || []).map((d) => `<div class="item row sp"><span>${esc(d.label || 'Phone')}<div class="mut">${d.lastSeen ? 'Last used ' + new Date(d.lastSeen).toLocaleDateString('en-KE') : ''}</div></span>${!d.active ? '<span class="chip gray">Signed out</span>' : `<button class="btn sec sm" onclick="revokeDev('${d.id}')">Sign out</button>`}</div>`).join('') || '<div class="mut">None</div>'}<br><button class="btn sec" onclick="closeSheet()">Close</button>`);
 }
 async function resetPin(id) { const r = await guard(() => api('members.resetPin', { id })); if (r) sheet(`<h3>New temporary PIN</h3><div class="ok"><div style="font-size:34px;font-weight:800;text-align:center">${esc(r.pin)}</div></div><button class="btn" onclick="closeSheet()">Done</button>`); }
 async function setRole(id) { const role = prompt('Role: admin, secretary, treasurer or member'); if (!role) return; const r = await guard(() => api('members.update', { id, role: role.trim().toLowerCase() })); if (r) { closeSheet(); toast('Role changed'); render(); } }
 async function toggleMember(id, status) { const r = await guard(() => api('members.update', { id, status })); if (r) { closeSheet(); toast('Updated'); render(); } }
+async function signOutAll(id) { if (!confirm('Sign this member out of every phone? They can sign in again with their PIN.')) return; const r = await guard(() => api('members.signOutAll', { id })); if (r) { closeSheet(); toast('Signed out everywhere ✅'); } }
 async function revokeDev(id) { const r = await guard(() => api('devices.revoke', { id })); if (r) { closeSheet(); toast('Signed out'); } }
 async function stmtOf(id) { const s = await guard(() => api('statement.member', { memberId: id })); if (s) sheet(statementHTML(s) + '<button class="btn noprint" onclick="memberFull(\''+id+'\')">📋 Full report</button><br><button class="btn noprint" onclick="printSheet()">🖨️ Print</button><br><button class="btn sec" onclick="closeSheet()">Close</button>'); }
 VIEWS.ledger = async () => {
@@ -396,15 +398,293 @@ async function runReport(kind, extra) {
 VIEWS.settings = async () => {
   const r = await api('settings.get'); const s = r.settings; S.set = s; const c = s.contribution, f = s.features;
   const sw = (id, l, v) => `<label class="row" style="font-weight:500;color:var(--ink)"><input type="checkbox" id="${id}" ${v ? 'checked' : ''} style="width:auto"> ${l}</label>`;
-  return shell('Settings', `<div class="card"><h3>Contributions</h3>${field('st-a', 'Amount per member per period (KES)', c.amountCents / 100, 'number')}<label>How often</label><select id="st-f">${r.freqs.map((k) => `<option value="${k}" ${c.freq === k ? 'selected' : ''}>${({ daily: 'Daily', weekly: 'Weekly', biweekly: 'Every 2 weeks', monthly: 'Monthly', bimonthly: 'Every 2 months', quarterly: 'Every 3 months', none: 'No fixed schedule' })[k] || k}</option>`).join('')}</select>${field('st-d', 'First period starts', c.startDate, 'date')}${field('st-i', 'Payment instructions shown to members', s.payInstructions || '')}</div><div class="card"><h3>Features</h3>${sw('sf-m', 'Meetings', f.meetings)}${sw('sf-g', 'Merry-go-round', f.mgr)}${sw('sf-l', 'Loans', f.loans)}${sw('sf-f', 'Fundraisers', f.fundraising)}${sw('sf-p', 'Penalties', f.penalties)}</div><div class="card"><h3>Penalties</h3>${sw('sp-m', 'Fine members who miss a meeting', s.penalties.missedMeeting.enabled)}${field('sp-a', 'Missed-meeting fine (KES)', s.penalties.missedMeeting.amountCents / 100, 'number')}</div><div class="card"><h3>Loans</h3>${field('sl-i', 'Interest (%)', s.loans.interestPct, 'number')}${field('sl-g', 'Guarantors required', s.loans.guarantors, 'number')}</div><div class="card"><h3>Privacy</h3>${sw('sv-r', 'Members can see who receives the merry-go-round', s.privacy.showRecipient)}</div><button class="btn" onclick="saveSettings(this)">Save settings</button><br><p class="mut center">Changing the amount affects future periods only. Every change is written to the audit log.</p>`);
+  return shell('Settings', `<div class="card"><h3>Contributions</h3>${field('st-a', 'Amount per member per period (KES)', c.amountCents / 100, 'number')}<label>How often</label><select id="st-f">${r.freqs.map((k) => `<option value="${k}" ${c.freq === k ? 'selected' : ''}>${({ daily: 'Daily', weekly: 'Weekly', biweekly: 'Every 2 weeks', monthly: 'Monthly', bimonthly: 'Every 2 months', quarterly: 'Every 3 months', none: 'No fixed schedule' })[k] || k}</option>`).join('')}</select>${field('st-d', 'First period starts', c.startDate, 'date')}${field('st-i', 'Payment instructions shown to members', s.payInstructions || '')}</div><div class="card"><h3>Features</h3>${sw('sf-m', 'Meetings', f.meetings)}${sw('sf-g', 'Merry-go-round', f.mgr)}${sw('sf-l', 'Loans', f.loans)}${sw('sf-f', 'Fundraisers', f.fundraising)}${sw('sf-p', 'Penalties', f.penalties)}</div><div class="card"><h3>Penalties</h3>${sw('sp-m', 'Fine members who miss a meeting', s.penalties.missedMeeting.enabled)}${field('sp-a', 'Missed-meeting fine (KES)', s.penalties.missedMeeting.amountCents / 100, 'number')}</div><div class="card"><h3>Loans</h3>${field('sl-i', 'Interest (%)', s.loans.interestPct, 'number')}${field('sl-g', 'Guarantors required', s.loans.guarantors, 'number')}</div><div class="card"><h3>Privacy</h3>${sw('sv-r', 'Members can see who receives the merry-go-round', s.privacy.showRecipient)}${sw('sv-n', 'Show member names on the sign-in screen (“Who is logging in?”)', s.privacy.showSignInNames !== false)}</div><button class="btn" onclick="saveSettings(this)">Save settings</button><br><p class="mut center">Changing the amount affects future periods only. Every change is written to the audit log.</p>`);
 };
 async function saveSettings(b) {
   const s = JSON.parse(JSON.stringify(S.set)); const ch = (id) => $('#' + id).checked;
   s.contribution.amountCents = Math.round(Number(val('st-a') || 0) * 100); s.contribution.freq = val('st-f'); s.contribution.startDate = val('st-d') || s.contribution.startDate; s.payInstructions = val('st-i');
   s.features = { meetings: ch('sf-m'), mgr: ch('sf-g'), loans: ch('sf-l'), fundraising: ch('sf-f'), penalties: ch('sf-p') };
   s.penalties.missedMeeting.enabled = ch('sp-m'); s.penalties.missedMeeting.amountCents = Math.round(Number(val('sp-a') || 0) * 100);
-  s.loans.interestPct = Number(val('sl-i') || 0); s.loans.guarantors = Number(val('sl-g') || 0); s.privacy.showRecipient = ch('sv-r');
+  s.loans.interestPct = Number(val('sl-i') || 0); s.loans.guarantors = Number(val('sl-g') || 0); s.privacy.showRecipient = ch('sv-r'); s.privacy.showSignInNames = ch('sv-n');
   const r = await guard(() => api('settings.save', { settings: s }), b); if (r) { toast('Saved ✅'); S.home = null; render(); }
+}
+
+/* ===================================================================================================================================
+   zip 230 — "Who is logging in?", cash reports, a merry-go-round that can already be running, the set-up wizard, roles.
+   (These replace the earlier phone + PIN sign-in, the old merry-go-round page and the old payment inbox.)
+   =================================================================================================================================== */
+const ROLE_LABELS = { admin: 'Admin', secretary: 'Secretary', treasurer: 'Treasurer', chairperson: 'Chairperson' };
+const roleText = (m) => ['Member'].concat((m.roles && m.roles.length ? m.roles : (m.role && m.role !== 'member' ? [m.role] : [])).map((r) => ROLE_LABELS[r] || r)).join(' + ');
+const initials = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map((x) => x[0]).join('').toUpperCase();
+const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+const avatar = (n, size) => `<div style="width:${size || 56}px;height:${size || 56}px;border-radius:50%;background:hsl(${hue(n)} 45% 42%);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:${Math.round((size || 56) / 2.6)}px;margin:0 auto 6px">${esc(initials(n))}</div>`;
+// a PIN box with a SHOW PIN switch
+const pinBox = (id, label) => `<label for="${id}">${esc(label)}</label><div class="row"><input id="${id}" type="password" inputmode="numeric" maxlength="6" autocomplete="off" style="flex:1;letter-spacing:6px;font-size:22px;text-align:center"><button type="button" class="btn sec sm" style="flex:0 0 auto" onclick="togglePin(this)" aria-label="Show or hide the PIN">👁 Show</button></div>`;
+function togglePin(btn) { const box = btn.parentNode.querySelector('input'); const show = box.type === 'password'; box.type = show ? 'text' : 'password'; btn.textContent = show ? '🙈 Hide' : '👁 Show'; }
+
+/* ---------- WHO IS LOGGING IN? ---------- */
+async function renderLogin() {
+  const app = $('#app'); app.innerHTML = '<div class="empty">Loading…</div>';
+  let st; try { st = await api('status'); } catch (e) { app.innerHTML = `<div class="login card"><div class="err">${esc(e.message)}</div><button class="btn" onclick="render()">Try again</button></div>`; return; }
+  const logo = '<img class="logo" src="icons/icon-192.png" alt="">';
+  if (st.setupNeeded) {
+    app.innerHTML = `<div class="login">${logo}<h2 class="center" style="margin:0 0 4px">Set up your chama</h2><p class="center mut">You will be the first member and the admin. Everything else can be changed later.</p><div class="card">${field('s-g', 'Chama name', '', 'text', 'placeholder="e.g. Umoja Chama" autocomplete="off"')}${field('s-n', 'Your name', '', 'text', 'autocomplete="name"')}${field('s-p', 'Your phone number', '', 'tel', 'placeholder="0712 345 678" autocomplete="tel"')}${pinBox('s-pin', 'Choose a PIN (4–6 digits)')}<div id="s-e"></div><br><button class="btn" onclick="doSetup(this)">Create my chama</button></div></div>`;
+    return;
+  }
+  let t = { tiles: [] }; try { t = await api('members.tiles'); } catch (e) { /* the phone form below still works */ }
+  if (!t.tiles.length) return renderPhoneLogin(st, logo);
+  const last = store.get('chama_last');
+  const tiles = t.tiles.slice().sort((a, b) => (a.id === last ? -1 : b.id === last ? 1 : 0));
+  app.innerHTML = `<div class="login">${logo}<h2 class="center" style="margin:0 0 2px">${esc(st.name || 'Chama')}</h2><h3 class="center" style="margin:0 0 12px;color:var(--mut)">Who is logging in?</h3>
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">${tiles.map((m) => `<button class="card center" style="margin:0;padding:14px 8px;border:1.5px solid ${m.id === last ? 'var(--g)' : 'var(--line)'};background:var(--card);color:var(--ink)" onclick="pickProfile('${m.id}')">${avatar(m.name, 56)}<div class="b" style="font-size:14px;line-height:1.2">${esc(m.name)}</div>${m.needsSetup ? '<span class="chip amb" style="margin-top:4px">First time</span>' : (m.id === last ? '<span class="chip" style="margin-top:4px">This phone</span>' : '')}</button>`).join('')}</div>
+    <p class="center mut" style="margin-top:16px">Forgot your PIN? Ask your admin to reset your sign-in.</p><p class="center"><a href="#" class="mut" onclick="renderPhoneLogin(null);return false">Not on the list? Sign in with your phone number</a></p></div>`;
+  S.tiles = t.tiles; S.stName = st.name;
+}
+function pickProfile(id) {
+  const m = (S.tiles || []).find((x) => x.id === id); if (!m) return;
+  const logo = '<img class="logo" src="icons/icon-192.png" alt="">';
+  $('#app').innerHTML = `<div class="login">${avatar(m.name, 84)}<h2 class="center" style="margin:0">${esc(m.name)}</h2><p class="center mut">${m.needsSetup ? 'Welcome! Enter the temporary PIN your admin gave you.' : 'Enter your PIN'}</p>
+    <div class="card">${pinBox('l-pin', m.needsSetup ? 'Temporary PIN' : 'PIN')}<label class="row" style="font-weight:500;color:var(--ink)"><input type="checkbox" id="l-r" checked style="width:auto"> Remember me on this phone</label><div id="l-e"></div><br><button class="btn" id="l-b" onclick="doLoginTile('${id}',this)">${m.needsSetup ? 'Continue' : 'Sign in'}</button><br><button class="btn sec" onclick="renderLogin()">← Not you?</button></div></div>`;
+  const pin = $('#l-pin'); if (pin) { pin.focus(); pin.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLoginTile(id, $('#l-b')); }); }
+}
+async function doLoginTile(id, b) {
+  showErr('l-e', ''); b.disabled = true;
+  try {
+    const pin = val('l-pin'), rem = $('#l-r').checked;
+    const r = await api('login', { memberId: id, pin, remember: rem, label: (navigator.userAgent.match(/\(([^)]+)\)/) || [])[1] || 'Phone' });
+    TOKEN = r.token; if (rem) store.set('chama_t', TOKEN); else store.del('chama_t'); store.set('chama_last', id);
+    S.tempPin = r.mustChangePin ? pin : ''; S.home = null; S.tab = 'home'; S.sub = ''; render();
+  } catch (e) { showErr('l-e', e.message); b.disabled = false; }
+}
+function renderPhoneLogin(st, logo) {
+  logo = logo || '<img class="logo" src="icons/icon-192.png" alt="">';
+  $('#app').innerHTML = `<div class="login">${logo}<h2 class="center" style="margin:0 0 4px">${esc((st && st.name) || S.stName || 'Chama')}</h2><p class="center mut">Sign in with your phone number and PIN</p><div class="card">${field('l-p', 'Phone number', store.get('chama_phone') || '', 'tel', 'placeholder="0712 345 678" autocomplete="tel"')}${pinBox('l-pin', 'PIN')}<label class="row" style="font-weight:500;color:var(--ink)"><input type="checkbox" id="l-r" checked style="width:auto"> Remember me on this phone</label><div id="l-e"></div><br><button class="btn" id="l-b" onclick="doLogin(this)">Sign in</button>${S.tiles && S.tiles.length ? '<br><button class="btn sec" onclick="renderLogin()">← Back to the list of names</button>' : ''}</div></div>`;
+  const pin = $('#l-pin'); if (pin) pin.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin($('#l-b')); });
+}
+async function doLogin(b) {
+  showErr('l-e', ''); b.disabled = true;
+  try { const pin = val('l-pin'), rem = $('#l-r').checked; const r = await api('login', { phone: val('l-p'), pin, remember: rem, label: (navigator.userAgent.match(/\(([^)]+)\)/) || [])[1] || 'Phone' }); TOKEN = r.token; if (rem) store.set('chama_t', TOKEN); else store.del('chama_t'); store.set('chama_phone', val('l-p')); S.tempPin = r.mustChangePin ? pin : ''; S.home = null; S.tab = 'home'; S.sub = ''; render(); }
+  catch (e) { showErr('l-e', e.message); b.disabled = false; }
+}
+/* first sign-in (temporary PIN) -> create a new PIN, typed twice; the temporary one stops working */
+function renderPinChange(forced) {
+  const needOld = !(forced && S.tempPin);
+  $('#app').innerHTML = `<div class="login"><h2 class="center">${forced ? 'Create your new PIN' : 'Change PIN'}</h2><p class="center mut">${forced ? 'The PIN your admin gave you was only temporary. Choose a PIN only you know (4–6 digits).' : ''}</p><div class="card">${needOld ? pinBox('p-o', 'Current PIN') : ''}${pinBox('p-n', 'New PIN (4–6 digits)')}${pinBox('p-n2', 'Type the new PIN again')}<div id="p-e"></div><br><button class="btn" onclick="doPin(this)">Save PIN</button>${forced ? '' : '<br><button class="btn sec" onclick="render()">Cancel</button>'}</div></div>`;
+}
+async function doPin(b) {
+  showErr('p-e', ''); const a = val('p-n'), c = val('p-n2');
+  if (!/^\d{4,6}$/.test(a)) return showErr('p-e', 'The PIN must be 4 to 6 digits.');
+  if (a !== c) return showErr('p-e', 'The two PINs are not the same.');
+  b.disabled = true;
+  try { await api('pin.change', { oldPin: $('#p-o') ? val('p-o') : S.tempPin, newPin: a }); S.tempPin = ''; toast('PIN saved ✅'); S.home = null; S.tab = 'home'; S.sub = ''; render(); } catch (e) { showErr('p-e', e.message); b.disabled = false; }
+}
+
+/* ---------- reporting a payment: M-Pesa or cash ---------- */
+const payPills = (mode) => `<div class="pills"><button class="${mode === 'mpesa' ? 'on' : ''}" onclick="S.payMode='mpesa';render()">📱 M-Pesa</button><button class="${mode === 'cash' ? 'on' : ''}" onclick="S.payMode='cash';render()">💵 Cash</button></div>`;
+const payOld = VIEWS.pay;
+VIEWS.pay = async () => {
+  if (S.payMode === 'cash') return cashPayView();
+  const h = await payOld();
+  return h.replace('<div class="card"><h3>1. Pay by M-Pesa', payPills('mpesa') + '<div class="card"><h3>1. Pay by M-Pesa');
+};
+async function cashPayView() {
+  await loadHome();
+  const [off, rp] = await Promise.all([api('members.officials'), api('report.mine')]); const list = rp.reports || [];
+  const kinds = [['contribution', 'Contribution']]; if (feat('loans')) kinds.push(['loan', 'Loan repayment']); if (feat('mgr')) kinds.push(['mgr', 'Merry-go-round']); if (feat('fundraising')) kinds.push(['fundraiser', 'Fundraiser']); if (feat('penalties')) kinds.push(['penalty', 'Penalty']);
+  let x = payPills('cash');
+  x += `<div class="card"><h3>Cash you gave to an official</h3>${off.officials.length ? `<label for="pk">What is this payment for?</label><select id="pk" onchange="kindChanged()">${kinds.map((k) => `<option value="${k[0]}">${k[1]}</option>`).join('')}</select><div id="pt"></div>${field('cs-a', 'Amount you gave (KES)', '', 'number', 'inputmode="decimal" placeholder="e.g. 500"')}<label for="cs-r">Who did you give it to?</label><select id="cs-r">${off.officials.map((o) => `<option value="${o.id}">${esc(o.name)} — ${esc(o.role)}</option>`).join('')}</select><br><button class="btn" onclick="submitCash(this)">Send for confirmation</button><p class="mut center">They will confirm the amount they received. Cash only counts after they confirm.</p>` : '<div class="warn">There is no secretary, treasurer or chairperson to give cash to yet. Ask your admin.</div>'}</div>`;
+  x += `<div class="card"><h3>Your recent reports</h3>${list.length ? list.map((r) => `<div class="item row sp"><div><div class="b">${kes(r.amountCents)} <span class="mut" style="font-weight:500">${r.method === 'cash' ? '💵 Cash' : '📱 M-Pesa'}</span></div><div class="mut">${esc(r.kind || '')}${r.code ? ' · ' + esc(r.code) : ''}</div>${r.status === 'verified' && r.reportedCents && r.reportedCents !== r.amountCents ? `<div class="mut">You said ${kes(r.reportedCents)}; ${kes(r.amountCents)} was confirmed.</div>` : ''}${r.note ? `<div class="mut">${esc(r.note)}</div>` : ''}</div>${chipFor(r.status)}</div>`).join('') : '<div class="empty">No reports yet.</div>'}</div>`;
+  return shell('Report payment', x);
+}
+async function submitCash(b) {
+  const t = $('#ptarget'), amt = Number(val('cs-a'));
+  if (!(amt > 0)) return toast('Type the amount you gave.');
+  const r = await guard(() => api('report.submit', { method: 'cash', amount: amt, receiverId: val('cs-r'), kind: val('pk'), targetId: t ? t.value : undefined, requestId: S.cashRid || (S.cashRid = rid()) }), b);
+  if (r) { S.cashRid = null; toast('Sent ✅ Waiting for ' + (r.receiverName || 'them') + ' to confirm.'); render(); }
+}
+
+/* ---------- the payment inbox: M-Pesa and cash ---------- */
+VIEWS.inbox = async () => {
+  const r = await api('report.inbox', { status: S.inbox || 'pending', limit: 50 });
+  const pills = [['pending', 'Waiting'], ['verified', 'Confirmed'], ['rejected', 'Rejected']].map(([k, l]) => `<button class="${(S.inbox || 'pending') === k ? 'on' : ''}" onclick="S.inbox='${k}';render()">${l}</button>`).join('');
+  const card = (i) => {
+    const cash = i.method === 'cash', changed = i.reportedCents && i.reportedCents !== i.amountCents;
+    return `<div class="card"><div class="row sp"><div class="b">${esc(i.memberName)}</div><div class="b">${kes(i.amountCents)}</div></div>
+      <div class="mut">${cash ? `💵 Cash · given to ${i.forMe ? '<b>you</b>' : esc(i.receiverName || 'an official')}` : `📱 ${esc(i.code || '')} · ${esc(i.dateText)} ${esc(i.timeText)}`} · ${esc(i.kindText || '')}</div>
+      ${cash && i.status === 'pending' ? `<div class="ok" style="margin:8px 0">${esc(i.memberName.split(' ')[0])} says they gave ${i.forMe ? 'you' : esc(i.receiverName || 'an official')} ${kes(i.amountCents)} cash.</div>` : ''}
+      ${changed ? `<div class="warn" style="margin:8px 0">Reported ${kes(i.reportedCents)} · confirmed ${kes(i.amountCents)}${i.note ? '<br>' + esc(i.note) : ''}</div>` : ''}
+      ${i.recipientMismatch ? '<div class="warn" style="margin:8px 0">This M-Pesa went to a different name than your chama’s account.</div>' : ''}
+      ${i.status === 'pending' ? (i.canConfirm ? `<br><div class="row"><button class="btn" onclick="${cash ? `confirmCash('${i.id}',${i.amountCents},'${esc(i.memberName.replace(/'/g, ''))}')` : `verify('${i.id}',this)`}">✅ Confirm</button><button class="btn sec" onclick="rejectRep('${i.id}')">Reject</button></div>` : `<div class="mut" style="margin-top:8px">Waiting for ${esc(i.receiverName || 'the receiver')} to confirm.</div>`) : ''}</div>`;
+  };
+  return shell('Payment inbox', `<div class="pills">${pills}</div>${r.items.length ? r.items.map(card).join('') : '<div class="empty">Nothing here.</div>'}`);
+};
+function confirmCash(id, cents, name) {
+  sheet(`<h3>Confirm cash from ${esc(name.split(' ')[0])}</h3><p class="mut">They reported <b>${kes(cents)}</b>. Type the amount you really received — change it only if it is different.</p>${field('cc-a', 'Amount received (KES)', cents / 100, 'number', 'inputmode="decimal" oninput="ccChanged(' + cents + ')"')}<div id="cc-w" style="display:none">${field('cc-r', 'Why is it different?', '', 'text', 'placeholder="e.g. only 900 was in the envelope"')}</div><div id="cc-e"></div><br><button class="btn" onclick="doConfirmCash('${id}',${cents},this)">✅ Confirm cash received</button><br><button class="btn sec" onclick="closeSheet()">Cancel</button>`);
+}
+function ccChanged(cents) { const w = $('#cc-w'); if (w) w.style.display = Math.round(Number(val('cc-a')) * 100) !== cents ? '' : 'none'; }
+async function doConfirmCash(id, cents, b) {
+  const a = Math.round(Number(val('cc-a')) * 100); showErr('cc-e', '');
+  if (!(a > 0)) return showErr('cc-e', 'Type the amount you received.');
+  const different = a !== cents; if (different && !val('cc-r').trim()) return showErr('cc-e', 'Say why the amount is different.');
+  const r = await guard(() => api('report.verify', { id, amount: a / 100, reason: different ? val('cc-r') : undefined }), b);
+  if (r) { closeSheet(); toast('Confirmed ✅'); S.home = null; render(); }
+}
+
+/* ---------- my contributions: the simple picture ---------- */
+const STATUS_CHIP = { complete: '<span class="chip">Complete</span>', partial: '<span class="chip amb">Partial</span>', not_started: '<span class="chip red">Not started</span>', pending: '<span class="chip amb">Pending verification</span>', overdue: '<span class="chip red">Overdue</span>' };
+VIEWS.contribs = async () => {
+  const [b, r] = await Promise.all([api('contrib.breakdown'), api('contrib.mine', { range: S.range || 'all' })]);
+  let x = '';
+  if (b.cycle) {
+    x += `<div class="card hero"><div style="opacity:.85">${esc(b.cycle.label)} · due ${esc(b.cycle.dueText)}</div><div class="row sp" style="margin-top:6px"><div><div class="lbl" style="color:#fff;opacity:.8">Required</div><div class="big" style="font-size:20px">${kes(b.requiredCents)}</div></div><div><div class="lbl" style="color:#fff;opacity:.8">Paid</div><div class="big" style="font-size:20px">${kes(b.paidCents)}</div></div><div><div class="lbl" style="color:#fff;opacity:.8">Remaining</div><div class="big" style="font-size:20px">${kes(b.remainingCents)}</div></div></div><div class="bar" style="background:rgba(255,255,255,.25)"><i style="width:${pct(b.paidCents, b.requiredCents)}%;background:#fff"></i></div><div class="row sp"><span>${STATUS_CHIP[b.status] || ''}</span>${b.cycle.countdown && b.status !== 'complete' ? `<span style="font-size:13px">${esc(b.cycle.countdown.text)} left</span>` : ''}</div></div>`;
+    if (b.pendingCents > 0) x += `<div class="warn">⏳ ${kes(b.pendingCents)} is waiting to be confirmed. It counts once the secretary or treasurer confirms it.</div>`;
+    x += `<div class="card"><h3>Payment breakdown</h3><table><tr><td>📱 M-Pesa</td><td class="n">${kes(b.byMethod.mpesa)}</td></tr><tr><td>💵 Cash</td><td class="n">${kes(b.byMethod.cash)}</td></tr>${b.byMethod.other ? `<tr><td>Other / opening</td><td class="n">${kes(b.byMethod.other)}</td></tr>` : ''}<tr><td class="b">Total paid</td><td class="n b">${kes(b.paidCents)}</td></tr></table>${b.payments.length ? `<details style="margin-top:8px"><summary class="mut">See each payment (${b.payments.length})</summary>${b.payments.map((p) => `<div class="item row sp"><div><div class="b">${kes(p.amountCents)} <span class="mut" style="font-weight:500">${esc(p.method)}</span></div><div class="mut">${esc(p.dateText)} ${esc(p.reference)}</div></div>${p.status === 'Pending' ? '<span class="chip amb">Pending</span>' : p.status === 'Reversed' ? '<span class="chip gray">Reversed</span>' : '<span class="chip">Verified</span>'}</div>`).join('')}</details>` : ''}</div>`;
+    x += `<button class="btn" onclick="go('pay')">💸 REPORT PAYMENT</button><br>`;
+  } else x += '<div class="card"><div class="empty">No contribution period has started yet.</div></div>';
+  const pills = [['all', 'All time'], ['year', 'This year']].map(([k, l]) => `<button class="${(S.range || 'all') === k ? 'on' : ''}" onclick="S.range='${k}';render()">${l}</button>`).join('');
+  x += `<div class="card"><h3>History</h3><div class="pills">${pills}</div><div class="row sp"><span class="mut">Total contributed</span><b>${kes(r.totalCents)}</b></div>${r.items.length ? r.items.map((i) => `<div class="item row sp"><div><div class="b">${esc(i.type)}</div><div class="mut">${esc(i.dateText)} ${esc(i.reference)}</div></div><b>${kes(i.amountCents)}</b></div>`).join('') : '<div class="empty">Nothing yet.</div>'}</div>`;
+  return shell('My contributions', x);
+};
+
+/* ---------- the merry-go-round: status card, collection, schedule ---------- */
+const cdText = (c) => (!c ? '' : c.today ? 'Today' : c.overdue ? c.text : c.days === 0 ? c.hours + ' hours' : c.text);
+VIEWS.mgr = async () => {
+  await loadHome();
+  const r = await api('mgr.status');
+  if (!r.mgr) return shell('Merry-go-round', (r.canManage ? '<button class="btn" onclick="mgrForm(false)">➕ Start a new merry-go-round</button><br><button class="btn sec" onclick="mgrForm(true)">⏩ We are already running one</button><br>' : '') + '<div class="empty">No merry-go-round is running.</div>');
+  const n = r.next; let x = '';
+  if (n) {
+    x += `<div class="card hero"><div style="opacity:.85;letter-spacing:1px;font-size:12px">NEXT RECIPIENT</div><div class="big">${esc(n.name)}${n.isMe ? ' 🎉' : ''}</div>
+      <div class="row sp wrap" style="margin-top:10px"><div><div class="lbl" style="color:#fff;opacity:.8">Expected payout</div><div class="b">${kes(n.expectedCents)}</div></div><div><div class="lbl" style="color:#fff;opacity:.8">Expected date</div><div class="b">${esc(n.dueText)}</div></div><div><div class="lbl" style="color:#fff;opacity:.8">Time remaining</div><div class="b">${esc(cdText(n.countdown))}</div></div></div>
+      ${n.originalDueText ? `<div style="font-size:12px;opacity:.85;margin-top:6px">Moved from ${esc(n.originalDueText)}</div>` : ''}
+      <div class="bar" style="background:rgba(255,255,255,.25);margin-top:12px"><i style="width:${pct(n.collectedCents, n.expectedCents)}%;background:#fff"></i></div>
+      <div class="row sp"><span>Collected ${kes(n.collectedCents)} / ${kes(n.expectedCents)}</span><span>Outstanding ${kes(n.outstandingCents)}</span></div></div>`;
+    x += `<div class="row wrap" style="gap:8px;margin-bottom:12px"><span class="chip">✔ ${r.completed} received</span><span class="chip blue">▶ 1 next</span><span class="chip gray">⏳ ${r.waiting} waiting</span></div>`;
+    x += `<div class="card"><h3>Your share this turn</h3><div class="row sp"><span>Required</span><b>${kes(n.myShareCents)}</b></div><div class="row sp"><span>Paid</span><b>${kes(n.myPaidCents)}</b></div>${n.myPendingCents ? `<div class="row sp"><span>Waiting to be confirmed</span><b>${kes(n.myPendingCents)}</b></div>` : ''}<div class="row sp"><span>Remaining</span><b style="color:${n.myRemainingCents ? 'var(--red)' : 'inherit'}">${kes(n.myRemainingCents)}</b></div>${n.myRemainingCents ? `<br><button class="btn" onclick="S.payKind='mgr';go('pay')">💸 Report payment</button>` : '<div class="ok">You have paid your share ✅</div>'}</div>`;
+  } else x += '<div class="card"><h3>Every turn is done 🎉</h3>' + (r.canManage ? '<button class="btn red" onclick="closeMgr()">Close this round</button>' : '') + '</div>';
+  if (r.collection && n) {
+    x += `<div class="card"><h3>Next payout collection</h3><div class="mut">${esc(n.name)} · expected ${kes(n.expectedCents)} · collected ${kes(n.collectedCents)} · outstanding ${kes(n.outstandingCents)}</div><div class="scroll"><table><tr><th>Member</th><th class="n">Required</th><th class="n">Paid</th><th class="n">Left</th><th></th></tr>${r.collection.map((m) => `<tr><td>${esc(m.name)}${m.pendingCents ? `<div class="mut">+${kes(m.pendingCents)} waiting</div>` : ''}</td><td class="n">${kes(m.requiredCents)}</td><td class="n">${kes(m.paidCents)}</td><td class="n">${kes(m.remainingCents)}</td><td>${STATUS_CHIP[m.status] || chipFor(m.status)}</td></tr>`).join('')}</table></div>${has('payments') ? '<br><button class="btn sec" onclick="mgrRecord()">➕ Record money received</button>' : ''}</div>`;
+    x += `<div class="row wrap" style="gap:8px;margin-bottom:12px">${r.canPay ? `<button class="btn" style="flex:1" onclick="mgrPay('${n.turnId}')">Record payout</button>` : ''}<button class="btn sec" style="flex:1" onclick="mgrAdjust()">🗓 Adjust schedule</button></div>`;
+  }
+  x += `<div class="card"><h3>${esc(r.mgr.name)} · ${kes(r.mgr.perMemberCents)} each</h3><div class="mut">${r.mgr.everyMonths ? 'Every ' + (r.mgr.everyMonths === 1 ? 'month' : r.mgr.everyMonths + ' months') : 'Every ' + (r.mgr.everyDays === 7 ? 'week' : r.mgr.everyDays + ' days')}${r.mgr.lastPayoutText ? ' · last payout ' + esc(r.mgr.lastPayoutText) : ''}</div>${r.turns.map((t) => `<div class="item row sp"><span>${t.seq}. ${esc(t.name)}${t.isMe ? ' (you)' : ''}<div class="mut">${t.status === 'paid_out' ? (t.opening ? 'Received before the system' : 'Received ' + esc(t.paidText || t.dueText)) : 'Due ' + esc(t.dueText)}</div></span>${t.status === 'paid_out' ? '<span class="chip">Received</span>' : n && t.id === n.turnId ? '<span class="chip blue">Next</span>' : '<span class="chip gray">Waiting</span>'}</div>`).join('')}</div>`;
+  S.mgr = r;
+  return shell('Merry-go-round', x);
+};
+async function closeMgr() { if (!confirm('Close this round? You can start a new one afterwards.')) return; const r = await guard(() => api('mgr.close')); if (r) { toast('Closed'); render(); } }
+const FREQ_CHOICES = [['7|0', 'Every week'], ['14|0', 'Every 2 weeks'], ['0|1', 'Every month'], ['0|2', 'Every 2 months'], ['0|3', 'Every 3 months'], ['0|6', 'Every 6 months']];
+const freqParse = (v) => { const [d, m] = String(v).split('|').map(Number); return m > 0 ? { everyMonths: m } : { everyDays: d || 7 }; };
+const addMonthsJs = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); if (isNaN(d)) return ''; const day = d.getUTCDate(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() + n); const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate(); d.setUTCDate(Math.min(day, last)); return d.toISOString().slice(0, 10); };
+const addDaysJs = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); if (isNaN(d)) return ''; d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+async function mgrForm(ongoing) {
+  const n = await guard(() => api('members.names')); if (!n) return; S.mgrMembers = n.members; S.mgrRecv = []; S.mgrOngoing = !!ongoing;
+  sheet(`<h3>${ongoing ? 'Take over a merry-go-round that is already running' : 'Start a merry-go-round'}</h3>${field('g-n', 'Name', 'Merry-go-round')}${field('g-a', 'Amount each member gives (KES)', '', 'number', 'inputmode="decimal"')}<label for="g-f">How often does someone receive?</label><select id="g-f" onchange="mgrCalc()">${FREQ_CHOICES.map((f) => `<option value="${f[0]}" ${f[0] === '0|1' ? 'selected' : ''}>${f[1]}</option>`).join('')}</select>
+    <div id="g-new" style="${ongoing ? 'display:none' : ''}">${field('g-s', 'Date of the first turn', '', 'date')}</div>
+    <div id="g-old" style="${ongoing ? '' : 'display:none'}"><label>Who has already received? <span class="mut">Tap in the order they received</span></label><div id="g-recv"></div>${field('g-l', 'Date the last member received money', '', 'date', 'onchange="mgrCalc()"')}<div id="g-next" class="ok" style="display:none"></div>${field('g-x', 'Next payout date (change only if it is different)', '', 'date')}
+      <details style="margin-top:8px"><summary class="mut">Money already collected for the next recipient (optional)</summary><div id="g-open"></div></details></div>
+    <div id="g-e"></div><br><button class="btn" onclick="saveMgr(this)">${ongoing ? 'Save the current position' : 'Start'}</button><br><button class="btn sec" onclick="closeSheet()">Cancel</button>`);
+  mgrRecvDraw();
+}
+function mgrRecvDraw() {
+  const box = $('#g-recv'); if (!box) return;
+  box.innerHTML = '<div class="row wrap" style="gap:6px">' + S.mgrMembers.map((m) => { const i = S.mgrRecv.indexOf(m.id); return `<button type="button" class="btn sm ${i >= 0 ? '' : 'sec'}" onclick="mgrToggle('${m.id}')">${i >= 0 ? (i + 1) + '. ' : ''}${esc(m.name)}</button>`; }).join('') + '</div>';
+  const left = S.mgrMembers.filter((m) => !S.mgrRecv.includes(m.id)); const o = $('#g-open');
+  if (o) o.innerHTML = left.length ? `<p class="mut">For <b>${esc(left[0].name)}</b>, the next recipient. Type what each member has already given:</p>` + S.mgrMembers.map((m) => `<div class="row" style="margin:4px 0"><span style="flex:1">${esc(m.name)}</span><input class="g-op" data-m="${m.id}" type="number" inputmode="decimal" placeholder="0" style="width:110px"></div>`).join('') : '';
+  mgrCalc();
+}
+function mgrToggle(id) { const i = S.mgrRecv.indexOf(id); if (i >= 0) S.mgrRecv.splice(i, 1); else S.mgrRecv.push(id); mgrRecvDraw(); }
+function mgrCalc() {
+  const l = val('g-l'), f = freqParse(val('g-f')), box = $('#g-next'); if (!box || !l) { if (box) box.style.display = 'none'; return; }
+  const nx = f.everyMonths ? addMonthsJs(l, f.everyMonths) : addDaysJs(l, f.everyDays); if (!nx) return;
+  box.style.display = ''; box.textContent = 'Next payout calculated: ' + new Date(nx + 'T00:00:00Z').toLocaleDateString('en-KE', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const x = $('#g-x'); if (x && !x.dataset.touched) x.value = nx; if (x) x.oninput = () => { x.dataset.touched = '1'; };
+}
+async function saveMgr(b) {
+  showErr('g-e', ''); const f = freqParse(val('g-f')), ongoing = !!S.mgrOngoing;
+  const opening = {}; document.querySelectorAll('.g-op').forEach((e) => { if (Number(e.value) > 0) opening[e.dataset.m] = Number(e.value); });
+  const body = { name: val('g-n'), perMember: Number(val('g-a')), ...f, ongoing, orderMode: 'fixed' };
+  if (ongoing) { body.received = S.mgrRecv; body.lastPayoutDate = val('g-l'); body.nextDate = val('g-x') || undefined; body.opening = opening; } else body.startDate = val('g-s');
+  const r = await guard(() => api('mgr.save', body), b); if (r) { closeSheet(); toast(ongoing ? `Saved — next: ${r.nextRecipient}` : 'Started ✅'); render(); }
+}
+function mgrAdjust() {
+  const r = S.mgr; if (!r || !r.next) return; const open = r.turns.filter((t) => t.status === 'open');
+  sheet(`<h3>Adjust the schedule</h3><p class="mut">Every change is recorded: who, when, the old value and your reason.</p><label for="ad-f">What do you want to change?</label><select id="ad-f" onchange="adForm()"><option value="nextDate">Next payout date</option><option value="recipient">Who is next</option><option value="frequency">How often</option><option value="perMember">Amount each member gives</option></select><div id="ad-b"></div>${field('ad-r', 'Reason (required)', '', 'text', 'placeholder="e.g. Members agreed to postpone the meeting"')}<div id="ad-e"></div><br><button class="btn" onclick="doAdjust(this)">Save change</button><br><button class="btn sec" onclick="closeSheet()">Cancel</button>`);
+  S.adOpen = open; adForm();
+}
+function adForm() {
+  const f = val('ad-f'), r = S.mgr, b = $('#ad-b'); if (!b) return;
+  b.innerHTML = f === 'nextDate' ? field('ad-v', 'New date for ' + r.next.name, r.next.dueDate, 'date') + '<label class="row" style="font-weight:500;color:var(--ink)"><input type="checkbox" id="ad-s" style="width:auto"> Move the later turns by the same dates too</label>'
+    : f === 'recipient' ? `<label for="ad-v">New next recipient</label><select id="ad-v">${(S.adOpen || []).filter((t) => t.id !== r.next.turnId).map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>`
+    : f === 'frequency' ? `<label for="ad-v">How often</label><select id="ad-v">${FREQ_CHOICES.map((x) => `<option value="${x[0]}">${x[1]}</option>`).join('')}</select>`
+    : field('ad-v', 'Amount each member gives (KES)', r.mgr.perMemberCents / 100, 'number', 'inputmode="decimal"');
+}
+async function doAdjust(b) {
+  const f = val('ad-f'), body = { field: f, reason: val('ad-r') }; showErr('ad-e', '');
+  if (!body.reason.trim()) return showErr('ad-e', 'Say why you are changing this.');
+  if (f === 'nextDate') { body.value = val('ad-v'); body.shiftLater = !!($('#ad-s') && $('#ad-s').checked); }
+  else if (f === 'recipient') { const t = (S.adOpen || []).find((x) => x.id === val('ad-v')); const m = (S.mgrMembers || []).find((x) => x.name === (t && t.name)); body.value = m ? m.id : ''; }
+  else if (f === 'frequency') Object.assign(body, freqParse(val('ad-v')));
+  else body.value = Number(val('ad-v'));
+  if (f === 'recipient' && !body.value) { const n = await guard(() => api('members.names')); S.mgrMembers = n ? n.members : []; const t = (S.adOpen || []).find((x) => x.id === val('ad-v')); const m = S.mgrMembers.find((x) => x.name === (t && t.name)); body.value = m ? m.id : ''; }
+  const r = await guard(() => api('mgr.adjust', body), b); if (r) { closeSheet(); toast('Changed ✅ and recorded'); render(); }
+}
+async function mgrRecord() { return recordForm(); }
+async function mgrPay(turnId) { sheet(`<h3>Record payout</h3><p class="mut">The money collected for this turn goes to the recipient.</p>${field('po-d', 'Date paid out', new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Nairobi' }), 'date')}${field('po-r', 'M-Pesa / reference', '')}<label>Method</label><select id="po-m"><option value="mpesa">M-Pesa</option><option value="cash">Cash</option><option value="bank">Bank</option></select><br><button class="btn" onclick="doPayout('${turnId}',this)">Confirm payout</button>`); }
+async function doPayout(id, b) { const r = await guard(() => api('mgr.payout', { turnId: id, date: val('po-d'), method: val('po-m'), reference: val('po-r') }), b); if (r) { closeSheet(); toast(r.roundComplete ? 'Paid out — that was the last turn 🎉' : 'Payout recorded'); render(); } }
+
+/* ---------- members: several roles each ---------- */
+const roleBoxes = (cur) => ['admin', 'secretary', 'treasurer', 'chairperson'].map((r) => `<label class="row" style="font-weight:500;color:var(--ink);margin:4px 0"><input type="checkbox" class="rl" value="${r}" ${cur.includes(r) ? 'checked' : ''} style="width:auto"> ${ROLE_LABELS[r]}</label>`).join('') + '<div class="mut">Everyone is a Member. Tick more roles where someone holds several.</div>';
+const pickedRoles = () => [...document.querySelectorAll('.rl')].filter((e) => e.checked).map((e) => e.value);
+VIEWS.members = async () => {
+  const r = await api('members.list');
+  return shell('Members', `<button class="btn" onclick="memberForm()">➕ Add member</button><br>${r.members.map((m) => `<div class="card" onclick="memberView('${m.id}')"><div class="row"><div style="flex:0 0 auto">${avatar(m.name, 40)}</div><div style="flex:1"><div class="b">${esc(m.name)}${m.mustChangePin ? ' <span class="chip amb">PIN not set</span>' : ''}</div><div class="mut">${esc(m.phone)} · ${esc(roleText(m))}${m.status === 'active' ? '' : ' · switched off'}</div></div></div></div>`).join('')}`);
+};
+function memberForm() { sheet(`<h3>Add member</h3>${field('am-n', 'Full name', '')}${field('am-p', 'Phone number', '', 'tel', 'placeholder="0712 345 678"')}${has('*') ? '<label>Roles</label>' + roleBoxes([]) : ''}<div id="am-e"></div><br><button class="btn" onclick="addMember(this)">Add</button><p class="mut">A sign-in account and a temporary PIN are made automatically.</p>`); }
+async function addMember(b) { b.disabled = true; try { const r = await api('members.add', { name: val('am-n'), phone: val('am-p'), roles: has('*') ? pickedRoles() : [] }); sheet(`<h3>Member added ✅</h3><div class="ok">Give ${esc(val('am-n') || 'them')} this temporary PIN:<div class="big" style="font-size:34px;font-weight:800;text-align:center">${esc(r.pin)}</div></div><p class="mut">They tap their name on the sign-in screen, enter this PIN, then choose their own. Write it down now — it is not shown again.</p><button class="btn" onclick="closeSheet();render()">Done</button>`); } catch (e) { showErr('am-e', e.message); b.disabled = false; } }
+async function setRole(id) { const ml = await guard(() => api('members.list')); const m = ml && ml.members.find((x) => x.id === id); if (!m) return; sheet(`<h3>Roles for ${esc(m.name)}</h3>${roleBoxes(m.roles || [])}<br><button class="btn" onclick="saveRoles('${id}',this)">Save roles</button><br><button class="btn sec" onclick="closeSheet()">Cancel</button>`); }
+async function saveRoles(id, b) { const r = await guard(() => api('members.update', { id, roles: pickedRoles() }), b); if (r) { closeSheet(); toast('Roles saved'); render(); } }
+
+/* ---------- set-up wizard for a chama that is already running (admin) ---------- */
+const WZ = { step: 1, d: {}, members: [], created: [] };
+async function wizard() {
+  const r = await guard(() => api('onboard.get')); if (!r) return;
+  const today = r.today;
+  WZ.step = 1; WZ.created = []; WZ.d = { name: r.name, startedOn: (r.chama && r.chama.startedOn) || '', description: (r.chama && r.chama.description) || '', ongoing: true, amount: r.contribution.amountCents ? r.contribution.amountCents / 100 : '', freq: r.contribution.freq || 'monthly', cycleStart: (r.currentCycle && r.currentCycle.start) || today.slice(0, 8) + '01', paid: {}, opening: [], today };
+  WZ.members = r.members; S.mgrMembers = r.members; WZ.mgr = feat('mgr'); wzDraw();
+}
+function wzDraw() {
+  const d = WZ.d, steps = ['Chama', 'Contributions', 'Merry-go-round', 'Members', 'Money so far'], s = WZ.step;
+  const bar = `<div class="row" style="gap:4px;margin-bottom:12px">${steps.map((t, i) => `<div style="flex:1;text-align:center;font-size:11px;color:${i + 1 === s ? 'var(--g)' : 'var(--mut)'};font-weight:${i + 1 === s ? 800 : 500}"><div style="height:5px;border-radius:9px;background:${i + 1 <= s ? 'var(--g)' : 'var(--line)'};margin-bottom:4px"></div>${i + 1}. ${t}</div>`).join('')}</div>`;
+  let b = '';
+  if (s === 1) b = `<h3>Step 1 — Your chama</h3>${field('w-n', 'Chama name', d.name)}${field('w-s', 'When did the chama start?', d.startedOn, 'date')}<p class="mut">Already running for months or years? Just enter the real start date — you do <b>not</b> need to enter old transactions. You start tracking from today.</p><label for="w-d">About the chama (optional)</label><input id="w-d" value="${esc(d.description)}">`;
+  if (s === 2) b = `<h3>Step 2 — Contributions</h3>${field('w-a', 'Amount each member pays (KES)', d.amount, 'number', 'inputmode="decimal"')}<label for="w-f">How often</label><select id="w-f">${[['weekly', 'Weekly'], ['biweekly', 'Every 2 weeks'], ['monthly', 'Monthly'], ['bimonthly', 'Every 2 months'], ['quarterly', 'Every 3 months']].map((f) => `<option value="${f[0]}" ${d.freq === f[0] ? 'selected' : ''}>${f[1]}</option>`).join('')}</select>${field('w-c', 'When did the current period start?', d.cycleStart, 'date')}<p class="mut">This is where tracking begins. Earlier periods are not created.</p>`;
+  if (s === 3) b = `<h3>Step 3 — Merry-go-round</h3><p>Is this chama running a merry-go-round?</p><div class="row"><button class="btn ${WZ.mgr ? '' : 'sec'}" onclick="WZ.mgr=true;wzDraw()">Yes</button><button class="btn ${WZ.mgr ? 'sec' : ''}" onclick="WZ.mgr=false;wzDraw()">No</button></div>${WZ.mgr ? '<p class="mut">You set the order, who has already received and the last payout date on the next screen after saving.</p>' : ''}`;
+  if (s === 4) b = `<h3>Step 4 — Members</h3><p class="mut">Add everyone. Each person gets a sign-in account and a temporary PIN. You are already in the list.</p>${WZ.members.map((m) => `<div class="item">${esc(m.name)}</div>`).join('')}<br><button class="btn sec" onclick="wzAddMember()">➕ Add a member</button>${WZ.created.length ? `<div class="ok" style="margin-top:10px"><b>Temporary PINs — write these down</b>${WZ.created.map((c) => `<div class="row sp"><span>${esc(c.name)}</span><b>${esc(c.pin)}</b></div>`).join('')}</div>` : ''}`;
+  if (s === 5) b = `<h3>Step 5 — Money so far</h3><p class="mut">Optional. Money that <b>already exists</b> is entered as an <b>opening balance</b> — clearly marked, not as made-up past transactions.</p><label>Already paid in the current period</label>${WZ.members.map((m) => `<div class="row" style="margin:4px 0"><span style="flex:1">${esc(m.name)}</span><input class="w-p" data-m="${m.id}" type="number" inputmode="decimal" placeholder="0" value="${d.paid[m.id] || ''}" style="width:110px"></div>`).join('')}<label>Money the chama already has (opening balance)</label>${field('w-o', 'Amount in the main fund (KES)', (d.opening[0] && d.opening[0].amount) || '', 'number', 'inputmode="decimal"')}`;
+  sheet(bar + b + '<div id="w-e"></div><br><div class="row">' + (s > 1 ? '<button class="btn sec" onclick="wzGo(-1)">← Back</button>' : '') + `<button class="btn" onclick="wzGo(1)">${s === 5 ? 'Save and finish' : 'Next →'}</button></div><br><button class="btn sec" onclick="closeSheet()">Cancel</button>`);
+}
+function wzRead() {
+  const d = WZ.d, s = WZ.step;
+  if (s === 1) { d.name = val('w-n'); d.startedOn = val('w-s'); d.description = val('w-d'); }
+  if (s === 2) { d.amount = val('w-a'); d.freq = val('w-f'); d.cycleStart = val('w-c'); }
+  if (s === 5) { d.paid = {}; document.querySelectorAll('.w-p').forEach((e) => { if (Number(e.value) > 0) d.paid[e.dataset.m] = Number(e.value); }); d.opening = Number(val('w-o')) > 0 ? [{ fund: 'main', amount: Number(val('w-o')), note: 'brought forward from before the system' }] : []; }
+}
+async function wzGo(dir) {
+  wzRead(); const d = WZ.d;
+  if (dir > 0 && WZ.step === 1 && !d.name.trim()) return showErr('w-e', 'Give the chama a name.');
+  if (dir > 0 && WZ.step === 2 && !(Number(d.amount) > 0)) return showErr('w-e', 'Type the contribution amount.');
+  if (dir > 0 && WZ.step === 5) {
+    const r = await guard(() => api('onboard.save', { name: d.name, startedOn: d.startedOn, description: d.description, ongoing: true, contribution: { amount: Number(d.amount), freq: d.freq, currentCycleStart: d.cycleStart, paid: d.paid }, opening: d.opening }));
+    if (!r) return;
+    if (WZ.mgr) { try { const st = await api('settings.get'); const s2 = JSON.parse(JSON.stringify(st.settings)); s2.features.mgr = true; await api('settings.save', { settings: s2 }); } catch (e) { /* the admin can switch it on in Settings */ } }
+    closeSheet(); S.home = null; toast('Saved ✅ You are now tracking from today.'); if (WZ.mgr) { S.sub = ''; go('more', 'mgr'); setTimeout(() => mgrForm(true), 400); } else render(); return;
+  }
+  WZ.step = Math.max(1, Math.min(5, WZ.step + dir)); wzDraw();
+}
+function wzAddMember() {
+  sheet(`<h3>Add a member</h3>${field('wm-n', 'Full name', '')}${field('wm-p', 'Phone number', '', 'tel', 'placeholder="0712 345 678"')}<label>Roles</label>${roleBoxes([])}<div id="wm-e"></div><br><button class="btn" onclick="wzSaveMember(this)">Add</button><br><button class="btn sec" onclick="wzDraw()">Back</button>`);
+}
+async function wzSaveMember(b) {
+  b.disabled = true; try { const nm = val('wm-n'), r = await api('members.add', { name: nm, phone: val('wm-p'), roles: pickedRoles() }); WZ.members.push({ id: r.id, name: nm }); S.mgrMembers = WZ.members; WZ.created.push({ name: nm, pin: r.pin }); wzDraw(); } catch (e) { showErr('wm-e', e.message); b.disabled = false; }
 }
 
 /* ---------- start ---------- */

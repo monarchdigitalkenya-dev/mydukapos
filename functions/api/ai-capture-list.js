@@ -256,13 +256,18 @@ function repairTruncatedJson(text) {
 }
 
 function isKeyExhaustedOrInvalid(status, errText) {
-  if (status === 429) return true;  // rate limit / quota — the whole reason to have a pool of keys
-  if (status === 403) return true;  // key rejected/forbidden
+  // Anything that means "THIS key can't serve the request right now" -> move on to the next key:
+  // quota/rate limit (429), rejected/forbidden/unauthorised/billing (401/402/403), a key the
+  // model isn't enabled for (404), invalid-key / quota / billing wording on a 400, a network
+  // failure (status 0 with a thrown error), and a Gemini overload (500/503) that survived the
+  // same-key retry (another key may sit on a less loaded route, and failing is worse than trying).
+  if (status === 429 || status === 401 || status === 402 || status === 403 || status === 404) return true;
+  if (status === 500 || status === 502 || status === 503 || status === 504) return true;
   if (status === 400) {
     try {
       const parsed = JSON.parse(errText);
       const msg = (parsed && parsed.error && parsed.error.message) || '';
-      if (/API key not valid|API_KEY_INVALID/i.test(msg)) return true;
+      if (/API key not valid|API_KEY_INVALID|quota|billing|exhausted|expired/i.test(msg)) return true;
     } catch (e) { /* not JSON — not a recognizable invalid-key error */ }
   }
   return false;
@@ -289,7 +294,7 @@ async function attemptGeminiKey(geminiApiKey, systemPrompt, userParts, responseS
   let geminiRes;
   let errText = '';
   for (let attempt = 1; attempt <= GEMINI_SAME_KEY_MAX_ATTEMPTS; attempt++) {
-    geminiRes = await callGemini();
+    try { geminiRes = await callGemini(); } catch (netErr) { return { ok: false, status: 503, errText: String(netErr && netErr.message || netErr), rotate: true }; }
     if (geminiRes.ok) break;
     errText = await geminiRes.text();
     const shouldRetrySameKey = attempt < GEMINI_SAME_KEY_MAX_ATTEMPTS && GEMINI_SAME_KEY_RETRYABLE_STATUS.has(geminiRes.status);

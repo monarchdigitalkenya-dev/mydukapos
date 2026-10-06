@@ -9,7 +9,20 @@
 //   * the same M-Pesa transaction code can never be reported twice while a report is pending or verified (partial unique index);
 //   * the audit trail is append-only too;
 //   * every table carries client_id (the chama's link): one chama can never read or write another chama's data.
-export const CHAMA_SCHEMA_VERSION = 1;
+export const CHAMA_SCHEMA_VERSION = 2;
+// zip 230: columns added after the first release. A fresh database gets them from CHAMA_SCHEMA below; a database created by zip 217-229 is upgraded in place
+// by ensureChamaSchema (it checks the table first, so running it twice is harmless).
+export const CHAMA_UPGRADES = [
+  ['chama_member', 'roles', "TEXT NOT NULL DEFAULT '[]'"],            // extra roles beyond the main one (a person can be Member + Secretary + Chairperson)
+  ['chama_report', 'reported_cents', 'INTEGER'],                      // what the member SAID they paid (amount_cents is what was verified)
+  ['chama_report', 'received_by', 'TEXT'],                            // the official a cash payment was handed to
+  ['chama_mgr', 'every_months', 'INTEGER NOT NULL DEFAULT 0'],
+  ['chama_mgr', 'last_payout_date', 'TEXT'],
+  ['chama_mgr', 'ongoing', 'INTEGER NOT NULL DEFAULT 0'],
+  ['chama_mgr_turn', 'opening', 'INTEGER NOT NULL DEFAULT 0'],        // 1 = this turn was paid before the chama started using the system
+  ['chama_mgr_turn', 'due_original', 'TEXT'],
+  ['chama_mgr_turn', 'paid_date', 'TEXT'],
+];
 
 export const CHAMA_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS chama_meta (
@@ -38,6 +51,7 @@ export const CHAMA_SCHEMA = [
   failed_pins INTEGER NOT NULL DEFAULT 0,
   locked_until INTEGER NOT NULL DEFAULT 0,
   joined_at INTEGER NOT NULL,
+  roles TEXT NOT NULL DEFAULT '[]',
   PRIMARY KEY (client_id, id)
 )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS chama_member_phone ON chama_member (client_id, phone)`,
@@ -109,6 +123,8 @@ export const CHAMA_SCHEMA = [
   reviewed_by TEXT,
   reviewed_at INTEGER,
   note TEXT,
+  reported_cents INTEGER,
+  received_by TEXT,
   PRIMARY KEY (client_id, id)
 )`,
   // the same M-Pesa transaction can be on only ONE live (pending / verified) report; a rejected one frees the code
@@ -185,6 +201,9 @@ export const CHAMA_SCHEMA = [
   order_mode TEXT NOT NULL DEFAULT 'admin',
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','closed')),
   created_at INTEGER NOT NULL,
+  every_months INTEGER NOT NULL DEFAULT 0,
+  last_payout_date TEXT,
+  ongoing INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (client_id, id)
 )`,
   `CREATE TABLE IF NOT EXISTS chama_mgr_turn (
@@ -196,6 +215,9 @@ export const CHAMA_SCHEMA = [
   due_date TEXT NOT NULL,
   expected_cents INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','paid_out')),
+  opening INTEGER NOT NULL DEFAULT 0,
+  due_original TEXT,
+  paid_date TEXT,
   PRIMARY KEY (client_id, id)
 )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS chama_mgr_turn_seq ON chama_mgr_turn (client_id, mgr_id, seq)`,
