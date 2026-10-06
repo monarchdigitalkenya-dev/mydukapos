@@ -43,7 +43,7 @@ async function open(browser, base, app, { width = 1280, height = 800, theme = nu
   if (!ctx.__seeded) {
     ctx.__seeded = true;
     await ctx.route('**/api/**', (r) => r.abort());
-    await ctx.addInitScript(([h, inv, water, th, col]) => { localStorage.setItem('pos_cash_reg_on', '0');
+    await ctx.addInitScript(([h, inv, water, th, col]) => {
       if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1');
       const pre = water ? 'aqua_' : 'pos_';
       localStorage.setItem(pre + 'pw_hash', h); localStorage.setItem(pre + 'biz_name', 'C&T Solution');

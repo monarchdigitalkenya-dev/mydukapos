@@ -15,8 +15,6 @@ const { LPG_SCHEMA } = await import(pathToFileURL(path.join(ROOT, 'functions/api
 export const lpgMigrationText = () => '-- GENERATED from functions/api/_lpg-schema.js by tools/gen-migration.mjs — do not edit by hand.\n-- LPG / gas retail (zip 216). Safe to run more than once (IF NOT EXISTS) and never drops anything.\n\n' + LPG_SCHEMA.join(';\n\n') + ';\n';
 const { CHAMA_SCHEMA, CHAMA_SCHEMA_VERSION } = await import(pathToFileURL(path.join(ROOT, 'functions/api/_chama-schema.js')).href);
 export const chamaMigrationText = () => '-- GENERATED from functions/api/_chama-schema.js by tools/gen-migration.mjs — do not edit by hand.\n-- Chama (zip 217). Safe to run more than once (IF NOT EXISTS) and never drops anything.\n\n' + CHAMA_SCHEMA.map((s) => s.trim() + ';').join('\n\n') + '\n';
-const { CASH_SCHEMA } = await import(pathToFileURL(path.join(ROOT, 'functions/api/_cash-schema.js')).href);
-export const cashMigrationText = () => '-- GENERATED from functions/api/_cash-schema.js by tools/gen-migration.mjs — do not edit by hand.\n-- Cash Register (zip 234). Safe to run more than once (IF NOT EXISTS) and never drops anything.\n\n' + CASH_SCHEMA.map((x) => x.trim() + ';').join('\n\n') + '\n';
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   fs.mkdirSync(path.join(ROOT, 'migrations'), { recursive: true });
   fs.writeFileSync(path.join(ROOT, 'migrations/0001_ledger.sql'), migrationText());
@@ -25,6 +23,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   fs.writeFileSync(path.join(ROOT, 'migrations/0010_payroll.sql'), payrollMigrationText());
   fs.writeFileSync(path.join(ROOT, 'migrations/0011_lpg.sql'), lpgMigrationText());
   fs.writeFileSync(path.join(ROOT, 'migrations/0012_chama.sql'), chamaMigrationText());
-  fs.writeFileSync(path.join(ROOT, 'migrations/0013_cash_register.sql'), cashMigrationText());
-  console.log('wrote migrations/0001_ledger.sql, 0003_efficiency.sql, 0007_audit_idempotency.sql, 0010_payroll.sql, 0011_lpg.sql, 0012_chama.sql, 0013_cash_register.sql');
+  console.log('wrote migrations/0001_ledger.sql, 0003_efficiency.sql, 0007_audit_idempotency.sql, 0010_payroll.sql, 0011_lpg.sql, 0012_chama.sql');
 }

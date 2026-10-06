@@ -50,7 +50,7 @@ async function withApp(fn) {
 async function open(browser, base, app, o = {}) {
   const ctx = await browser.newContext({ viewport: { width: o.width || 390, height: 844 }, isMobile: true, hasTouch: true });
   await ctx.route('**/api/**', (r) => r.abort());
-  await ctx.addInitScript(([h, inv, extra]) => { localStorage.setItem('pos_cash_reg_on', '0');
+  await ctx.addInitScript(([h, inv, extra]) => {
     if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1');
     localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'Test Shop');
     localStorage.setItem('pos_inventory', JSON.stringify(inv));
@@ -257,7 +257,7 @@ test('shop: a wide screen (sidebar beside it) shows 4+ columns', { skip, timeout
   await withApp(async (browser, base) => {
     const ctx = await browser.newContext({ viewport: { width: 1600, height: 800 } });
     await ctx.route('**/api/**', (r) => r.abort());
-    await ctx.addInitScript(([h, inv]) => { localStorage.setItem('pos_cash_reg_on', '0'); if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1'); localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_inventory', JSON.stringify(inv)); localStorage.setItem('pos_cat_tiles', 'true'); }, [H, SHOP]);
+    await ctx.addInitScript(([h, inv]) => { if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1'); localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_inventory', JSON.stringify(inv)); localStorage.setItem('pos_cat_tiles', 'true'); }, [H, SHOP]);
     const page = await ctx.newPage(); const errors = []; page.on('pageerror', (e) => errors.push(String(e.message)));
     await page.goto(base + '/index.html'); await page.waitForTimeout(1300);
     await page.evaluate(() => { document.getElementById('login-screen').style.display = 'none'; }); await page.waitForTimeout(400);

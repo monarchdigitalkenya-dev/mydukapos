@@ -31,10 +31,8 @@ export async function boot(app, opts = {}) {
     url: opts.url || 'https://demo.mydukapos.store/', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: vc,
     beforeParse(w) {
       Object.entries(opts.storage || {}).forEach(([k, v]) => w.localStorage.setItem(k, v));
-      // zip 234: the Sales Counter cash register (open a cash session first) is OFF in tests unless a test turns it on - the hundreds of checkout tests are about something else
       // zip 233: whole-shilling rounding is ON in the app; the older money tests are about exact cents, so tests start with it off unless they ask
       if (!(opts.storage && 'pos_round_up' in opts.storage)) w.localStorage.setItem('pos_round_up', '0');
-      if (!(opts.storage && 'pos_cash_reg_on' in opts.storage)) w.localStorage.setItem('pos_cash_reg_on', '0');
       // zip 158: a real browser stops running a page's code when the page goes away; jsdom does not - a request that was still on its way
       // when a test closed a device answered later and the page's code, finding no document any more, threw (an unhandled rejection that
       // failed whichever test happened to be running: the multi-device chaos test). After close() no answer reaches the page.

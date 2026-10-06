@@ -58,7 +58,7 @@ async function open(browser, base, app, { width = 390, height = 844, reuse = nul
   const errors = []; page.on('pageerror', (e) => errors.push(String(e && e.message || e)));
   if (!reuse) {
     await ctx.route('**/api/**', (r) => r.abort());
-    await ctx.addInitScript(([h, inv, water, shop]) => { localStorage.setItem('pos_cash_reg_on', '0');
+    await ctx.addInitScript(([h, inv, water, shop]) => {
       if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1');
       const pre = water ? 'aqua_' : 'pos_';
       localStorage.setItem(pre + 'pw_hash', h); localStorage.setItem(pre + 'biz_name', 'Test Shop');
@@ -182,7 +182,7 @@ test('a cart line stays whole at 320 px wide too (long name, big amounts)', { sk
     const app = APPS[1];
     const c2 = await browser.newContext({ viewport: { width: 320, height: 640 }, isMobile: true, hasTouch: true });
     await c2.route('**/api/**', (r) => r.abort());
-    await c2.addInitScript(([h, inv]) => { localStorage.setItem('pos_cash_reg_on', '0'); if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1'); localStorage.setItem('pos_notif_prompt_last', String(Date.now())); localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'T'); localStorage.setItem('pos_inventory', JSON.stringify(inv)); }, [H, INV.map((p) => ({ ...p, price: p.price * 1234.5 }))]);
+    await c2.addInitScript(([h, inv]) => { if (sessionStorage.getItem('seeded')) return; sessionStorage.setItem('seeded', '1'); localStorage.setItem('pos_notif_prompt_last', String(Date.now())); localStorage.setItem('pos_pw_hash', h); localStorage.setItem('pos_biz_name', 'T'); localStorage.setItem('pos_inventory', JSON.stringify(inv)); }, [H, INV.map((p) => ({ ...p, price: p.price * 1234.5 }))]);
     const page = await c2.newPage(); const errors = []; page.on('pageerror', (e) => errors.push(String(e.message || e)));
     await page.goto(base + '/' + app.file); await page.waitForTimeout(1300);
     await page.evaluate(() => { document.getElementById('login-screen').style.display = 'none'; });
