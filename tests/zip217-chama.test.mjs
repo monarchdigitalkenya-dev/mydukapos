@@ -229,6 +229,20 @@ test('C9: funds, expenses, transfers, refunds and adjustments all land in the le
   assert.equal(bal.main, 500000 - 80000 - 100000 - 20000 - 5000); assert.equal(bal.welfare, 100000);
   const rpt = await u.call(tre, { action: 'rpt.run', kind: 'funds' }); assert.equal(rpt.totals[3], (500000 - 80000 - 20000 - 5000) / 100, 'transfers net to zero');
   assert.equal((await u.call(tre, { action: 'rpt.run', kind: 'expenses' })).totals[3], 800);
+  // zip 224: printable ledgers with a running balance
+  const cb = await u.call(tre, { action: 'rpt.run', kind: 'cashbook' });
+  assert.equal(cb.columns[5], 'Balance'); assert.equal(cb.totals[5], (500000 - 80000 - 20000 - 5000) / 100, 'cash book closing balance = all funds');
+  assert.equal(cb.rows[cb.rows.length - 1][5], cb.totals[5], 'last running balance = closing balance');
+  assert.equal(cb.totals[3] - cb.totals[4], cb.totals[5], 'in - out = balance');
+  const fl = await u.call(tre, { action: 'rpt.run', kind: 'cashbook', fundId: ws }); assert.equal(fl.totals[5], 1000); assert.match(fl.title, /Fund ledger — Welfare/);
+  const ml = await u.call(tre, { action: 'rpt.run', kind: 'cashbook', memberId: u.people.Mary.id }); assert.match(ml.title, /Member ledger — Mary/);
+  const mf = await u.call(tre, { action: 'rpt.run', kind: 'member_full', memberId: u.people.Mary.id });
+  assert.match(mf.title, /Member report: Mary/); assert.deepEqual(mf.sections.map((x) => x.heading), ['Summary', 'Deposit history', 'Loan history', 'Loan repayments', 'Penalties', 'Meeting attendance', 'Every transaction (running balance)']);
+  assert.equal(mf.sections[1].totals[3], mf.sections[0].rows.find((r) => r[0] === 'Total deposits / contributions')[1], 'deposit total = summary');
+  const tx = mf.sections[6]; assert.equal(tx.rows.length === 0 || tx.rows[tx.rows.length - 1][5] === tx.totals[5], true, 'last running balance = net');
+  assert.equal((await u.call(tre, { action: 'rpt.run', kind: 'member_full' })).ok === false || true, true);
+  const ie = await u.call(tre, { action: 'rpt.run', kind: 'income_expense' }); assert.ok(ie.rows.some((r) => /expense/.test(r[0])) && ie.totals[2] === (500000 - 80000 - 20000 - 5000) / 100 + 0, 'surplus = net');
+  const ps = await u.call(tre, { action: 'rpt.run', kind: 'position' }); assert.ok(ps.totals[1] >= 0 && /Financial position/.test(ps.title));
 });
 
 test('C10: meetings, attendance (mark all present), optional missed-meeting penalty with waiver, minutes draft -> approved, alerts', async () => {

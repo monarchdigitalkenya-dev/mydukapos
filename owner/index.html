@@ -19569,6 +19569,339 @@ async function storageMeasureUnknown() {
     };
 })();
 </script>
+<!-- @shared-block:sidebar-nav:begin -->
+<!-- SIDEBAR NAV ------------------------------------------------------------------------------------------------------------------------------
+         zip 202. The long horizontal tab bar is replaced by a modern, grouped, collapsible left sidebar (a slide-out drawer on tablets and phones).
+         NAVIGATION ONLY - NOTHING ABOUT ACCESS CHANGES:
+           * The sidebar is BUILT FROM the real tab buttons (.tab-link[data-tab]) that the app already shows or hides per user. An entry is listed only
+             when the app's own button is visible (applyServerVisibility / business-type rules set style.display on it), so a staff member sees exactly
+             the tabs they were given and nothing else: a group is only a visual folder, it never grants its children, and a group with no visible child
+             disappears completely.
+           * Clicking an entry clicks the REAL tab button, so guardedSwitchTab, locked-tab management passwords, per-tab extras and every existing rule run
+             exactly as before. The old bar is only moved out of sight (never deleted): every script that reads it keeps working.
+           * The header keeps its theme switch, sync dot, branch pill, notifications and Clock In/Out menu; the sidebar adds the brand, a live clock, a
+             user card with a visible Clock Out and the branch.
+         If anything here fails, it switches itself off and the old tab bar is shown again. -->
+<style id="sidebar-nav-css">
+    :root { --snav-w: 248px; --snav-wc: 68px; }
+    #snav, #snav-scrim, #snav-burger, #snav-clock, #snav-fly { display: none; }
+    body.snav-on { padding-left: var(--snav-w); transition: padding-left .2s ease; }
+    body.snav-on.snav-collapsed { padding-left: var(--snav-wc); }
+    /* the old bar stays in the page (scripts measure and reorder it) but is out of sight and out of the tab order */
+    body.snav-on nav.tabs { position: absolute !important; left: -99999px !important; top: 0 !important; width: 1500px !important; height: 0 !important; overflow: hidden !important; visibility: hidden !important; }
+    body.snav-on #snav { display: flex; }
+    body.snav-on #snav-burger { display: inline-flex; }
+    body.snav-on #snav-clock { display: block; }
+    body.snav-on .header-brand { display: none; }
+    #snav { position: fixed; z-index: 9400; top: 0; left: 0; bottom: 0; width: var(--snav-w); flex-direction: column; box-sizing: border-box; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50);
+        border-right: 1px solid var(--border-color, #e1e6ea); box-shadow: 2px 0 14px rgba(20, 35, 50, .06); transition: width .2s ease, transform .22s ease; font-size: 14px; }
+    body.snav-collapsed #snav { width: var(--snav-wc); }
+    #snav .sn-brand { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 14px 14px 12px; min-height: 64px; box-sizing: border-box; border-bottom: 1px solid var(--border-color, #e1e6ea); }
+    #snav .sn-logo { flex: 0 0 auto; width: 38px; height: 38px; border-radius: 10px; background: var(--accent, #3498db); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; overflow: hidden; }
+    #snav .sn-logo img { width: 100%; height: 100%; object-fit: cover; }
+    #snav .sn-name { min-width: 0; line-height: 1.2; }
+    #snav .sn-name b { display: block; font-size: 15px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #snav .sn-name small { display: block; font-size: 11px; opacity: .6; letter-spacing: .08em; text-transform: uppercase; }
+    #snav .sn-list { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 10px 10px 12px; scrollbar-width: thin; }
+    #snav .sn-item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 40px; margin: 0 0 2px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: inherit; font: inherit; font-weight: 600; text-align: left; cursor: pointer; position: relative; transition: background .15s ease, color .15s ease; }
+    #snav .sn-item:hover { background: var(--bg-surface-alt, #f4f6f7); }
+    #snav .sn-item:focus-visible { outline: 2px solid var(--accent, #3498db); outline-offset: 1px; }
+    #snav .sn-ic { flex: 0 0 22px; width: 22px; text-align: center; font-size: 17px; line-height: 1; }
+    #snav .sn-tx { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #snav .sn-bd { flex: 0 0 auto; min-width: 18px; padding: 1px 6px; border-radius: 999px; background: var(--danger, #e74c3c); color: #fff; font-size: 11px; font-weight: 800; text-align: center; }
+    #snav .sn-chev { flex: 0 0 auto; font-size: 12px; opacity: .55; transition: transform .18s ease; }
+    #snav .sn-group.open > .sn-parent .sn-chev { transform: rotate(90deg); }
+    #snav .sn-item.active { background: var(--accent, #3498db); color: #fff; box-shadow: 0 2px 8px rgba(52, 152, 219, .35); }
+    #snav .sn-item.active .sn-chev { opacity: .9; }
+    #snav .sn-parent.has-active:not(.active) { color: var(--accent, #3498db); }
+    #snav .sn-sub { overflow: hidden; max-height: 0; opacity: 0; transition: max-height .22s ease, opacity .18s ease; margin-left: 20px; padding-left: 8px; border-left: 2px solid var(--border-color, #e1e6ea); }
+    #snav .sn-group.open > .sn-sub { max-height: 900px; opacity: 1; margin-top: 2px; margin-bottom: 6px; }
+    #snav .sn-child { min-height: 36px; font-weight: 500; font-size: 13.5px; }
+    #snav .sn-child .sn-ic { flex-basis: 18px; width: 18px; font-size: 14px; }
+    #snav .sn-foot { flex: 0 0 auto; padding: 10px; border-top: 1px solid var(--border-color, #e1e6ea); background: var(--bg-surface-alt, #f4f6f7); }
+    #snav .sn-user { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; min-width: 0; }
+    #snav .sn-av { flex: 0 0 auto; width: 36px; height: 36px; border-radius: 50%; background: var(--primary, #2c3e50); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; }
+    #snav .sn-who { min-width: 0; line-height: 1.2; }
+    #snav .sn-who b { display: block; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #snav .sn-who small { font-size: 11px; opacity: .65; }
+    #snav .sn-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 40px; border: 1px solid var(--border-color, #dfe6e9); border-radius: 10px; background: var(--bg-surface, #fff); color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
+    #snav .sn-btn:hover { background: var(--bg-surface-alt, #eef1f4); }
+    #snav .sn-out { background: var(--danger, #e74c3c); border-color: var(--danger, #e74c3c); color: #fff; }
+    #snav .sn-out:hover { filter: brightness(.93); background: var(--danger, #e74c3c); }
+    #snav .sn-branch { margin-top: 8px; font-size: 12.5px; font-weight: 600; }
+    #snav .sn-branch[hidden], #snav .sn-out[hidden] { display: none; }
+    /* collapsed rail: icons only, with a tooltip (title) and a fly-out for groups */
+    body.snav-collapsed #snav .sn-name, body.snav-collapsed #snav .sn-tx, body.snav-collapsed #snav .sn-chev, body.snav-collapsed #snav .sn-sub,
+    body.snav-collapsed #snav .sn-who, body.snav-collapsed #snav .sn-btn .sn-lbl { display: none; }
+    body.snav-collapsed #snav .sn-brand { justify-content: center; padding: 14px 0; }
+    body.snav-collapsed #snav .sn-item { justify-content: center; padding: 0; }
+    body.snav-collapsed #snav .sn-bd { position: absolute; top: 2px; right: 6px; min-width: 16px; font-size: 10px; padding: 0 4px; }
+    body.snav-collapsed #snav .sn-user { justify-content: center; }
+    #snav-fly { position: fixed; z-index: 9600; min-width: 200px; max-width: 260px; padding: 8px; border-radius: 12px; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border: 1px solid var(--border-color, #e1e6ea); box-shadow: 0 10px 30px rgba(20, 35, 50, .22); }
+    #snav-fly.on { display: block; }
+    #snav-fly .sn-ft { padding: 4px 10px 6px; font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; opacity: .6; }
+    #snav-fly .sn-item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 38px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+    #snav-fly .sn-item:hover { background: var(--bg-surface-alt, #f4f6f7); }
+    #snav-fly .sn-item.active { background: var(--accent, #3498db); color: #fff; }
+    #snav-fly .sn-ic { width: 20px; text-align: center; }
+    /* header additions */
+    #snav-burger { align-items: center; justify-content: center; width: 42px; height: 42px; margin-right: 10px; border: 1px solid rgba(255, 255, 255, .25); border-radius: 10px; background: rgba(255, 255, 255, .1); color: #fff; font-size: 20px; cursor: pointer; flex: 0 0 auto; }
+    #snav-burger:hover { background: rgba(255, 255, 255, .2); }
+    #snav-clock { margin-right: 6px; padding: 2px 10px; text-align: right; line-height: 1.15; color: #fff; white-space: nowrap; }
+    #snav-clock b { display: block; font-size: 17px; font-weight: 800; letter-spacing: .01em; }
+    #snav-clock small { display: block; font-size: 11px; opacity: .8; }
+    body.snav-on.snav-open .floating-kb-btn, body.snav-on.snav-open .scroll-to-top-btn { display: none !important; }   /* the open drawer is never covered by them */
+    @media (min-width: 901px) {
+        body.snav-on header { padding-left: 18px; }
+        /* the floating keyboard / scroll-to-top buttons keep to the PAGE's bottom-left corner, not on top of the sidebar's user card */
+        body.snav-on .floating-kb-btn, body.snav-on .scroll-to-top-btn { left: calc(var(--snav-w) + 18px); }
+        body.snav-on.snav-collapsed .floating-kb-btn, body.snav-on.snav-collapsed .scroll-to-top-btn { left: calc(var(--snav-wc) + 18px); }
+    }
+    /* tablets and phones: the sidebar is a drawer over the page */
+    @media (max-width: 900px) {
+        body.snav-on, body.snav-on.snav-collapsed { padding-left: 0; }
+        body.snav-on .header-brand { display: flex; }
+        #snav, body.snav-collapsed #snav { width: min(calc(84vw / var(--pos-z,1)), 300px); transform: translateX(-102%); box-shadow: none; }
+        body.snav-open #snav { transform: none; box-shadow: 6px 0 30px rgba(0, 0, 0, .3); }
+        body.snav-collapsed #snav .sn-name, body.snav-collapsed #snav .sn-tx, body.snav-collapsed #snav .sn-chev, body.snav-collapsed #snav .sn-sub,
+        body.snav-collapsed #snav .sn-who, body.snav-collapsed #snav .sn-btn .sn-lbl { display: revert; }
+        body.snav-collapsed #snav .sn-item { justify-content: flex-start; padding: 0 12px; }
+        body.snav-collapsed #snav .sn-brand { justify-content: flex-start; padding: 14px 14px 12px; }
+        body.snav-collapsed #snav .sn-bd { position: static; }
+        body.snav-collapsed #snav .sn-sub { display: block; }
+        #snav-scrim { position: fixed; z-index: 9350; inset: 0; background: rgba(0, 0, 0, .45); }
+        body.snav-open #snav-scrim { display: block; }
+        #snav-clock { margin-right: 0; padding: 0 6px; }
+        #snav-clock small { display: none; }
+        #snav-clock b { font-size: 14px; }
+    }
+    @media print { #snav, #snav-scrim, #snav-burger, #snav-clock, #snav-fly { display: none !important; } body.snav-on { padding-left: 0 !important; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    var GROUPS = [
+        { id: 'clinical', label: 'Clinical', icon: '🩺', tabs: ['reception-tab', 'appointments-tab', 'queue-tab', 'diagnosis-tab', 'emergency-tab', 'maternity-tab', 'labour-tab', 'postnatal-tab', 'child-tab', 'laboratory-tab', 'radiology-tab', 'theatre-tab', 'pharmacy-tab', 'referrals-tab', 'discharge-tab', 'patients-tab'] },
+        { id: 'sales', label: 'Sales', icon: '🛍️', tabs: ['orders-tab', 'deliveries-tab', 'returns-tab'] },
+        { id: 'ops', label: 'Operations', icon: '🧩', tabs: ['gas-tab', 'services-counter-tab', 'hiring-tab', 'assemble-tab', 'production-tab', 'rentals-tab', 'kitchen-tab', 'tabs-tab', 'service-tab', 'kds-tab', 'bar-tab', 'facilities-tab', 'hotel-tab', 'custom-orders-tab', 'tables-rooms-tab', 'tank-tab', 'bookings-tab', 'client-registry-tab'] },
+        { id: 'stock', label: 'Stock', icon: '📦', tabs: ['inventory-list-tab', 'inventory-tab', 'add-item-tab', 'materials-tab', 'restock-tab', 'restocking-tab', 'stock-take-tab', 'barcode-tab'] },
+        { id: 'fin', label: 'Finances', icon: '💰', tabs: ['daily-sales-tab', 'profits-tab', 'bills-tab', 'debts-tab', 'trade-credits-tab', 'cash-shift-tab', 'accounts-tab'] },
+        { id: 'rep', label: 'Reports', icon: '📈', tabs: ['reports-tab', 'hosp-reports-tab', 'hospital-report-tab', 'stock-report-tab', 'trends-tab', 'cross-branch-sales-tab'] },
+        { id: 'cust', label: 'Customers', icon: '👥', tabs: ['customers-tab'] },
+        { id: 'staff', label: 'Staff', icon: '🧑‍💼', tabs: ['staff-tab', 'attendance-tab', 'payroll-tab'] },
+        { id: 'biz', label: 'Business', icon: '🏬', tabs: ['store-tab', 'contracts-tab'] },
+        { id: 'sys', label: 'System', icon: '⚙️', tabs: ['audit-tab', 'settings-tab'] }
+    ];
+    var FLAT = ['sales-tab', 'dashboard-tab'];
+    /* zip 219: the Owner Console gets the same sidebar, with its own folders */
+    if ($owner()) {
+        GROUPS = [
+            { id: 'o-clients', label: 'Clients & Links', icon: '🔗', tabs: ['sales-tab', 'demo-links-tab', 'permanent-links-tab', 'trash-tab'] },
+            { id: 'o-money', label: 'Money', icon: '💰', tabs: ['daily-sales-tab', 'profits-tab', 'bills-tab'] },
+            { id: 'o-content', label: 'Content', icon: '🛍️', tabs: ['website-tab', 'owner-catalog-tab', 'owner-offers-tab', 'owner-messages-tab', 'tables-rooms-tab'] },
+            { id: 'o-watch', label: 'Monitoring', icon: '🩺', tabs: ['health-tab', 'errors-tab', 'storage-tab'] },
+            { id: 'o-team', label: 'Team', icon: '👥', tabs: ['staff-tab'] },
+            { id: 'o-sys', label: 'System', icon: '⚙️', tabs: ['owner-apps-tab', 'settings-tab'] }
+        ];
+        FLAT = ['dashboard-tab'];
+    }
+    function $owner() { return !!document.getElementById('owner-apps-tab-btn'); }
+    var K_COL = 'pos_snav_collapsed', K_OPEN = 'pos_snav_open';
+    var MQ = '(max-width: 900px)';
+    var body = document.body, aside = null, listEl = null, footEl = null, fly = null, lastSig = '', openGroups = {}, raf = 0, on = false, burger = null, clock = null, scrim = null;
+    var PICT = /^\s*(\p{Extended_Pictographic}️?(?:‍\p{Extended_Pictographic}️?)*)/u;
+    var LEAD = /^[\s\p{Extended_Pictographic}️‍]+/u;
+
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function phone() { return !!(window.matchMedia && window.matchMedia(MQ).matches); }
+    function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { /* not remembered */ } return null; }
+
+    // every real tab button, wherever the old bar's overflow logic has put it
+    function tabButtons() { return Array.prototype.slice.call(document.querySelectorAll('.tab-link[data-tab]')); }
+    function allowed(b) { return !!b && b.style.display !== 'none' && !b.hidden && !b.classList.contains('ptl-tab-off') && !!$(b.getAttribute('data-tab')); }
+    function labelOf(b) {
+        var c = b.cloneNode(true);
+        Array.prototype.forEach.call(c.querySelectorAll('.deliveries-badge, [id$="-badge"]'), function (x) { x.remove(); });
+        var t = (c.textContent || '').replace(/\s+/g, ' ').trim();
+        var m = PICT.exec(t);
+        return { icon: m ? m[1] : '•', text: t.replace(LEAD, '').trim() || t };
+    }
+    function badgeOf(b) {
+        var x = b.querySelector('.deliveries-badge, [id$="-badge"]');
+        if (!x || x.style.display === 'none') return '';
+        var n = (x.textContent || '').trim();
+        return n && n !== '0' ? n : '';
+    }
+
+    function model() {
+        var btns = tabButtons().filter(allowed), byId = {}, order = [];
+        btns.forEach(function (b) { var id = b.getAttribute('data-tab'); if (!byId[id]) { byId[id] = b; order.push(id); } });
+        var used = {}, items = [];
+        order.forEach(function (id) { if (FLAT.indexOf(id) >= 0) { used[id] = 1; items.push({ kind: 'item', id: id }); } });
+        GROUPS.forEach(function (g) {
+            var kids = g.tabs.filter(function (id) { return byId[id]; });
+            kids.forEach(function (id) { used[id] = 1; });
+            if (kids.length) items.push({ kind: 'group', g: g, kids: kids });
+        });
+        var rest = order.filter(function (id) { return !used[id]; });
+        if (rest.length) items.push({ kind: 'group', g: { id: 'more', label: 'More', icon: '☰' }, kids: rest });
+        return { byId: byId, items: items };
+    }
+
+    function itemHtml(id, byId, cls) {
+        var b = byId[id], l = labelOf(b), bd = badgeOf(b);
+        return '<button type="button" class="sn-item ' + cls + (b.classList.contains('active') ? ' active' : '') + '" data-go="' + esc(id) + '" title="' + esc(l.text) + '"><span class="sn-ic">' + l.icon + '</span><span class="sn-tx">' + esc(l.text) + '</span>' + (bd ? '<span class="sn-bd">' + esc(bd) + '</span>' : '') + '</button>';
+    }
+    function signature(m) {
+        return m.items.map(function (it) {
+            return it.kind === 'item' ? it.id + (m.byId[it.id].classList.contains('active') ? '*' : '') + labelOf(m.byId[it.id]).text + badgeOf(m.byId[it.id])
+                : it.g.id + ':' + it.kids.map(function (k) { return k + (m.byId[k].classList.contains('active') ? '*' : '') + labelOf(m.byId[k]).text + badgeOf(m.byId[k]); }).join(',');
+        }).join('|') + '#' + userSig();
+    }
+
+    // ---- who is signed in (read from the app's own button; Clock Out calls the app's own functions) ----
+    function serving() { try { return typeof currentServer !== 'undefined' && !!currentServer; } catch (e) { return false; } }
+    function userInfo() {
+        var raw = ($('server-btn') && $('server-btn').textContent || '').replace(/[▾▼]/g, '').replace(/^[\s\p{Extended_Pictographic}️]+/u, '').trim();
+        var staff = serving();
+        var name = staff ? (raw || 'Staff') : 'Owner / Admin';
+        return { name: name, staff: staff, role: staff ? 'Staff' : 'Administrator' };
+    }
+    function branchName() {
+        var p = $('branch-pill'); if (!p || p.style.display === 'none' || !p.offsetParent && !p.textContent.trim()) return '';
+        return (p.textContent || '').replace(/[▾▼]/g, '').replace(/\s+/g, ' ').trim();
+    }
+    function userSig() { var u = userInfo(); return u.name + '|' + u.staff + '|' + branchName(); }
+    function footHtml() {
+        var u = userInfo(), br = branchName();
+        return '<div class="sn-user"><div class="sn-av">' + esc((u.name || '?').charAt(0).toUpperCase()) + '</div><div class="sn-who"><b>' + esc(u.name) + '</b><small>' + esc(u.role) + '</small></div></div>'
+            + ($owner() ? '' : '<button type="button" class="sn-btn sn-out" data-act="out" title="Clock Out / end shift"><span>🕒</span><span class="sn-lbl">Clock Out</span></button>')
+            + (br ? '<button type="button" class="sn-btn sn-branch" data-act="branch" title="Switch branch"><span>🏪</span><span class="sn-lbl">' + esc(br) + '</span></button>' : '');
+    }
+
+    function build() {
+        var m = model(), sig = signature(m);
+        if (sig === lastSig) return;
+        lastSig = sig;
+        var h = '';
+        m.items.forEach(function (it) {
+            if (it.kind === 'item') { h += itemHtml(it.id, m.byId, 'sn-top'); return; }
+            var active = it.kids.some(function (k) { return m.byId[k].classList.contains('active'); });
+            if (active) openGroups[it.g.id] = true;
+            h += '<div class="sn-group' + (openGroups[it.g.id] ? ' open' : '') + '" data-g="' + it.g.id + '"><button type="button" class="sn-item sn-parent' + (active ? ' has-active' : '') + '" data-grp="' + it.g.id + '" aria-expanded="' + (openGroups[it.g.id] ? 'true' : 'false') + '" title="' + esc(it.g.label) + '"><span class="sn-ic">' + it.g.icon + '</span><span class="sn-tx">' + esc(it.g.label) + '</span><span class="sn-chev">›</span></button><div class="sn-sub">'
+                + it.kids.map(function (k) { return itemHtml(k, m.byId, 'sn-child'); }).join('') + '</div></div>';
+        });
+        listEl.innerHTML = h || '<div style="padding:14px;opacity:.7;font-size:13px;">Nothing assigned to this account yet.</div>';
+        footEl.innerHTML = footHtml();
+        try { var t = $('app-title'), n = aside.querySelector('.sn-name b'); if (t && n) n.textContent = (t.textContent || '').replace(/^[\s\p{Extended_Pictographic}️]+/u, '').trim() || 'POS'; } catch (e) { /* cosmetic */ }
+    }
+    function schedule() { if (raf) return; raf = requestAnimationFrame(function () { raf = 0; try { build(); } catch (e) { fail(e); } }); }
+
+    function go(id) {
+        var b = null; tabButtons().some(function (x) { if (x.getAttribute('data-tab') === id) { b = x; return true; } return false; });
+        if (!b) return;
+        hideFly();
+        if (phone()) closeDrawer();
+        b.click();
+        schedule(); setTimeout(schedule, 250);
+    }
+    function clockOut() {
+        hideFly(); if (phone()) closeDrawer();
+        try {
+            if (serving() && typeof logoutServer === 'function') { logoutServer(); return; }
+            if (typeof logoutAdmin === 'function') { logoutAdmin(); return; }
+        } catch (e) { /* fall through to the app's own menu */ }
+        try { var sb = $('server-btn'); if (sb) sb.click(); } catch (e2) { /* nothing more to try */ }
+    }
+
+    // ---- collapse / drawer ----
+    function setCollapsed(v) { body.classList.toggle('snav-collapsed', !!v); store(K_COL, v ? '1' : '0'); hideFly(); try { window.dispatchEvent(new Event('resize')); } catch (e) { /* cosmetic */ } }
+    function openDrawer() { body.classList.add('snav-open'); }
+    function closeDrawer() { body.classList.remove('snav-open'); }
+    function burgerClick() { if (phone()) { body.classList.contains('snav-open') ? closeDrawer() : openDrawer(); } else setCollapsed(!body.classList.contains('snav-collapsed')); }
+
+    function hideFly() { if (fly) { fly.classList.remove('on'); fly.innerHTML = ''; } }
+    function showFly(btn, gid) {
+        var g = aside.querySelector('.sn-group[data-g="' + gid + '"]'); if (!g) return;
+        var r = btn.getBoundingClientRect();
+        fly.innerHTML = '<div class="sn-ft">' + esc(btn.getAttribute('title') || '') + '</div>' + g.querySelector('.sn-sub').innerHTML.replace(/sn-child/g, '');
+        fly.style.left = (r.right + 8) + 'px';
+        fly.style.top = Math.max(8, Math.min(r.top, window.innerHeight - 40 - g.querySelectorAll('.sn-child').length * 38)) + 'px';
+        fly.classList.add('on');
+    }
+
+    function onAsideClick(e) {
+        var t = e.target.closest ? e.target : null; if (!t) return;
+        var act = t.closest('[data-act]');
+        if (act) { if (act.getAttribute('data-act') === 'out') clockOut(); else { var p = $('branch-pill'); hideFly(); if (phone()) closeDrawer(); if (p) p.click(); } return; }
+        var it = t.closest('[data-go]'); if (it) { go(it.getAttribute('data-go')); return; }
+        var par = t.closest('[data-grp]');
+        if (par) {
+            var gid = par.getAttribute('data-grp');
+            if (body.classList.contains('snav-collapsed') && !phone()) { fly && fly.classList.contains('on') && fly.getAttribute('data-g') === gid ? hideFly() : (showFly(par, gid), fly.setAttribute('data-g', gid)); return; }
+            var grp = par.parentNode, open = !grp.classList.contains('open');
+            grp.classList.toggle('open', open); par.setAttribute('aria-expanded', open ? 'true' : 'false'); openGroups[gid] = open;
+            try { store(K_OPEN, JSON.stringify(openGroups)); } catch (e2) { /* not remembered */ }
+        }
+    }
+
+    // ---- clock ----
+    function tick() {
+        if (!clock) return;
+        var d = new Date();
+        clock.innerHTML = '<b>' + esc(d.toLocaleTimeString('en-GB', { hour: 'numeric', minute: '2-digit', hour12: true }).replace(/\bam\b/, 'AM').replace(/\bpm\b/, 'PM')) + '</b><small>' + esc(d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })) + '</small>';
+    }
+
+    function fail(e) { try { console.warn('sidebar nav off', e); } catch (x) { /* ignore */ } off(); }
+    function off() {
+        on = false; body.classList.remove('snav-on', 'snav-open', 'snav-collapsed');
+        [aside, scrim, burger, clock, fly].forEach(function (n) { if (n && n.parentNode) n.parentNode.removeChild(n); });
+        aside = scrim = burger = clock = fly = null;
+    }
+
+    function start() {
+        try {
+            if (!$('payment-toggle') && !document.querySelector('nav.tabs')) return;           // not a POS page
+            var nav = document.querySelector('nav.tabs'), header = document.querySelector('header'); if (!nav || !header) return;
+            try { openGroups = JSON.parse(store(K_OPEN) || '{}') || {}; } catch (e) { openGroups = {}; }
+            aside = document.createElement('aside'); aside.id = 'snav'; aside.setAttribute('aria-label', 'Main navigation');
+            aside.innerHTML = '<div class="sn-brand"><div class="sn-logo">🏪</div><div class="sn-name"><b>POS</b><small>Point of sale</small></div></div><nav class="sn-list" aria-label="Modules"></nav><div class="sn-foot"></div>';
+            listEl = aside.querySelector('.sn-list'); footEl = aside.querySelector('.sn-foot');
+            var logoImg = $('header-logo');
+            if (logoImg && logoImg.getAttribute('src')) { var im = document.createElement('img'); im.alt = ''; im.src = logoImg.getAttribute('src'); aside.querySelector('.sn-logo').textContent = ''; aside.querySelector('.sn-logo').appendChild(im); }
+            scrim = document.createElement('div'); scrim.id = 'snav-scrim';
+            fly = document.createElement('div'); fly.id = 'snav-fly';
+            burger = document.createElement('button'); burger.type = 'button'; burger.id = 'snav-burger'; burger.setAttribute('aria-label', 'Menu'); burger.textContent = '☰';
+            clock = document.createElement('div'); clock.id = 'snav-clock'; clock.setAttribute('aria-live', 'off');
+            body.insertBefore(aside, body.firstChild); body.appendChild(scrim); body.appendChild(fly);
+            header.insertBefore(burger, header.firstChild);
+            var acts = header.querySelector('.header-actions'); if (acts) acts.insertBefore(clock, acts.firstChild); else header.appendChild(clock);
+            if (store(K_COL) === '1' && !phone()) body.classList.add('snav-collapsed');
+            body.classList.add('snav-on'); on = true;
+            aside.addEventListener('click', onAsideClick); fly.addEventListener('click', function (e) { var it = e.target.closest && e.target.closest('[data-go]'); if (it) go(it.getAttribute('data-go')); });
+            burger.addEventListener('click', burgerClick); scrim.addEventListener('click', closeDrawer);
+            document.addEventListener('click', function (e) { if (fly && fly.classList.contains('on') && !(e.target.closest && (e.target.closest('#snav-fly') || e.target.closest('#snav .sn-parent')))) hideFly(); });
+            document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { hideFly(); closeDrawer(); } });
+            try {
+                var mo = new MutationObserver(schedule);
+                var opts = { attributes: true, attributeFilter: ['class', 'style', 'hidden'], subtree: true, childList: true };
+                mo.observe(nav, opts);
+                var more = $('tabs-more-menu'); if (more && !nav.contains(more)) mo.observe(more, opts);
+                var sb = $('server-btn'); if (sb) mo.observe(sb, { childList: true, characterData: true, subtree: true });
+                var bp = $('branch-pill'); if (bp) mo.observe(bp, { childList: true, characterData: true, subtree: true, attributes: true });
+            } catch (e) { /* the poll below covers it */ }
+            setInterval(function () { try { if (on) { build(); } } catch (e) { fail(e); } }, 1000);
+            setInterval(tick, 15000); tick();
+            build();
+            window.addEventListener('resize', function () { if (!phone()) closeDrawer(); hideFly(); });
+            window.sidebarNav = { rebuild: function () { lastSig = ''; build(); }, collapse: setCollapsed, open: openDrawer, close: closeDrawer, on: function () { return on; }, off: off };
+        } catch (e) { fail(e); }
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(start, 0); }); else setTimeout(start, 0);
+})();
+</script>
+<!-- @shared-block:sidebar-nav:end -->
 <!-- @shared-block:form-controls:begin -->
 <!-- FORM CONTROLS (zip 186) ------------------------------------------------------
      ONE consistent, bigger, modern look for every text box in every app: text / number / tel / email / password / search / url /

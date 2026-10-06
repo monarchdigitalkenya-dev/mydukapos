@@ -160,9 +160,72 @@
             } catch (e) { /* none */ }
             return out;
         }
-        function categories() { return hotelMode() ? hotelCategories() : genericCategories(); }
+        /* ---------- zip 219: the ORDER of categories and sub-categories ---------- */
+        var LS_ORD = 'pos_cat_order', MODES = ['default', 'manual', 'name', 'name-desc', 'items', 'sales'];
+        var MODE_LABEL = { 'default': 'Standard (as before)', manual: 'My own order (arrange with ▲ ▼)', name: 'Name A → Z', 'name-desc': 'Name Z → A', items: 'Most items first', sales: 'Best selling first' };
+        function ordGet() {
+            var o = null; try { o = JSON.parse(lsGet(LS_ORD) || 'null'); } catch (e) { o = null; }
+            if (!o || typeof o !== 'object' || Array.isArray(o)) o = {};
+            var subs = {}; if (o.subs && typeof o.subs === 'object' && !Array.isArray(o.subs)) Object.keys(o.subs).forEach(function (k) { if (Array.isArray(o.subs[k])) subs[k] = o.subs[k].filter(function (x) { return typeof x === 'string'; }); });
+            return { mode: MODES.indexOf(o.mode) >= 0 ? o.mode : 'default', manual: Array.isArray(o.manual) ? o.manual.filter(function (x) { return typeof x === 'string'; }) : [], subs: subs };
+        }
+        function ordSave(o) { lsSet(LS_ORD, JSON.stringify(o)); pushSoon(); lastMode = ''; try { renderPanel(); } catch (e) { /* not open */ } refresh(); }
+        var soldCache = null, soldAt = 0;
+        function soldByCat() {
+            if (soldCache && Date.now() - soldAt < 30000) return soldCache;
+            var m = {}, inv, log, byCode = {};
+            try { inv = inventory; log = salesLog; } catch (e) { inv = []; log = []; }
+            (Array.isArray(inv) ? inv : []).forEach(function (p) { if (p && p.code != null) byCode[p.code] = normCat(p.category) || 'uncategorised'; });
+            (Array.isArray(log) ? log : []).forEach(function (sale) {
+                if (!sale || sale.voided || !Array.isArray(sale.items)) return;
+                sale.items.forEach(function (it) { var c = byCode[it && it.code]; if (c) m[c] = (m[c] || 0) + (Number(it.qty) || 0); });
+            });
+            soldCache = m; soldAt = Date.now(); return m;
+        }
+        /* orders a list of { label, n } records. manualKeys = the saved order (labels); anything not in it goes after, A-Z. `last` stays at the end. */
+        function orderList(list, labelOf, nOf, manualKeys, isLast) {
+            var o = ordGet(), mode = o.mode; if (mode === 'default' || !list.length) return list;
+            var idx = {}; (manualKeys || []).forEach(function (k, i) { if (idx[normCat(k)] === undefined) idx[normCat(k)] = i; });
+            var sold = mode === 'sales' ? soldByCat() : null, base = {}; list.forEach(function (x, i) { base[labelOf(x)] = i; });
+            var arr = list.slice();
+            arr.sort(function (a, b) {
+                var la = labelOf(a), lb = labelOf(b);
+                if (isLast && isLast(a) !== isLast(b)) return isLast(a) ? 1 : -1;
+                var r = 0;
+                if (mode === 'manual') { var ia = idx[normCat(la)], ib = idx[normCat(lb)]; r = (ia === undefined ? 1e6 : ia) - (ib === undefined ? 1e6 : ib); if (r === 0 && ia === undefined) r = la.localeCompare(lb, undefined, { sensitivity: 'base' }); }
+                else if (mode === 'name') r = la.localeCompare(lb, undefined, { sensitivity: 'base' });
+                else if (mode === 'name-desc') r = lb.localeCompare(la, undefined, { sensitivity: 'base' });
+                else if (mode === 'items') r = (nOf ? (nOf(b) || 0) - (nOf(a) || 0) : 0);
+                else if (mode === 'sales') r = (sold[normCat(lb) || 'uncategorised'] || 0) - (sold[normCat(la) || 'uncategorised'] || 0);
+                return r || (base[la] - base[lb]);
+            });
+            return arr;
+        }
+        function categories() {
+            var list = hotelMode() ? hotelCategories() : genericCategories();
+            return orderList(list, function (c) { return c.label; }, function (c) { return c.n; }, ordGet().manual, function (c) { return c.norm === '' && normCat(c.label) === 'uncategorised'; });
+        }
+        window.__ctlOrderChips = function (chips) {           // the category chip bar of the Hotel: same order as the tiles
+            try {
+                if (!Array.isArray(chips) || ordGet().mode === 'default') return chips;
+                var all = chips.filter(function (c) { return c.id === HOSP_CAT_ALL; }), none = chips.filter(function (c) { return c.id === HOSP_CAT_NONE; }), rest = chips.filter(function (c) { return c.id !== HOSP_CAT_ALL && c.id !== HOSP_CAT_NONE; });
+                return all.concat(orderList(rest, function (c) { return c.label; }, function (c) { return c.n; }, ordGet().manual), none);
+            } catch (e) { return chips; }
+        };
         function hotelSubs(cat) {
-            try { if (!cat || cat.all || typeof hospSubList !== 'function') return []; var l = hospSubList(cat.id); return Array.isArray(l) ? l : []; } catch (e) { return []; }
+            try {
+                if (!cat || cat.all || typeof hospSubList !== 'function') return [];
+                var l = hospSubList(cat.id); if (!Array.isArray(l)) return [];
+                var o = ordGet(), mode = o.mode === 'items' || o.mode === 'sales' ? 'default' : o.mode;   // sub-categories: manual or by name
+                if (mode === 'default') return l;
+                var arr = l.slice(), mk = o.subs[cat.key] || [];
+                arr.sort(function (a, b) {
+                    var na = String(a.name), nb = String(b.name);
+                    if (mode === 'manual') { var ia = mk.indexOf(na), ib = mk.indexOf(nb); return (ia < 0 ? 1e6 : ia) - (ib < 0 ? 1e6 : ib) || na.localeCompare(nb, undefined, { sensitivity: 'base' }); }
+                    return mode === 'name-desc' ? nb.localeCompare(na, undefined, { sensitivity: 'base' }) : na.localeCompare(nb, undefined, { sensitivity: 'base' });
+                });
+                return arr;
+            } catch (e) { return []; }
         }
         function allItemsCount(cats) { var n = 0; cats.forEach(function (c) { n += c.n; }); return n; }
 
@@ -348,6 +411,7 @@
             if (lsGet(LS_IMG) !== null) o.categoryImages = images();          // only a device that has its own copy sends one: a fresh phone must never blank the shop's pictures
             var on = lsGet(LS_ON); if (on !== null) o.catTilesOn = on === 'true';
             var pl = lsGet(LS_PLAIN); if (pl !== null) o.catPlainOn = pl === 'true';
+            if (lsGet(LS_ORD) !== null) o.catOrder = ordGet();                 // zip 219: the order of categories travels to every device
             return o;
         }
         function applyRemote(data) {
@@ -360,6 +424,7 @@
             }
             if (typeof data.catTilesOn === 'boolean' && data.catTilesOn !== enabled()) { lsSet(LS_ON, data.catTilesOn ? 'true' : 'false'); changed = true; }
             if (typeof data.catPlainOn === 'boolean' && data.catPlainOn !== plainOn()) { lsSet(LS_PLAIN, data.catPlainOn ? 'true' : 'false'); changed = true; }
+            if (data.catOrder && typeof data.catOrder === 'object' && !Array.isArray(data.catOrder)) { var co = JSON.stringify(data.catOrder); if (co !== JSON.stringify(ordGet()) && co !== lsGet(LS_ORD)) { lsSet(LS_ORD, co); changed = true; } }
             if (changed) { try { renderPanel(); } catch (e) { /* the page may not be open */ } refresh(); }
         }
         function installSync() {
@@ -451,12 +516,49 @@
             var im = images()[key];
             return '<span class="ctl-thumb">' + (im ? '<img src="' + esc(im) + '" alt="" loading="lazy">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(initials(label)) + '</span>') + '</span>';
         }
+        function ordHtml(cats, ro) {
+            var o = ordGet();
+            var opts = MODES.map(function (m) { return '<option value="' + m + '"' + (o.mode === m ? ' selected' : '') + '>' + esc(MODE_LABEL[m]) + '</option>'; }).join('');
+            return '<h3 style="margin-top:0;">↕️ Order of categories</h3><p class="ctl-note">Choose how categories (and sub-categories) are lined up on the Sales Counter. It applies to every device of the shop. “My own order” lets you move each one up or down below.</p>'
+                + '<label class="ctl-sw" style="display:block;"><select id="ctl-ord-mode"' + (ro ? ' disabled' : '') + ' style="max-width:100%;">' + opts + '</select></label>'
+                + (o.mode === 'manual' ? '<p class="ctl-note">Use ▲ ▼ on each category (and sub-category) in the list below.</p>' : '');
+        }
+        function moveBtns(key, sub, ro) {
+            if (ordGet().mode !== 'manual') return '';
+            var k = esc(encodeURIComponent(key));
+            return '<button type="button" class="settings-small-btn" data-ctl-act="mv" data-d="-1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move up">▲</button><button type="button" class="settings-small-btn" data-ctl-act="mv" data-d="1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move down">▼</button>';
+        }
+        function moveItem(key, d) {
+            var o = ordGet(), parts = key.split(SEP), cat = parts[0], sub = parts.length > 1 ? parts.slice(1).join(SEP) : null;
+            if (sub === null) {
+                var cur = categories().map(function (c) { return c.label; });
+                var arr = o.manual.length ? o.manual.slice() : cur.slice();
+                cur.forEach(function (l) { if (arr.map(normCat).indexOf(normCat(l)) < 0) arr.push(l); });
+                var order = cur.slice().sort(function (a, b) { var ia = arr.map(normCat).indexOf(normCat(a)), ib = arr.map(normCat).indexOf(normCat(b)); return ia - ib; });
+                var i = order.indexOf(cat), j = i + d; if (i < 0 || j < 0 || j >= order.length) return;
+                var t = order[i]; order[i] = order[j]; order[j] = t;
+                o.manual = order;
+            } else {
+                var c = categories().filter(function (x) { return x.key === cat; })[0]; if (!c) return;
+                var names = hotelSubs(c).map(function (x) { return String(x.name); }), i2 = names.indexOf(sub), j2 = i2 + d;
+                if (i2 < 0 || j2 < 0 || j2 >= names.length) return;
+                var t2 = names[i2]; names[i2] = names[j2]; names[j2] = t2;
+                o.subs[cat] = names;
+            }
+            o.mode = 'manual'; ordSave(o);
+        }
+        window.__ctlSetOrderMode = function (m) {
+            var o = ordGet(); if (MODES.indexOf(m) < 0) return;
+            if (m === 'manual' && !o.manual.length) o.manual = categories().map(function (c) { return c.label; });   // start from the order on screen
+            if (m === 'manual') { categories().forEach(function (c) { if (!o.subs[c.key] || !o.subs[c.key].length) { var l = hotelSubs(c).map(function (x) { return String(x.name); }); if (l.length) o.subs[c.key] = l; } }); }
+            o.mode = m; ordSave(o);
+        };
         function rowHtml(label, key, sub, count, ro) {
             var has = images()[key] !== undefined, k = esc(encodeURIComponent(key));
             return '<div class="ctl-row' + (sub ? ' ctl-subrow' : '') + '">' + thumb(label, key)
                 + '<span class="ctl-rname"><b>' + esc(label) + '</b>' + (count != null ? '<small>' + count + (count === 1 ? ' item' : ' items') + '</small>' : '') + '</span>'
                 + '<span class="ctl-racts"><button type="button" class="settings-small-btn" data-ctl-act="pick" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>📷 ' + (has ? 'Change image' : 'Add image') + '</button>'
-                + (has ? '<button type="button" class="settings-small-btn" data-ctl-act="rm" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>Remove</button>' : '') + '</span></div>';
+                + moveBtns(key, sub, ro) + (has ? '<button type="button" class="settings-small-btn" data-ctl-act="rm" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>Remove</button>' : '') + '</span></div>';
         }
         function renderPanel() {
             var el = $('ctl-panel'); if (!el) return;
@@ -467,7 +569,7 @@
             });
             var orphan = Object.keys(imgs).filter(function (k) { return !listed[k]; });
             if (orphan.length) rows += '<div class="ctl-row"><b>Pictures for categories that have no items now</b></div>' + orphan.map(function (k) { return rowHtml(k, k, false, null, ro); }).join('');
-            el.innerHTML = '<h3 style="margin-top:0;">🖼️ Category images</h3>'
+            el.innerHTML = ordHtml(cats, ro) + '<h3 style="margin-top:16px;">🖼️ Category images</h3>'
                 + '<p class="ctl-note">Give each category a picture. With the switch below on, the Sales Counter opens on big picture tiles: tap a tile to see the items (or sub-categories) in it. Searching still works as always. Every till and phone follows these settings.</p>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-switch"' + (enabled() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Show category image tiles on the Sales Counter</label>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-plain-switch"' + (plainOn() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Categories and sub-categories without a picture stay plain buttons</label>'
@@ -482,9 +584,11 @@
             var act = t.getAttribute('data-ctl-act'), k = ''; try { k = decodeURIComponent(t.getAttribute('data-k') || ''); } catch (e) { k = ''; }
             if (act === 'pick') { pendingKey = k; var f = $('ctl-file'); if (f) { f.value = ''; f.click(); } }
             else if (act === 'rm') { removeImage(k); msg('Picture removed.'); }
+            else if (act === 'mv') { moveItem(k, parseInt(t.getAttribute('data-d'), 10) || 0); }
         }
         function onPanelChange(ev) {
             var t = ev.target; if (!t) return;
+            if (t.id === 'ctl-ord-mode') { window.__ctlSetOrderMode(t.value); return; }
             if (t.id === 'ctl-plain-switch') { setPlain(!!t.checked); msg(t.checked ? 'Categories without a picture are plain buttons.' : 'Categories without a picture show a coloured letter tile.'); return; }
             if (t.id === 'ctl-switch') { setEnabled(!!t.checked); msg(t.checked ? 'Category tiles are ON for the Sales Counter.' : 'Category tiles are OFF. The Sales Counter is back to the usual list.'); return; }
             if (t.id === 'ctl-file') {
@@ -521,6 +625,7 @@
             try {
                 if (!$('item-image-grid') || typeof window.renderItemImageGrid !== 'function') return;   // Water has no product grid: nothing to do
                 loadOrig();
+                try { var hc = window.hospScreenChips; if (typeof hc === 'function' && !hc.__ctl) { var hw = function () { return window.__ctlOrderChips(hc.apply(this, arguments)); }; hw.__ctl = true; window.hospScreenChips = hw; } } catch (e) { /* the chip bar keeps its own order */ }
                 installRender(); installSync();
                 document.addEventListener('input', onSearchInput, true);
                 if (!installPanel()) { [600, 2500].forEach(function (ms) { setTimeout(function () { try { installPanel(); } catch (e) { /* later */ } }, ms); }); }
@@ -531,7 +636,7 @@
         Object.assign(window.__catTiles, {
             version: 1, MAX_IMAGES: MAX_IMAGES, MAX_PX: MAX_PX,
             enabled: enabled, setEnabled: setEnabled, plainOn: plainOn, setPlain: setPlain, images: images, setImage: setImage, removeImage: removeImage, scaleFile: scaleFile,
-            categories: categories, state: function () { return { cat: S.cat && S.cat.key, sub: S.sub, mode: mode(categories()) }; },
+            categories: categories, order: ordGet, setOrderMode: function (m) { window.__ctlSetOrderMode(m); }, state: function () { return { cat: S.cat && S.cat.key, sub: S.sub, mode: mode(categories()) }; },
             open: openCat, openSub: openSub, back: back, refresh: refresh, sync: function () { sync(); }, collect: collect, apply: applyRemote, renderPanel: renderPanel
         });
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();

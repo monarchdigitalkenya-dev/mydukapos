@@ -1,0 +1,316 @@
+<!-- STOCK RULES (zip 221) ------------------------------------------------
+         1. Item edit window (Inventory > ✏️): "Stock alerts" - this item's own Minimum stock, Reorder level, Preferred order quantity, and Active / Inactive.
+            An item with no minimum of its own keeps using the shop-wide low-stock level (Settings), so nothing changes until a rule is typed.
+            Quantity 0 never removes an item: it stays in Inventory as OUT OF STOCK and comes back to IN STOCK when it is restocked.
+            An Inactive item stays in Inventory (history is never lost) but cannot be sold and is not chased as low stock; set it Active to bring it back.
+         2. ⚖️ Adjust stock (top of Inventory): remove or add stock with a REASON (damaged, expired, lost, stolen, broken, found, correction, giveaway, ...).
+            Every adjustment is written to the stock movement log, so it shows in the Stock Report; taking stock off needs the management password.
+         3. Stock value by category (inside Stock Valuation): items, quantity, value at cost and at retail, per category.
+         4. Renaming a dish / service from the Add Item form keeps the same item (photo, code, history) instead of creating a new one. -->
+<style>
+    #sr-adjust-modal { display: none; position: fixed; inset: 0; z-index: 100050; background: rgba(0,0,0,.55); align-items: center; justify-content: center; padding: 16px; }
+    #sr-adjust-modal .sr-box { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border-radius: 14px; padding: 18px; width: 100%; max-width: 440px; max-height: 92vh; overflow: auto; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+    #sr-adjust-modal label { display: block; font-size: 12px; font-weight: 700; margin: 10px 0 4px; color: #7f8c8d; }
+    #sr-adjust-modal input, #sr-adjust-modal select, #sr-adjust-modal textarea { width: 100%; box-sizing: border-box; }
+    #sr-adjust-modal .sr-seg { display: flex; gap: 8px; }
+    #sr-adjust-modal .sr-seg label { flex: 1; margin: 0; padding: 10px; border: 2px solid var(--border-color, #dfe6e9); border-radius: 10px; text-align: center; cursor: pointer; font-size: 14px; color: inherit; }
+    #sr-adjust-modal .sr-seg input { display: none; width: auto; }
+    #sr-adjust-modal .sr-seg label.on { border-color: #27ae60; background: rgba(39,174,96,.12); font-weight: 700; }
+    #sr-adjust-modal .sr-seg label.on.rm { border-color: #e74c3c; background: rgba(231,76,60,.12); }
+    #sr-adjust-msg { font-size: 13px; margin-top: 8px; min-height: 18px; }
+    #inv-edit-stockrules { margin-top: 12px; padding: 12px; border-radius: 12px; background: rgba(127,140,141,.12); }
+    #inv-edit-stockrules .sr-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    #inv-edit-stockrules small { color: #7f8c8d; display: block; margin-top: 4px; }
+    #sr-valuation table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+    #sr-valuation th, #sr-valuation td { padding: 6px 8px; border-bottom: 1px solid var(--border-color, #e1e6ea); text-align: right; }
+    #sr-valuation th:first-child, #sr-valuation td:first-child { text-align: left; }
+</style>
+<script>
+(function () {
+    'use strict';
+    function $(id) { return document.getElementById(id); }
+    function safe(fn) { try { return fn(); } catch (e) { return undefined; } }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function toast(m, bad) { safe(function () { showToast(m, !!bad); }); }
+    function inv() { return (typeof inventory !== 'undefined' && Array.isArray(inventory)) ? inventory : []; }
+    function money(n) { return safe(function () { return 'KES ' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }) || String(n); }
+    function r3(n) { return Math.round((Number(n) || 0) * 1000) / 1000; }
+    function editing() { var code = (typeof inventoryEditModalCode !== 'undefined') ? inventoryEditModalCode : null, vid = (typeof inventoryEditModalVariantId !== 'undefined') ? inventoryEditModalVariantId : null; return { p: code ? inv().find(function (x) { return x.code === code; }) : null, variant: !!vid }; }
+
+    /* ---------- 1. item edit window: stock alerts + Active / Inactive ---------- */
+    function ensureGroup() {
+        var a = $('inv-edit-expiry-input');
+        if (!a || $('inv-edit-stockrules')) return !!$('inv-edit-stockrules');
+        var host = a.closest ? a.closest('.form-group') : null; host = host || a.parentNode;
+        if (!host || !host.parentNode) return false;
+        var g = document.createElement('div'); g.id = 'inv-edit-stockrules';
+        g.innerHTML = '<div style="font-weight:700; font-size:14px; margin-bottom:6px;">🔔 Stock alerts for this item</div>'
+            + '<div class="sr-grid">'
+            + '<div><label class="label" style="margin-top:0;">Minimum stock</label><input type="number" id="sr-min" min="0" step="any" placeholder="shop default" onchange="srSetField(\'minStock\', this.value)"></div>'
+            + '<div><label class="label" style="margin-top:0;">Reorder level</label><input type="number" id="sr-level" min="0" step="any" placeholder="optional" onchange="srSetField(\'reorderLevel\', this.value)"></div>'
+            + '<div><label class="label" style="margin-top:0;">Order quantity</label><input type="number" id="sr-oqty" min="0" step="any" placeholder="optional" onchange="srSetField(\'reorderQty\', this.value)"></div>'
+            + '</div><small>LOW STOCK shows at or below the minimum. Blank minimum = the shop-wide level in Settings. At or below the reorder level the item is suggested for ordering, with the order quantity filled in.</small>'
+            + '<label class="label" style="margin-top:10px;">Status</label><select id="sr-status" onchange="srSetField(\'status\', this.value)"><option value="0">Active — can be sold</option><option value="1">Inactive — kept in Inventory, cannot be sold</option><option value="2">Archived — hidden from the till, Inventory and stock take; history is kept</option></select>';
+        host.parentNode.insertBefore(g, host.nextSibling);
+        return true;
+    }
+    function fillGroup() {
+        if (!ensureGroup()) return;
+        var e = editing(), g = $('inv-edit-stockrules'); if (!g) return;
+        g.style.display = (e.p && !e.variant && e.p.type !== 'service') ? '' : 'none';
+        if (!e.p) return;
+        var set = function (id, v) { var el = $(id); if (el && document.activeElement !== el) el.value = (v === undefined || v === null) ? '' : v; };
+        set('sr-min', e.p.minStock); set('sr-level', e.p.reorderLevel); set('sr-oqty', e.p.reorderQty); set('sr-status', e.p.archived ? '2' : (e.p.inactive ? '1' : '0'));
+    }
+    window.srSetField = function (field, value) {
+        var e = editing(), p = e.p; if (!p || e.variant) return;
+        if (field === 'status' || field === 'inactive') {
+            if (value === '2') { p.archived = true; p.inactive = true; }
+            else if (value === '1') { p.inactive = true; delete p.archived; }
+            else { delete p.inactive; delete p.archived; }
+        }
+        else {
+            var t = String(value).trim();
+            if (t === '') delete p[field];
+            else { var n = parseFloat(t); if (!isFinite(n) || n < 0) { toast('Enter 0 or more, or leave it blank.', true); fillGroup(); return; } p[field] = n; }
+        }
+        safe(function () { queuePush(); });
+        safe(function () { renderInventoryTable(); });
+        safe(function () { if (typeof renderNotifications === 'function') renderNotifications(); });
+        toast('Saved.');
+    };
+    function wrapModal() {
+        var f = window.renderInventoryEditModalFields;
+        if (typeof f === 'function' && !f.__sr) { var w = function () { var r = f.apply(this, arguments); safe(fillGroup); return r; }; w.__sr = true; window.renderInventoryEditModalFields = w; }
+    }
+
+    /* an Inactive item cannot be put on a sale */
+    function wrapCart() {
+        var f = window.addToCart;
+        if (typeof f === 'function' && !f.__sr) {
+            var w = function (code) {
+                var p = inv().find(function (x) { return x.code === code; });
+                if (p && p.inactive) { toast('"' + p.name + '" is Inactive. Set it to Active in Inventory to sell it again.', true); return; }
+                return f.apply(this, arguments);
+            };
+            w.__sr = true; window.addToCart = w;
+        }
+    }
+
+    /* ---------- 2. Adjust stock ---------- */
+    var OUT = ['Damaged', 'Expired', 'Lost', 'Stolen', 'Broken', 'Complimentary / giveaway', 'Correction', 'Other'];
+    var INN = ['Found stock', 'Opening balance', 'Correction', 'Other'];
+    function adjustItems() { return inv().filter(function (p) { return p && p.type !== 'service' && !p.removed && !p.hasVariants && !(Array.isArray(p.variants) && p.variants.length); }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); }); }
+    function ensureModal() {
+        if ($('sr-adjust-modal')) return;
+        var m = document.createElement('div'); m.id = 'sr-adjust-modal';
+        m.innerHTML = '<div class="sr-box"><h3 style="margin:0 0 4px;">⚖️ Adjust stock</h3><p style="margin:0 0 6px; font-size:13px; color:#7f8c8d;">For damaged, expired, lost or found stock. Every adjustment is recorded with its reason.</p>'
+            + '<label>Item</label><input type="text" id="sr-adj-item" list="sr-adj-list" placeholder="Type or pick an item" autocomplete="off" oninput="srAdjustRefresh()"><datalist id="sr-adj-list"></datalist>'
+            + '<div id="sr-adj-now" style="font-size:13px; margin-top:4px; color:#7f8c8d;"></div>'
+            + '<label>What happened to the stock?</label><div class="sr-seg"><label class="on rm" id="sr-dir-out"><input type="radio" name="sr-dir" value="out" checked onchange="srAdjustRefresh()">➖ Take off</label><label id="sr-dir-in"><input type="radio" name="sr-dir" value="in" onchange="srAdjustRefresh()">➕ Add</label></div>'
+            + '<label>Quantity</label><input type="number" id="sr-adj-qty" min="0" step="any" inputmode="decimal" placeholder="0">'
+            + '<label>Reason</label><select id="sr-adj-reason"></select>'
+            + '<label>Note (optional)</label><input type="text" id="sr-adj-note" maxlength="120" placeholder="e.g. crate dropped, shelf 3">'
+            + '<div id="sr-adjust-msg"></div>'
+            + '<div style="display:flex; gap:10px; margin-top:12px;"><button type="button" class="btn-main" style="background:#95a5a6;" onclick="srAdjustClose()">Cancel</button><button type="button" class="btn-main" onclick="srAdjustConfirm()">Save adjustment</button></div></div>';
+        document.body.appendChild(m);
+    }
+    function dir() { var r = document.querySelector('input[name="sr-dir"]:checked'); return r ? r.value : 'out'; }
+    function pick() { var v = ($('sr-adj-item') || {}).value || ''; v = v.trim().toLowerCase(); if (!v) return null; return adjustItems().find(function (p) { return String(p.name).toLowerCase() === v || String(p.code || '').toLowerCase() === v; }) || null; }
+    window.srAdjustRefresh = function () {
+        var d = dir(), p = pick();
+        var out = $('sr-dir-out'), inn = $('sr-dir-in'); if (out) out.className = d === 'out' ? 'on rm' : ''; if (inn) inn.className = d === 'in' ? 'on' : '';
+        var sel = $('sr-adj-reason'), list = d === 'out' ? OUT : INN, cur = sel.value;
+        if (sel.getAttribute('data-dir') !== d) { sel.innerHTML = list.map(function (x) { return '<option>' + esc(x) + '</option>'; }).join(''); sel.setAttribute('data-dir', d); } else if (cur) sel.value = cur;
+        var now = $('sr-adj-now'); if (now) now.textContent = p ? ('In stock now: ' + safe(function () { return formatQtyDisplay(p.qty || 0, p.unit); }) + ' ' + safe(function () { return unitLabel(p.unit); })) : '';
+    };
+    window.openStockAdjust = function () {
+        ensureModal();
+        $('sr-adj-list').innerHTML = adjustItems().map(function (p) { return '<option value="' + esc(p.name) + '">'; }).join('');
+        $('sr-adj-item').value = ''; $('sr-adj-qty').value = ''; $('sr-adj-note').value = ''; $('sr-adjust-msg').textContent = '';
+        document.querySelector('input[name="sr-dir"][value="out"]').checked = true; $('sr-adj-reason').setAttribute('data-dir', '');
+        srAdjustRefresh(); $('sr-adjust-modal').style.display = 'flex';
+    };
+    window.srAdjustClose = function () { var m = $('sr-adjust-modal'); if (m) m.style.display = 'none'; };
+    function msg(t, bad) { var m = $('sr-adjust-msg'); if (m) { m.textContent = t; m.style.color = bad ? '#c0392b' : '#27ae60'; } }
+    window.srApplyAdjustment = function (code, direction, qty, reason, note) {
+        var p = inv().find(function (x) { return x.code === code; });
+        if (!p) return { ok: false, error: 'Pick an item from the list.' };
+        qty = r3(qty);
+        if (!(qty > 0)) return { ok: false, error: 'Enter a quantity above 0.' };
+        if (!reason) return { ok: false, error: 'Choose a reason.' };
+        var cur = Number(p.qty) || 0;
+        if (direction === 'out' && qty > cur + 1e-9) return { ok: false, error: 'Only ' + cur + ' in stock — you cannot take off ' + qty + '.' };
+        var delta = direction === 'out' ? -qty : qty;
+        p.qty = r3(cur + delta);
+        var why = 'Stock adjustment — ' + reason + (note ? ': ' + note : '');
+        safe(function () { if (typeof logStockMovement === 'function') logStockMovement(p.code, p.name, delta, why); });
+        safe(function () { queuePush(); }); safe(function () { renderInventoryTable(); }); safe(function () { if (typeof renderNotifications === 'function') renderNotifications(); });
+        return { ok: true, delta: delta, qty: p.qty, name: p.name };
+    };
+    window.srAdjustConfirm = function () {
+        var p = pick(); if (!p) { msg('Pick an item from the list.', true); return; }
+        var d = dir(), q = parseFloat($('sr-adj-qty').value), reason = $('sr-adj-reason').value, note = ($('sr-adj-note').value || '').trim();
+        var go = function () {
+            var r = srApplyAdjustment(p.code, d, q, reason, note);
+            if (!r.ok) { msg(r.error, true); return; }
+            srAdjustClose(); toast((r.delta < 0 ? 'Took ' + (-r.delta) + ' off' : 'Added ' + r.delta + ' to') + ' "' + r.name + '" — ' + reason + '.');
+        };
+        if (!(q > 0)) { msg('Enter a quantity above 0.', true); return; }
+        if (d === 'out' && typeof requireManagementApproval === 'function') requireManagementApproval('Enter the management password to take "' + p.name + '" off stock (' + reason + ').', go); else go();
+    };
+    function ensureButton() {
+        var tab = $('inventory-list-tab'); if (!tab || $('sr-adjust-btn')) return;
+        var panels = tab.querySelectorAll('.panel'); var panel = panels[panels.length - 1]; if (!panel) return;
+        var h = panel.querySelector('h3'); if (!h) return;
+        var b = document.createElement('button'); b.type = 'button'; b.id = 'sr-adjust-btn'; b.className = 'btn-main settings-small-btn';
+        b.style.cssText = 'margin:0 0 10px; background:#8e44ad; color:#fff;'; b.textContent = '⚖️ Adjust stock (damaged, lost, found…)'; b.setAttribute('onclick', 'openStockAdjust()');
+        h.parentNode.insertBefore(b, h.nextSibling);
+    }
+
+    /* ---------- 3. stock value by category ---------- */
+    function valuationRows(list) {
+        var by = {};
+        (Array.isArray(list) ? list : inv()).forEach(function (p) {
+            if (!p || p.removed || p.type === 'service') return;
+            if (typeof isStockedProduct === 'function' && !safe(function () { return isStockedProduct(p); })) return;
+            var cat = (p.category && String(p.category).trim()) || 'Uncategorised', row = by[cat] || (by[cat] = { cat: cat, items: 0, qty: 0, cost: 0, retail: 0 });
+            var parts = (Array.isArray(p.variants) && p.variants.length) ? p.variants.map(function (v) { return { qty: Number(v.qty) || 0, cost: Number(v.wholesalePrice) > 0 ? Number(v.wholesalePrice) : (Number(p.wholesalePrice) || 0), price: Number(v.price) || Number(p.price) || 0 }; }) : [{ qty: Number(p.qty) || 0, cost: Number(p.wholesalePrice) || 0, price: Number(p.price) || 0 }];
+            row.items++;
+            parts.forEach(function (x) { var q = Math.max(0, x.qty); row.qty += q; row.cost += q * x.cost; row.retail += q * x.price; });
+        });
+        return Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) { return b.cost - a.cost; });
+    }
+    window.srValuationRows = valuationRows;
+    function totalsOf(rows) { return rows.reduce(function (t, r) { t.items += r.items; t.qty += r.qty; t.cost += r.cost; t.retail += r.retail; return t; }, { items: 0, qty: 0, cost: 0, retail: 0 }); }
+    /* zip 224: stock value BY BRANCH - this branch from its own stock, every other branch from the copy this device holds (loaded on request) */
+    function branchList() {
+        var out = [];
+        try { var bs = (typeof branchesSummaryCache !== 'undefined' && branchesSummaryCache && branchesSummaryCache.branches) || []; bs.forEach(function (b) { out.push({ id: b.id, name: b.name || b.label || b.id, isSelf: !!b.isSelf }); }); } catch (e) { /* none */ }
+        return out;
+    }
+    window.srBranchValuation = function () {
+        return branchList().map(function (b) {
+            var list = null;
+            if (b.isSelf) list = inv(); else { try { var d = branchDetailCache[b.id]; if (d && Array.isArray(d.inventory)) list = d.inventory; } catch (e) { list = null; } }
+            var t = list ? totalsOf(valuationRows(list)) : null;
+            return { id: b.id, name: b.name, isSelf: b.isSelf, loaded: !!list, totals: t };
+        });
+    };
+    window.srLoadBranchValue = function (id) {
+        var go = (typeof fetchBranchDetail === 'function') ? fetchBranchDetail(id, true) : Promise.resolve();
+        Promise.resolve(go).then(function () { renderValuation(); }, function () { toast('Could not load that branch — check the connection.', true); });
+    };
+    window.srShowArchived = function (on) { window.__showArchived = !!on; safe(function () { renderInventoryTable(); }); };
+    function branchValuationHtml() {
+        var rows = window.srBranchValuation(); if (rows.length < 2) return '';
+        var sum = { cost: 0, retail: 0 };
+        var body = rows.map(function (r) {
+            if (!r.loaded) return '<tr><td>' + esc(r.name) + '</td><td colspan="3"><button type="button" class="settings-small-btn" onclick="srLoadBranchValue(\'' + String(r.id).replace(/'/g, '') + '\')">Load this branch</button></td></tr>';
+            sum.cost += r.totals.cost; sum.retail += r.totals.retail;
+            return '<tr><td>' + esc(r.name) + (r.isSelf ? ' (this branch)' : '') + '</td><td>' + r.totals.items + '</td><td>' + money(r.totals.cost) + '</td><td>' + money(r.totals.retail) + '</td></tr>';
+        }).join('');
+        return '<div style="font-weight:700; font-size:14px; margin-top:16px;">🏬 Stock value by branch</div><table><thead><tr><th>Branch</th><th>Items</th><th>Value at cost</th><th>Value at retail</th></tr></thead><tbody>' + body
+            + '<tr style="font-weight:700;"><td>All branches loaded</td><td></td><td>' + money(sum.cost) + '</td><td>' + money(sum.retail) + '</td></tr></tbody></table>'
+            + '<p style="font-size:12px; color:#95a5a6; margin:6px 0 0;">Other branches are counted from the latest copy this device has fetched — press “Load this branch” to refresh one.</p>';
+    }
+    function renderValuation() {
+        var panel = $('stock-valuation-panel'); if (!panel) return;
+        var box = $('sr-valuation');
+        if (!box) { box = document.createElement('div'); box.id = 'sr-valuation'; box.style.marginTop = '12px'; panel.appendChild(box); }
+        var rows = valuationRows(), tot = rows.reduce(function (t, r) { t.items += r.items; t.qty += r.qty; t.cost += r.cost; t.retail += r.retail; return t; }, { items: 0, qty: 0, cost: 0, retail: 0 });
+        box.innerHTML = '<div style="font-weight:700; font-size:14px;">📊 Stock value by category</div>'
+            + (rows.length ? '<table><thead><tr><th>Category</th><th>Items</th><th>Qty</th><th>Value at cost</th><th>Value at retail</th></tr></thead><tbody>'
+                + rows.map(function (r) { return '<tr><td>' + esc(r.cat) + '</td><td>' + r.items + '</td><td>' + r3(r.qty) + '</td><td>' + money(r.cost) + '</td><td>' + money(r.retail) + '</td></tr>'; }).join('')
+                + '<tr style="font-weight:700;"><td>Total</td><td>' + tot.items + '</td><td>' + r3(tot.qty) + '</td><td>' + money(tot.cost) + '</td><td>' + money(tot.retail) + '</td></tr></tbody></table>'
+                + '<p style="font-size:12px; color:#95a5a6; margin:6px 0 0;">Value at cost uses each item’s Cost Price — never its selling price. An item with no Cost Price counts as 0 at cost.</p>'
+                : '<p style="font-size:13px; color:#95a5a6;">No stocked items yet.</p>')
+            + branchValuationHtml()
+            + '<label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:12px;"><input type="checkbox" id="sr-show-archived" onchange="srShowArchived(this.checked)"' + (window.__showArchived ? ' checked' : '') + '> Show archived items (' + inv().filter(function (p) { return p && p.archived; }).length + ')</label>';
+    }
+    function wrapTable() {
+        var f = window.renderInventoryTable;
+        if (typeof f === 'function' && !f.__sr) { var w = function () { var r = f.apply(this, arguments); safe(ensureButton); safe(renderValuation); return r; }; w.__sr = true; window.renderInventoryTable = w; }
+    }
+
+    /* ---------- 4. renaming a service / dish from the Add Item form keeps the SAME item (photo, code, history) ----------
+       Edit loads the item into the Add form but the form used to find "the item being edited" by its NAME - so a new name made a brand-new item
+       (no photo, new code) and left the old one behind. Now Edit remembers which item it loaded, says so on the form, and saves into that item. */
+    var editCode = null, loadingEdit = false;
+    function banner(text) {
+        var b = $('svc-edit-banner'), anchor = $('inv-name');
+        if (!text) { if (b) b.style.display = 'none'; return; }
+        if (!anchor) return;
+        var host = anchor.closest ? (anchor.closest('.form-group') || anchor.parentNode) : anchor.parentNode;
+        if (!b) { b = document.createElement('div'); b.id = 'svc-edit-banner'; b.style.cssText = 'margin:0 0 10px; padding:10px 12px; border-radius:10px; background:rgba(52,152,219,.14); font-size:13px; display:flex; gap:10px; align-items:center; justify-content:space-between;'; host.parentNode.insertBefore(b, host); }
+        b.style.display = 'flex';
+        b.innerHTML = '<span>✏️ Editing <b>' + esc(text) + '</b> — the name can be changed; its photo, code and history stay with it.</span><button type="button" class="settings-small-btn" onclick="srCancelServiceEdit()">Cancel edit</button>';
+    }
+    window.srCancelServiceEdit = function () {
+        editCode = null; banner('');
+        ['inv-name', 'inv-code', 'inv-price', 'inv-wholesale-price'].forEach(function (id) { var el = $(id); if (el) el.value = ''; });
+    };
+    function wrapEditService() {
+        var f = window.editService;
+        if (typeof f === 'function' && !f.__sr) {
+            var w = function (code) {
+                loadingEdit = true;
+                try { var r = f.apply(this, arguments); } finally { loadingEdit = false; }
+                var rec = inv().find(function (p) { return p.code === code && p.type === 'service'; });
+                if (rec) { editCode = code; banner(rec.name); }
+                return r;
+            };
+            w.__sr = true; window.editService = w;
+        }
+        var t = window.setAddItemType;
+        if (typeof t === 'function' && !t.__sr) { var w2 = function () { if (!loadingEdit) { editCode = null; banner(''); } return t.apply(this, arguments); }; w2.__sr = true; window.setAddItemType = w2; }
+    }
+    /* zip 227: "Alert me when stock falls to" on the Add New Item form (the item's own low-stock threshold, same as Minimum stock in the edit window) */
+    function ensureAddMin() {
+        var q = $('inv-qty'); if (!q || $('sr-add-min')) return;
+        var host = q.closest ? q.closest('.form-group') : null; host = host || q.parentNode; if (!host || !host.parentNode) return;
+        var g = document.createElement('div'); g.className = 'form-group'; g.id = 'sr-add-min-group';
+        g.innerHTML = '<label class="label">Low-stock alert at <span style="font-weight:normal; color:#7f8c8d;">(optional — this item\'s own level)</span></label><input type="text" inputmode="decimal" id="sr-add-min" placeholder="blank = the shop-wide level in Settings"><small style="color:#7f8c8d;">LOW STOCK shows when the quantity is at or below this number.</small>';
+        host.parentNode.insertBefore(g, host.nextSibling);
+    }
+    function wrapSaveItem() {
+        var f = window.saveInventoryItem;
+        if (typeof f === 'function' && !f.__sr) {
+            var w = function () {
+                var addMinEl = $('sr-add-min'), addMin = addMinEl ? String(addMinEl.value).trim() : '', nameBefore = $('inv-name') ? $('inv-name').value.trim() : '';
+                var rec = editCode ? inv().find(function (p) { return p.code === editCode && p.type === 'service'; }) : null;
+                var nameEl = $('inv-name'), codeEl = $('inv-code'), snap = null, touched = false, codeWas = codeEl ? codeEl.value : '';
+                if (rec && nameEl) {
+                    var nn = nameEl.value.trim();
+                    var clash = inv().some(function (p) { return p !== rec && String(p.name).trim().toLowerCase() === nn.toLowerCase(); });
+                    if (nn && nn.toLowerCase() !== String(rec.name).trim().toLowerCase() && !clash) {
+                        snap = JSON.parse(JSON.stringify(rec)); rec.name = nn; touched = true;
+                        if (codeEl && !codeEl.value.trim()) codeEl.value = rec.code;
+                    } else { snap = JSON.parse(JSON.stringify(rec)); }
+                }
+                var r = f.apply(this, arguments);
+                if (snap) {
+                    var saved = nameEl && nameEl.value.trim() === '';               // the form empties itself only after a successful save
+                    var now = inv().find(function (p) { return p.code === snap.code; });
+                    if (saved && codeEl && codeEl.value.trim() === snap.code) codeEl.value = '';   // the form is reset after a save - the code box too, so the next new item does not reuse this code
+                    if (saved && now) { Object.keys(snap).forEach(function (k) { if (!(k in now)) now[k] = snap[k]; }); editCode = null; banner(''); safe(function () { queuePush(); }); }
+                    else if (touched && now && !saved) { now.name = snap.name; if (codeEl) codeEl.value = codeWas; }
+                }
+                if (addMin !== '' && nameBefore) {
+                    var mv = parseFloat(addMin);
+                    if (isFinite(mv) && mv >= 0) {
+                        var item = inv().find(function (p) { return p && !p.removed && String(p.name).trim().toLowerCase() === nameBefore.toLowerCase(); });
+                        if (item) { item.minStock = mv; item.updatedAt = Date.now(); if (addMinEl) addMinEl.value = ''; safe(function () { queuePush(); }); safe(function () { renderInventoryTable(); }); }
+                    }
+                }
+                return r;
+            };
+            w.__sr = true; window.saveInventoryItem = w;
+        }
+    }
+
+    function go() { safe(wrapEditService); safe(wrapSaveItem); safe(ensureAddMin); safe(ensureGroup); safe(wrapModal); safe(wrapCart); safe(wrapTable); safe(ensureButton); safe(renderValuation); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
+    setTimeout(go, 700); setTimeout(go, 2500);
+})();
+</script>

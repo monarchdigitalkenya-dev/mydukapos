@@ -55,10 +55,10 @@ for (const app of ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'pro
 test('the Sales panel heading says Today\'s Sales (hotel and the shared block)', async () => {
   const h = await boot('hotel/index.html', { wait: 900 });
   h.w.eval('toggleMySalesPanel()');
-  assert.match(h.d.getElementById('my-sales-list').textContent, /Today's Sales/);
+  assert.match(h.d.getElementById('my-sales-list').textContent, /Daily Sales/);
   const p = await boot('pharmacy/index.html', { wait: 1300 });
   p.w.eval('posSqToggle()');
-  assert.match(p.d.getElementById('pos-sq-list').textContent, /Today's Sales/);
+  assert.match(p.d.getElementById('pos-sq-list').textContent, /Daily Sales/);
   assert.doesNotMatch(p.d.getElementById('pos-sq-list').textContent, /Everyone/);
 });
 

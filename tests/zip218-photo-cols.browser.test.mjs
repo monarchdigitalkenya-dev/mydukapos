@@ -38,7 +38,7 @@ async function open(browser, base, file, storage) {
 const tab = async (page, id) => { await page.evaluate((t) => { document.querySelector('.tab-link[data-tab="' + t + '"]').click(); }, id); await page.waitForTimeout(400); };
 async function pick(page, val) {
   await tab(page, 'settings-tab');
-  await page.evaluate(() => { const b = document.querySelector('[data-section="settings-section-paymethods"]'); if (b) b.click(); });
+  await page.evaluate(() => { const b = document.querySelector('[data-section="settings-section-view"]'); if (b) b.click(); });
   await page.waitForSelector('input[name="ptl-cols"]', { timeout: 8000 });
   await page.evaluate(() => document.querySelector('input[name="ptl-cols"]').closest('label').scrollIntoView({ block: 'center' }));
   await page.click('label:has(input[name="ptl-cols"][value="' + val + '"])'); await page.waitForTimeout(300);

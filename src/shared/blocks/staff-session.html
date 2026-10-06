@@ -17,7 +17,10 @@
         window.__staffSessionInit = true;
 
         var KEY = 'pos_staff_sessions_v1', UNSIGNED = 'pos_staff_unsigned_v1';
-        var pending = {};                                                  // sid -> { proof, since }  (memory only — never saved)
+        var pending = {};                                                  // sid -> { proof, since }  (memory + this tab's sessionStorage only — never localStorage)
+        var PKEY = 'pos_staff_pending_v1';                                 // survives a page reload on a flaky connection; wiped when the tab closes or the person clocks out
+        function savePending() { try { sessionStorage.setItem(PKEY, JSON.stringify(pending)); } catch (e) { /* memory copy still works */ } }
+        try { var __p = JSON.parse(sessionStorage.getItem(PKEY) || '{}'); if (__p && typeof __p === 'object') Object.keys(__p).forEach(function (k) { if (__p[k] && __p[k].proof && Date.now() - __p[k].since < 16 * 3600000) pending[k] = __p[k]; }); } catch (e) { /* none */ }
 
         /* ---- SHA-256 / HMAC-SHA256, synchronous (a sale is signed inside the save that records it) ---- */
         var K = [], H0 = [];
@@ -92,12 +95,12 @@
                     Object.keys(all).forEach(function (k) { if (!(all[k] && all[k].exp > Date.now())) delete all[k]; });
                     all[sid] = { sessionId: d.sessionId, token: d.token, secret: d.secret, exp: d.exp, name: d.name, perms: d.perms || [], since: p.since, at: Date.now() };
                     writeJ(KEY, all);
-                    delete pending[sid];
+                    delete pending[sid]; savePending();
                     signWaiting(sid);
                     return true;
                 }
                 // a wrong PIN / removed / locked account here means the server's staff list differs from this device's: stop asking
-                if (res.status === 401 || res.status === 403 || res.status === 400) { delete pending[sid]; return false; }
+                if (res.status === 401 || res.status === 403 || res.status === 400) { delete pending[sid]; savePending(); return false; }
                 if (res.status === 404 && (d.code === 'unknown_staff')) { p.busy = false; return false; }   // not synced yet: later
                 if (res.status === 404 || res.status === 405) { delete pending[sid]; return false; }       // server without sessions
             } catch (e) { /* offline: later */ }
@@ -110,10 +113,20 @@
             if (!proof || typeof proof !== 'string' || /^p2\$/.test(proof)) return;
             var held = sessionFor(sid);
             if (held && held.exp - Date.now() > 4 * 3600000) return;           // still good for a while
-            pending[sid] = { proof: proof, since: Date.now() };
+            pending[sid] = { proof: proof, since: Date.now() }; savePending();
             request(sid);
         };
-        function retryAll() { Object.keys(pending).forEach(function (sid) { if (Date.now() - pending[sid].since > 16 * 3600000) delete pending[sid]; else request(sid); }); }
+        function retryAll() { Object.keys(pending).forEach(function (sid) { if (Date.now() - pending[sid].since > 16 * 3600000 || sid !== currentSid()) { delete pending[sid]; savePending(); } else request(sid); }); }
+        // Anything that needs the server session (payroll...) calls this instead of asking the person to sign in again: if they signed in
+        // offline, the PIN proof is still held, so the session is simply requested now. Resolves true when a session is held.
+        window.staffSessionEnsure = async function (sid) {
+            sid = String(sid || currentSid());
+            if (sessionFor(sid)) return true;
+            if (!pending[sid]) return false;
+            for (var i = 0; i < 4 && !sessionFor(sid) && pending[sid]; i++) { await request(sid); if (!sessionFor(sid) && pending[sid]) await new Promise(function (r) { setTimeout(r, 700); }); }
+            return !!sessionFor(sid);
+        };
+        window.staffSessionClearPending = function () { pending = {}; savePending(); };
         window.addEventListener('online', function () { setTimeout(retryAll, 1500); });
         setInterval(retryAll, 60000);
 

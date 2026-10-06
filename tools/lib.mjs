@@ -104,6 +104,10 @@ export const SHARED_BLOCKS = {
   'measure-by-price': { startMarker: '<!-- MEASURE BY PRICE', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html'] },   // cart: measure by price for kg / litre items (zip 209)
   'balance-sheet': { startMarker: '<!-- BALANCE SHEET', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html'] },   // Reports: Balance Sheet (zip 209)
   'gateway-more': { startMarker: '<!-- PAYMENT GATEWAYS: PESAPAL', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html', 'water/index.html'] },   // Pesapal + Co-op Bank (zip 210)
+  'stock-rules': { startMarker: '<!-- STOCK RULES', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html'] },   // zip 221: per-item stock alerts, Active/Inactive, Adjust stock with reasons, valuation by category
+  'view-settings': { startMarker: '<!-- VIEW SETTINGS', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html', 'water/index.html'] },   // zip 219: ONE Settings > View tab holding every hide switch
+  'accounts': { startMarker: '<!-- ACCOUNTS (zip 227)', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html'] },   // zip 227: double-entry books built from the till's records (ledger, trial balance, P&L, balance sheet, cash flow, ageing, bank rec, fixed assets)
+  'print-panels': { startMarker: '<!-- PRINT ANY LEDGER', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html', 'water/index.html'] },   // zip 224: Print button on every ledger/list panel that had none
   'hide-adhoc': { startMarker: '<!-- HIDE UNLISTED', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html'] },   // Settings > General: hide the Sell Unlisted Item button (zip 208)
   'hide-counter-btns': { startMarker: '<!-- HIDE COUNTER BUTTONS', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html'] },   // zip 217: Settings > General: hide the Bills / Sales buttons on the Sales Counter
   'lpg-retail': { startMarker: '<!-- LPG RETAIL', only: ['index.html', 'production/index.html', 'services/index.html'] },   // zip 216: the gas chooser at the Sales Counter, bundles, damaged, stock take, history, reports (server: _lpg.js)
@@ -122,7 +126,7 @@ export const SHARED_BLOCKS = {
   'phone-till': { startMarker: '<!-- PHONE TILL' },
   'branch-switcher': { startMarker: '<!-- BRANCH SWITCHER' },   // zip 199: the owner's global branch switcher in the header (opens the other branch on the same screen; All branches = read-only)
   'phone-pay-steps': { startMarker: '<!-- PHONE PAY STEPS' },   // zip 200: phone only - Collect, then the shop's payment methods, then that method's boxes, then Confirm
-  'sidebar-nav': { startMarker: '<!-- SIDEBAR NAV' },   // zip 202: grouped collapsible left sidebar built from the permitted tab buttons (drawer on phones/tablets)
+  'sidebar-nav': { startMarker: '<!-- SIDEBAR NAV', owner: true },   // zip 202: grouped collapsible left sidebar built from the permitted tab buttons (drawer on phones/tablets)
   'category-tiles': { startMarker: '<!-- CATEGORY TILES' },
   'stock-report-edit': { startMarker: '<!-- STOCK REPORT EDIT' },
   // Orders tab (purchase orders) sits next to Restock. Water's Restocking tab is a different design

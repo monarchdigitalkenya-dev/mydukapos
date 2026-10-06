@@ -6,7 +6,7 @@
 //     A correction is a NEW run of kind 'adjustment' that points at the original (a reversal, or hand-entered lines);
 //   * the payroll audit trail is append-only (no UPDATE, no DELETE);
 //   * every table carries client_id (the shop / branch link): one branch can never read or write another branch's payroll.
-export const PAYROLL_SCHEMA_VERSION = 1;
+export const PAYROLL_SCHEMA_VERSION = 2;
 
 export const PAYROLL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS pr_meta (
@@ -244,4 +244,22 @@ BEGIN SELECT RAISE(ABORT, 'payroll_run_is_final'); END`,
   `CREATE TRIGGER IF NOT EXISTS pr_lines_no_delete BEFORE DELETE ON pr_item_lines
 WHEN COALESCE((SELECT status FROM pr_runs WHERE client_id = OLD.client_id AND run_id = OLD.run_id), 'draft') <> 'draft'
 BEGIN SELECT RAISE(ABORT, 'payroll_run_is_final'); END`,
+
+  // zip 221: the saved PDF of a payslip. One row per payslip (saving again replaces it). Recent files sit in `data` (base64); once older than the
+  // archive age they move to R2 (r2_key) and `data` is emptied, so the database never grows without limit. The row itself is always kept.
+  `CREATE TABLE IF NOT EXISTS pr_slip_files (
+  client_id TEXT NOT NULL,
+  payslip_no TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  emp_id TEXT NOT NULL,
+  file_name TEXT,
+  size INTEGER NOT NULL DEFAULT 0,
+  data TEXT,
+  r2_key TEXT,
+  saved_by TEXT,
+  saved_at INTEGER NOT NULL,
+  archived_at INTEGER,
+  PRIMARY KEY (client_id, payslip_no)
+) WITHOUT ROWID`,
+  `CREATE INDEX IF NOT EXISTS ix_pr_slip_files_age ON pr_slip_files (client_id, saved_at)`,
 ];

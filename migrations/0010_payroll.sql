@@ -239,4 +239,21 @@ CREATE TRIGGER IF NOT EXISTS pr_lines_no_delete BEFORE DELETE ON pr_item_lines
 WHEN COALESCE((SELECT status FROM pr_runs WHERE client_id = OLD.client_id AND run_id = OLD.run_id), 'draft') <> 'draft'
 BEGIN SELECT RAISE(ABORT, 'payroll_run_is_final'); END;
 
+CREATE TABLE IF NOT EXISTS pr_slip_files (
+  client_id TEXT NOT NULL,
+  payslip_no TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  emp_id TEXT NOT NULL,
+  file_name TEXT,
+  size INTEGER NOT NULL DEFAULT 0,
+  data TEXT,
+  r2_key TEXT,
+  saved_by TEXT,
+  saved_at INTEGER NOT NULL,
+  archived_at INTEGER,
+  PRIMARY KEY (client_id, payslip_no)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS ix_pr_slip_files_age ON pr_slip_files (client_id, saved_at);
+
 INSERT INTO pr_meta (k, v) VALUES ('schema', '1') ON CONFLICT (k) DO UPDATE SET v = excluded.v;

@@ -27,7 +27,7 @@ const NAVIGATION_NETWORK_TIMEOUT_MS = 3500;
 // zip 145 — BUMP THIS WITH EVERY RELEASE. A service worker only updates when THIS file changes; it had not changed for many releases,
 // so installed apps kept the service worker (and the old cached page) they were installed with. A new version here makes every
 // installed app install this worker, which re-downloads the whole shell (refreshShell) — the stuck phones catch up by themselves.
-const SW_VERSION = 'zip-217';
+const SW_VERSION = 'zip-219';
 
 // Paths are relative to the service worker's own location, not the site root.
 // Using absolute '/index.html' style paths silently breaks on any deployment
@@ -136,9 +136,14 @@ async function savePageCopy(copyPromise) {
     const prevTag = prev ? await prev.text() : null;
     if (tag && tag === prevTag) return;
     const cache = await currentCache();
+    // zip 219 - the open page may have come from the cached copy (slow line, or the first open after a release). It must ALWAYS be told when the
+    // new copy differs from the one it was shown - before, no notice was sent when no earlier tag was stored, so the old view stayed on screen.
+    const old = await cache.match('./index.html');
+    let differs = !!prevTag;
+    if (!differs && old) { try { const [a, b] = await Promise.all([old.clone().text(), copy.clone().text()]); differs = a !== b; } catch (e) { differs = true; } }
     await cache.put('./index.html', copy);
     if (tag) await pointer.put('https://sw-internal/page-etag', new Response(tag));
-    if (prevTag) {
+    if (differs) {
       const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       wins.forEach((c) => { try { c.postMessage({ type: 'app-update-ready', sw: SW_VERSION }); } catch (e) { /* closed */ } });
     }

@@ -1,0 +1,45 @@
+<!-- PRINT ANY LEDGER (zip 224) ----------------------------------------------------------------------------------------------------
+         Every list / ledger panel that did not already have its own Print button gets one at the top: it prints the panel as it is on
+         screen (buttons and inputs removed), under the business name, the title and the date and time, with the header repeated on
+         every page. "Save as PDF" is the same dialog. Nothing is stored and nothing on the panel changes. -->
+<script>
+(function () {
+    'use strict';
+    if (window.__printPanelsInit) return; window.__printPanelsInit = true;
+    var IDS = ['trade-credits-tab', 'cross-branch-sales-tab', 'deliveries-tab', 'bills-tab', 'audit-tab', 'inventory-list-tab', 'restock-tab', 'orders-tab', 'trends-tab', 'dashboard-tab', 'store-tab', 'contracts-tab', 'attendance-tab', 'tables-rooms-tab'];
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+    function bizName() { try { return typeof businessName !== 'undefined' && businessName ? businessName : (document.title || ''); } catch (e) { return document.title || ''; } }
+    function titleOf(p) {
+        var h = p.querySelector('h1, h2, h3'); var t = h ? h.textContent.replace(/\s+/g, ' ').trim() : '';
+        if (t) return t;
+        var b = document.querySelector('.tab-link[data-tab="' + p.id + '"], [data-tab="' + p.id + '"]');
+        return b ? b.textContent.replace(/\s+/g, ' ').trim() : p.id.replace(/-tab$/, '').replace(/-/g, ' ');
+    }
+    function cleanClone(p) {
+        var c = p.cloneNode(true);
+        Array.prototype.forEach.call(c.querySelectorAll('.noprint, .pp-bar, button, input, select, textarea, script, style, [onclick][class*="btn"], .settings-small-btn'), function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
+        Array.prototype.forEach.call(c.querySelectorAll('[style*="display: none"], [style*="display:none"], [hidden]'), function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
+        return c.innerHTML;
+    }
+    var CSS = 'body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:0;font-size:12px}h1{font-size:18px;margin:0}.sub{color:#555;margin:2px 0 10px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #bbb;padding:4px 6px;text-align:left;vertical-align:top}th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}@page{size:A4;margin:12mm}img{max-width:120px}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}';
+    function printPanel(id) {
+        var p = document.getElementById(id); if (!p) return;
+        var html = '<div class="doc"><h1>' + esc(bizName()) + '</h1><div class="sub"><b>' + esc(titleOf(p)) + '</b> &nbsp;·&nbsp; Printed ' + esc(new Date().toLocaleString('en-KE')) + '</div>' + cleanClone(p) + '</div>';
+        var f = document.createElement('iframe'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'; document.body.appendChild(f);
+        var doc = f.contentWindow.document; doc.open(); doc.write('<!doctype html><html><head><meta charset="utf-8"><title>' + esc(titleOf(p)) + '</title><style>' + CSS + '</style></head><body>' + html + '</body></html>'); doc.close();
+        setTimeout(function () { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { try { window.print(); } catch (e2) { /* no printing here */ } } setTimeout(function () { try { f.remove(); } catch (e) { /* gone */ } }, 60000); }, 350);
+    }
+    window.printPanel = printPanel;
+    function mount() {
+        IDS.forEach(function (id) {
+            var p = document.getElementById(id); if (!p || p.querySelector('.pp-bar')) return;
+            if (/[Pp]rint/.test(p.innerHTML.replace(/<script[\s\S]*?<\/script>/g, '')) && id !== 'audit-tab') return;     // it already has its own Print
+            var bar = document.createElement('div'); bar.className = 'pp-bar noprint'; bar.style.cssText = 'display:flex;justify-content:flex-end;margin:0 0 8px';
+            bar.innerHTML = '<button type="button" class="settings-small-btn" onclick="printPanel(\'' + id + '\')">🖨️ Print / Save as PDF</button>';
+            p.insertBefore(bar, p.firstChild);
+        });
+    }
+    function start() { mount(); setInterval(mount, 3000); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+})();
+</script>

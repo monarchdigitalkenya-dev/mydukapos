@@ -2,7 +2,34 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 221
+- Per-item low-stock level: the Add New Item form now has "Low-stock alert at" (this item's own minimum; blank = shop-wide level), and variant rows use the item's own level. It was already editable in the item's Edit window (Stock alerts).
+- **Accounts (new tab, owner/admin only, Finances group):** double-entry books rebuilt from the till's own records on every open (so they can never disagree with it): **General ledger** per account with running balance, **Trial balance**, **Income statement**, **Balance sheet**, **Cash flow** (direct), **Receivables and Payables ageing**, **Bank / M-Pesa reconciliation** (paste statement lines, auto-match, record missing items), **Fixed-assets register** with monthly straight-line depreciation and disposal, **Journals & opening balances**. Every report prints and exports to CSV. Accrual basis: a Pay Later bill is income and a receivable the day it is made; bill payments clear it; "Restock" expenses go to Inventory. Tests `zip227-accounts` (postings balance, statements add up, ageing, cash flow, bank rec, tab in 6 apps). Not in Aqua/Owner.
+- **Payslip "Approved by":** type the approver's name; remembered, shown on screen, print, PDF and share.
+- **Chama full member report:** one report per member with summary, deposit history, loans and repayments, penalties, meeting attendance and every transaction with a running balance; prints and exports to CSV.
+- **Archived status** (Item edit > Status): hidden from the till grid and search, the Inventory list (tick "Show archived" to see them) and stock take; never deleted, history and stock value kept.
+- **Stock-take reasons per line:** every counted line that differs gets a reason (Damaged, Expired, Missing / theft, Counting error, Delivery not recorded, Used / sampled, Other) saved on its movement as "Stock take - <reason>".
+- **Stock value by branch:** this branch plus every other branch (from the copy this device holds; "Load this branch" refreshes one).
+- Already existed (no change): Supplier directory and Purchase Orders (Restock / Orders tabs). Branch-to-branch transfers with approval: not built.
+- **Chama reports and ledgers:** new printable **Cash book** (money in / out / running balance, opening balance, date range), **member ledger**, **fund ledger**, **Income and expenditure**, **Financial position**, plus **Print every member's statement**. Every Chama report and statement now prints cleanly (only the report, with a "Printed <date>" line, headers repeat on each page) and exports to CSV.
+- **Every ledger printable in the shop apps:** Trade credits, Cross-branch sales, Deliveries, Bills, Audit, Inventory list, Restock, Orders, Trends, Dashboard, Store, Contracts, Attendance and Tables/Rooms get a "Print / Save as PDF" button (titled with the business name and date). New block `print-panels`; test `zip224-print-panels`.
+- **No re-login after a flaky connection:** a PIN/password entered offline is kept for that tab only and the server session is requested silently when the internet returns (also after a page reload). Payroll no longer shows its sign-in card in that case - it waits for the silent session, and opens by itself on reconnect. New `staffSessionEnsure`; test `zip222-session-reconnect`.
+- **Login audit (online AND offline):** shop password, staff PIN (picker and personal link) and the Owner Console password are all verified on the device, so they work with no internet. New test `zip221-login-offline` proves it in all 7 shop apps + owner, offline and online; the page itself opens offline from the service-worker copy (query strings like `?staff=` included).
+- **Aqua cost mode:** every product/refill chooses "calculate from materials" or "I type the cost"; no hidden cost any more (fixes the 0 vs 708 mismatch).
+- **Stock rules per item:** low-stock / reorder level, OUT OF STOCK pill, Inactive (blocks sale), Adjust stock with reasons, valuation by category.
+- **Renaming a service/dish** keeps the same item and its image.
+- **Category order:** manual drag, A-Z, Z-A, most items, best selling; shop-wide sync.
+- **Payslips:** Print, Download PDF, Share PDF, Save, Saved copy, Cancel. Saved PDFs live in D1 (`pr_slip_files`) and copies older than 90 days move to R2 automatically (restored on open). Migration 0010 regenerated (idempotent; run it).
+- Not built from the master prompt: general ledger/trial balance, AR/AP ageing, reconciliation, fixed assets, branch transfers, PO workflow, per-tenant D1 (not possible with Pages static bindings).
+
+## Zip 219 - Settings > View, Owner sidebar, Daily Sales, stale-page fix
+- **Settings > 👁️ View** (new tab, every app): ALL the "hide this" switches now live in one place - Hide Sell Unlisted Item, Hide the 🧾 Bills button (Hotel: the staff-bills button on the Sales Counter), Hide the 💰 Sales button, and the Phone & till layout (photos per row, search style, which tabs show). Shop-wide; nothing is deleted.
+- The Sales panel heading reads **Daily Sales** (it said "Everyone"); another day reads "Daily Sales - <date>".
+- **Owner Console** now has the grouped sidebar like the other apps (Clients & Links, Money, Content, Monitoring, Team, System).
+- **Old page after a release fixed**: the service worker now always tells an open page when a newer copy differs from the one it was shown (it stayed silent on the first open after a release), and every app's service worker version is bumped so installed apps re-download the page.
+
 ## Zip 218 - Photos per row (2 or 3) on the phone
+- **Aqua POS: Dispatch Refills.** Production > Dispatch History > 💧 Dispatch Refills. Pick the shop branch, then send refill water either as **pre-filled bottles** of an existing refill size (N x size, converted to litres) or as plain **litres**. It is taken from Production's bulk tank(s) and added to the branch's tank, both tank logs get an entry, and it shows in Dispatch History (e.g. 200 L). Refused, with nothing changed, if Production lacks the water, the branch tank lacks room or has no tank, or a half bottle is entered.
 - Settings > Phone till (Payment methods card): **Photos per row on the phone - 2 big photos / 3 smaller photos**. It applies to the item photo grid AND the category / sub-category picture tiles, and is saved for **every device** of the shop.
 - Sub-category pictures (Hotel) were already supported: Settings > Category images lists every sub-category under its category with Add image; a sub-category without a picture is a plain button when "plain buttons" is on. Category -> Sub-category -> Items each show pictures or buttons.
 

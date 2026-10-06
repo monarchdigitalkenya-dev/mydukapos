@@ -648,6 +648,66 @@ A['payslip.get'] = async ({ db, c, who, body }) => {
   return { run: { run_id: run.run_id, ref: run.ref, kind: run.kind, label: run.label, status: run.status, frequency: run.frequency, period_start: run.period_start, period_end: run.period_end, pay_date: run.pay_date, pay_method: run.pay_method, pay_reference: run.pay_reference, approved_by: run.approved_by }, item: it, lines };
 };
 
+// ---- saved payslip PDFs + automatic archiving (zip 221) ----
+const SLIP_MAX_BYTES = 400 * 1024;
+export const SLIP_ARCHIVE_DAYS = 90;
+async function slipAccess(db, c, who, body) {
+  const run = await getRun(db, c, body.runId);
+  const empId = String(body.empId || '');
+  const it = await one(db, `SELECT payslip_no, emp_name FROM pr_items WHERE client_id = ? AND run_id = ? AND emp_id = ?`, c, run.run_id, empId);
+  if (!it) throw bad('not_found', 'That payslip was not found.', 404);
+  if (!can(who, 'view', 'run', 'approve')) {
+    const mine = await one(db, `SELECT emp_id FROM pr_employees WHERE client_id = ? AND pos_staff_id = ?`, c, who.sid);
+    if (!mine || mine.emp_id !== empId || run.status !== 'paid') throw bad('payroll_forbidden', 'ACCESS DENIED — you can only open your own payslips.', 403);
+  }
+  return { run, it, empId };
+}
+const slipBucket = (env) => (env && (env.DB_BACKUPS || env.AUDIT_ARCHIVE)) || null;
+// Move saved PDFs older than SLIP_ARCHIVE_DAYS out of D1 into R2. Safe to repeat; does nothing when R2 is not bound (files then simply stay in D1).
+export async function archiveOldSlips(db, c, env, now = Date.now(), days = SLIP_ARCHIVE_DAYS) {
+  const bucket = slipBucket(env); if (!bucket) return { archived: 0, reason: 'no_bucket' };
+  const rows = await all(db, `SELECT payslip_no, data FROM pr_slip_files WHERE client_id = ? AND data IS NOT NULL AND saved_at <= ? LIMIT 50`, c, now - days * 86400000);
+  let n = 0;
+  for (const r of rows) {
+    const key = `payslips/${c}/${r.payslip_no}.pdf.b64`;
+    try { await bucket.put(key, r.data, { httpMetadata: { contentType: 'text/plain' } }); } catch (e) { continue; }
+    await db.prepare(`UPDATE pr_slip_files SET data = NULL, r2_key = ?, archived_at = ? WHERE client_id = ? AND payslip_no = ?`).bind(key, now, c, r.payslip_no).run();
+    n++;
+  }
+  return { archived: n };
+}
+A['payslip.save'] = async ({ db, c, who, env, body }) => {
+  const { run, it, empId } = await slipAccess(db, c, who, body);
+  const b64 = String(body.pdf || '').replace(/^data:[^,]*,/, '');
+  if (!b64 || !/^[A-Za-z0-9+/=]+$/.test(b64)) throw bad('bad_file', 'There is no PDF to save.');
+  const size = Math.floor(b64.length * 3 / 4);
+  if (size > SLIP_MAX_BYTES) throw bad('too_big', 'That payslip PDF is too large to store.');
+  const now = Date.now();
+  await db.prepare(`INSERT INTO pr_slip_files (client_id, payslip_no, run_id, emp_id, file_name, size, data, r2_key, saved_by, saved_at, archived_at) VALUES (?,?,?,?,?,?,?,NULL,?,?,NULL)
+    ON CONFLICT(client_id, payslip_no) DO UPDATE SET file_name = excluded.file_name, size = excluded.size, data = excluded.data, r2_key = NULL, saved_by = excluded.saved_by, saved_at = excluded.saved_at, archived_at = NULL`)
+    .bind(c, it.payslip_no, run.run_id, empId, str(body.fileName, 120), size, b64, str(who && (who.name || who.sid), 80), now).run();
+  await auditStmt(db, c, who, 'payslip_generated', 'payslip', it.payslip_no, { employee: it.emp_name, how: 'saved' }).run();
+  let arch = { archived: 0 }; try { arch = await archiveOldSlips(db, c, env, now); } catch (e) { /* the save already worked */ }
+  return { saved: true, payslip_no: it.payslip_no, size, archived_now: arch.archived };
+};
+A['payslip.saved'] = async ({ db, c, who, env, body }) => {
+  const { it } = await slipAccess(db, c, who, body);
+  const r = await one(db, `SELECT file_name, size, data, r2_key, saved_at, archived_at FROM pr_slip_files WHERE client_id = ? AND payslip_no = ?`, c, it.payslip_no);
+  if (!r) return { found: false };
+  let data = r.data, restored = false;
+  if (!data && r.r2_key) {
+    const bucket = slipBucket(env); const o = bucket ? await bucket.get(r.r2_key) : null;
+    if (!o) throw bad('archive_unavailable', 'This payslip is in the archive and the archive could not be reached right now — try again later.', 503);
+    data = await o.text(); restored = true;
+  }
+  return { found: true, file_name: r.file_name, size: r.size, saved_at: r.saved_at, archived: !!r.archived_at, restored, pdf: data };
+};
+A['payslip.archive'] = async ({ db, c, who, env, body }) => {
+  if (!can(who, 'view', 'run', 'approve')) throw bad('payroll_forbidden', 'ACCESS DENIED.', 403);
+  const nd = Number(body.days); const days = Math.max(0, Math.min(3650, Number.isFinite(nd) && body.days !== undefined && body.days !== null ? nd : SLIP_ARCHIVE_DAYS));
+  return await archiveOldSlips(db, c, env, Date.now(), days);
+};
+
 // An ordinary staff member: their own record and their own PAID payslips. Nothing else, ever.
 A['me'] = async ({ db, c, who }) => {
   const e = await one(db, `SELECT * FROM pr_employees WHERE client_id = ? AND pos_staff_id = ?`, c, who.sid);
@@ -680,5 +740,5 @@ A['audit.list'] = async ({ db, c, who, body }) => {
 
 export const ACTIONS = A;
 // Actions any signed-in staff member may call (their own data); every other action checks permissions inside.
-export const SELF_ACTIONS = new Set(['me', 'whoami', 'payslip.get']);
+export const SELF_ACTIONS = new Set(['me', 'whoami', 'payslip.get', 'payslip.save', 'payslip.saved']);
 export { bad };

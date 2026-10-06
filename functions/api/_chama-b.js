@@ -526,6 +526,64 @@ A['rpt.run'] = { p: 'reports', fn: async (ctx) => {
     const r = rows(await ctx.db.prepare("SELECT l.entry_date, l.kind, l.member_id, l.amount_cents, l.reference, l.note, l.reversal_of FROM chama_ledger l WHERE l.client_id = ? AND l.entry_date BETWEEN ? AND ? ORDER BY l.ts, l.rowid LIMIT 5000").bind(ctx.c, from, to).all());
     return T('Transaction ledger', ['Date', 'Type', 'Member', 'Amount (in +, out −)', 'Reference', 'Note'], r.map((x) => [x.entry_date, (x.reversal_of ? 'REVERSAL — ' : '') + x.kind, names[x.member_id] || '', M(x.amount_cents), x.reference || '', x.note || '']), ['Net', '', '', M(r.reduce((a, x) => a + x.amount_cents, 0)), '', '']);
   }
+  // zip 224: printable ledgers with a RUNNING BALANCE (cash book), one member's ledger, one fund's ledger, income & expenditure, financial position
+  if (kind === 'cashbook') {
+    const fundId = String(b.fundId || ''), memberId = String(b.memberId || '');
+    const w = ['client_id = ?'], a = [ctx.c];
+    if (fundId) { w.push('fund_id = ?'); a.push(fundId); }
+    if (memberId) { w.push('member_id = ?'); a.push(memberId); }
+    const open = await ctx.db.prepare(`SELECT COALESCE(SUM(amount_cents), 0) AS s FROM chama_ledger WHERE ${w.join(' AND ')} AND entry_date < ?`).bind(...a, from).first();
+    const r = rows(await ctx.db.prepare(`SELECT entry_date, kind, member_id, amount_cents, reference, note, reversal_of FROM chama_ledger WHERE ${w.join(' AND ')} AND entry_date BETWEEN ? AND ? ORDER BY ts, rowid LIMIT 5000`).bind(...a, from, to).all());
+    let bal = open ? open.s : 0, inn = 0, out = 0;
+    const data = [['', 'Opening balance', '', '', '', M(bal), '']];
+    r.forEach((x) => { bal += x.amount_cents; if (x.amount_cents > 0) inn += x.amount_cents; else out -= x.amount_cents; data.push([x.entry_date, (x.reversal_of ? 'REVERSAL — ' : '') + String(x.kind).replace(/_/g, ' '), names[x.member_id] || '', x.amount_cents > 0 ? M(x.amount_cents) : '', x.amount_cents < 0 ? M(-x.amount_cents) : '', M(bal), [x.reference, x.note].filter(Boolean).join(' · ')]); });
+    let what = 'Cash book'; if (memberId) what = `Member ledger — ${names[memberId] || ''}`;
+    if (fundId) { const f = await ctx.db.prepare('SELECT name FROM chama_fund WHERE client_id = ? AND id = ?').bind(ctx.c, fundId).first(); what = `Fund ledger — ${f ? f.name : ''}`; }
+    return T(what, ['Date', 'Type', 'Member', 'Money in', 'Money out', 'Balance', 'Reference / note'], data, ['Totals', '', '', M(inn), M(out), M(bal), '']);
+  }
+  if (kind === 'income_expense') {
+    const r = rows(await ctx.db.prepare("SELECT kind, COALESCE(SUM(amount_cents),0) AS s, COUNT(*) AS n FROM chama_ledger WHERE client_id = ? AND entry_date BETWEEN ? AND ? GROUP BY kind ORDER BY kind").bind(ctx.c, from, to).all());
+    const INC = ['contribution', 'mgr_contribution', 'fundraising', 'penalty', 'loan_repayment'], EXP = ['expense', 'refund', 'loan_disbursement', 'mgr_payout'];
+    const lab = (k) => String(k).replace(/_/g, ' ');
+    const inc = r.filter((x) => INC.includes(x.kind)), exp = r.filter((x) => EXP.includes(x.kind)), oth = r.filter((x) => !INC.includes(x.kind) && !EXP.includes(x.kind));
+    const ti = inc.reduce((n, x) => n + x.s, 0), te = exp.reduce((n, x) => n - x.s, 0), to2 = oth.reduce((n, x) => n + x.s, 0);
+    const data = [['MONEY IN', '', ''], ...inc.map((x) => ['   ' + lab(x.kind), x.n, M(x.s)]), ['Total money in', '', M(ti)], ['MONEY OUT', '', ''], ...exp.map((x) => ['   ' + lab(x.kind), x.n, M(-x.s)]), ['Total money out', '', M(te)]];
+    if (oth.length) { data.push(['TRANSFERS / ADJUSTMENTS (net)', '', M(to2)]); }
+    return T('Income and expenditure', ['Item', 'Entries', 'KES'], data, ['Net surplus / (deficit)', '', M(ti - te + to2)]);
+  }
+  if (kind === 'position') {
+    const funds = rows(await ctx.db.prepare('SELECT f.name, COALESCE(SUM(l.amount_cents),0) AS bal FROM chama_fund f LEFT JOIN chama_ledger l ON l.client_id = f.client_id AND l.fund_id = f.id AND l.entry_date <= ? WHERE f.client_id = ? GROUP BY f.id, f.name ORDER BY f.name').bind(to, ctx.c).all());
+    const rep = await repaidByLoan(ctx, null), loans = rows(await ctx.db.prepare("SELECT * FROM chama_loan WHERE client_id = ? AND status = 'active'").bind(ctx.c).all()).map((x) => loanOut(x, rep));
+    const owed = loans.reduce((n, l) => n + l.outstandingCents, 0), cash = funds.reduce((n, f) => n + f.bal, 0);
+    const pen = await ctx.db.prepare("SELECT COALESCE(SUM(p.amount_cents - COALESCE((SELECT SUM(l.amount_cents) FROM chama_ledger l WHERE l.client_id = p.client_id AND l.kind = 'penalty' AND l.ref_id = p.id), 0)), 0) AS s FROM chama_penalty p WHERE p.client_id = ? AND p.status = 'open'").bind(ctx.c).first().catch(() => ({ s: 0 }));
+    const data = [['WHAT THE GROUP HOLDS', ''], ...funds.map((f) => ['   ' + f.name, M(f.bal)]), ['Cash and funds', M(cash)], ['WHAT IS OWED TO THE GROUP', ''], ['   Loans still to be repaid (' + loans.length + ')', M(owed)], ['   Penalties still open', M((pen && pen.s) || 0)]];
+    return T(`Financial position as at ${to === '9999-12-31' ? 'today' : to}`, ['Item', 'KES'], data, ['Total (cash + owed to the group)', M(cash + owed + ((pen && pen.s) || 0))]);
+  }
+  // zip 227: everything about ONE member — summary, deposits, loans + repayments, penalties, meeting attendance, every transaction with a running balance
+  if (kind === 'member_full') {
+    const mid = String(b.memberId || ''); if (!mid) fail('Choose a member.');
+    const mem = await memberById(ctx, mid), tbl = (heading, columns, data, totals) => ({ heading, columns, rows: data, totals: totals || null });
+    const led = rows(await ctx.db.prepare('SELECT entry_date, kind, amount_cents, reference, note, reversal_of, method FROM chama_ledger WHERE client_id = ? AND member_id = ? AND entry_date BETWEEN ? AND ? ORDER BY ts, rowid LIMIT 5000').bind(ctx.c, mid, from, to).all());
+    const nice = (k) => String(k).replace(/_/g, ' ');
+    const dep = led.filter((x) => ['contribution', 'mgr_contribution', 'fundraising'].includes(x.kind) && !x.reversal_of);
+    const rep = await repaidByLoan(ctx, mid), loans = rows(await ctx.db.prepare("SELECT * FROM chama_loan WHERE client_id = ? AND member_id = ? ORDER BY requested_at DESC").bind(ctx.c, mid).all()).map((x) => loanOut(x, rep[x.id], (id) => names[id]));
+    const pen = rows(await ctx.db.prepare("SELECT p.kind, p.amount_cents, p.status, p.reason, p.created_at, COALESCE((SELECT SUM(l.amount_cents) FROM chama_ledger l WHERE l.client_id = p.client_id AND l.kind = 'penalty' AND l.ref_id = p.id), 0) AS paid FROM chama_penalty p WHERE p.client_id = ? AND p.member_id = ? ORDER BY p.created_at DESC").bind(ctx.c, mid).all());
+    const att = rows(await ctx.db.prepare("SELECT m.meet_date, m.title, a.status FROM chama_attendance a JOIN chama_meeting m ON m.client_id = a.client_id AND m.id = a.meeting_id WHERE a.client_id = ? AND a.member_id = ? AND m.meet_date BETWEEN ? AND ? ORDER BY m.meet_date DESC").bind(ctx.c, mid, from, to).all());
+    const present = att.filter((x) => x.status === 'present' || x.status === 'late').length;
+    const totalDep = dep.reduce((n, x) => n + x.amount_cents, 0), repaid = loans.reduce((n, l) => n + l.repaidCents, 0), owed = loans.reduce((n, l) => n + (l.status === 'active' ? l.outstandingCents : 0), 0);
+    let bal = 0;
+    const all = led.map((x) => { bal += x.amount_cents; return [x.entry_date, (x.reversal_of ? 'REVERSAL — ' : '') + nice(x.kind), x.method || '', x.amount_cents > 0 ? M(x.amount_cents) : '', x.amount_cents < 0 ? M(-x.amount_cents) : '', M(bal), [x.reference, x.note].filter(Boolean).join(' · ')]; });
+    const sections = [
+      tbl('Summary', ['Item', 'Value'], [['Member', mem.name], ['Phone', mem.phone ? showPhone(mem.phone) : ''], ['Role', mem.role || ''], ['Status', mem.status || ''], ['Total deposits / contributions', M(totalDep)], ['Number of deposits', dep.length], ['Loans taken', loans.length], ['Total loan repayments', M(repaid)], ['Loan balance still owed', M(owed)], ['Penalties still open', M(pen.filter((x) => x.status === 'open').reduce((n, x) => n + Math.max(0, x.amount_cents - x.paid), 0))], ['Meetings marked', att.length], ['Meetings attended', present], ['Attendance %', att.length ? Math.round(present / att.length * 100) : 0]]),
+      tbl('Deposit history', ['Date', 'Type', 'Reference', 'Amount'], dep.map((x) => [x.entry_date, nice(x.kind), x.reference || '', M(x.amount_cents)]), ['Total', '', '', M(totalDep)]),
+      tbl('Loan history', ['Requested', 'Borrowed', 'Interest', 'Repaid', 'Outstanding', 'Overdue', 'Status'], loans.map((x) => [(x.requestedAt ? new Date(Number(x.requestedAt) || x.requestedAt).toISOString().slice(0, 10) : ''), M(x.principalCents), M(x.interestCents), M(x.repaidCents), M(x.outstandingCents), M(x.overdueCents), x.status]), ['Total', M(loans.reduce((n, l) => n + l.principalCents, 0)), M(loans.reduce((n, l) => n + l.interestCents, 0)), M(repaid), M(owed), '', '']),
+      tbl('Loan repayments', ['Date', 'Reference', 'Amount'], led.filter((x) => x.kind === 'loan_repayment' && !x.reversal_of).map((x) => [x.entry_date, x.reference || '', M(x.amount_cents)])),
+      tbl('Penalties', ['Date', 'Reason', 'Amount', 'Paid', 'Status'], pen.map((x) => [x.created_at ? new Date(x.created_at).toISOString().slice(0, 10) : '', x.reason || nice(x.kind), M(x.amount_cents), M(x.paid), x.status])),
+      tbl('Meeting attendance', ['Date', 'Meeting', 'Status'], att.map((x) => [x.meet_date, x.title, x.status]), ['Attended', present + ' of ' + att.length, att.length ? Math.round(present / att.length * 100) + '%' : '']),
+      tbl('Every transaction (running balance)', ['Date', 'Type', 'Method', 'Money in', 'Money out', 'Balance', 'Reference / note'], all, ['Net', '', '', '', '', M(bal), '']),
+    ];
+    return { title: `${name} — Member report: ${mem.name}`, sections, columns: [], rows: [], totals: null };
+  }
   if (kind === 'meetings') {
     const r = rows(await ctx.db.prepare(`SELECT m.title, m.meeting_type, m.meet_date, m.status, m.location, COALESCE((SELECT COUNT(*) FROM chama_attendance a WHERE a.client_id = m.client_id AND a.meeting_id = m.id AND a.status IN ('present','late')),0) AS p, COALESCE((SELECT COUNT(*) FROM chama_attendance a WHERE a.client_id = m.client_id AND a.meeting_id = m.id),0) AS n, (SELECT status FROM chama_minutes x WHERE x.client_id = m.client_id AND x.meeting_id = m.id) AS mn FROM chama_meeting m WHERE m.client_id = ? AND m.meet_date BETWEEN ? AND ? ORDER BY m.meet_date DESC LIMIT 500`).bind(ctx.c, from, to).all());
     return T('Meetings', ['Date', 'Meeting', 'Place', 'Status', 'Present', 'Marked', 'Minutes'], r.map((x) => [x.meet_date, x.title, x.location || '', x.status, x.p, x.n, x.mn || 'none']));

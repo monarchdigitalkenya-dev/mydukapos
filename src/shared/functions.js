@@ -3729,7 +3729,7 @@ function isRunningStandalone() {
         }
 
 //@fn isSellableProduct
-function isSellableProduct(p) { return productType(p) !== 'ingredient'; }
+function isSellableProduct(p) { return productType(p) !== 'ingredient' && !(p && p.archived); }
 
 //@fn isServiceProduct
 function isServiceProduct(p) { return productType(p) === 'service'; }
@@ -15612,7 +15612,7 @@ function gridStockInfo(p) {
             n = Math.max(0, stockRound3(n));
             const unit = p.unit && p.unit !== 'pcs' && !p.dualUnit ? ' ' + unitLabel(p.unit) : (p.dualUnit && p.unit && p.unit !== 'pcs' ? ' ' + unitLabel(p.unit) : '');
             const shown = typeof formatQtyDisplay === 'function' ? formatQtyDisplay(n, p.unit) : String(n);
-            const low = typeof LOW_STOCK_THRESHOLD !== 'undefined' ? LOW_STOCK_THRESHOLD : 3;
+            const low = stockRuleOf(p).min;   // zip 221: the item's own minimum
             const level = (n <= 0 && !soft) ? 'out' : (n <= low ? 'low' : 'ok');
             return { n, text: level === 'out' ? 'Out' : shown + unit + ' left', level, soft };
         }
@@ -15711,12 +15711,55 @@ function pastSaleStore(saleRecord, payment) {
             if (document.getElementById('bills-table') && typeof renderBillsTab === 'function') { try { renderBillsTab(); } catch (e) { /* not on screen */ } }
         }
 
+//@fn stockRuleOf
+// zip 221: each item can have its OWN stock rule - minStock (alert at or below), reorderLevel (recommend buying at or below) and reorderQty
+// (the usual order size). An item without its own minimum falls back to the shop-wide low-stock level (Settings), exactly as before.
+function stockRuleOf(p) {
+            const g = typeof LOW_STOCK_THRESHOLD !== 'undefined' ? LOW_STOCK_THRESHOLD : 3;
+            const num = (v) => (v === undefined || v === null || v === '' || !isFinite(Number(v)) || Number(v) < 0) ? null : Number(v);
+            const own = p ? num(p.minStock) : null;
+            return { min: own === null ? g : own, own: own !== null, reorderLevel: p ? num(p.reorderLevel) : null, orderQty: p ? num(p.reorderQty) : null };
+        }
+
+//@fn stockIsLow
+function stockIsLow(p) {
+            if (!p) return false;
+            return (Number(p.qty) || 0) <= stockRuleOf(p).min;
+        }
+
+//@fn stockNeedsOrder
+function stockNeedsOrder(p) {
+            if (!p) return false;
+            const r = stockRuleOf(p);
+            return (Number(p.qty) || 0) <= Math.max(r.min, r.reorderLevel === null ? -Infinity : r.reorderLevel);
+        }
+
+//@fn stockPillText
+function stockPillText(p) {
+            if (p && p.archived) return 'ARCHIVED';
+            if (p && p.inactive) return 'INACTIVE';
+            if ((Number(p && p.qty) || 0) <= 0) return 'OUT OF STOCK';
+            return stockIsLow(p) ? 'LOW STOCK' : 'IN STOCK';
+        }
+
+//@fn stockRuleHint
+function stockRuleHint(p) {
+            const r = stockRuleOf(p);
+            const rec = stockRecommendedQty(p);
+            return 'Alert at or below ' + r.min + (r.own ? '' : ' (shop default)') + (rec ? ' — recommended order: ' + rec : '');
+        }
+
+//@fn stockRecommendedQty
+function stockRecommendedQty(p) {
+            const r = stockRuleOf(p);
+            return r.orderQty && r.orderQty > 0 && stockNeedsOrder(p) ? r.orderQty : 0;
+        }
+
 //@fn lowStockItems
 function lowStockItems() {
-            // Everything that is at or below the low-stock level (Settings), worst first. Services are not stock, and the "empty" half of a gas
-            // cylinder is not something you order.
-            const limit = typeof LOW_STOCK_THRESHOLD !== 'undefined' ? LOW_STOCK_THRESHOLD : 3;
-            return inventory.filter((p) => p && p.type !== 'service' && !p.removed && !(p.isGasCylinder && p.gasRole === 'empty') && (Number(p.qty) || 0) <= limit)
+            // Everything that is at or below its own minimum (or the shop's low-stock level, Settings) or its reorder level, worst first. Services are not stock, the
+            // "empty" half of a gas cylinder is not something you order, and an item switched to Inactive is not chased.
+            return inventory.filter((p) => p && p.type !== 'service' && !p.removed && !p.inactive && !(p.isGasCylinder && p.gasRole === 'empty') && stockNeedsOrder(p))
                 .sort((a, b) => (Number(a.qty) || 0) - (Number(b.qty) || 0) || String(a.name || '').localeCompare(String(b.name || '')))
                 .slice(0, 60);
         }
@@ -15741,7 +15784,7 @@ function renderLowStockStrip(kind) {
             if (items.length === 0) { el.innerHTML = kind === 'po' ? '' : '<p class="settings-hint" style="margin:0 0 10px;">Nothing is running low right now.</p>'; return; }
             const chips = items.map((p) => {
                 const added = lowStockInDraft(kind, p);
-                return `<button type="button" class="lowstock-chip${added ? ' added' : ''}" ${added ? 'disabled' : ''} onclick="lowStockAdd('${kind}', '${escapeJsAttr(p.code)}')" title="${added ? 'Already on the form' : 'Add to the form'}">${escapeHtml(p.name)} <b>${formatQtyDisplay(p.qty || 0, p.unit || 'pcs')}</b> ${added ? '✓' : '➕'}</button>`;
+                return `<button type="button" class="lowstock-chip${added ? ' added' : ''}" ${added ? 'disabled' : ''} onclick="lowStockAdd('${kind}', '${escapeJsAttr(p.code)}')" title="${added ? 'Already on the form' : 'Add to the form'}">${escapeHtml(p.name)} <b>${formatQtyDisplay(p.qty || 0, p.unit || 'pcs')}</b>${stockRecommendedQty(p) ? ` <small>order ${stockRecommendedQty(p)}</small>` : ''} ${added ? '✓' : '➕'}</button>`;
             }).join('');
             const remaining = items.filter((p) => !lowStockInDraft(kind, p)).length;
             el.innerHTML = `<div class="lowstock-head">⚠️ Low stock <span class="settings-hint" style="margin:0;">(${items.length}) — tap one to add it, then enter the quantity</span>${remaining > 1 ? ` <button type="button" class="settings-small-btn" onclick="lowStockAddAll('${kind}')">➕ Add all (${remaining})</button>` : ''}</div><div class="lowstock-chips">${chips}</div>`;
@@ -15761,6 +15804,7 @@ function lowStockAdd(kind, code, quiet) {
                 if (!row) { row = poNewRow(); st.draft.push(row); }
                 row.name = p.name; row.code = p.code || ''; row.autoCode = row.code; row.unit = p.unit || 'pcs';
                 if (Number(p.wholesalePrice) > 0) row.cost = String(p.wholesalePrice);
+                if (stockRecommendedQty(p)) row.qty = String(stockRecommendedQty(p));   // zip 221: the item's preferred order size
                 poRenderRows();
                 focusEl = document.getElementById(`po-row-${row.rowId}-qty`);
             } else {
@@ -15768,6 +15812,7 @@ function lowStockAdd(kind, code, quiet) {
                 const blank = last && !last.code && !last.name && last.qty === '' && last.cost === '';
                 const row = blank ? last : { rowId: restockRowSeq++, unit: 'pcs', qty: '', cost: '', wholesaleSell: '', sellPrice: '' };
                 Object.assign(row, { code: p.code || '', name: p.name, unit: p.unit || 'pcs', cost: Number(p.wholesalePrice) > 0 ? String(p.wholesalePrice) : '' });
+                if (stockRecommendedQty(p)) row.qty = String(stockRecommendedQty(p));   // zip 221: the item's preferred order size
                 if (!blank) restockDraft.push(row);
                 renderRestockRows();
                 const rows = document.querySelectorAll('#restock-rows-tbody tr');
@@ -15837,7 +15882,7 @@ function poSendOrder(orderId) {
 
 //@fn stockTakeState
 function stockTakeState() {
-            if (!window.__stState) window.__stState = { counts: {}, q: '', diffOnly: false };
+            if (!window.__stState) window.__stState = { counts: {}, q: '', diffOnly: false, reasons: {} };
             return window.__stState;
         }
 
@@ -15845,7 +15890,7 @@ function stockTakeState() {
 function stockTakeItems() {
             const st = stockTakeState();
             const q = st.q.trim().toLowerCase();
-            let list = inventory.filter((p) => p && p.type !== 'service' && !p.removed);
+            let list = inventory.filter((p) => p && p.type !== 'service' && !p.removed && !p.archived);
             // Flatten variants into their own countable rows — a shoe with
             // 5 sizes needs each size counted separately, not one combined
             // number for the whole item. A variant-bearing parent itself
@@ -15944,8 +15989,17 @@ function stockTakeFillDiffCell(row, p) {
             const parts = [];
             if (d.qtyNew !== null) parts.push(`<span class="${d.qty === 0 ? 'st-ok' : d.qty < 0 ? 'st-bad' : 'st-over'}">${d.qty === 0 ? '✓ matches' : fmt(d.qty)}</span>`);
             if (d.pieceNew !== null) parts.push(`<span class="${d.pieces === 0 ? 'st-ok' : d.pieces < 0 ? 'st-bad' : 'st-over'}">${d.pieces === 0 ? '✓ loose match' : fmt(d.pieces) + ' loose'}</span>`);
+            const differs = (d.qtyNew !== null && d.qty !== 0) || (d.pieceNew !== null && d.pieces !== 0);
+            if (differs) {
+                const st = stockTakeState(), cur = (st.reasons && st.reasons[p.code]) || '';
+                parts.push(`<select class="st-reason" onchange="stockTakeSetReason('${escapeJsAttr(p.code)}', this.value)" style="margin-top:4px; max-width:150px; font-size:12px;"><option value="">Reason…</option>${STOCK_TAKE_REASONS.map((r) => `<option value="${escapeHtml(r)}"${cur === r ? ' selected' : ''}>${escapeHtml(r)}</option>`).join('')}</select>`);
+            }
             cell.innerHTML = parts.join('<br>');
         }
+
+//@fn stockTakeSetReason
+const STOCK_TAKE_REASONS = ['Damaged','Expired','Missing / theft','Counting error','Delivery not recorded','Used / sampled','Other'];
+function stockTakeSetReason(code, reason) { const st = stockTakeState(); if (!st.reasons) st.reasons = {}; if (reason) st.reasons[code] = String(reason); else delete st.reasons[code]; }
 
 //@fn stockTakeRenderSummary
 function stockTakeRenderSummary() {
@@ -16009,7 +16063,7 @@ function stockTakeMatches(code) {
 
 //@fn stockTakeClear
 function stockTakeClear() {
-            stockTakeState().counts = {};
+            stockTakeState().counts = {}; stockTakeState().reasons = {};
             renderStockTake();
         }
 
@@ -16059,7 +16113,7 @@ function stockTakeApply(opts) {
             queuePush();
             // The history is now read from the synced stock movements themselves (every device, with the server's confirmed
             // figures) — see renderStockTakeHistory. The old per-device list is still shown for stock takes made before this.
-            st.counts = {};
+            st.counts = {}; st.reasons = {};
             if (typeof renderInventoryTable === 'function') { try { renderInventoryTable(); } catch (e) { /* not on screen */ } }
             renderStockTake();
             showToast(`Stock take applied: ${lines.length} item${lines.length === 1 ? '' : 's'} updated.`);
@@ -16147,6 +16201,8 @@ function stockTakeRecordCount(p, parent, d, stocktakeId, meta) {
                 const m = typeof logStockCount === 'function'
                     ? logStockCount(p, name, unit, counted, before, stocktakeId)
                     : (typeof logStockMovement === 'function' ? logStockMovement(p.code, name, counted - before, 'Stock take', unit) : null);
+                const why = (window.__stState && window.__stState.reasons && window.__stState.reasons[p.code]) || '';
+                if (m && why) m.reason = 'Stock take — ' + why;
                 if (m && meta) m.st = meta;
             };
             if (d.qtyNew !== null && d.qty !== 0) { const before = Number(p.qty) || 0; p.qty = d.qtyNew; log('qty', d.qtyNew, before); }

@@ -1,0 +1,443 @@
+<!-- ACCOUNTS (zip 227) ------------------------------------------------------------------------------------------------------------
+         A real set of books for the shop, built from what the till already records, plus the things only the owner can add.
+         WHAT IT DOES. Every sale, Pay Later bill, bill payment, expense, trade credit and customer debt is turned into a balanced double-entry
+         posting (debits = credits, always). Add your own opening balances, journals and fixed assets. From these it produces: General Ledger
+         (per account, with running balance), Trial Balance, Income Statement, Balance Sheet, Cash Flow, Receivables and Payables ageing,
+         Bank / M-Pesa reconciliation and a Fixed-assets register with monthly straight-line depreciation. Every report prints and exports to CSV.
+         HOW THE BOOKS ARE KEPT. Accrual basis: a Pay Later bill is income and a receivable the day it is made; each payment moves money into
+         Cash / M-Pesa / Bank and clears the receivable. Stock bought ("Restock" expenses) goes to Inventory and reaches Cost of goods sold as it is sold.
+         Nothing in the till is changed or copied: the books are rebuilt from the till's own records every time, so they can never disagree with it.
+         The owner's own entries (opening balances, journals, fixed assets, bank clearing) are kept on this device and travel with the shop's settings.
+         Only the owner / admin sees the tab (a signed-in worker is locked out of it like every other management tab). -->
+<style>
+    #accounts-tab .acc { max-width: 1100px; margin: 0 auto; }
+    #accounts-tab .acc-nav { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 12px; }
+    #accounts-tab .acc-nav button { width: auto; margin: 0; padding: 8px 13px; border-radius: 999px; border: 1px solid var(--border-color, #ccd1d5); background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); font-size: 13px; font-weight: 600; cursor: pointer; }
+    #accounts-tab .acc-nav button.on { background: #1f6f8b; border-color: #1f6f8b; color: #fff; }
+    #accounts-tab .acc-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin: 6px 0 12px; }
+    #accounts-tab .acc-bar label { font-size: 12px; font-weight: 700; color: #7f8c8d; display: block; margin-bottom: 2px; }
+    #accounts-tab .acc-bar input, #accounts-tab .acc-bar select { width: auto; min-width: 130px; margin: 0; }
+    #accounts-tab .acc-btn { width: auto; margin: 0; padding: 9px 14px; border-radius: 8px; border: 0; background: #1f6f8b; color: #fff; font-weight: 700; font-size: 13px; cursor: pointer; }
+    #accounts-tab .acc-btn.sec { background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); border: 1px solid var(--border-color, #ccd1d5); }
+    #accounts-tab .acc-btn.dng { background: #c0392b; }
+    #accounts-tab .acc-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 8px 0 14px; }
+    #accounts-tab .acc-card { background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #e1e5e8); border-left: 5px solid #1f6f8b; border-radius: 12px; padding: 12px 14px; }
+    #accounts-tab .acc-card small { display: block; color: #7f8c8d; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; }
+    #accounts-tab .acc-card b { display: block; font-size: 20px; margin-top: 3px; color: var(--dark, #2c3e50); }
+    #accounts-tab .acc-card.good { border-left-color: #1f8a70; } #accounts-tab .acc-card.bad { border-left-color: #c0392b; } #accounts-tab .acc-card.warn { border-left-color: #e67e22; }
+    #accounts-tab .acc-tip { background: #eaf3f7; border-left: 4px solid #1f6f8b; padding: 10px 12px; border-radius: 8px; font-size: 13px; margin: 8px 0; }
+    #accounts-tab .acc-warn { background: #fff6e5; border-left: 4px solid #e67e22; padding: 10px 12px; border-radius: 8px; font-size: 13px; margin: 8px 0; }
+    #accounts-tab .acc-ok { background: #e8f6ef; border-left: 4px solid #1f8a70; padding: 10px 12px; border-radius: 8px; font-size: 13px; margin: 8px 0; }
+    #accounts-tab table.acc-t { width: 100%; border-collapse: collapse; font-size: 13px; }
+    #accounts-tab table.acc-t th, #accounts-tab table.acc-t td { padding: 6px 8px; border-bottom: 1px solid var(--border-color, #e1e5e8); text-align: left; vertical-align: top; }
+    #accounts-tab table.acc-t th { background: rgba(127,140,141,.12); font-size: 12px; }
+    #accounts-tab table.acc-t td.n, #accounts-tab table.acc-t th.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    #accounts-tab table.acc-t tr.tot td { font-weight: 800; border-top: 2px solid #7f8c8d; }
+    #accounts-tab table.acc-t tr.hd td { font-weight: 800; background: rgba(31,111,139,.08); }
+    #accounts-tab .acc-scroll { overflow-x: auto; }
+    #accounts-tab .acc-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 8px 0; }
+    #accounts-tab .acc-form label { font-size: 12px; font-weight: 700; color: #7f8c8d; display: block; margin-bottom: 2px; }
+    #accounts-tab .acc-form input, #accounts-tab .acc-form select, #accounts-tab .acc-form textarea { width: 100%; margin: 0; box-sizing: border-box; }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__accountsInit) return; window.__accountsInit = true;
+    var KEY = 'pos_accounting_v1';
+    var r2 = function (n) { return Math.round((Number(n) || 0) * 100 + (n < 0 ? -1e-9 : 1e-9)) / 100; };
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function $(id) { return document.getElementById(id); }
+    function safe(fn, d) { try { return fn(); } catch (e) { return d; } }
+    function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* silent */ } }
+    function uid() { return 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+    function dayOf(ts) {
+        var t = ts instanceof Date ? ts : new Date(ts); if (isNaN(t.getTime())) return '';
+        try { if (typeof dateKey === 'function') return dateKey(t); } catch (e) { /* fall through */ }
+        return t.toISOString().slice(0, 10);
+    }
+    function today() { return dayOf(new Date()); }
+    function daysBetween(a, b) { return Math.floor((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000); }
+    function fmt(n) { n = r2(n); var s = Math.abs(n).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return n < 0 ? '(' + s + ')' : s; }
+
+    /* ---------------- the owner's own records (opening balances, journals, assets, bank clearing) ---------------- */
+    var D = null;
+    function blank() { return { v: 1, updatedAt: 0, journals: [], assets: [], accounts: [], bank: {}, openedOn: '' }; }
+    function load() { if (D) return D; try { var o = JSON.parse(localStorage.getItem(KEY) || 'null'); D = (o && typeof o === 'object') ? Object.assign(blank(), o) : blank(); } catch (e) { D = blank(); } return D; }
+    function save() { D = load(); D.updatedAt = Date.now(); try { localStorage.setItem(KEY, JSON.stringify(D)); } catch (e) { toast('Could not save the accounts on this device (storage is full).', true); } try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* later */ } }
+
+    /* ---------------- chart of accounts ---------------- */
+    var CHART = [
+        ['1010', 'Cash on hand', 'asset'], ['1020', 'M-Pesa', 'asset'], ['1030', 'Bank & card', 'asset'],
+        ['1100', 'Accounts receivable — customer bills', 'asset'], ['1150', 'Other receivables', 'asset'], ['1200', 'Inventory (stock)', 'asset'],
+        ['1500', 'Fixed assets at cost', 'asset'], ['1590', 'Accumulated depreciation', 'asset'],
+        ['2000', 'Accounts payable', 'liability'], ['2100', 'Loans & other payables', 'liability'],
+        ['3000', "Owner's capital", 'equity'], ['3050', 'Opening balance equity', 'equity'], ['3100', "Owner's drawings", 'equity'],
+        ['4000', 'Sales', 'income'], ['4100', 'Delivery income', 'income'], ['4900', 'Other income', 'income'], ['4950', 'Gain on sale of assets', 'income'], ['4990', 'Cash over / short', 'income'],
+        ['5000', 'Cost of goods sold', 'cogs'], ['5100', 'Purchases on credit', 'cogs'],
+        ['6900', 'Depreciation', 'expense'], ['6950', 'Loss on sale of assets', 'expense']
+    ];
+    var CASH = ['1010', '1020', '1030'];
+    function accountMap(ledger) {
+        var m = {}; CHART.forEach(function (a) { m[a[0]] = { code: a[0], name: a[1], type: a[2] }; });
+        load().accounts.forEach(function (a) { if (a && a.code) m[a.code] = { code: a.code, name: a.name, type: a.type || 'expense' }; });
+        (ledger || []).forEach(function (e) { e.lines.forEach(function (l) { if (!m[l.a]) { var nm = String(l.a).replace(/^E:/, ''); m[l.a] = { code: l.a, name: nm, type: 'expense', auto: true }; } }); });
+        return m;
+    }
+    function expCode(cat) { var c = String(cat || '').trim() || 'General expenses'; return 'E:' + c; }
+    function cashFor(method) { var m = String(method || 'cash').toLowerCase(); if (m === 'mpesa' || m === 'm-pesa') return '1020'; if (m === 'card' || m === 'bank' || m === 'cheque' || m === 'transfer') return '1030'; return '1010'; }
+    function sortKey(code) { return /^\d/.test(code) ? code : '6' + code; }
+
+    /* ---------------- building the ledger from the till's records ---------------- */
+    function tcList() { return (typeof tradeCredits !== 'undefined' && Array.isArray(tradeCredits)) ? tradeCredits : []; }
+    function itemsSum(items) { return (items || []).reduce(function (s, l) { return s + (Number(l.price) || 0) * (Number(l.qty) || 0); }, 0); }
+    function itemsCost(items) { return (items || []).reduce(function (s, l) { if (l.unit === 'payment' || l.isPayment) return s; return s + (Number(l.wholesalePrice) || 0) * (Number(l.qty) || 0); }, 0); }
+    function isCollection(sale) { return !!sale.billId || (sale.items || []).some(function (l) { return l && (l.unit === 'payment' || l.isPayment); }); }
+    function split(sale, amount) {
+        var c = Number(sale.cashAmount) || 0, m = Number(sale.mpesaAmount) || 0, k = Number(sale.cardAmount) || 0, sum = c + m + k;
+        if (sum <= 0.004) return [[cashFor(sale.paymentMethod), r2(amount)]];
+        var parts = [['1010', c], ['1020', m], ['1030', k]].filter(function (p) { return p[1] > 0; }), out = [], used = 0;
+        parts.forEach(function (p, i) { var v = i === parts.length - 1 ? r2(amount - used) : r2(amount * p[1] / sum); used = r2(used + v); out.push([p[0], v]); });
+        return out;
+    }
+    function E(list, id, date, src, memo, lines, extra) {
+        var ls = [], dr = 0, cr = 0;
+        lines.forEach(function (l) { var d = r2(l[1] || 0), c = r2(l[2] || 0); if (!d && !c) return; ls.push({ a: l[0], dr: d, cr: c }); dr += d; cr += c; });
+        if (!ls.length) return;
+        var diff = r2(dr - cr);
+        if (Math.abs(diff) >= 0.005) ls.push(diff > 0 ? { a: '4990', dr: 0, cr: diff } : { a: '4990', dr: -diff, cr: 0 });   // rounding / over-short never leaves an entry unbalanced
+        if (!date) return;
+        var e = { id: id, date: date, src: src, memo: memo, lines: ls }; if (extra) for (var k in extra) e[k] = extra[k];
+        list.push(e);
+    }
+    function monthEnds(fromDate, toDate) {
+        var out = [], y = +fromDate.slice(0, 4), m = +fromDate.slice(5, 7);
+        for (var i = 0; i < 600; i++) { m++; if (m > 12) { m = 1; y++; } var last = new Date(Date.UTC(y, m, 0)).getUTCDate(), d = y + '-' + ('0' + m).slice(-2) + '-' + ('0' + last).slice(-2); if (d > toDate) break; out.push(d); }
+        return out;
+    }
+    function monthlyDep(a) { var life = Math.max(1, Number(a.lifeYears) || 1) * 12; return r2(Math.max(0, (Number(a.cost) || 0) - (Number(a.salvage) || 0)) / life); }
+    function depUpTo(a, upto) {
+        var end = a.disposed && a.disposed.date ? (a.disposed.date < upto ? a.disposed.date : upto) : upto, ms = monthEnds(a.date, end), life = Math.max(1, Number(a.lifeYears) || 1) * 12, per = monthlyDep(a), max = r2(Math.max(0, (Number(a.cost) || 0) - (Number(a.salvage) || 0)));
+        return ms.slice(0, life).map(function (d, i, arr) { var amt = per; var before = r2(per * i); if (before + amt > max) amt = r2(max - before); return { date: d, amount: amt }; }).filter(function (x) { return x.amount > 0; });
+    }
+    function build(opts) {
+        opts = opts || {}; var upto = opts.upto || '9999-12-31', list = [], d = load();
+        var S = safe(function () { return salesLog; }, []) || [], B = safe(function () { return bills; }, []) || [], X = safe(function () { return expenses; }, []) || [];
+        var T = tcList() || [], DB = safe(function () { return debts; }, []) || [];
+        var billTotal = function (b) { return safe(function () { return billTotalOf(b); }, null) !== null ? billTotalOf(b) : r2(itemsSum(b.items) + (Number(b.deliveryDetails && b.deliveryDetails.fee) || 0)); };
+        S.forEach(function (s) {
+            if (!s || s.voided) return; var dt = dayOf(s.timestamp); if (!dt) return;
+            var amt = r2(itemsSum(s.items));
+            if (isCollection(s)) { var cs = split(s, amt); E(list, 'S:' + s.id, dt, 'collection', 'Payment received' + (s.customerName ? ' — ' + s.customerName : ''), cs.map(function (p) { return [p[0], p[1], 0]; }).concat([['1100', 0, amt]]), { ref: s.refNumber || s.id }); return; }
+            var cost = r2(itemsCost(s.items)), sp = split(s, amt);
+            E(list, 'S:' + s.id, dt, 'sale', 'Sale ' + (s.refNumber || ''), sp.map(function (p) { return [p[0], p[1], 0]; }).concat([['4000', 0, amt], ['5000', cost, 0], ['1200', 0, cost]]), { ref: s.refNumber || s.id });
+        });
+        B.forEach(function (b) {
+            if (!b || b.voided || b.deleted) return; var dt = dayOf(b.timestamp); if (!dt) return;
+            var total = r2(billTotal(b)), fee = r2(Number(b.deliveryDetails && b.deliveryDetails.fee) || 0), cost = r2(itemsCost(b.items));
+            E(list, 'B:' + b.id, dt, 'bill', 'Pay Later bill — ' + (b.customerName || 'customer') + (b.refNumber ? ' ' + b.refNumber : ''), [['1100', total, 0], ['4000', 0, r2(total - fee)], ['4100', 0, fee], ['5000', cost, 0], ['1200', 0, cost]], { ref: b.refNumber || b.id, customer: b.customerName || '' });
+        });
+        X.forEach(function (x) {
+            if (!x || x.voided) return; var dt = dayOf(x.timestamp); if (!dt) return; var amt = r2((Number(x.amount) || 0) + (Number(x.transactionCost) || 0)); if (!amt) return;
+            var acct = x.category === 'Restock' ? '1200' : expCode(x.category);
+            E(list, 'X:' + x.id, dt, 'expense', (x.category || 'Expense') + (x.description ? ' — ' + x.description : ''), [[acct, amt, 0], [cashFor(x.paymentMethod || x.method), 0, amt]]);
+        });
+        T.forEach(function (t) {
+            if (!t || t.voided) return; var dt = dayOf(t.timestamp), amt = r2(t.amount); if (!dt || !amt) return;
+            var owe = t.direction === 'i_owe', name = (owe ? 'Owed to ' : 'Owed by ') + (t.partyName || '') + (t.description ? ' — ' + t.description : '');
+            if (owe) E(list, 'T:' + t.id, dt, 'tradecredit', name, [['5100', amt, 0], ['2000', 0, amt]], { party: t.partyName });
+            else E(list, 'T:' + t.id, dt, 'tradecredit', name, [['1150', amt, 0], ['4900', 0, amt]], { party: t.partyName });
+            if (t.status === 'settled' || t.settledAt) { var sd = dayOf(t.settledAt || t.timestamp); if (owe) E(list, 'T:' + t.id + ':s', sd, 'tradecredit', 'Paid — ' + (t.partyName || ''), [['2000', amt, 0], ['1010', 0, amt]], { party: t.partyName }); else E(list, 'T:' + t.id + ':s', sd, 'tradecredit', 'Received — ' + (t.partyName || ''), [['1010', amt, 0], ['1150', 0, amt]], { party: t.partyName }); }
+        });
+        DB.forEach(function (x) {
+            if (!x || x.voided) return; var dt = dayOf(x.createdAt || x.timestamp), amt = r2(x.amount); if (!dt || !amt) return;
+            E(list, 'D:' + x.id, dt, 'debt', 'Customer debt — ' + (x.customerName || ''), [['1100', amt, 0], ['3050', 0, amt]], { customer: x.customerName || '' });
+            (x.payments || []).forEach(function (p) { var pa = r2(p.amount); if (pa) E(list, 'D:' + x.id + ':' + (p.id || p.timestamp), dayOf(p.timestamp), 'collection', 'Debt payment — ' + (x.customerName || ''), [[cashFor(p.method), pa, 0], ['1100', 0, pa]], { customer: x.customerName || '' }); });
+        });
+        d.assets.forEach(function (a) {
+            if (!a || !a.date) return; var cost = r2(a.cost); var pay = a.paidFrom || '1010';
+            E(list, 'FA:' + a.id, a.date, 'asset', 'Bought ' + a.name, [['1500', cost, 0], [pay, 0, cost]]);
+            var dep = depUpTo(a, upto), tot = 0; dep.forEach(function (x) { E(list, 'FA:' + a.id + ':d' + x.date, x.date, 'depreciation', 'Depreciation — ' + a.name, [['6900', x.amount, 0], ['1590', 0, x.amount]]); tot = r2(tot + x.amount); });
+            if (a.disposed && a.disposed.date) {
+                var allDep = depUpTo(a, a.disposed.date).reduce(function (s, x) { return r2(s + x.amount); }, 0), proceeds = r2(a.disposed.proceeds), gain = r2(proceeds - (cost - allDep));
+                E(list, 'FA:' + a.id + ':x', a.disposed.date, 'asset', 'Sold ' + a.name, [[a.disposed.account || '1010', proceeds, 0], ['1590', allDep, 0], ['1500', 0, cost], ['4950', 0, gain > 0 ? gain : 0], ['6950', gain < 0 ? -gain : 0, 0]]);
+            }
+        });
+        d.journals.forEach(function (j) { if (!j || !j.date) return; E(list, 'J:' + j.id, j.date, j.kind === 'opening' ? 'opening' : 'journal', j.memo || 'Journal', (j.lines || []).map(function (l) { return [l.a, l.dr, l.cr]; }), { ref: j.ref || '', manual: true, jid: j.id }); });
+        list = list.filter(function (e) { return e.date <= upto; });
+        list.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.id < b.id ? -1 : 1); });
+        return list;
+    }
+
+    /* ---------------- reports (pure functions of the ledger) ---------------- */
+    function balances(ledger, from, to) {
+        var b = {}; ledger.forEach(function (e) { if ((from && e.date < from) || (to && e.date > to)) return; e.lines.forEach(function (l) { var x = b[l.a] || (b[l.a] = { dr: 0, cr: 0 }); x.dr = r2(x.dr + l.dr); x.cr = r2(x.cr + l.cr); }); });
+        return b;
+    }
+    function net(x) { return x ? r2(x.dr - x.cr) : 0; }
+    function sectionRows(map, bal, types, sign) {
+        var rows = [], total = 0;
+        Object.keys(map).filter(function (c) { return types.indexOf(map[c].type) >= 0; }).sort(function (a, b) { return sortKey(a) < sortKey(b) ? -1 : 1; }).forEach(function (c) { var v = r2(sign * net(bal[c])); if (Math.abs(v) < 0.005) return; rows.push([/^\d/.test(c) ? c : '', map[c].name, v]); total = r2(total + v); });
+        return { rows: rows, total: total };
+    }
+    function trialBalance(ledger, asAt) {
+        var map = accountMap(ledger), bal = balances(ledger, null, asAt), rows = [], dr = 0, cr = 0;
+        Object.keys(map).sort(function (a, b) { return sortKey(a) < sortKey(b) ? -1 : 1; }).forEach(function (c) { var v = net(bal[c]); if (Math.abs(v) < 0.005) return; var d = v > 0 ? v : 0, k = v < 0 ? -v : 0; dr = r2(dr + d); cr = r2(cr + k); rows.push([/^\d/.test(c) ? c : '—', map[c].name, d || '', k || '']); });
+        return { rows: rows, dr: dr, cr: cr, balanced: Math.abs(dr - cr) < 0.005 };
+    }
+    function incomeStatement(ledger, from, to) {
+        var map = accountMap(ledger), bal = balances(ledger, from, to), inc = sectionRows(map, bal, ['income'], -1), cogs = sectionRows(map, bal, ['cogs'], 1), exp = sectionRows(map, bal, ['expense'], 1);
+        return { income: inc, cogs: cogs, expenses: exp, gross: r2(inc.total - cogs.total), net: r2(inc.total - cogs.total - exp.total) };
+    }
+    function balanceSheet(ledger, asAt) {
+        var map = accountMap(ledger), bal = balances(ledger, null, asAt), a = sectionRows(map, bal, ['asset'], 1), l = sectionRows(map, bal, ['liability'], -1), e = sectionRows(map, bal, ['equity'], -1);
+        var pl = incomeStatement(ledger, null, asAt).net; var eq = r2(e.total + pl);
+        return { assets: a, liabilities: l, equity: e, profit: pl, equityTotal: eq, check: r2(a.total - l.total - eq) };
+    }
+    function cashFlow(ledger, from, to) {
+        var open = 0, cats = { 'Money from customers (sales & bill payments)': 0, 'Paid for expenses & stock': 0, 'Trade credits & customer debts': 0, 'Other operating (journals)': 0, 'Bought / sold fixed assets': 0, "Owner's money in / out & loans": 0 };
+        ledger.forEach(function (e) {
+            var delta = e.lines.reduce(function (s, l) { return CASH.indexOf(l.a) >= 0 ? r2(s + l.dr - l.cr) : s; }, 0); if (!delta) return;
+            if (e.date < from) { open = r2(open + delta); return; } if (e.date > to) return;
+            var k = e.src === 'sale' || e.src === 'collection' ? 'Money from customers (sales & bill payments)' : e.src === 'expense' ? 'Paid for expenses & stock' : e.src === 'tradecredit' || e.src === 'debt' ? 'Trade credits & customer debts' : e.src === 'asset' ? 'Bought / sold fixed assets'
+                : (e.src === 'journal' || e.src === 'opening') ? (e.lines.some(function (l) { return l.a === '3000' || l.a === '3100' || l.a === '2100' || l.a === '3050'; }) ? "Owner's money in / out & loans" : 'Other operating (journals)') : 'Other operating (journals)';
+            cats[k] = r2(cats[k] + delta);
+        });
+        var total = Object.keys(cats).reduce(function (s, k) { return r2(s + cats[k]); }, 0);
+        return { open: open, cats: cats, net: total, close: r2(open + total) };
+    }
+    function accountLedger(ledger, code, from, to) {
+        var rows = [], run = 0;
+        ledger.forEach(function (e) { e.lines.forEach(function (l, i) { if (l.a !== code) return; var mv = r2(l.dr - l.cr); if (e.date < from) { run = r2(run + mv); return; } if (e.date > to) return; run = r2(run + mv); rows.push({ date: e.date, memo: e.memo, ref: e.ref || '', src: e.src, dr: l.dr, cr: l.cr, bal: run, key: e.id + '#' + i }); }); });
+        var opening = 0; ledger.forEach(function (e) { if (e.date < from) e.lines.forEach(function (l) { if (l.a === code) opening = r2(opening + l.dr - l.cr); }); });
+        return { opening: opening, rows: rows, close: run };
+    }
+    var BUCKETS = [['Current (0–30 days)', 0, 30], ['31–60 days', 31, 60], ['61–90 days', 61, 90], ['Over 90 days', 91, 99999]];
+    function bucketOf(days) { for (var i = 0; i < BUCKETS.length; i++) if (days <= BUCKETS[i][2]) return i; return 3; }
+    function ageing(kind, asAt) {
+        var parties = {}, add = function (name, date, amt, what) { if (amt < 0.005) return; var p = parties[name] || (parties[name] = { name: name, b: [0, 0, 0, 0], total: 0, items: 0 }), i = bucketOf(Math.max(0, daysBetween(date, asAt))); p.b[i] = r2(p.b[i] + amt); p.total = r2(p.total + amt); p.items++; void what; };
+        if (kind === 'ar') {
+            (safe(function () { return bills; }, []) || []).forEach(function (b) { if (!b || b.voided || b.deleted) return; var dt = dayOf(b.timestamp); if (!dt || dt > asAt) return; var paid = (safe(function () { return salesLog; }, []) || []).reduce(function (s, x) { return x && !x.voided && x.billId === b.id && dayOf(x.timestamp) <= asAt ? s + itemsSum(x.items) : s; }, 0); var out = r2((safe(function () { return billTotalOf(b); }, 0) || itemsSum(b.items)) - paid); add(b.customerName || 'Walk-in customer', dt, out); });
+            (safe(function () { return debts; }, []) || []).forEach(function (x) { if (!x || x.voided) return; var dt = dayOf(x.createdAt || x.timestamp); if (!dt || dt > asAt) return; var paid = (x.payments || []).reduce(function (s, p) { return dayOf(p.timestamp) <= asAt ? s + (Number(p.amount) || 0) : s; }, 0); add((x.customerName || 'Customer') + ' (old debt)', dt, r2((Number(x.amount) || 0) - paid)); });
+            (tcList() || []).forEach(function (t) { if (!t || t.voided || t.direction === 'i_owe') return; var dt = dayOf(t.timestamp); if (!dt || dt > asAt) return; if ((t.status === 'settled' || t.settledAt) && dayOf(t.settledAt || t.timestamp) <= asAt) return; add((t.partyName || 'Other') + ' (owes the shop)', dt, r2(t.amount)); });
+        } else {
+            (tcList() || []).forEach(function (t) { if (!t || t.voided || t.direction !== 'i_owe') return; var dt = dayOf(t.timestamp); if (!dt || dt > asAt) return; if ((t.status === 'settled' || t.settledAt) && dayOf(t.settledAt || t.timestamp) <= asAt) return; add(t.partyName || 'Supplier', dt, r2(t.amount)); });
+        }
+        var rows = Object.keys(parties).map(function (k) { return parties[k]; }).sort(function (a, b) { return b.total - a.total; });
+        var totals = [0, 0, 0, 0], all = 0; rows.forEach(function (p) { p.b.forEach(function (v, i) { totals[i] = r2(totals[i] + v); }); all = r2(all + p.total); });
+        return { rows: rows, totals: totals, total: all };
+    }
+    function bankData(code) { var d = load(); d.bank = d.bank || {}; return d.bank[code] || (d.bank[code] = { cleared: {}, stmt: [], balance: '', asAt: '' }); }
+    function reconcile(ledger, code, asAt) {
+        var bd = bankData(code), ac = accountLedger(ledger, code, '0000-01-01', asAt), clearedDr = 0, clearedCr = 0, unDr = [], unCr = [];
+        ac.rows.forEach(function (r) { if (bd.cleared[r.key]) { clearedDr = r2(clearedDr + r.dr); clearedCr = r2(clearedCr + r.cr); } else if (r.dr) unDr.push(r); else unCr.push(r); });
+        var cleared = r2(clearedDr - clearedCr), stmt = bd.balance === '' ? null : r2(bd.balance), book = ac.close;
+        return { book: book, cleared: cleared, unDr: unDr, unCr: unCr, stmt: stmt, diff: stmt === null ? null : r2(stmt - cleared), outDr: r2(unDr.reduce(function (s, r) { return s + r.dr; }, 0)), outCr: r2(unCr.reduce(function (s, r) { return s + r.cr; }, 0)) };
+    }
+    function autoMatch(ledger, code, asAt) {
+        var bd = bankData(code), ac = accountLedger(ledger, code, '0000-01-01', asAt), used = {}, n = 0;
+        bd.stmt.forEach(function (s) { s.matched = null; });
+        Object.keys(bd.cleared).forEach(function (k) { if (bd.cleared[k] === 'auto') delete bd.cleared[k]; });
+        bd.stmt.forEach(function (s) {
+            var amt = r2(s.amount), best = null, bestGap = 9999;
+            ac.rows.forEach(function (r) { if (used[r.key] || bd.cleared[r.key]) return; var mv = r2(r.dr - r.cr); if (Math.abs(mv - amt) > 0.004) return; var gap = Math.abs(daysBetween(r.date, s.date)); if (gap <= 5 && gap < bestGap) { best = r; bestGap = gap; } });
+            if (best) { used[best.key] = 1; bd.cleared[best.key] = 'auto'; s.matched = best.key; n++; }
+        });
+        return n;
+    }
+
+    /* ---------------- screen ---------------- */
+    var S = { view: 'overview', from: '', to: '', asAt: '', acct: '1010', bankAcct: '1030', last: null };
+    function defaults() { var t = today(); S.asAt = S.asAt || t; S.to = S.to || t; if (!S.from) { S.from = t.slice(0, 8) + '01'; } }
+    var VIEWS = [['overview', '📊 Overview'], ['ledger', '📒 Ledger'], ['tb', '⚖️ Trial balance'], ['is', '📈 Income statement'], ['bs', '🏦 Balance sheet'], ['cf', '💧 Cash flow'], ['ar', '🧾 Receivables'], ['ap', '📬 Payables'], ['bank', '🏧 Bank / M-Pesa rec.'], ['fa', '🏗️ Fixed assets'], ['jr', '✍️ Journals & opening']];
+    function nav() { return '<div class="acc-nav">' + VIEWS.map(function (v) { return '<button type="button" class="' + (S.view === v[0] ? 'on' : '') + '" onclick="Accounts.go(\'' + v[0] + '\')">' + v[1] + '</button>'; }).join('') + '</div>'; }
+    function bar(kind) {
+        var f = function (id, label, val, extra) { return '<div><label>' + label + '</label><input type="date" id="' + id + '" value="' + esc(val) + '" ' + (extra || '') + '></div>'; };
+        var h = '<div class="acc-bar">';
+        if (kind === 'range') h += f('acc-from', 'From', S.from) + f('acc-to', 'To', S.to);
+        if (kind === 'asat') h += f('acc-asat', 'As at', S.asAt);
+        h += '<button type="button" class="acc-btn" onclick="Accounts.apply()">Show</button><button type="button" class="acc-btn sec" onclick="Accounts.print()">🖨️ Print / PDF</button><button type="button" class="acc-btn sec" onclick="Accounts.csv()">⬇ CSV (Excel)</button></div>';
+        return h;
+    }
+    function table(title, cols, rows, o) {
+        o = o || {}; S.last = { title: title, cols: cols, rows: rows.map(function (r) { return r.cells || r; }) };
+        var h = '<div id="acc-report"><h3 style="margin:6px 0">' + esc(title) + '</h3><div class="acc-scroll"><table class="acc-t"><thead><tr>' + cols.map(function (c, i) { return '<th' + (o.num && o.num.indexOf(i) >= 0 ? ' class="n"' : '') + '>' + esc(c) + '</th>'; }).join('') + '</tr></thead><tbody>';
+        rows.forEach(function (r) { var cells = r.cells || r, cls = r.cls || ''; h += '<tr class="' + cls + '">' + cells.map(function (c, i) { var isN = o.num && o.num.indexOf(i) >= 0; return '<td' + (isN ? ' class="n"' : '') + '>' + (typeof c === 'number' ? (c === 0 ? '' : fmt(c)) : (isN && c !== '' ? esc(c) : (c && c.__html ? c.__html : esc(c)))) + '</td>'; }).join('') + '</tr>'; });
+        return h + '</tbody></table></div></div>';
+    }
+    function name() { return safe(function () { return typeof businessName !== 'undefined' && businessName ? businessName : 'Business'; }, 'Business'); }
+    function tip(t) { return '<div class="acc-tip">' + t + '</div>'; }
+
+    function vOverview() {
+        var L = build({ upto: S.asAt }), tb = trialBalance(L, S.asAt), bs = balanceSheet(L, S.asAt), is = incomeStatement(L, S.from, S.asAt), cash = 0;
+        var bal = balances(L, null, S.asAt); CASH.forEach(function (c) { cash = r2(cash + net(bal[c])); });
+        var ar = ageing('ar', S.asAt), ap = ageing('ap', S.asAt), arCtl = net(bal['1100']), diff = r2(arCtl - safe(function () { return ageing('ar', S.asAt).rows.filter(function (r) { return !/\(owes the shop\)/.test(r.name); }).reduce(function (s, r) { return s + r.total; }, 0); }, 0));
+        var h = bar('asat') + '<div class="acc-cards">'
+            + '<div class="acc-card good"><small>Cash + M-Pesa + Bank</small><b>' + fmt(cash) + '</b></div><div class="acc-card"><small>Customers owe you</small><b>' + fmt(ar.total) + '</b></div><div class="acc-card warn"><small>You owe suppliers</small><b>' + fmt(ap.total) + '</b></div>'
+            + '<div class="acc-card"><small>Stock (at cost, in the books)</small><b>' + fmt(net(bal['1200'])) + '</b></div><div class="acc-card ' + (is.net >= 0 ? 'good' : 'bad') + '"><small>Profit this month to date</small><b>' + fmt(is.net) + '</b></div><div class="acc-card"><small>Net worth (equity)</small><b>' + fmt(bs.equityTotal) + '</b></div></div>';
+        h += tb.balanced ? '<div class="acc-ok">✅ The books balance: total debits ' + fmt(tb.dr) + ' = total credits ' + fmt(tb.cr) + '. Balance sheet check: ' + fmt(bs.check) + '.</div>' : '<div class="acc-warn">⚠️ Debits and credits differ by ' + fmt(tb.dr - tb.cr) + '. Check your manual journals.</div>';
+        if (Math.abs(diff) > 0.5) h += '<div class="acc-warn">Receivables in the books (' + fmt(arCtl) + ') differ from the open bills (' + fmt(arCtl - diff) + ') by ' + fmt(diff) + '. This usually means a bill payment was recorded outside the Bills tab. Look at Ledger → Accounts receivable.</div>';
+        var stockVal = safe(function () { return srValuationRows().reduce(function (s, r) { return s + r.cost; }, 0); }, null);
+        if (stockVal !== null) h += tip('Stock counted in Inventory (at cost): <b>' + fmt(stockVal) + '</b> · Stock in the books: <b>' + fmt(net(bal['1200'])) + '</b>. If they differ, post the difference as a journal (Journals tab) — usually it is opening stock you have not entered yet.');
+        if (!load().journals.some(function (j) { return j.kind === 'opening'; })) h += tip('<b>First time?</b> Open <b>Journals &amp; opening</b> and enter your opening balances (cash, M-Pesa, bank, stock, what customers owe you, what you owe, equipment) so the Balance Sheet starts from the truth. Everything the till recorded is already in.');
+        return h;
+    }
+    function vLedger() {
+        var L = build({ upto: S.to }), map = accountMap(L), codes = Object.keys(map).sort(function (a, b) { return sortKey(a) < sortKey(b) ? -1 : 1; });
+        var h = '<div class="acc-bar"><div><label>Account</label><select id="acc-acct">' + codes.map(function (c) { return '<option value="' + esc(c) + '"' + (c === S.acct ? ' selected' : '') + '>' + esc((/^\d/.test(c) ? c + ' · ' : '') + map[c].name) + '</option>'; }).join('') + '</select></div><div><label>From</label><input type="date" id="acc-from" value="' + esc(S.from) + '"></div><div><label>To</label><input type="date" id="acc-to" value="' + esc(S.to) + '"></div><button type="button" class="acc-btn" onclick="Accounts.apply()">Show</button><button type="button" class="acc-btn sec" onclick="Accounts.print()">🖨️ Print / PDF</button><button type="button" class="acc-btn sec" onclick="Accounts.csv()">⬇ CSV (Excel)</button></div>';
+        var a = accountLedger(L, S.acct, S.from, S.to), rows = [{ cells: [S.from, 'Opening balance', '', '', '', a.opening], cls: 'hd' }];
+        a.rows.forEach(function (r) { rows.push([r.date, r.memo, r.ref, r.dr, r.cr, r.bal]); });
+        rows.push({ cells: ['', 'Closing balance', '', a.rows.reduce(function (s, r) { return r2(s + r.dr); }, 0), a.rows.reduce(function (s, r) { return r2(s + r.cr); }, 0), a.close], cls: 'tot' });
+        return h + table(name() + ' — General ledger: ' + (map[S.acct] ? map[S.acct].name : S.acct) + ' (' + S.from + ' to ' + S.to + ')', ['Date', 'Description', 'Ref', 'Debit', 'Credit', 'Balance'], rows, { num: [3, 4, 5] });
+    }
+    function vTB() {
+        var L = build({ upto: S.asAt }), t = trialBalance(L, S.asAt), rows = t.rows.slice(); rows.push({ cells: ['', 'Totals', t.dr, t.cr], cls: 'tot' });
+        return bar('asat') + table(name() + ' — Trial balance as at ' + S.asAt, ['Code', 'Account', 'Debit', 'Credit'], rows, { num: [2, 3] }) + (t.balanced ? '<div class="acc-ok">✅ Balanced.</div>' : '<div class="acc-warn">⚠️ Not balanced.</div>');
+    }
+    function vIS() {
+        var L = build({ upto: S.to }), r = incomeStatement(L, S.from, S.to), rows = [];
+        rows.push({ cells: ['', 'INCOME', ''], cls: 'hd' }); r.income.rows.forEach(function (x) { rows.push([x[0], x[1], x[2]]); }); rows.push({ cells: ['', 'Total income', r.income.total], cls: 'tot' });
+        rows.push({ cells: ['', 'COST OF SALES', ''], cls: 'hd' }); r.cogs.rows.forEach(function (x) { rows.push([x[0], x[1], x[2]]); }); rows.push({ cells: ['', 'Total cost of sales', r.cogs.total], cls: 'tot' });
+        rows.push({ cells: ['', 'GROSS PROFIT', r.gross], cls: 'tot' });
+        rows.push({ cells: ['', 'EXPENSES', ''], cls: 'hd' }); r.expenses.rows.forEach(function (x) { rows.push([x[0], x[1], x[2]]); }); rows.push({ cells: ['', 'Total expenses', r.expenses.total], cls: 'tot' });
+        rows.push({ cells: ['', 'NET PROFIT / (LOSS)', r.net], cls: 'tot' });
+        return bar('range') + table(name() + ' — Income statement ' + S.from + ' to ' + S.to, ['Code', 'Account', 'KES'], rows, { num: [2] });
+    }
+    function vBS() {
+        var L = build({ upto: S.asAt }), b = balanceSheet(L, S.asAt), rows = [];
+        rows.push({ cells: ['', 'ASSETS', ''], cls: 'hd' }); b.assets.rows.forEach(function (x) { rows.push([x[0], x[1], x[2]]); }); rows.push({ cells: ['', 'Total assets', b.assets.total], cls: 'tot' });
+        rows.push({ cells: ['', 'LIABILITIES', ''], cls: 'hd' }); b.liabilities.rows.forEach(function (x) { rows.push([x[0], x[1], x[2]]); }); rows.push({ cells: ['', 'Total liabilities', b.liabilities.total], cls: 'tot' });
+        rows.push({ cells: ['', "OWNER'S EQUITY", ''], cls: 'hd' }); b.equity.rows.forEach(function (x) { rows.push([x[0], x[1], x[2]]); }); rows.push(['', 'Profit for the period (all time to this date)', b.profit]); rows.push({ cells: ['', "Total owner's equity", b.equityTotal], cls: 'tot' });
+        rows.push({ cells: ['', 'LIABILITIES + EQUITY', r2(b.liabilities.total + b.equityTotal)], cls: 'tot' });
+        return bar('asat') + table(name() + ' — Balance sheet as at ' + S.asAt, ['Code', 'Account', 'KES'], rows, { num: [2] }) + (Math.abs(b.check) < 0.005 ? '<div class="acc-ok">✅ Assets = Liabilities + Equity.</div>' : '<div class="acc-warn">⚠️ Out of balance by ' + fmt(b.check) + '.</div>');
+    }
+    function vCF() {
+        var L = build({ upto: S.to }), c = cashFlow(L, S.from, S.to), rows = [{ cells: ['Opening cash (cash + M-Pesa + bank) on ' + S.from, c.open], cls: 'hd' }];
+        Object.keys(c.cats).forEach(function (k) { if (Math.abs(c.cats[k]) > 0.004) rows.push([k, c.cats[k]]); });
+        rows.push({ cells: ['Net change in cash', c.net], cls: 'tot' }); rows.push({ cells: ['Closing cash on ' + S.to, c.close], cls: 'tot' });
+        return bar('range') + table(name() + ' — Cash flow ' + S.from + ' to ' + S.to, ['', 'KES'], rows, { num: [1] }) + tip('Direct method: every shilling that moved in Cash on hand, M-Pesa or Bank, grouped by why it moved.');
+    }
+    function vAge(kind) {
+        var a = ageing(kind, S.asAt), rows = a.rows.map(function (p) { return [p.name, p.b[0], p.b[1], p.b[2], p.b[3], p.total]; });
+        rows.push({ cells: ['Total'].concat(a.totals, [a.total]), cls: 'tot' });
+        return bar('asat') + table(name() + (kind === 'ar' ? ' — Receivables ageing (who owes you) as at ' : ' — Payables ageing (who you owe) as at ') + S.asAt, ['Name'].concat(BUCKETS.map(function (b) { return b[0]; }), ['Total']), rows, { num: [1, 2, 3, 4, 5] }) + (kind === 'ap' ? tip('Payables come from <b>Trade credits</b> marked “I owe”. Add supplier credit there and it appears here.') : '');
+    }
+    function vBank() {
+        var L = build({ upto: S.asAt }), code = S.bankAcct, bd = bankData(code), map = accountMap(L), rec = reconcile(L, code, S.asAt), ac = accountLedger(L, code, '0000-01-01', S.asAt);
+        var h = '<div class="acc-bar"><div><label>Account</label><select id="acc-bank">' + ['1030', '1020', '1010'].map(function (c) { return '<option value="' + c + '"' + (c === code ? ' selected' : '') + '>' + esc(map[c].name) + '</option>'; }).join('') + '</select></div>' + '<div><label>Statement date</label><input type="date" id="acc-asat" value="' + esc(S.asAt) + '"></div><div><label>Closing balance on the statement</label><input type="number" step="0.01" id="acc-stbal" value="' + esc(bd.balance) + '"></div><button type="button" class="acc-btn" onclick="Accounts.bankSave()">Save</button><button type="button" class="acc-btn sec" onclick="Accounts.print()">🖨️ Print / PDF</button><button type="button" class="acc-btn sec" onclick="Accounts.csv()">⬇ CSV</button></div>';
+        h += '<div class="acc-tip">1) Type the statement’s closing balance. 2) Paste the statement lines below (one per line: <code>date, description, amount</code> — money in positive, out negative) and press <b>Match</b>; or tick lines by hand. 3) The difference must reach <b>0</b>.</div>';
+        h += '<div class="acc-form"><div style="grid-column:1/-1"><label>Paste statement lines (date, description, amount)</label><textarea id="acc-paste" rows="4" placeholder="2026-10-02, Deposit, 15000&#10;2026-10-03, Bank charge, -150"></textarea></div></div><div class="acc-bar"><button type="button" class="acc-btn" onclick="Accounts.bankPaste()">Add lines &amp; match</button><button type="button" class="acc-btn sec" onclick="Accounts.bankMatch()">Re-match</button><button type="button" class="acc-btn sec" onclick="Accounts.bankClear()">Clear statement lines</button></div>';
+        var rows = [];
+        ac.rows.forEach(function (r) { var ck = !!bd.cleared[r.key]; rows.push([{ __html: '<input type="checkbox" style="width:auto" ' + (ck ? 'checked' : '') + ' onchange="Accounts.bankTick(\'' + esc(r.key) + '\', this.checked)">' }, r.date, r.memo, r.dr, r.cr]); });
+        h += table(name() + ' — ' + map[code].name + ' reconciliation as at ' + S.asAt, ['Cleared', 'Date', 'Description', 'Money in', 'Money out'], rows, { num: [3, 4] });
+        var un = bd.stmt.filter(function (s) { return !s.matched; });
+        h += '<h4>Statement lines not found in the books (' + un.length + ')</h4>' + (un.length ? '<div class="acc-scroll"><table class="acc-t"><thead><tr><th>Date</th><th>Description</th><th class="n">Amount</th><th></th></tr></thead><tbody>' + un.map(function (s) { return '<tr><td>' + esc(s.date) + '</td><td>' + esc(s.desc) + '</td><td class="n">' + fmt(s.amount) + '</td><td><button type="button" class="acc-btn sec" onclick="Accounts.bankPost(\'' + esc(s.id) + '\')">Record in the books</button></td></tr>'; }).join('') + '</tbody></table></div>' : '<p style="font-size:13px;color:#7f8c8d">None.</p>');
+        h += '<div class="acc-cards"><div class="acc-card"><small>Balance in the books</small><b>' + fmt(rec.book) + '</b></div><div class="acc-card"><small>Cleared on the statement</small><b>' + fmt(rec.cleared) + '</b></div><div class="acc-card warn"><small>Not yet cleared: in / out</small><b>' + fmt(rec.outDr) + ' / ' + fmt(rec.outCr) + '</b></div><div class="acc-card ' + (rec.diff === null ? '' : Math.abs(rec.diff) < 0.005 ? 'good' : 'bad') + '"><small>Difference to the statement</small><b>' + (rec.diff === null ? 'enter the balance' : fmt(rec.diff)) + '</b></div></div>';
+        if (rec.diff !== null) h += Math.abs(rec.diff) < 0.005 ? '<div class="acc-ok">✅ Reconciled: the cleared lines agree with the statement.</div>' : '<div class="acc-warn">Not reconciled yet. A statement line missing from the books, or a line ticked wrongly, makes the difference.</div>';
+        return h;
+    }
+    function vFA() {
+        var d = load(), t = today(), rows = d.assets.map(function (a) {
+            var dep = depUpTo(a, t).reduce(function (s, x) { return r2(s + x.amount); }, 0);
+            return [a.name, a.date, r2(a.cost), (a.lifeYears || '') + ' yrs', monthlyDep(a), dep, r2(a.cost - dep), a.disposed ? 'Sold ' + a.disposed.date : { __html: '<button type="button" class="acc-btn sec" onclick="Accounts.assetSell(\'' + esc(a.id) + '\')">Sell / dispose</button> <button type="button" class="acc-btn dng" onclick="Accounts.assetDel(\'' + esc(a.id) + '\')">Remove</button>' }];
+        });
+        var tot = d.assets.reduce(function (s, a) { return r2(s + a.cost); }, 0);
+        var h = '<div class="acc-tip">Straight-line depreciation, one month at a time from the month after purchase, down to the salvage value. Each month’s depreciation is posted to the books automatically.</div>'
+            + '<div class="acc-form"><div><label>Asset (e.g. Freezer)</label><input id="fa-name"></div><div><label>Date bought</label><input type="date" id="fa-date" value="' + t + '"></div><div><label>Cost (KES)</label><input type="number" step="0.01" id="fa-cost"></div><div><label>Useful life (years)</label><input type="number" step="0.5" id="fa-life" value="5"></div><div><label>Salvage value (KES)</label><input type="number" step="0.01" id="fa-salv" value="0"></div><div><label>Paid from</label><select id="fa-from"><option value="1010">Cash on hand</option><option value="1020">M-Pesa</option><option value="1030">Bank &amp; card</option><option value="2000">On credit (payable)</option><option value="3000">Owner brought it in (capital)</option></select></div></div><div class="acc-bar"><button type="button" class="acc-btn" onclick="Accounts.assetAdd()">Add asset</button><button type="button" class="acc-btn sec" onclick="Accounts.print()">🖨️ Print / PDF</button><button type="button" class="acc-btn sec" onclick="Accounts.csv()">⬇ CSV</button></div>';
+        return h + table(name() + ' — Fixed assets register at ' + t, ['Asset', 'Bought', 'Cost', 'Life', 'Per month', 'Depreciation to date', 'Book value', ''], rows.concat([{ cells: ['Total cost', '', tot, '', '', '', '', ''], cls: 'tot' }]), { num: [2, 4, 5, 6] });
+    }
+    function vJR() {
+        var d = load(), L = build(), map = accountMap(L), codes = Object.keys(map).sort(function (a, b) { return sortKey(a) < sortKey(b) ? -1 : 1; }), opts = codes.map(function (c) { return '<option value="' + esc(c) + '">' + esc((/^\d/.test(c) ? c + ' · ' : '') + map[c].name) + '</option>'; }).join('');
+        var h = '<h4>1 · Opening balances</h4>' + tip('Enter what the business had on the day you start using these books. Leave blank what is zero. The balancing figure goes to “Opening balance equity”.')
+            + '<div class="acc-form"><div><label>Opening date</label><input type="date" id="op-date" value="' + esc(d.openedOn || S.from) + '"></div>' + [['op-1010', 'Cash on hand'], ['op-1020', 'M-Pesa'], ['op-1030', 'Bank & card'], ['op-1100', 'Customers owe you'], ['op-1200', 'Stock at cost'], ['op-1500', 'Equipment (cost)'], ['op-2000', 'You owe suppliers'], ['op-2100', 'Loans you owe']].map(function (f) { return '<div><label>' + f[1] + '</label><input type="number" step="0.01" id="' + f[0] + '"></div>'; }).join('') + '</div><div class="acc-bar"><button type="button" class="acc-btn" onclick="Accounts.opening()">Save opening balances</button></div>'
+            + '<h4>2 · New journal entry</h4><div class="acc-form"><div><label>Date</label><input type="date" id="jr-date" value="' + today() + '"></div><div style="grid-column:span 2"><label>Description</label><input id="jr-memo" placeholder="e.g. Owner took KES 5,000 for personal use"></div></div>'
+            + [1, 2, 3, 4].map(function (i) { return '<div class="acc-form"><div style="grid-column:span 2"><label>Line ' + i + ' — account</label><select id="jr-a' + i + '"><option value="">—</option>' + opts + '</select></div><div><label>Debit</label><input type="number" step="0.01" id="jr-d' + i + '"></div><div><label>Credit</label><input type="number" step="0.01" id="jr-c' + i + '"></div></div>'; }).join('')
+            + '<div class="acc-bar"><button type="button" class="acc-btn" onclick="Accounts.journal()">Post journal</button></div>'
+            + '<h4>3 · Add an account</h4><div class="acc-form"><div><label>Name</label><input id="ac-name" placeholder="e.g. Rent expense"></div><div><label>Type</label><select id="ac-type"><option value="expense">Expense</option><option value="income">Income</option><option value="asset">Asset</option><option value="liability">Liability</option><option value="equity">Equity</option></select></div></div><div class="acc-bar"><button type="button" class="acc-btn sec" onclick="Accounts.addAccount()">Add account</button></div>';
+        var rows = d.journals.slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; }).map(function (j) { return [j.date, (j.kind === 'opening' ? '[Opening] ' : '') + j.memo, j.lines.map(function (l) { return (map[l.a] ? map[l.a].name : l.a) + ' ' + (l.dr ? 'Dr ' + fmt(l.dr) : 'Cr ' + fmt(l.cr)); }).join(' · '), { __html: '<button type="button" class="acc-btn dng" onclick="Accounts.jDel(\'' + esc(j.id) + '\')">Delete</button>' }]; });
+        return h + '<h4>Your journals</h4>' + table(name() + ' — Journals', ['Date', 'Description', 'Lines', ''], rows);
+    }
+    function render() {
+        var host = $('acc-body'); if (!host) return; defaults();
+        var h = ''; try {
+            h = nav() + ({ overview: vOverview, ledger: vLedger, tb: vTB, is: vIS, bs: vBS, cf: vCF, ar: function () { return vAge('ar'); }, ap: function () { return vAge('ap'); }, bank: vBank, fa: vFA, jr: vJR }[S.view] || vOverview)();
+        } catch (e) { h = nav() + '<div class="acc-warn">Could not build this report: ' + esc(e && e.message || e) + '</div>'; }
+        host.innerHTML = h;
+    }
+    function readDates() { var g = function (id) { var el = $(id); return el ? el.value : ''; }; if (g('acc-from')) S.from = g('acc-from'); if (g('acc-to')) S.to = g('acc-to'); if (g('acc-asat')) S.asAt = g('acc-asat'); if ($('acc-acct')) S.acct = $('acc-acct').value; if ($('acc-bank')) S.bankAcct = $('acc-bank').value; }
+    function num(id) { var el = $(id), n = el ? parseFloat(el.value) : NaN; return isFinite(n) ? n : 0; }
+
+    var API = {
+        engine: { build: build, trialBalance: trialBalance, incomeStatement: incomeStatement, balanceSheet: balanceSheet, cashFlow: cashFlow, accountLedger: accountLedger, ageing: ageing, reconcile: reconcile, autoMatch: autoMatch, depUpTo: depUpTo, store: load, reset: function () { D = null; } },
+        go: function (v) { readDates(); S.view = v; render(); }, apply: function () { readDates(); render(); },
+        print: function () { if (typeof window.printPanel === 'function' && $('acc-report')) window.printPanel('acc-report'); else window.print(); },
+        csv: function () {
+            var l = S.last; if (!l) { toast('Show a report first.', true); return; }
+            var q = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+            var t = [l.cols.map(q).join(',')].concat(l.rows.map(function (r) { return r.map(function (c) { return q(c && c.__html ? '' : c); }).join(','); })).join('\r\n');
+            var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['\ufeff' + t], { type: 'text/csv' })); a.download = 'accounts-' + S.view + '.csv'; a.click();
+        },
+        opening: function () {
+            readDates(); var date = $('op-date').value; if (!date) { toast('Choose the opening date.', true); return; }
+            var A = { '1010': num('op-1010'), '1020': num('op-1020'), '1030': num('op-1030'), '1100': num('op-1100'), '1200': num('op-1200'), '1500': num('op-1500') }, Lb = { '2000': num('op-2000'), '2100': num('op-2100') }, lines = [], dr = 0, cr = 0;
+            Object.keys(A).forEach(function (k) { if (A[k]) { lines.push({ a: k, dr: r2(A[k]), cr: 0 }); dr = r2(dr + A[k]); } }); Object.keys(Lb).forEach(function (k) { if (Lb[k]) { lines.push({ a: k, dr: 0, cr: r2(Lb[k]) }); cr = r2(cr + Lb[k]); } });
+            if (!lines.length) { toast('Enter at least one opening balance.', true); return; }
+            var diff = r2(dr - cr); lines.push(diff > 0 ? { a: '3050', dr: 0, cr: diff } : { a: '3050', dr: -diff, cr: 0 });
+            var d = load(); d.journals = d.journals.filter(function (j) { return j.kind !== 'opening'; }); d.journals.push({ id: uid(), kind: 'opening', date: date, memo: 'Opening balances', lines: lines }); d.openedOn = date; save(); toast('Opening balances saved.'); render();
+        },
+        journal: function () {
+            var date = $('jr-date').value, memo = ($('jr-memo').value || '').trim(), lines = [], dr = 0, cr = 0;
+            for (var i = 1; i <= 4; i++) { var a = $('jr-a' + i).value, d = num('jr-d' + i), c = num('jr-c' + i); if (!a || (!d && !c)) continue; if (d && c) { toast('Line ' + i + ': use debit OR credit, not both.', true); return; } lines.push({ a: a, dr: r2(d), cr: r2(c) }); dr = r2(dr + d); cr = r2(cr + c); }
+            if (!date || !memo) { toast('Enter the date and a description.', true); return; } if (lines.length < 2) { toast('A journal needs at least two lines.', true); return; }
+            if (Math.abs(dr - cr) >= 0.005) { toast('Debits (' + fmt(dr) + ') must equal credits (' + fmt(cr) + ').', true); return; }
+            var d0 = load(); d0.journals.push({ id: uid(), kind: 'journal', date: date, memo: memo, lines: lines }); save(); toast('Journal posted.'); render();
+        },
+        jDel: function (id) { if (!confirm('Delete this journal entry?')) return; var d = load(); d.journals = d.journals.filter(function (j) { return j.id !== id; }); save(); render(); },
+        addAccount: function () { var n = ($('ac-name').value || '').trim(); if (!n) { toast('Enter the account name.', true); return; } var d = load(), t = $('ac-type').value, base = { asset: 1900, liability: 2900, equity: 3900, income: 4800, expense: 6800 }[t] || 6800, code = String(base - d.accounts.length); d.accounts.push({ code: code, name: n, type: t }); save(); toast('Account ' + code + ' added.'); render(); },
+        assetAdd: function () {
+            var n = ($('fa-name').value || '').trim(), cost = num('fa-cost'); if (!n || cost <= 0) { toast('Enter the asset name and cost.', true); return; }
+            var d = load(); d.assets.push({ id: uid(), name: n, date: $('fa-date').value || today(), cost: r2(cost), lifeYears: Math.max(0.5, num('fa-life') || 5), salvage: r2(num('fa-salv')), paidFrom: $('fa-from').value }); save(); toast('Asset added.'); render();
+        },
+        assetSell: function (id) {
+            var a = load().assets.filter(function (x) { return x.id === id; })[0]; if (!a) return; var p = prompt('Sold for how much (KES)? Enter 0 if scrapped.', '0'); if (p === null) return; var date = prompt('Date sold (YYYY-MM-DD)', today()); if (!date) return;
+            a.disposed = { date: date, proceeds: r2(parseFloat(p) || 0), account: '1010' }; save(); render();
+        },
+        assetDel: function (id) { if (!confirm('Remove this asset and its depreciation from the books?')) return; var d = load(); d.assets = d.assets.filter(function (a) { return a.id !== id; }); save(); render(); },
+        bankSave: function () { readDates(); var bd = bankData(S.bankAcct), v = $('acc-stbal').value; bd.balance = v === '' ? '' : r2(parseFloat(v)); save(); render(); },
+        bankTick: function (key, on) { var bd = bankData(S.bankAcct); if (on) bd.cleared[key] = 'hand'; else delete bd.cleared[key]; save(); render(); },
+        bankPaste: function () {
+            readDates(); var bd = bankData(S.bankAcct), txt = ($('acc-paste').value || ''), n = 0;
+            txt.split(/\r?\n/).forEach(function (ln) { var p = ln.split(/[,;\t]/); if (p.length < 3) return; var date = p[0].trim(), amt = parseFloat(p[p.length - 1].replace(/[^0-9.\-]/g, '')); if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isFinite(amt)) return; bd.stmt.push({ id: uid(), date: date, desc: p.slice(1, -1).join(',').trim(), amount: r2(amt), matched: null }); n++; });
+            if (!n) { toast('No valid lines found. Use: 2026-10-02, Deposit, 15000', true); return; } var m = autoMatch(build({ upto: S.asAt }), S.bankAcct, S.asAt); save(); toast(n + ' lines added, ' + m + ' matched.'); render();
+        },
+        bankMatch: function () { readDates(); var m = autoMatch(build({ upto: S.asAt }), S.bankAcct, S.asAt); save(); toast(m + ' lines matched.'); render(); },
+        bankClear: function () { var bd = bankData(S.bankAcct); bd.stmt = []; Object.keys(bd.cleared).forEach(function (k) { if (bd.cleared[k] === 'auto') delete bd.cleared[k]; }); save(); render(); },
+        bankPost: function (id) {
+            var bd = bankData(S.bankAcct), s = bd.stmt.filter(function (x) { return x.id === id; })[0]; if (!s) return; var amt = r2(Math.abs(s.amount)), other = s.amount < 0 ? expCode('Bank charges') : '4900', d = load();
+            d.journals.push({ id: uid(), kind: 'journal', date: s.date, memo: (s.amount < 0 ? 'Bank charge — ' : 'Bank credit — ') + s.desc, lines: s.amount < 0 ? [{ a: other, dr: amt, cr: 0 }, { a: S.bankAcct, dr: 0, cr: amt }] : [{ a: S.bankAcct, dr: amt, cr: 0 }, { a: other, dr: 0, cr: amt }] });
+            save(); autoMatch(build({ upto: S.asAt }), S.bankAcct, S.asAt); save(); render();
+        }
+    };
+    window.Accounts = API;
+
+    /* ---------------- the tab ---------------- */
+    function mount() {
+        if ($('accounts-tab')) return true;
+        var anchor = $('settings-tab-btn') || $('payroll-tab-btn'), panelHost = $('settings-tab'); if (!anchor || !panelHost || !panelHost.parentNode) return false;
+        var btn = document.createElement('button'); btn.id = 'accounts-tab-btn'; btn.className = 'tab-link'; btn.setAttribute('data-tab', 'accounts-tab'); btn.setAttribute('onclick', "guardedSwitchTab(event, 'accounts-tab')"); btn.textContent = '📚 Accounts';
+        anchor.parentNode.insertBefore(btn, anchor);
+        var p = document.createElement('div'); p.id = 'accounts-tab'; p.className = 'tab-content'; p.innerHTML = '<div class="panel acc"><h3>📚 Accounts — books of ' + esc(name()) + '</h3><div id="acc-body"><p>Opening…</p></div></div>';
+        panelHost.parentNode.insertBefore(p, panelHost);
+        return true;
+    }
+    function wire() {
+        try { if (typeof performTabSwitch === 'function' && !performTabSwitch.__acc) { var _p = performTabSwitch; var w = function (btn, id) { var r = _p.apply(this, arguments); if (id === 'accounts-tab') { try { render(); } catch (e) { /* shown inside */ } } return r; }; w.__acc = true; performTabSwitch = w; } } catch (e) { /* the button still opens the tab */ }
+    }
+    function start() { if (!mount()) { setTimeout(start, 700); return; } wire(); setTimeout(wire, 800); setTimeout(wire, 2500); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    window.addEventListener('load', function () { setTimeout(start, 400); });
+
+    /* ---------------- travels with the shop's settings (every device sees the same books) ---------------- */
+    try { var ec = window.extraSettingsCollect; if (typeof ec === 'function' && !ec.__acc) { var wc = function () { var r = ec.apply(this, arguments) || {}; var d = load(); if (d.updatedAt) r.accounting = d; return r; }; wc.__acc = true; window.extraSettingsCollect = wc; } } catch (e) { /* local only */ }
+    try { var ea = window.extraSettingsApply; if (typeof ea === 'function' && !ea.__acc) { var wa = function (data) { var r = ea.apply(this, arguments); safe(function () { var inc = data && data.accounting; if (inc && typeof inc === 'object' && (inc.updatedAt || 0) > (load().updatedAt || 0)) { D = Object.assign(blank(), inc); localStorage.setItem(KEY, JSON.stringify(D)); if ($('acc-body') && $('accounts-tab') && $('accounts-tab').classList.contains('active')) render(); } }); return r; }; wa.__acc = true; window.extraSettingsApply = wa; } } catch (e) { /* local only */ }
+})();
+</script>

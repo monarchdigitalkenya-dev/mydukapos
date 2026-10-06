@@ -93,7 +93,7 @@ const vis = (page, sel) => page.evaluate((s) => { const e = document.querySelect
 async function openSettingsCard(page) {
   await page.evaluate(() => { const b = document.querySelector('.tab-link[data-tab="settings-tab"]'); if (b) b.click(); });
   await page.waitForTimeout(300);
-  await page.evaluate(() => { const b = document.querySelector('[data-section="settings-section-paymethods"]'); if (b) b.click(); });
+  await page.evaluate(() => { const b = document.querySelector('[data-section="settings-section-view"]'); if (b) b.click(); });
   await page.waitForFunction(() => !!document.getElementById('pos-phonetill-panel') && !!document.querySelector('#pos-phonetill-panel .ptl-sw'), null, { timeout: 8000 });
 }
 const flip = (page, id) => page.evaluate((i) => { const l = document.getElementById(i).closest('label'); l.scrollIntoView({ block: 'center' }); }, id).then(() => page.click('label.ptl-sw:has(#' + id + ')'));
@@ -211,7 +211,7 @@ for (const app of APPS) {
       const { ctx, page, errors } = await open(browser, base, app);
       // the card is in Settings, next to the payment methods
       await openSettingsCard(page);
-      assert.equal(await page.evaluate(() => document.getElementById('pos-phonetill-panel').parentNode.id), 'settings-section-paymethods' || '');
+      assert.equal(await page.evaluate(() => document.getElementById('pos-phonetill-panel').parentNode.id), 'settings-section-view');
       // (a) delivery: pick Delivery first, then switch the choice off -> walk-in, toggle and form hidden
       await page.evaluate(() => { setOrderType('delivery'); });
       assert.equal(await page.evaluate(() => orderType), 'delivery');

@@ -1670,7 +1670,7 @@
         /* These two were missing their default-hidden rule entirely — every
            other modal in this file has one, these somehow didn't, so they
            rendered visible on every page load instead of only when opened. */
-        #site-dispatch-modal, #product-edit-modal {
+        #site-dispatch-modal, #refill-dispatch-modal, #product-edit-modal {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(44, 62, 80, 0.95);
             display: none; justify-content: center; align-items: center; z-index: 9999; overflow-y: auto; padding: 20px 0;
@@ -3336,7 +3336,8 @@
 
                 <div class="panel">
                     <h3>🚚 Dispatch History</h3>
-                    <p style="font-size:13px; color:#7f8c8d; margin-top:-6px;">Every transfer of stock from Production to a Shop branch — click 🚚 Dispatch on an item in Inventory to send more.</p>
+                    <p style="font-size:13px; color:#7f8c8d; margin-top:-6px;">Every transfer of stock from Production to a Shop branch — click 🚚 Dispatch on an item in Inventory to send more, or dispatch refill water below.</p>
+                    <button type="button" class="btn-main" style="background:var(--primary, #2980b9); margin:0 0 10px;" onclick="openRefillDispatchModal()">💧 Dispatch Refills (pre-filled bottles or litres)</button>
                     <div class="table-scroll">
                         <table id="dispatch-history-table">
                             <thead><tr><th>Date/Time</th><th>Item</th><th>Qty</th><th>To</th><th>Dispatched By</th><th>Status</th></tr></thead>
@@ -4223,6 +4224,7 @@
     }
     async function sessionReady() {
         var s = typeof window.staffSessionFor === 'function' ? window.staffSessionFor(sidNow()) : null;
+        if (!(s && s.token) && typeof window.staffSessionEnsure === 'function' && !isOffline()) { try { await window.staffSessionEnsure(sidNow()); } catch (e) { /* ask below */ } s = window.staffSessionFor(sidNow()); }
         return !!(s && s.token);
     }
 
@@ -4282,7 +4284,7 @@
 
     async function open() {
         if (isOffline()) { body('<div class="prl-warnbox">📴 You are offline. Payroll needs the internet — salaries, ID copies and payslips are never kept on this device.</div>'); return; }
-        if (!(await sessionReady())) { body(unlockCard('(Signing in offline does not give the server a session.)')); return; }
+        if (!(await sessionReady())) { body(unlockCard('(This device could not confirm your sign-in with the server yet.)')); return; }
         body('<p class="prl-muted">Loading…</p>');
         try {
             await loadWho();
@@ -4633,12 +4635,14 @@
         try { extra = typeof receiptExtraInfo !== 'undefined' ? receiptExtraInfo : ''; } catch (e) { /* none */ } try { logo = typeof receiptLogoData !== 'undefined' ? receiptLogoData : ''; } catch (e) { /* none */ }
         void g; return { name: name || 'Business', email: email, contact: contact, extra: extra, logo: logo };
     }
+    var APPR_KEY = 'prl_approved_by';
+    function approvedByNow() { try { return (localStorage.getItem(APPR_KEY) || '').slice(0, 60); } catch (e) { return ''; } }
     function slipModel(d) {
         var it = d.item, run = d.run, earn = [], ded = [];
         if (run.kind !== 'adjustment') earn.push(['Basic / gross pay' + (it.rate_unit !== 'period' ? ' (' + it.units + (it.rate_unit === 'day' ? ' days × ' : ' hrs × ') + kes(it.rate) + ')' : ''), it.basic]);
         d.lines.forEach(function (l) { var r = [l.label + (l.note ? ' — ' + l.note : ''), l.amount]; if (l.kind === 'earning') earn.push(r); else ded.push([l.label + (l.calc && l.calc !== 'fixed' && !l.manual ? (l.calc === 'bands' ? ' (tax bands)' : ' (' + l.rate + '%)') : ''), l.amount]); });
         var b = bizInfo();
-        return { biz: b, branch: (it.branch_name && it.branch_name !== b.name) ? it.branch_name : '', title: run.kind === 'adjustment' ? 'ADJUSTMENT SLIP' : 'PAYSLIP', slipNo: it.payslip_no, ref: run.ref, period: dshow(run.period_start) + ' – ' + dshow(run.period_end), freq: FREQ[run.frequency] || run.frequency, name: it.emp_name, empNo: it.emp_no || '', position: it.job_title || '', dept: it.department || '', earn: earn, ded: ded, totalEarn: it.basic + it.additions, totalDed: it.deductions, net: it.net, status: run.status, payDate: run.pay_date ? dshow(run.pay_date) : '', method: run.pay_method || '', payRef: run.pay_reference || '', note: it.note || '' };
+        return { approvedBy: approvedByNow(), biz: b, branch: (it.branch_name && it.branch_name !== b.name) ? it.branch_name : '', title: run.kind === 'adjustment' ? 'ADJUSTMENT SLIP' : 'PAYSLIP', slipNo: it.payslip_no, ref: run.ref, period: dshow(run.period_start) + ' – ' + dshow(run.period_end), freq: FREQ[run.frequency] || run.frequency, name: it.emp_name, empNo: it.emp_no || '', position: it.job_title || '', dept: it.department || '', earn: earn, ded: ded, totalEarn: it.basic + it.additions, totalDed: it.deductions, net: it.net, status: run.status, payDate: run.pay_date ? dshow(run.pay_date) : '', method: run.pay_method || '', payRef: run.pay_reference || '', note: it.note || '' };
     }
     function slipHtml(m) {
         var rows = function (a) { return a.length ? a.map(function (r) { return '<tr><td>' + esc(r[0]) + '</td><td class="n">' + kes(r[1]) + '</td></tr>'; }).join('') : '<tr><td class="mu" colspan="2">None</td></tr>'; };
@@ -4648,13 +4652,13 @@
             '<table><thead><tr><th>DEDUCTIONS</th><th class="n">KES</th></tr></thead><tbody>' + rows(m.ded) + '</tbody><tfoot><tr><td>Total deductions</td><td class="n">' + kes(m.totalDed) + '</td></tr></tfoot></table></div>' +
             '<div class="ps-net"><span>NET PAY</span><b>' + kes(m.net) + '</b></div>' + (m.note ? '<div class="mu" style="margin-top:8px">Note: ' + esc(m.note) + '</div>' : '') +
             '<div class="ps-f"><div><span class="mu">Payment date</span><b>' + esc(m.payDate || '—') + '</b></div><div><span class="mu">Payment method</span><b>' + esc(m.method ? m.method.toUpperCase() : '—') + '</b></div><div><span class="mu">Payroll reference</span><b>' + esc(m.payRef || m.ref) + '</b></div></div>' +
-            '<div class="ps-sig"><div>Employee signature</div><div>Approved by</div></div></div>';
+            '<div class="ps-sig"><div>Employee signature</div><div><b class="ps-apby" style="display:block;min-height:15px;color:#1d2b36;font-size:12px;margin-top:-18px;margin-bottom:3px">' + esc(m.approvedBy || '') + '</b>Approved by</div></div></div>';
     }
     var SLIP_CSS = '.ps{font-family:Arial,Helvetica,sans-serif;color:#1d2b36;max-width:760px;margin:0 auto;padding:18px;border:1px solid #cfd6dc;border-radius:10px;font-size:13px}.mu{color:#7a8791;font-size:11px}.n{text-align:right;white-space:nowrap}.ps-h{display:flex;justify-content:space-between;gap:14px;border-bottom:3px solid #1f8a70;padding-bottom:10px}.ps-b{display:flex;gap:10px;align-items:center}.ps-logo{height:46px;max-width:120px;object-fit:contain}.ps-bn{font-size:20px;font-weight:800}.ps-t{text-align:right}.ps-title{font-size:20px;font-weight:800;color:#1f8a70;letter-spacing:.06em}.ps-draft{display:inline-block;margin-top:4px;padding:2px 8px;border:2px solid #e67e22;color:#e67e22;font-weight:800;font-size:11px;transform:rotate(-3deg)}.ps-emp{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0;background:#f4f8f7;border-radius:8px;padding:10px}.ps-emp div,.ps-f div{display:flex;flex-direction:column}.ps-emp b,.ps-f b{font-size:13px}.ps-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}table{width:100%;border-collapse:collapse}th{background:#1f8a70;color:#fff;text-align:left;padding:6px 8px;font-size:12px}td{padding:6px 8px;border-bottom:1px solid #e6ebee}tfoot td{font-weight:800;border-top:2px solid #1f8a70;border-bottom:0}.ps-net{display:flex;justify-content:space-between;align-items:center;background:#1f8a70;color:#fff;border-radius:10px;padding:12px 16px;margin-top:14px}.ps-net span{font-weight:800;letter-spacing:.08em}.ps-net b{font-size:26px}.ps-f{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}.ps-sig{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:34px;color:#7a8791;font-size:11px}.ps-sig div{border-top:1px solid #9aa6ae;padding-top:4px}@media(max-width:600px){.ps-emp,.ps-f{grid-template-columns:1fr 1fr}.ps-cols{grid-template-columns:1fr}}';
     async function slip(runId, empId) {
         try {
             var d = await api('payslip.get', { runId: runId, empId: empId }); S.slipData = d; var m = slipModel(d); S.slipModel = m;
-            modal('<style>' + SLIP_CSS + '</style>' + slipHtml(m) + '<div class="prl-actions"><button type="button" onclick="Payroll.slipPrint()">🖨 Print</button><button type="button" onclick="Payroll.slipPdf()">⬇ Download PDF</button><button type="button" class="sec" onclick="Payroll.slipShare()">📤 Share</button><button type="button" class="sec" onclick="Payroll.closeModal()">Close</button></div><div id="prl-mmsg"></div>');
+            modal('<style>' + SLIP_CSS + '</style>' + slipHtml(m) + '<div class="prl-form" style="margin:10px 0"><div><label>Approved by (type a name — it prints on the payslip)</label><input id="prl-appr" type="text" maxlength="60" value="' + esc(m.approvedBy || '') + '" placeholder="e.g. Jane Wanjiru, Director" oninput="Payroll.setApprovedBy(this.value)"></div></div><div class="prl-actions"><button type="button" onclick="Payroll.slipPrint()">🖨 Print</button><button type="button" onclick="Payroll.slipPdf()">⬇ Download PDF</button><button type="button" class="sec" onclick="Payroll.slipShare()">📤 Share</button><button type="button" class="sec" onclick="Payroll.closeModal()">Cancel</button><button type="button" onclick="Payroll.slipSave()">💾 Save</button><button type="button" class="sec" onclick="Payroll.slipOpenSaved()">📂 Saved copy</button></div><div id="prl-mmsg"></div>');
         } catch (e) { toast(e.message, true); }
     }
     function audit(how) { try { var d = S.slipData; api('payslip.get', { runId: d.run.run_id, empId: d.item.emp_id, audit: true, how: how }); } catch (e) { /* the slip is already open */ } }
@@ -4718,7 +4722,7 @@
         y -= 54; if (m.note) { text('Note: ' + m.note, M, y, 8.5, false, [0.48, 0.53, 0.57]); y -= 16; }
         var pf = [['Payment date', m.payDate || '-'], ['Payment method', m.method ? m.method.toUpperCase() : '-'], ['Payroll reference', m.payRef || m.ref]], pw = (W - 2 * M) / 3;
         pf.forEach(function (p, i) { text(p[0], M + i * pw, y, 7.5, false, [0.48, 0.53, 0.57]); text(p[1], M + i * pw, y - 13, 10, true); });
-        y -= 70; line(M, y, M + 200, y, [0.6, 0.65, 0.68], 0.8); line(W - M - 200, y, W - M, y, [0.6, 0.65, 0.68], 0.8); text('Employee signature', M, y - 11, 8, false, [0.48, 0.53, 0.57]); text('Approved by', W - M - 200, y - 11, 8, false, [0.48, 0.53, 0.57]);
+        y -= 70; line(M, y, M + 200, y, [0.6, 0.65, 0.68], 0.8); line(W - M - 200, y, W - M, y, [0.6, 0.65, 0.68], 0.8); text('Employee signature', M, y - 11, 8, false, [0.48, 0.53, 0.57]); text('Approved by', W - M - 200, y - 11, 8, false, [0.48, 0.53, 0.57]); if (m.approvedBy) text(m.approvedBy, W - M - 200, y + 5, 10, true, [0.11, 0.17, 0.21]);
         text('Generated by Create Payroll', W / 2, 24, 7.5, false, [0.65, 0.69, 0.72], 'c');
         var content = ops.join('\n'), parts = [], len = 0, offs = [];
         function push(x) { if (typeof x === 'string') { var b = new Uint8Array(x.length); for (var i = 0; i < x.length; i++) b[i] = x.charCodeAt(i) & 255; parts.push(b); len += b.length; } else { parts.push(x); len += x.length; } }
@@ -4737,6 +4741,29 @@
     async function slipPdf() {
         try { audit('pdf'); var blob = await slipPdfBlob(S.slipModel), url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = fileName(S.slipModel); document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 5000); }
         catch (e) { toast('Could not make the PDF: ' + e.message, true); }
+    }
+    function setApprovedBy(v) {
+        v = String(v || '').slice(0, 60); try { localStorage.setItem(APPR_KEY, v); } catch (e) { /* kept for this slip only */ }
+        if (S.slipModel) S.slipModel.approvedBy = v;
+        var el = document.querySelector('.ps .ps-apby'); if (el) el.textContent = v;
+    }
+    function b64OfBlob(blob) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(String(r.result).split(',')[1] || ''); }; r.onerror = function () { rej(new Error('Could not read the PDF')); }; r.readAsDataURL(blob); }); }
+    function b64ToBlob(b64) { var bin = atob(b64), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type: 'application/pdf' }); }
+    // Save: keep a PDF copy of this payslip on the server (replaces any earlier copy). Copies older than 90 days are archived to R2 automatically.
+    async function slipSave() {
+        try {
+            var d = S.slipData, m = S.slipModel, blob = await slipPdfBlob(m), pdf = await b64OfBlob(blob);
+            var r = await api('payslip.save', { runId: d.run.run_id, empId: d.item.emp_id, pdf: pdf, fileName: fileName(m) });
+            toast('Payslip saved (' + Math.max(1, Math.round(r.size / 1024)) + ' KB). Old copies are archived automatically.');
+        } catch (e) { toast('Could not save the payslip: ' + (e && e.message || e), true); }
+    }
+    async function slipOpenSaved() {
+        try {
+            var d = S.slipData, r = await api('payslip.saved', { runId: d.run.run_id, empId: d.item.emp_id });
+            if (!r.found) { toast('No saved copy yet — press Save first.', true); return; }
+            var url = URL.createObjectURL(b64ToBlob(r.pdf)), a = document.createElement('a'); a.href = url; a.download = r.file_name || fileName(S.slipModel); document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+            toast(r.archived ? 'Restored from the archive and downloaded.' : 'Saved copy downloaded.');
+        } catch (e) { toast(e && e.message || String(e), true); }
     }
     async function slipShare() {
         var m = S.slipModel;
@@ -4828,14 +4855,14 @@
         } catch (e) { /* the tab opens by its button anyway */ }
     }
     wire(); document.addEventListener('DOMContentLoaded', wire); window.addEventListener('load', function () { wire(); setTimeout(wire, 300); setTimeout(wire, 1500); });
-    window.addEventListener('online', function () { setTimeout(refreshAccess, 1500); });
+    window.addEventListener('online', function () { setTimeout(refreshAccess, 1500); setTimeout(function () { try { if ($('prl-unlock')) open(); } catch (e) { /* stays on the card */ } }, 3500); });
     setInterval(refreshAccess, 45000); setTimeout(refreshAccess, 2500); setTimeout(paintBtn, 600);
     document.addEventListener('click', function (ev) { if (ev.target && ev.target.id === 'prl-modal') closeModal(); });
 
     window.Payroll = { importPos: importPos, go: go, open: open, unlock: unlock, newEmp: newEmp, saveNew: saveNew, saveEmp: saveEmp, openEmp: openEmp, search: search, sub: sub, addLine: addLine, delLine: delLine,
         docPicked: docPicked, docUpload: docUpload, docView: docView, docReplace: docReplace, docReplaceGo: docReplaceGo, docArchive: docArchive, docDelete: docDelete, closeModal: closeModal,
         newRun: newRun, nrFreq: nrFreq, createRun: createRun, openRun: openRun, step: step, delRun: delRun, addEmpToRun: addEmpToRun, addEmpGo: addEmpGo, payForm: payForm, payGo: payGo, adjustForm: adjustForm, adjustPick: adjustPick, adjustGo: adjustGo,
-        editItem: editItem, eiAdd: eiAdd, eiDel: eiDel, eiSet: eiSet, eiSave: eiSave, eiRemove: eiRemove, slip: slip, slipPrint: slipPrint, slipPdf: slipPdf, slipShare: slipShare, printAll: printAll, csv: csv,
+        editItem: editItem, eiAdd: eiAdd, eiDel: eiDel, eiSet: eiSet, eiSave: eiSave, eiRemove: eiRemove, slip: slip, slipPrint: slipPrint, slipPdf: slipPdf, slipSave: slipSave, setApprovedBy: setApprovedBy, slipOpenSaved: slipOpenSaved, slipShare: slipShare, printAll: printAll, csv: csv,
         perm: perm, template: template, typeEdit: typeEdit, tyCalc: tyCalc, tySave: tySave, auditShow: auditShow, calc: { slipModel: slipModel, slipPdfBlob: slipPdfBlob, slipHtml: slipHtml, current: function () { return S.slipModel; } } };
 })();
 </script>
@@ -6467,6 +6494,7 @@
                 <input type="number" id="bom-add-qty-input" min="0" step="1" placeholder="Qty" style="width:80px;">
                 <button class="settings-small-btn" onclick="addBomRow()">+ Add</button>
             </div>
+            <div id="bom-cost-mode" style="margin-top:10px; padding:10px 12px; border-radius:10px; background:rgba(127,140,141,.12);"></div>
             <p id="bom-cost-summary" style="margin-top:10px; font-weight:bold; color:#27ae60;"></p>
             <div style="display:flex; gap:10px; margin-top:14px;">
                 <button class="btn-main" style="background:#95a5a6;" onclick="closeBomModal()">Close</button>
@@ -6495,6 +6523,40 @@
             <div style="display:flex; gap:10px; margin-top:10px;">
                 <button class="btn-main" style="background:#95a5a6;" onclick="closeSiteDispatchModal()">Cancel</button>
                 <button class="btn-main" style="background:var(--success);" onclick="confirmSiteDispatch()">🚚 Dispatch</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- REFILL DISPATCH MODAL (zip 218): sends refill WATER from Production's bulk tank(s) to a Shop branch's tank - as pre-filled containers of
+         the existing refill sizes, or as plain litres. Water leaves one tank and arrives in the other in the same step; both tanks' logs record it. -->
+    <div id="refill-dispatch-modal">
+        <div class="popup-modal-box" style="max-width:480px;">
+            <h2>💧 Dispatch Refills</h2>
+            <p id="refill-dispatch-subtitle" style="color:#7f8c8d; font-size:14px; margin-bottom:10px;"></p>
+            <div class="form-group" id="refill-dispatch-branch-group">
+                <label class="label">Destination Branch</label>
+                <select id="refill-dispatch-branch-select" onchange="renderRefillDispatchPreview()"></select>
+            </div>
+            <div class="form-group">
+                <label class="label">Send as</label>
+                <select id="refill-dispatch-mode" onchange="renderRefillDispatchPreview()">
+                    <option value="containers">Pre-filled bottles (existing refill sizes)</option>
+                    <option value="litres">Litres</option>
+                </select>
+            </div>
+            <div class="form-group" id="refill-dispatch-size-group">
+                <label class="label">Bottle size</label>
+                <select id="refill-dispatch-size" onchange="renderRefillDispatchPreview()"></select>
+            </div>
+            <div class="form-group">
+                <label class="label" id="refill-dispatch-qty-label">Number of bottles</label>
+                <input type="number" id="refill-dispatch-qty" min="0" step="1" inputmode="decimal" placeholder="e.g. 20" oninput="renderRefillDispatchPreview()">
+            </div>
+            <p id="refill-dispatch-preview" style="font-size:13px; color:#7f8c8d;"></p>
+            <p id="refill-dispatch-error" style="color:var(--danger); font-size:13px; min-height:16px;"></p>
+            <div style="display:flex; gap:10px; margin-top:10px;">
+                <button class="btn-main" style="background:#95a5a6;" onclick="closeRefillDispatchModal()">Cancel</button>
+                <button class="btn-main" style="background:var(--success);" onclick="confirmRefillDispatch()">🚚 Dispatch</button>
             </div>
         </div>
     </div>
@@ -15812,6 +15874,8 @@ function stockTakeRecordCount(p, parent, d, stocktakeId, meta) {
                 const m = typeof logStockCount === 'function'
                     ? logStockCount(p, name, unit, counted, before, stocktakeId)
                     : (typeof logStockMovement === 'function' ? logStockMovement(p.code, name, counted - before, 'Stock take', unit) : null);
+                const why = (window.__stState && window.__stState.reasons && window.__stState.reasons[p.code]) || '';
+                if (m && why) m.reason = 'Stock take — ' + why;
                 if (m && meta) m.st = meta;
             };
             if (d.qtyNew !== null && d.qty !== 0) { const before = Number(p.qty) || 0; p.qty = d.qtyNew; log('qty', d.qtyNew, before); }
@@ -21308,13 +21372,16 @@ async function zReportPreflight() {
             entries.forEach(line => {
                 if (line.type === 'refill') {
                     deductFromTanks((line.sizeML / 1000) * line.qty, siteId);
-                    line.materialsUsed = deductBomForLine(refillSizes.find(s => s.id === line.refillSizeId), line.qty, line.materialsOverride);
+                    const rsz = refillSizes.find(s => s.id === line.refillSizeId);
+                    line.materialsUsed = deductBomForLine(rsz, line.qty, line.materialsOverride);
+                    line.fixedCostAtSale = (rsz && itemCostMode(rsz) === 'fixed') ? (Number(rsz.fixedCost) || 0) : null;
                 } else {
                     const product = products.find(p => p.code === line.code);
                     // A custom bale order was already produced (materials used, run logged)
                     // when the order was confirmed — deducting stock again here double-counted it.
                     if (product && !line.customBaleOrder) deductProductStockForSale(product, line.qty);
                     line.materialsUsed = deductBomForLine(product, line.qty, line.materialsOverride);
+                    line.fixedCostAtSale = (product && itemCostMode(product) === 'fixed') ? (Number(product.fixedCost) || 0) : null;
                 }
                 // Toggled accessory materials are genuinely sold, chargeable
                 // stock — deducted from their own product record exactly
@@ -21563,7 +21630,7 @@ async function zReportPreflight() {
                     const costAtSale = (l.code && (!l.materialsUsed || l.materialsUsed.length === 0))
                         ? (() => { const p = products.find(pr => pr.code === l.code); return p && Number(p.wholesalePrice) > 0 ? Number(p.wholesalePrice) : null; })()
                         : null;
-                    const mainItem = { type: l.type, code: l.code || null, refillSizeId: l.refillSizeId || null, name: l.name, sizeML: l.sizeML, qty: l.qty, price: l.price, refillCostAtSale, costAtSale, materialsUsed: l.materialsUsed || [], vatCategory: l.vatCategory || 'A', offerApplied: lineOffer ? { label: lineOffer.label, offerName: lineOffer.offerName, amount: lineOffer.amount } : null, customBaleOrder: !!l.customBaleOrder };
+                    const mainItem = { type: l.type, code: l.code || null, refillSizeId: l.refillSizeId || null, name: l.name, sizeML: l.sizeML, qty: l.qty, price: l.price, refillCostAtSale, costAtSale, fixedCostAtSale: (typeof l.fixedCostAtSale === 'number') ? l.fixedCostAtSale : null, materialsUsed: l.materialsUsed || [], vatCategory: l.vatCategory || 'A', offerApplied: lineOffer ? { label: lineOffer.label, offerName: lineOffer.offerName, amount: lineOffer.amount } : null, customBaleOrder: !!l.customBaleOrder };
                     // Toggled accessory materials print as their own
                     // separate chargeable line — never folded into the
                     // parent item's own price — so the receipt shows
@@ -23208,7 +23275,7 @@ async function zReportPreflight() {
                     <tr>
                         <td>${new Date(r.timestamp).toLocaleString('en-GB')}</td>
                         <td>${escapeHtml(r.name)}</td>
-                        <td>${r.qty}</td>
+                        <td>${r.qty}${r.unit ? ' ' + escapeHtml(r.unit) : ''}</td>
                         <td>${escapeHtml(toSite ? toSite.name : '(deleted branch)')}</td>
                         <td>${escapeHtml(r.dispatchedBy || 'Admin')}</td>
                         <td>${statusLabel}</td>
@@ -23688,6 +23755,11 @@ async function zReportPreflight() {
         function itemCogs(it, sale) {
             if (aquaIsPaymentLine(it) || it.type === 'bulk-booking' || it.type === 'bulk-booking-deposit') {
                 return (typeof it.costShare === 'number' && isFinite(it.costShare)) ? it.costShare : 0;
+            }
+            if (typeof it.fixedCostAtSale === 'number' && isFinite(it.fixedCostAtSale)) {   // zip 221: a cost typed in by the owner is the whole cost (snapshot at sale)
+                let fc = it.fixedCostAtSale * (Number(it.qty) || 0);
+                if (sale && typeof sale.cogsScale === 'number' && isFinite(sale.cogsScale) && sale.cogsScale >= 0) fc *= sale.cogsScale;
+                return fc;
             }
             let cost = 0;
             (it.materialsUsed || []).forEach(m => { cost += m.qty * (m.unitCost || 0); });
@@ -30123,6 +30195,120 @@ async function zReportPreflight() {
             showToast(`Dispatched ${qty} × "${product.name}" to ${branch.name}.`);
         }
 
+        /* ---------- DISPATCH REFILLS (zip 218) ----------
+           Refill water is not a product: it lives in the bulk tanks (litres per site). Dispatching it moves litres from Production's tank(s) to the
+           chosen branch's tank, either typed as litres or as a number of pre-filled bottles of an existing refill size (bottles x size = litres).
+           Everything is checked BEFORE anything changes, so a refused dispatch leaves both tanks exactly as they were; both tanks log the movement
+           (signed entry in their refill history) and Dispatch History shows it with its litres. */
+        function refillDispatchSizes() {
+            const prod = productionSiteId();
+            const mine = refillSizes.filter(s => s && !s.removed && s.siteId === prod && Number(s.sizeML) > 0);
+            const pool = mine.length ? mine : refillSizes.filter(s => s && !s.removed && Number(s.sizeML) > 0);
+            const seen = {}; const out = [];
+            pool.slice().sort((a, b) => a.sizeML - b.sizeML).forEach(s => { if (!seen[s.sizeML]) { seen[s.sizeML] = 1; out.push(s); } });
+            return out;
+        }
+        function refillSizeName(s) { return (s.label && String(s.label).trim()) || (s.sizeML >= 1000 ? (s.sizeML / 1000) + ' L' : s.sizeML + ' ml'); }
+        function refillDispatchPlan() {
+            // -> { ok, error, litres, branch, fromTanks, toTank, desc } ; never touches data
+            const branches = shopBranches();
+            if (!branches.length) return { ok: false, error: 'No Shop branch exists yet to dispatch to.' };
+            const sel = document.getElementById('refill-dispatch-branch-select');
+            const branch = sites.find(s => s.id === (branches.length > 1 && sel ? sel.value : branches[0].id));
+            if (!branch) return { ok: false, error: 'Choose a destination branch.' };
+            const mode = document.getElementById('refill-dispatch-mode').value;
+            const qty = parseFloat(document.getElementById('refill-dispatch-qty').value);
+            let litres = 0, desc = '', sizeName = '', size = null;
+            if (mode === 'containers') {
+                const sizes = refillDispatchSizes();
+                size = sizes.find(x => String(x.id) === document.getElementById('refill-dispatch-size').value) || null;
+                if (!size) return { ok: false, error: 'No refill sizes are set up yet - add them in Refill Prices first, or send litres instead.' };
+                if (!Number.isFinite(qty) || qty <= 0) return { ok: false, error: 'Enter how many bottles to dispatch.' };
+                if (Math.abs(qty - Math.round(qty)) > 1e-9) return { ok: false, error: 'Bottles must be a whole number.' };
+                sizeName = refillSizeName(size);
+                litres = Math.round(qty * Number(size.sizeML)) / 1000;
+                desc = `${qty} × ${sizeName} pre-filled`;
+            } else {
+                if (!Number.isFinite(qty) || qty <= 0) return { ok: false, error: 'Enter the litres to dispatch.' };
+                litres = Math.round(qty * 1000) / 1000; desc = `${litres} L`;
+            }
+            const prodId = productionSiteId();
+            const srcPool = tanks.filter(t => !t.removed && t.siteId === prodId);
+            if (!srcPool.length) return { ok: false, error: 'Production has no bulk tank to take water from.' };
+            const srcInfinite = srcPool.some(t => t.infinite);
+            const have = srcPool.reduce((a, t) => a + (Number(t.currentVolumeLiters) || 0), 0);
+            if (!srcInfinite && litres > have + 1e-9) return { ok: false, error: `Only ${Math.round(have * 1000) / 1000} L in Production's tank(s) - can't dispatch ${litres} L.` };
+            const dstPool = tanks.filter(t => !t.removed && t.siteId === branch.id && !t.infinite);
+            if (!dstPool.length) return { ok: false, error: `${branch.name} has no metered bulk tank to receive the water. Add one in its Bulk Tank tab first.` };
+            // destination: the tank with the most free room that can take it all, else the fullest-room tank (checked against capacity)
+            const room = (t) => (Number(t.capacityLiters) || 0) - (Number(t.currentVolumeLiters) || 0);
+            const toTank = dstPool.slice().sort((a, b) => room(b) - room(a))[0];
+            if (litres > room(toTank) + 1e-9) return { ok: false, error: `${branch.name}'s tank only has room for ${Math.max(0, Math.round(room(toTank) * 1000) / 1000)} L more (capacity ${toTank.capacityLiters} L) - dispatch less, or raise its capacity.` };
+            return { ok: true, litres, branch, srcPool, srcInfinite, toTank, desc, mode, qty, size, sizeName, have };
+        }
+        function openRefillDispatchModal() {
+            if (currentSite().type !== 'production') { showToast('Switch to 🏭 Production first - that is where the refill water is made.', true); return; }
+            const branches = shopBranches();
+            if (!branches.length) { showToast('No Shop branch exists yet to dispatch to.', true); return; }
+            document.getElementById('refill-dispatch-branch-select').innerHTML = branches.map(b => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)}</option>`).join('');
+            document.getElementById('refill-dispatch-branch-group').style.display = branches.length > 1 ? '' : 'none';
+            const sizes = refillDispatchSizes();
+            document.getElementById('refill-dispatch-size').innerHTML = sizes.map(x => `<option value="${escapeHtml(String(x.id))}">${escapeHtml(refillSizeName(x))}</option>`).join('');
+            document.getElementById('refill-dispatch-mode').value = sizes.length ? 'containers' : 'litres';
+            document.getElementById('refill-dispatch-qty').value = '';
+            document.getElementById('refill-dispatch-error').textContent = '';
+            const prodId = productionSiteId(); const have = tanks.filter(t => !t.removed && t.siteId === prodId).reduce((a, t) => a + (Number(t.currentVolumeLiters) || 0), 0);
+            document.getElementById('refill-dispatch-subtitle').textContent = `${currentSite().name} - ${Math.round(have * 1000) / 1000} L in the bulk tank(s)`;
+            renderRefillDispatchPreview();
+            document.getElementById('refill-dispatch-modal').style.display = 'flex';
+        }
+        function closeRefillDispatchModal() { const m = document.getElementById('refill-dispatch-modal'); if (m) m.style.display = 'none'; }
+        function renderRefillDispatchPreview() {
+            const mode = document.getElementById('refill-dispatch-mode').value;
+            document.getElementById('refill-dispatch-size-group').style.display = mode === 'containers' ? '' : 'none';
+            document.getElementById('refill-dispatch-qty-label').textContent = mode === 'containers' ? 'Number of bottles' : 'Litres to dispatch';
+            const pv = document.getElementById('refill-dispatch-preview'); const er = document.getElementById('refill-dispatch-error'); er.textContent = '';
+            const v = document.getElementById('refill-dispatch-qty').value;
+            if (v === '') { pv.textContent = ''; return; }
+            const plan = refillDispatchPlan();
+            if (!plan.ok) { pv.textContent = ''; er.textContent = plan.error; return; }
+            pv.textContent = `→ ${plan.desc} = ${plan.litres} L leaves Production and is added to "${plan.toTank.name}" at ${plan.branch.name} (now ${Math.round((Number(plan.toTank.currentVolumeLiters) || 0) * 1000) / 1000} L there).`;
+        }
+        function confirmRefillDispatch() {
+            const errEl = document.getElementById('refill-dispatch-error'); errEl.textContent = '';
+            const plan = refillDispatchPlan();
+            if (!plan.ok) { errEl.textContent = plan.error; return; }
+            const now = new Date().toISOString(), who = activeServerName(), prodName = currentSite().name;
+            // take the water from Production's tanks (fullest first), logging each tank's share
+            if (!plan.srcInfinite) {
+                let remaining = plan.litres;
+                plan.srcPool.slice().sort((a, b) => (b.currentVolumeLiters || 0) - (a.currentVolumeLiters || 0)).forEach(t => {
+                    if (remaining <= 1e-9) return;
+                    const take = Math.min(Number(t.currentVolumeLiters) || 0, remaining);
+                    if (take <= 0) return;
+                    t.currentVolumeLiters = Math.round(((Number(t.currentVolumeLiters) || 0) - take) * 1000) / 1000;
+                    remaining -= take;
+                    t.refillLog = t.refillLog || [];
+                    t.refillLog.push({ id: genSaleId(), timestamp: now, litersAdded: -take, cost: 0, supplier: `Dispatched to ${plan.branch.name} (${plan.desc})`, servedBy: who });
+                });
+            }
+            plan.toTank.currentVolumeLiters = Math.round(((Number(plan.toTank.currentVolumeLiters) || 0) + plan.litres) * 1000) / 1000;
+            plan.toTank.refillLog = plan.toTank.refillLog || [];
+            plan.toTank.refillLog.push({ id: genSaleId(), timestamp: now, litersAdded: plan.litres, cost: 0, supplier: `Dispatch received from ${prodName} (${plan.desc})`, servedBy: who });
+            dispatchLog.push({
+                id: genSaleId(), timestamp: now, fromSiteId: activeSiteId, toSiteId: plan.branch.id,
+                sourceCode: 'REFILL-WATER', destCode: 'REFILL-WATER', name: `💧 Refill water (${plan.desc})`, kind: 'refill',
+                qty: plan.litres, unit: 'L', containers: plan.mode === 'containers' ? { sizeML: Number(plan.size.sizeML), count: plan.qty } : null,
+                dispatchedBy: who, status: 'delivered',
+            });
+            closeRefillDispatchModal();
+            try { renderTankTab(); } catch (e) { /* the tank tab is only drawn when it is open */ }
+            renderDispatchHistoryTable();
+            renderSiteSwitcher();
+            queuePush();
+            showToast(`Dispatched ${plan.desc} (${plan.litres} L) to ${plan.branch.name}.`);
+        }
+
         function renderBomRows() {
             const item = getBomItem();
             if (!item) return;
@@ -30143,12 +30329,41 @@ async function zReportPreflight() {
                     </div>`;
                 }).join('');
 
-            const totalCost = item.bom.reduce((sum, row) => {
+            const matCost = bomMaterialsCostPerUnit(item.bom);
+            const fixed = itemCostMode(item) === 'fixed';
+            const modeBox = document.getElementById('bom-cost-mode');
+            if (modeBox) modeBox.innerHTML = `<div style="font-weight:700; font-size:14px; margin-bottom:6px;">💲 How is this item's cost worked out?</div>
+                <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; margin-bottom:4px;"><input type="radio" name="bom-cost-mode" value="materials" ${fixed ? '' : 'checked'} onchange="setBomCostMode('materials')"> Calculate it from the materials above (${money(matCost)} per unit)</label>
+                <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;"><input type="radio" name="bom-cost-mode" value="fixed" ${fixed ? 'checked' : ''} onchange="setBomCostMode('fixed')"> I will type the cost myself</label>
+                ${fixed ? `<div style="margin-top:6px; display:flex; align-items:center; gap:8px; font-size:13px;">Cost per unit (KES) <input class="inv-edit-input" type="number" min="0" step="0.01" style="width:110px;" value="${(Number(item.fixedCost) || 0).toFixed(2)}" onchange="setBomFixedCost(this.value)"></div>` : ''}`;
+            document.getElementById('bom-cost-summary').textContent = fixed
+                ? `Cost per unit: ${money(Number(item.fixedCost) || 0)} — the cost you typed. The materials above still come off stock on every sale, but their prices are not added to the cost.`
+                : `Materials cost per unit: ${money(matCost)}` + (item.bom.length > 0 && Number(item.wholesalePrice) > 0
+                    ? ` — this is the item’s cost on every sale. Its own Cost Price (${money(Number(item.wholesalePrice))}) is NOT added on top while materials are listed; remove the materials to cost it by its Cost Price instead.` : '');
+        }
+
+        // zip 221: an item's cost is EITHER worked out from its materials (default) OR a cost you type yourself - never a mix, never hidden.
+        function itemCostMode(item) { return item && item.costMode === 'fixed' ? 'fixed' : 'materials'; }
+        function bomMaterialsCostPerUnit(rows) {
+            return (rows || []).reduce((sum, row) => {
                 const material = rawMaterials.find(m => m.id === row.materialId);
-                return sum + (material ? material.unitCost * row.qty : 0);
+                return sum + (material ? (Number(material.unitCost) || 0) * (Number(row.qty) || 0) : 0);
             }, 0);
-            document.getElementById('bom-cost-summary').textContent = `Materials cost per unit: ${money(totalCost)}` + (item.bom.length > 0 && Number(item.wholesalePrice) > 0
-                ? ` — this is the item’s cost on every sale. Its own Cost Price (${money(Number(item.wholesalePrice))}) is NOT added on top while materials are listed; remove the materials to cost it by its Cost Price instead.` : '');
+        }
+        function setBomCostMode(mode) {
+            const item = getBomItem(); if (!item) return;
+            if (mode === 'fixed') {
+                item.costMode = 'fixed';
+                if (!(Number(item.fixedCost) > 0)) item.fixedCost = Math.round(bomMaterialsCostPerUnit(item.bom) * 100) / 100;   // start from what the materials work out to
+            } else { item.costMode = 'materials'; }
+            queuePush(); renderBomRows();
+        }
+        function setBomFixedCost(value) {
+            const item = getBomItem(); if (!item) return;
+            const trimmed = String(value).trim(), num = trimmed === '' ? 0 : parseFloat(trimmed);
+            if (isNaN(num) || num < 0) { showToast('Enter a valid number, or leave it blank for 0.', true); renderBomRows(); return; }
+            item.costMode = 'fixed'; item.fixedCost = Math.round(num * 100) / 100;
+            queuePush(); renderBomRows();
         }
 
         // zip 215: change a material's cost from inside the recipe window (same field as Inventory > Raw Materials)
@@ -30316,7 +30531,7 @@ async function zReportPreflight() {
                 // should always reflect what the cost genuinely was on the
                 // day of that sale, not whatever the price happens to be
                 // when someone looks at the report later.
-                used.push({ materialId: material.id, name: material.name, qty: Math.round(row.qty * qty * 1e6) / 1e6, unitCost: material.unitCost, sellingPrice: material.sellingPrice || 0 });   // (materialId: a void puts it back into the SAME material)
+                used.push({ materialId: material.id, name: material.name, qty: Math.round(row.qty * qty * 1e6) / 1e6, unitCost: itemCostMode(item) === 'fixed' ? 0 : material.unitCost, sellingPrice: material.sellingPrice || 0 });   // (materialId: a void puts it back into the SAME material)
             });
             return used;
         }
@@ -30326,6 +30541,8 @@ async function zReportPreflight() {
         // Used to build the COGS breakdown shown at checkout/on request,
         // entirely separate from the item's SELLING price.
         function lineMaterialsCost(line) {
+            const src = line.type === 'refill' ? refillSizes.find(s => s.id === line.refillSizeId) : products.find(p => p.code === line.code);
+            if (src && itemCostMode(src) === 'fixed') return (Number(src.fixedCost) || 0) * line.qty;   // zip 221: the cost typed in is the whole cost
             const bom = effectiveLineMaterials(line);
             const materialsCost = bom.reduce((sum, row) => {
                 const material = rawMaterials.find(m => m.id === row.materialId);
@@ -34390,7 +34607,7 @@ async function zReportPreflight() {
             var tt = totals(sqDay), zero = { total: 0, cash: 0, mpesa: 0, card: 0 }, list = document.getElementById('pos-sq-list');
             if (!list) return;
             var all = tt.reduce(function (a, t) { return { total: r2(a.total + t.total), cash: r2(a.cash + t.cash), mpesa: r2(a.mpesa + t.mpesa), card: r2(a.card + t.card) }; }, zero);
-            list.innerHTML = '<div class="pos-sq-staff">' + esc((sqDay === dayKey(new Date()) ? "Today's Sales" : 'Sales — ' + sqDay)) + '</div>' + boxes(all) + tt.map(function (t) { return '<div class="pos-sq-staff">👤 ' + esc(t.server) + '</div>' + boxes(t); }).join('');
+            list.innerHTML = '<div class="pos-sq-staff">' + esc((sqDay === dayKey(new Date()) ? "Daily Sales" : 'Daily Sales — ' + sqDay)) + '</div>' + boxes(all) + tt.map(function (t) { return '<div class="pos-sq-staff">👤 ' + esc(t.server) + '</div>' + boxes(t); }).join('');
         }
         window.posSqToggle = function () { sqOpen = !sqOpen; refresh(); };
         window.posSqDay = function (v) { sqDay = v || dayKey(new Date()); refresh(); };
@@ -37469,7 +37686,10 @@ async function zReportPreflight() {
         window.__staffSessionInit = true;
 
         var KEY = 'pos_staff_sessions_v1', UNSIGNED = 'pos_staff_unsigned_v1';
-        var pending = {};                                                  // sid -> { proof, since }  (memory only — never saved)
+        var pending = {};                                                  // sid -> { proof, since }  (memory + this tab's sessionStorage only — never localStorage)
+        var PKEY = 'pos_staff_pending_v1';                                 // survives a page reload on a flaky connection; wiped when the tab closes or the person clocks out
+        function savePending() { try { sessionStorage.setItem(PKEY, JSON.stringify(pending)); } catch (e) { /* memory copy still works */ } }
+        try { var __p = JSON.parse(sessionStorage.getItem(PKEY) || '{}'); if (__p && typeof __p === 'object') Object.keys(__p).forEach(function (k) { if (__p[k] && __p[k].proof && Date.now() - __p[k].since < 16 * 3600000) pending[k] = __p[k]; }); } catch (e) { /* none */ }
 
         /* ---- SHA-256 / HMAC-SHA256, synchronous (a sale is signed inside the save that records it) ---- */
         var K = [], H0 = [];
@@ -37544,12 +37764,12 @@ async function zReportPreflight() {
                     Object.keys(all).forEach(function (k) { if (!(all[k] && all[k].exp > Date.now())) delete all[k]; });
                     all[sid] = { sessionId: d.sessionId, token: d.token, secret: d.secret, exp: d.exp, name: d.name, perms: d.perms || [], since: p.since, at: Date.now() };
                     writeJ(KEY, all);
-                    delete pending[sid];
+                    delete pending[sid]; savePending();
                     signWaiting(sid);
                     return true;
                 }
                 // a wrong PIN / removed / locked account here means the server's staff list differs from this device's: stop asking
-                if (res.status === 401 || res.status === 403 || res.status === 400) { delete pending[sid]; return false; }
+                if (res.status === 401 || res.status === 403 || res.status === 400) { delete pending[sid]; savePending(); return false; }
                 if (res.status === 404 && (d.code === 'unknown_staff')) { p.busy = false; return false; }   // not synced yet: later
                 if (res.status === 404 || res.status === 405) { delete pending[sid]; return false; }       // server without sessions
             } catch (e) { /* offline: later */ }
@@ -37562,10 +37782,20 @@ async function zReportPreflight() {
             if (!proof || typeof proof !== 'string' || /^p2\$/.test(proof)) return;
             var held = sessionFor(sid);
             if (held && held.exp - Date.now() > 4 * 3600000) return;           // still good for a while
-            pending[sid] = { proof: proof, since: Date.now() };
+            pending[sid] = { proof: proof, since: Date.now() }; savePending();
             request(sid);
         };
-        function retryAll() { Object.keys(pending).forEach(function (sid) { if (Date.now() - pending[sid].since > 16 * 3600000) delete pending[sid]; else request(sid); }); }
+        function retryAll() { Object.keys(pending).forEach(function (sid) { if (Date.now() - pending[sid].since > 16 * 3600000 || sid !== currentSid()) { delete pending[sid]; savePending(); } else request(sid); }); }
+        // Anything that needs the server session (payroll...) calls this instead of asking the person to sign in again: if they signed in
+        // offline, the PIN proof is still held, so the session is simply requested now. Resolves true when a session is held.
+        window.staffSessionEnsure = async function (sid) {
+            sid = String(sid || currentSid());
+            if (sessionFor(sid)) return true;
+            if (!pending[sid]) return false;
+            for (var i = 0; i < 4 && !sessionFor(sid) && pending[sid]; i++) { await request(sid); if (!sessionFor(sid) && pending[sid]) await new Promise(function (r) { setTimeout(r, 700); }); }
+            return !!sessionFor(sid);
+        };
+        window.staffSessionClearPending = function () { pending = {}; savePending(); };
         window.addEventListener('online', function () { setTimeout(retryAll, 1500); });
         setInterval(retryAll, 60000);
 
@@ -40311,6 +40541,81 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
 
 </script>
 <!-- zip187-dashboard-water:end -->
+<!-- @shared-block:print-panels:begin -->
+<!-- PRINT ANY LEDGER (zip 224) ----------------------------------------------------------------------------------------------------
+         Every list / ledger panel that did not already have its own Print button gets one at the top: it prints the panel as it is on
+         screen (buttons and inputs removed), under the business name, the title and the date and time, with the header repeated on
+         every page. "Save as PDF" is the same dialog. Nothing is stored and nothing on the panel changes. -->
+<script>
+(function () {
+    'use strict';
+    if (window.__printPanelsInit) return; window.__printPanelsInit = true;
+    var IDS = ['trade-credits-tab', 'cross-branch-sales-tab', 'deliveries-tab', 'bills-tab', 'audit-tab', 'inventory-list-tab', 'restock-tab', 'orders-tab', 'trends-tab', 'dashboard-tab', 'store-tab', 'contracts-tab', 'attendance-tab', 'tables-rooms-tab'];
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+    function bizName() { try { return typeof businessName !== 'undefined' && businessName ? businessName : (document.title || ''); } catch (e) { return document.title || ''; } }
+    function titleOf(p) {
+        var h = p.querySelector('h1, h2, h3'); var t = h ? h.textContent.replace(/\s+/g, ' ').trim() : '';
+        if (t) return t;
+        var b = document.querySelector('.tab-link[data-tab="' + p.id + '"], [data-tab="' + p.id + '"]');
+        return b ? b.textContent.replace(/\s+/g, ' ').trim() : p.id.replace(/-tab$/, '').replace(/-/g, ' ');
+    }
+    function cleanClone(p) {
+        var c = p.cloneNode(true);
+        Array.prototype.forEach.call(c.querySelectorAll('.noprint, .pp-bar, button, input, select, textarea, script, style, [onclick][class*="btn"], .settings-small-btn'), function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
+        Array.prototype.forEach.call(c.querySelectorAll('[style*="display: none"], [style*="display:none"], [hidden]'), function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
+        return c.innerHTML;
+    }
+    var CSS = 'body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:0;font-size:12px}h1{font-size:18px;margin:0}.sub{color:#555;margin:2px 0 10px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #bbb;padding:4px 6px;text-align:left;vertical-align:top}th{background:#eee}thead{display:table-header-group}tr{page-break-inside:avoid}@page{size:A4;margin:12mm}img{max-width:120px}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}';
+    function printPanel(id) {
+        var p = document.getElementById(id); if (!p) return;
+        var html = '<div class="doc"><h1>' + esc(bizName()) + '</h1><div class="sub"><b>' + esc(titleOf(p)) + '</b> &nbsp;·&nbsp; Printed ' + esc(new Date().toLocaleString('en-KE')) + '</div>' + cleanClone(p) + '</div>';
+        var f = document.createElement('iframe'); f.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0'; document.body.appendChild(f);
+        var doc = f.contentWindow.document; doc.open(); doc.write('<!doctype html><html><head><meta charset="utf-8"><title>' + esc(titleOf(p)) + '</title><style>' + CSS + '</style></head><body>' + html + '</body></html>'); doc.close();
+        setTimeout(function () { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { try { window.print(); } catch (e2) { /* no printing here */ } } setTimeout(function () { try { f.remove(); } catch (e) { /* gone */ } }, 60000); }, 350);
+    }
+    window.printPanel = printPanel;
+    function mount() {
+        IDS.forEach(function (id) {
+            var p = document.getElementById(id); if (!p || p.querySelector('.pp-bar')) return;
+            if (/[Pp]rint/.test(p.innerHTML.replace(/<script[\s\S]*?<\/script>/g, '')) && id !== 'audit-tab') return;     // it already has its own Print
+            var bar = document.createElement('div'); bar.className = 'pp-bar noprint'; bar.style.cssText = 'display:flex;justify-content:flex-end;margin:0 0 8px';
+            bar.innerHTML = '<button type="button" class="settings-small-btn" onclick="printPanel(\'' + id + '\')">🖨️ Print / Save as PDF</button>';
+            p.insertBefore(bar, p.firstChild);
+        });
+    }
+    function start() { mount(); setInterval(mount, 3000); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+})();
+</script>
+<!-- @shared-block:print-panels:end -->
+<!-- @shared-block:view-settings:begin -->
+<!-- VIEW SETTINGS (zip 219) ---------------------------------------------
+         ONE Settings tab, "👁️ View", that holds every "hide this button / tab / panel" switch of the app (Sell Unlisted Item, Bills, Sales, the phone & till layout with its tab list).
+         The blocks that own a switch call window.__viewSection() to get the tab's page; if this block is missing they fall back to Settings > General. Nothing is deleted by any switch. -->
+<script>
+(function () {
+    var ID = 'settings-section-view';
+    function ensure() {
+        var sec = document.getElementById(ID);
+        if (sec) return sec;
+        var nav = document.getElementById('settings-subnav'), gen = document.getElementById('settings-section-general');
+        if (!nav || !gen || !gen.parentNode) return null;
+        sec = document.createElement('div'); sec.className = 'settings-section-content'; sec.id = ID;
+        sec.innerHTML = '<h4>👁️ View</h4><p class="settings-hint" style="margin:0 0 6px;">Everything you can hide or show lives here — buttons, tabs and panels. Each switch applies to every device of this shop and saves at once. Nothing is deleted: untick a switch and the item is back.</p>';
+        gen.parentNode.appendChild(sec);
+        var b = document.createElement('button'); b.type = 'button'; b.className = 'settings-subtab-btn'; b.setAttribute('data-section', ID);
+        b.textContent = '👁️ View'; b.setAttribute('onclick', "showSettingsSection('" + ID + "', this)");
+        var after = nav.querySelector('[data-section="settings-section-general"]');
+        if (after && after.parentNode) after.parentNode.insertBefore(b, after.nextSibling); else nav.appendChild(b);
+        return sec;
+    }
+    window.__viewSection = ensure;
+    function go() { try { ensure(); } catch (e) { /* the switches fall back to General */ } }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
+    setTimeout(go, 600);
+})();
+</script>
+<!-- @shared-block:view-settings:end -->
 <!-- @shared-block:phone-till:begin -->
 <!-- PHONE TILL ----------------------------------------------------------------
          zip 190. The Sales Counter on a PHONE (Chrome, ~390 px wide) without the scrolling. Everything below is phone-only (max-width 700 px) except the new
@@ -40821,14 +41126,14 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
                     var pc = photoCols();
                     out += '<div class="ptl-note" style="margin-top:6px;">Photos per row on the phone (item photos and category / sub-category pictures) — every device of the shop</div><div class="ptl-seg"><label><input type="radio" name="ptl-cols" value="2"' + (pc === 2 ? ' checked' : '') + '> 2 big photos</label><label><input type="radio" name="ptl-cols" value="3"' + (pc === 3 ? ' checked' : '') + '> 3 smaller photos</label></div>';
                 }
-                out += '<div class="ptl-sub">This device only</div>';
+                out += '<div class="ptl-sub">Search and tabs — every device follows these</div>';
                 if ($('sales-search')) {
                     var st = searchStyle();
                     out += '<div class="ptl-note" style="margin-top:6px;">Product search on the phone</div><div class="ptl-seg"><label><input type="radio" name="ptl-search" value="bar"' + (st === 'bar' ? ' checked' : '') + '> Search bar</label><label><input type="radio" name="ptl-search" value="icon"' + (st === 'icon' ? ' checked' : '') + '> 🔍 Icon</label></div>';
                 }
                 var off = tabsOff(), list = tabButtons().filter(function (b) { var id = b.getAttribute('data-tab'); return !NEVER_HIDE[id] && (b.style.display !== 'none' || off.indexOf(id) !== -1); });
                 if (list.length) {
-                    out += '<div class="ptl-note" style="margin-top:8px;">Tabs shown on this device. Untick one to remove it completely (tab bar, “More” and side menu) — tick it again to bring it back. Settings always shows.</div><div class="ptl-tabs">';
+                    out += '<div class="ptl-note" style="margin-top:8px;">Tabs shown. Untick one to remove it completely (tab bar, “More” and side menu) — tick it again to bring it back. Settings always shows.</div><div class="ptl-tabs">';
                     list.forEach(function (b) { var id = b.getAttribute('data-tab'), label = (b.textContent || '').replace(/\s+/g, ' ').trim(); out += '<label><input type="checkbox" class="ptl-tab-cb" value="' + esc(id) + '"' + (off.indexOf(id) === -1 ? ' checked' : '') + '> ' + esc(label) + '</label>'; });
                     out += '</div>';
                 }
@@ -40863,13 +41168,17 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         var panelTries = 0;
         function panelInstall() {
             safe(function () {
-                if ($('pos-phonetill-panel')) return true;
+                var cur = $('pos-phonetill-panel');
+                if (cur) { var vs = window.__viewSection && window.__viewSection(); if (vs && cur.parentNode !== vs) { cur.style.marginTop = '15px'; vs.appendChild(cur); } return true; }   /* zip 219: lives in Settings > View */
+                var vs1 = window.__viewSection && window.__viewSection();
+                if (vs1) { var h1 = document.createElement('div'); h1.className = 'panel'; h1.id = 'pos-phonetill-panel'; h1.style.marginTop = '15px'; h1.style.marginBottom = '15px'; vs1.appendChild(h1); h1.addEventListener('change', onPanelChange); renderPanel(); return true; }   /* zip 219: straight into Settings > View */
                 var pm = $('pos-paymethods-panel'); if (!pm || !pm.parentNode) return false;
                 var settled = !!$('settings-section-paymethods') || !$('settings-subnav') || panelTries > 40;
                 if (!settled) return false;
                 var host = document.createElement('div'); host.className = 'panel'; host.id = 'pos-phonetill-panel';
                 host.style.marginTop = pm.parentNode.id === 'settings-section-paymethods' ? '15px' : '0'; host.style.marginBottom = '15px';
                 pm.parentNode.insertBefore(host, pm.nextSibling);
+                var vs2 = window.__viewSection && window.__viewSection(); if (vs2) { host.style.marginTop = '15px'; vs2.appendChild(host); }   /* zip 219: straight into Settings > View */
                 host.addEventListener('change', onPanelChange);
                 renderPanel();
                 return true;
@@ -41355,7 +41664,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         { id: 'sales', label: 'Sales', icon: '🛍️', tabs: ['orders-tab', 'deliveries-tab', 'returns-tab'] },
         { id: 'ops', label: 'Operations', icon: '🧩', tabs: ['gas-tab', 'services-counter-tab', 'hiring-tab', 'assemble-tab', 'production-tab', 'rentals-tab', 'kitchen-tab', 'tabs-tab', 'service-tab', 'kds-tab', 'bar-tab', 'facilities-tab', 'hotel-tab', 'custom-orders-tab', 'tables-rooms-tab', 'tank-tab', 'bookings-tab', 'client-registry-tab'] },
         { id: 'stock', label: 'Stock', icon: '📦', tabs: ['inventory-list-tab', 'inventory-tab', 'add-item-tab', 'materials-tab', 'restock-tab', 'restocking-tab', 'stock-take-tab', 'barcode-tab'] },
-        { id: 'fin', label: 'Finances', icon: '💰', tabs: ['daily-sales-tab', 'profits-tab', 'bills-tab', 'debts-tab', 'trade-credits-tab', 'cash-shift-tab'] },
+        { id: 'fin', label: 'Finances', icon: '💰', tabs: ['daily-sales-tab', 'profits-tab', 'bills-tab', 'debts-tab', 'trade-credits-tab', 'cash-shift-tab', 'accounts-tab'] },
         { id: 'rep', label: 'Reports', icon: '📈', tabs: ['reports-tab', 'hosp-reports-tab', 'hospital-report-tab', 'stock-report-tab', 'trends-tab', 'cross-branch-sales-tab'] },
         { id: 'cust', label: 'Customers', icon: '👥', tabs: ['customers-tab'] },
         { id: 'staff', label: 'Staff', icon: '🧑‍💼', tabs: ['staff-tab', 'attendance-tab', 'payroll-tab'] },
@@ -41363,6 +41672,19 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         { id: 'sys', label: 'System', icon: '⚙️', tabs: ['audit-tab', 'settings-tab'] }
     ];
     var FLAT = ['sales-tab', 'dashboard-tab'];
+    /* zip 219: the Owner Console gets the same sidebar, with its own folders */
+    if ($owner()) {
+        GROUPS = [
+            { id: 'o-clients', label: 'Clients & Links', icon: '🔗', tabs: ['sales-tab', 'demo-links-tab', 'permanent-links-tab', 'trash-tab'] },
+            { id: 'o-money', label: 'Money', icon: '💰', tabs: ['daily-sales-tab', 'profits-tab', 'bills-tab'] },
+            { id: 'o-content', label: 'Content', icon: '🛍️', tabs: ['website-tab', 'owner-catalog-tab', 'owner-offers-tab', 'owner-messages-tab', 'tables-rooms-tab'] },
+            { id: 'o-watch', label: 'Monitoring', icon: '🩺', tabs: ['health-tab', 'errors-tab', 'storage-tab'] },
+            { id: 'o-team', label: 'Team', icon: '👥', tabs: ['staff-tab'] },
+            { id: 'o-sys', label: 'System', icon: '⚙️', tabs: ['owner-apps-tab', 'settings-tab'] }
+        ];
+        FLAT = ['dashboard-tab'];
+    }
+    function $owner() { return !!document.getElementById('owner-apps-tab-btn'); }
     var K_COL = 'pos_snav_collapsed', K_OPEN = 'pos_snav_open';
     var MQ = '(max-width: 900px)';
     var body = document.body, aside = null, listEl = null, footEl = null, fly = null, lastSig = '', openGroups = {}, raf = 0, on = false, burger = null, clock = null, scrim = null;
@@ -41433,7 +41755,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
     function footHtml() {
         var u = userInfo(), br = branchName();
         return '<div class="sn-user"><div class="sn-av">' + esc((u.name || '?').charAt(0).toUpperCase()) + '</div><div class="sn-who"><b>' + esc(u.name) + '</b><small>' + esc(u.role) + '</small></div></div>'
-            + '<button type="button" class="sn-btn sn-out" data-act="out" title="Clock Out / end shift"><span>🕒</span><span class="sn-lbl">Clock Out</span></button>'
+            + ($owner() ? '' : '<button type="button" class="sn-btn sn-out" data-act="out" title="Clock Out / end shift"><span>🕒</span><span class="sn-lbl">Clock Out</span></button>')
             + (br ? '<button type="button" class="sn-btn sn-branch" data-act="branch" title="Switch branch"><span>🏪</span><span class="sn-lbl">' + esc(br) + '</span></button>' : '');
     }
 
@@ -41722,9 +42044,72 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             } catch (e) { /* none */ }
             return out;
         }
-        function categories() { return hotelMode() ? hotelCategories() : genericCategories(); }
+        /* ---------- zip 219: the ORDER of categories and sub-categories ---------- */
+        var LS_ORD = 'pos_cat_order', MODES = ['default', 'manual', 'name', 'name-desc', 'items', 'sales'];
+        var MODE_LABEL = { 'default': 'Standard (as before)', manual: 'My own order (arrange with ▲ ▼)', name: 'Name A → Z', 'name-desc': 'Name Z → A', items: 'Most items first', sales: 'Best selling first' };
+        function ordGet() {
+            var o = null; try { o = JSON.parse(lsGet(LS_ORD) || 'null'); } catch (e) { o = null; }
+            if (!o || typeof o !== 'object' || Array.isArray(o)) o = {};
+            var subs = {}; if (o.subs && typeof o.subs === 'object' && !Array.isArray(o.subs)) Object.keys(o.subs).forEach(function (k) { if (Array.isArray(o.subs[k])) subs[k] = o.subs[k].filter(function (x) { return typeof x === 'string'; }); });
+            return { mode: MODES.indexOf(o.mode) >= 0 ? o.mode : 'default', manual: Array.isArray(o.manual) ? o.manual.filter(function (x) { return typeof x === 'string'; }) : [], subs: subs };
+        }
+        function ordSave(o) { lsSet(LS_ORD, JSON.stringify(o)); pushSoon(); lastMode = ''; try { renderPanel(); } catch (e) { /* not open */ } refresh(); }
+        var soldCache = null, soldAt = 0;
+        function soldByCat() {
+            if (soldCache && Date.now() - soldAt < 30000) return soldCache;
+            var m = {}, inv, log, byCode = {};
+            try { inv = inventory; log = salesLog; } catch (e) { inv = []; log = []; }
+            (Array.isArray(inv) ? inv : []).forEach(function (p) { if (p && p.code != null) byCode[p.code] = normCat(p.category) || 'uncategorised'; });
+            (Array.isArray(log) ? log : []).forEach(function (sale) {
+                if (!sale || sale.voided || !Array.isArray(sale.items)) return;
+                sale.items.forEach(function (it) { var c = byCode[it && it.code]; if (c) m[c] = (m[c] || 0) + (Number(it.qty) || 0); });
+            });
+            soldCache = m; soldAt = Date.now(); return m;
+        }
+        /* orders a list of { label, n } records. manualKeys = the saved order (labels); anything not in it goes after, A-Z. `last` stays at the end. */
+        function orderList(list, labelOf, nOf, manualKeys, isLast) {
+            var o = ordGet(), mode = o.mode; if (mode === 'default' || !list.length) return list;
+            var idx = {}; (manualKeys || []).forEach(function (k, i) { if (idx[normCat(k)] === undefined) idx[normCat(k)] = i; });
+            var sold = mode === 'sales' ? soldByCat() : null, base = {}; list.forEach(function (x, i) { base[labelOf(x)] = i; });
+            var arr = list.slice();
+            arr.sort(function (a, b) {
+                var la = labelOf(a), lb = labelOf(b);
+                if (isLast && isLast(a) !== isLast(b)) return isLast(a) ? 1 : -1;
+                var r = 0;
+                if (mode === 'manual') { var ia = idx[normCat(la)], ib = idx[normCat(lb)]; r = (ia === undefined ? 1e6 : ia) - (ib === undefined ? 1e6 : ib); if (r === 0 && ia === undefined) r = la.localeCompare(lb, undefined, { sensitivity: 'base' }); }
+                else if (mode === 'name') r = la.localeCompare(lb, undefined, { sensitivity: 'base' });
+                else if (mode === 'name-desc') r = lb.localeCompare(la, undefined, { sensitivity: 'base' });
+                else if (mode === 'items') r = (nOf ? (nOf(b) || 0) - (nOf(a) || 0) : 0);
+                else if (mode === 'sales') r = (sold[normCat(lb) || 'uncategorised'] || 0) - (sold[normCat(la) || 'uncategorised'] || 0);
+                return r || (base[la] - base[lb]);
+            });
+            return arr;
+        }
+        function categories() {
+            var list = hotelMode() ? hotelCategories() : genericCategories();
+            return orderList(list, function (c) { return c.label; }, function (c) { return c.n; }, ordGet().manual, function (c) { return c.norm === '' && normCat(c.label) === 'uncategorised'; });
+        }
+        window.__ctlOrderChips = function (chips) {           // the category chip bar of the Hotel: same order as the tiles
+            try {
+                if (!Array.isArray(chips) || ordGet().mode === 'default') return chips;
+                var all = chips.filter(function (c) { return c.id === HOSP_CAT_ALL; }), none = chips.filter(function (c) { return c.id === HOSP_CAT_NONE; }), rest = chips.filter(function (c) { return c.id !== HOSP_CAT_ALL && c.id !== HOSP_CAT_NONE; });
+                return all.concat(orderList(rest, function (c) { return c.label; }, function (c) { return c.n; }, ordGet().manual), none);
+            } catch (e) { return chips; }
+        };
         function hotelSubs(cat) {
-            try { if (!cat || cat.all || typeof hospSubList !== 'function') return []; var l = hospSubList(cat.id); return Array.isArray(l) ? l : []; } catch (e) { return []; }
+            try {
+                if (!cat || cat.all || typeof hospSubList !== 'function') return [];
+                var l = hospSubList(cat.id); if (!Array.isArray(l)) return [];
+                var o = ordGet(), mode = o.mode === 'items' || o.mode === 'sales' ? 'default' : o.mode;   // sub-categories: manual or by name
+                if (mode === 'default') return l;
+                var arr = l.slice(), mk = o.subs[cat.key] || [];
+                arr.sort(function (a, b) {
+                    var na = String(a.name), nb = String(b.name);
+                    if (mode === 'manual') { var ia = mk.indexOf(na), ib = mk.indexOf(nb); return (ia < 0 ? 1e6 : ia) - (ib < 0 ? 1e6 : ib) || na.localeCompare(nb, undefined, { sensitivity: 'base' }); }
+                    return mode === 'name-desc' ? nb.localeCompare(na, undefined, { sensitivity: 'base' }) : na.localeCompare(nb, undefined, { sensitivity: 'base' });
+                });
+                return arr;
+            } catch (e) { return []; }
         }
         function allItemsCount(cats) { var n = 0; cats.forEach(function (c) { n += c.n; }); return n; }
 
@@ -41910,6 +42295,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             if (lsGet(LS_IMG) !== null) o.categoryImages = images();          // only a device that has its own copy sends one: a fresh phone must never blank the shop's pictures
             var on = lsGet(LS_ON); if (on !== null) o.catTilesOn = on === 'true';
             var pl = lsGet(LS_PLAIN); if (pl !== null) o.catPlainOn = pl === 'true';
+            if (lsGet(LS_ORD) !== null) o.catOrder = ordGet();                 // zip 219: the order of categories travels to every device
             return o;
         }
         function applyRemote(data) {
@@ -41922,6 +42308,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             }
             if (typeof data.catTilesOn === 'boolean' && data.catTilesOn !== enabled()) { lsSet(LS_ON, data.catTilesOn ? 'true' : 'false'); changed = true; }
             if (typeof data.catPlainOn === 'boolean' && data.catPlainOn !== plainOn()) { lsSet(LS_PLAIN, data.catPlainOn ? 'true' : 'false'); changed = true; }
+            if (data.catOrder && typeof data.catOrder === 'object' && !Array.isArray(data.catOrder)) { var co = JSON.stringify(data.catOrder); if (co !== JSON.stringify(ordGet()) && co !== lsGet(LS_ORD)) { lsSet(LS_ORD, co); changed = true; } }
             if (changed) { try { renderPanel(); } catch (e) { /* the page may not be open */ } refresh(); }
         }
         function installSync() {
@@ -42013,12 +42400,49 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             var im = images()[key];
             return '<span class="ctl-thumb">' + (im ? '<img src="' + esc(im) + '" alt="" loading="lazy">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(initials(label)) + '</span>') + '</span>';
         }
+        function ordHtml(cats, ro) {
+            var o = ordGet();
+            var opts = MODES.map(function (m) { return '<option value="' + m + '"' + (o.mode === m ? ' selected' : '') + '>' + esc(MODE_LABEL[m]) + '</option>'; }).join('');
+            return '<h3 style="margin-top:0;">↕️ Order of categories</h3><p class="ctl-note">Choose how categories (and sub-categories) are lined up on the Sales Counter. It applies to every device of the shop. “My own order” lets you move each one up or down below.</p>'
+                + '<label class="ctl-sw" style="display:block;"><select id="ctl-ord-mode"' + (ro ? ' disabled' : '') + ' style="max-width:100%;">' + opts + '</select></label>'
+                + (o.mode === 'manual' ? '<p class="ctl-note">Use ▲ ▼ on each category (and sub-category) in the list below.</p>' : '');
+        }
+        function moveBtns(key, sub, ro) {
+            if (ordGet().mode !== 'manual') return '';
+            var k = esc(encodeURIComponent(key));
+            return '<button type="button" class="settings-small-btn" data-ctl-act="mv" data-d="-1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move up">▲</button><button type="button" class="settings-small-btn" data-ctl-act="mv" data-d="1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move down">▼</button>';
+        }
+        function moveItem(key, d) {
+            var o = ordGet(), parts = key.split(SEP), cat = parts[0], sub = parts.length > 1 ? parts.slice(1).join(SEP) : null;
+            if (sub === null) {
+                var cur = categories().map(function (c) { return c.label; });
+                var arr = o.manual.length ? o.manual.slice() : cur.slice();
+                cur.forEach(function (l) { if (arr.map(normCat).indexOf(normCat(l)) < 0) arr.push(l); });
+                var order = cur.slice().sort(function (a, b) { var ia = arr.map(normCat).indexOf(normCat(a)), ib = arr.map(normCat).indexOf(normCat(b)); return ia - ib; });
+                var i = order.indexOf(cat), j = i + d; if (i < 0 || j < 0 || j >= order.length) return;
+                var t = order[i]; order[i] = order[j]; order[j] = t;
+                o.manual = order;
+            } else {
+                var c = categories().filter(function (x) { return x.key === cat; })[0]; if (!c) return;
+                var names = hotelSubs(c).map(function (x) { return String(x.name); }), i2 = names.indexOf(sub), j2 = i2 + d;
+                if (i2 < 0 || j2 < 0 || j2 >= names.length) return;
+                var t2 = names[i2]; names[i2] = names[j2]; names[j2] = t2;
+                o.subs[cat] = names;
+            }
+            o.mode = 'manual'; ordSave(o);
+        }
+        window.__ctlSetOrderMode = function (m) {
+            var o = ordGet(); if (MODES.indexOf(m) < 0) return;
+            if (m === 'manual' && !o.manual.length) o.manual = categories().map(function (c) { return c.label; });   // start from the order on screen
+            if (m === 'manual') { categories().forEach(function (c) { if (!o.subs[c.key] || !o.subs[c.key].length) { var l = hotelSubs(c).map(function (x) { return String(x.name); }); if (l.length) o.subs[c.key] = l; } }); }
+            o.mode = m; ordSave(o);
+        };
         function rowHtml(label, key, sub, count, ro) {
             var has = images()[key] !== undefined, k = esc(encodeURIComponent(key));
             return '<div class="ctl-row' + (sub ? ' ctl-subrow' : '') + '">' + thumb(label, key)
                 + '<span class="ctl-rname"><b>' + esc(label) + '</b>' + (count != null ? '<small>' + count + (count === 1 ? ' item' : ' items') + '</small>' : '') + '</span>'
                 + '<span class="ctl-racts"><button type="button" class="settings-small-btn" data-ctl-act="pick" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>📷 ' + (has ? 'Change image' : 'Add image') + '</button>'
-                + (has ? '<button type="button" class="settings-small-btn" data-ctl-act="rm" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>Remove</button>' : '') + '</span></div>';
+                + moveBtns(key, sub, ro) + (has ? '<button type="button" class="settings-small-btn" data-ctl-act="rm" data-k="' + k + '"' + (ro ? ' disabled' : '') + '>Remove</button>' : '') + '</span></div>';
         }
         function renderPanel() {
             var el = $('ctl-panel'); if (!el) return;
@@ -42029,7 +42453,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             });
             var orphan = Object.keys(imgs).filter(function (k) { return !listed[k]; });
             if (orphan.length) rows += '<div class="ctl-row"><b>Pictures for categories that have no items now</b></div>' + orphan.map(function (k) { return rowHtml(k, k, false, null, ro); }).join('');
-            el.innerHTML = '<h3 style="margin-top:0;">🖼️ Category images</h3>'
+            el.innerHTML = ordHtml(cats, ro) + '<h3 style="margin-top:16px;">🖼️ Category images</h3>'
                 + '<p class="ctl-note">Give each category a picture. With the switch below on, the Sales Counter opens on big picture tiles: tap a tile to see the items (or sub-categories) in it. Searching still works as always. Every till and phone follows these settings.</p>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-switch"' + (enabled() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Show category image tiles on the Sales Counter</label>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-plain-switch"' + (plainOn() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Categories and sub-categories without a picture stay plain buttons</label>'
@@ -42044,9 +42468,11 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             var act = t.getAttribute('data-ctl-act'), k = ''; try { k = decodeURIComponent(t.getAttribute('data-k') || ''); } catch (e) { k = ''; }
             if (act === 'pick') { pendingKey = k; var f = $('ctl-file'); if (f) { f.value = ''; f.click(); } }
             else if (act === 'rm') { removeImage(k); msg('Picture removed.'); }
+            else if (act === 'mv') { moveItem(k, parseInt(t.getAttribute('data-d'), 10) || 0); }
         }
         function onPanelChange(ev) {
             var t = ev.target; if (!t) return;
+            if (t.id === 'ctl-ord-mode') { window.__ctlSetOrderMode(t.value); return; }
             if (t.id === 'ctl-plain-switch') { setPlain(!!t.checked); msg(t.checked ? 'Categories without a picture are plain buttons.' : 'Categories without a picture show a coloured letter tile.'); return; }
             if (t.id === 'ctl-switch') { setEnabled(!!t.checked); msg(t.checked ? 'Category tiles are ON for the Sales Counter.' : 'Category tiles are OFF. The Sales Counter is back to the usual list.'); return; }
             if (t.id === 'ctl-file') {
@@ -42083,6 +42509,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             try {
                 if (!$('item-image-grid') || typeof window.renderItemImageGrid !== 'function') return;   // Water has no product grid: nothing to do
                 loadOrig();
+                try { var hc = window.hospScreenChips; if (typeof hc === 'function' && !hc.__ctl) { var hw = function () { return window.__ctlOrderChips(hc.apply(this, arguments)); }; hw.__ctl = true; window.hospScreenChips = hw; } } catch (e) { /* the chip bar keeps its own order */ }
                 installRender(); installSync();
                 document.addEventListener('input', onSearchInput, true);
                 if (!installPanel()) { [600, 2500].forEach(function (ms) { setTimeout(function () { try { installPanel(); } catch (e) { /* later */ } }, ms); }); }
@@ -42093,7 +42520,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         Object.assign(window.__catTiles, {
             version: 1, MAX_IMAGES: MAX_IMAGES, MAX_PX: MAX_PX,
             enabled: enabled, setEnabled: setEnabled, plainOn: plainOn, setPlain: setPlain, images: images, setImage: setImage, removeImage: removeImage, scaleFile: scaleFile,
-            categories: categories, state: function () { return { cat: S.cat && S.cat.key, sub: S.sub, mode: mode(categories()) }; },
+            categories: categories, order: ordGet, setOrderMode: function (m) { window.__ctlSetOrderMode(m); }, state: function () { return { cat: S.cat && S.cat.key, sub: S.sub, mode: mode(categories()) }; },
             open: openCat, openSub: openSub, back: back, refresh: refresh, sync: function () { sync(); }, collect: collect, apply: applyRemote, renderPanel: renderPanel
         });
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();

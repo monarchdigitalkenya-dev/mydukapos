@@ -103,6 +103,7 @@
     }
     async function sessionReady() {
         var s = typeof window.staffSessionFor === 'function' ? window.staffSessionFor(sidNow()) : null;
+        if (!(s && s.token) && typeof window.staffSessionEnsure === 'function' && !isOffline()) { try { await window.staffSessionEnsure(sidNow()); } catch (e) { /* ask below */ } s = window.staffSessionFor(sidNow()); }
         return !!(s && s.token);
     }
 
@@ -162,7 +163,7 @@
 
     async function open() {
         if (isOffline()) { body('<div class="prl-warnbox">📴 You are offline. Payroll needs the internet — salaries, ID copies and payslips are never kept on this device.</div>'); return; }
-        if (!(await sessionReady())) { body(unlockCard('(Signing in offline does not give the server a session.)')); return; }
+        if (!(await sessionReady())) { body(unlockCard('(This device could not confirm your sign-in with the server yet.)')); return; }
         body('<p class="prl-muted">Loading…</p>');
         try {
             await loadWho();
@@ -513,12 +514,14 @@
         try { extra = typeof receiptExtraInfo !== 'undefined' ? receiptExtraInfo : ''; } catch (e) { /* none */ } try { logo = typeof receiptLogoData !== 'undefined' ? receiptLogoData : ''; } catch (e) { /* none */ }
         void g; return { name: name || 'Business', email: email, contact: contact, extra: extra, logo: logo };
     }
+    var APPR_KEY = 'prl_approved_by';
+    function approvedByNow() { try { return (localStorage.getItem(APPR_KEY) || '').slice(0, 60); } catch (e) { return ''; } }
     function slipModel(d) {
         var it = d.item, run = d.run, earn = [], ded = [];
         if (run.kind !== 'adjustment') earn.push(['Basic / gross pay' + (it.rate_unit !== 'period' ? ' (' + it.units + (it.rate_unit === 'day' ? ' days × ' : ' hrs × ') + kes(it.rate) + ')' : ''), it.basic]);
         d.lines.forEach(function (l) { var r = [l.label + (l.note ? ' — ' + l.note : ''), l.amount]; if (l.kind === 'earning') earn.push(r); else ded.push([l.label + (l.calc && l.calc !== 'fixed' && !l.manual ? (l.calc === 'bands' ? ' (tax bands)' : ' (' + l.rate + '%)') : ''), l.amount]); });
         var b = bizInfo();
-        return { biz: b, branch: (it.branch_name && it.branch_name !== b.name) ? it.branch_name : '', title: run.kind === 'adjustment' ? 'ADJUSTMENT SLIP' : 'PAYSLIP', slipNo: it.payslip_no, ref: run.ref, period: dshow(run.period_start) + ' – ' + dshow(run.period_end), freq: FREQ[run.frequency] || run.frequency, name: it.emp_name, empNo: it.emp_no || '', position: it.job_title || '', dept: it.department || '', earn: earn, ded: ded, totalEarn: it.basic + it.additions, totalDed: it.deductions, net: it.net, status: run.status, payDate: run.pay_date ? dshow(run.pay_date) : '', method: run.pay_method || '', payRef: run.pay_reference || '', note: it.note || '' };
+        return { approvedBy: approvedByNow(), biz: b, branch: (it.branch_name && it.branch_name !== b.name) ? it.branch_name : '', title: run.kind === 'adjustment' ? 'ADJUSTMENT SLIP' : 'PAYSLIP', slipNo: it.payslip_no, ref: run.ref, period: dshow(run.period_start) + ' – ' + dshow(run.period_end), freq: FREQ[run.frequency] || run.frequency, name: it.emp_name, empNo: it.emp_no || '', position: it.job_title || '', dept: it.department || '', earn: earn, ded: ded, totalEarn: it.basic + it.additions, totalDed: it.deductions, net: it.net, status: run.status, payDate: run.pay_date ? dshow(run.pay_date) : '', method: run.pay_method || '', payRef: run.pay_reference || '', note: it.note || '' };
     }
     function slipHtml(m) {
         var rows = function (a) { return a.length ? a.map(function (r) { return '<tr><td>' + esc(r[0]) + '</td><td class="n">' + kes(r[1]) + '</td></tr>'; }).join('') : '<tr><td class="mu" colspan="2">None</td></tr>'; };
@@ -528,13 +531,13 @@
             '<table><thead><tr><th>DEDUCTIONS</th><th class="n">KES</th></tr></thead><tbody>' + rows(m.ded) + '</tbody><tfoot><tr><td>Total deductions</td><td class="n">' + kes(m.totalDed) + '</td></tr></tfoot></table></div>' +
             '<div class="ps-net"><span>NET PAY</span><b>' + kes(m.net) + '</b></div>' + (m.note ? '<div class="mu" style="margin-top:8px">Note: ' + esc(m.note) + '</div>' : '') +
             '<div class="ps-f"><div><span class="mu">Payment date</span><b>' + esc(m.payDate || '—') + '</b></div><div><span class="mu">Payment method</span><b>' + esc(m.method ? m.method.toUpperCase() : '—') + '</b></div><div><span class="mu">Payroll reference</span><b>' + esc(m.payRef || m.ref) + '</b></div></div>' +
-            '<div class="ps-sig"><div>Employee signature</div><div>Approved by</div></div></div>';
+            '<div class="ps-sig"><div>Employee signature</div><div><b class="ps-apby" style="display:block;min-height:15px;color:#1d2b36;font-size:12px;margin-top:-18px;margin-bottom:3px">' + esc(m.approvedBy || '') + '</b>Approved by</div></div></div>';
     }
     var SLIP_CSS = '.ps{font-family:Arial,Helvetica,sans-serif;color:#1d2b36;max-width:760px;margin:0 auto;padding:18px;border:1px solid #cfd6dc;border-radius:10px;font-size:13px}.mu{color:#7a8791;font-size:11px}.n{text-align:right;white-space:nowrap}.ps-h{display:flex;justify-content:space-between;gap:14px;border-bottom:3px solid #1f8a70;padding-bottom:10px}.ps-b{display:flex;gap:10px;align-items:center}.ps-logo{height:46px;max-width:120px;object-fit:contain}.ps-bn{font-size:20px;font-weight:800}.ps-t{text-align:right}.ps-title{font-size:20px;font-weight:800;color:#1f8a70;letter-spacing:.06em}.ps-draft{display:inline-block;margin-top:4px;padding:2px 8px;border:2px solid #e67e22;color:#e67e22;font-weight:800;font-size:11px;transform:rotate(-3deg)}.ps-emp{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0;background:#f4f8f7;border-radius:8px;padding:10px}.ps-emp div,.ps-f div{display:flex;flex-direction:column}.ps-emp b,.ps-f b{font-size:13px}.ps-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}table{width:100%;border-collapse:collapse}th{background:#1f8a70;color:#fff;text-align:left;padding:6px 8px;font-size:12px}td{padding:6px 8px;border-bottom:1px solid #e6ebee}tfoot td{font-weight:800;border-top:2px solid #1f8a70;border-bottom:0}.ps-net{display:flex;justify-content:space-between;align-items:center;background:#1f8a70;color:#fff;border-radius:10px;padding:12px 16px;margin-top:14px}.ps-net span{font-weight:800;letter-spacing:.08em}.ps-net b{font-size:26px}.ps-f{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}.ps-sig{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:34px;color:#7a8791;font-size:11px}.ps-sig div{border-top:1px solid #9aa6ae;padding-top:4px}@media(max-width:600px){.ps-emp,.ps-f{grid-template-columns:1fr 1fr}.ps-cols{grid-template-columns:1fr}}';
     async function slip(runId, empId) {
         try {
             var d = await api('payslip.get', { runId: runId, empId: empId }); S.slipData = d; var m = slipModel(d); S.slipModel = m;
-            modal('<style>' + SLIP_CSS + '</style>' + slipHtml(m) + '<div class="prl-actions"><button type="button" onclick="Payroll.slipPrint()">🖨 Print</button><button type="button" onclick="Payroll.slipPdf()">⬇ Download PDF</button><button type="button" class="sec" onclick="Payroll.slipShare()">📤 Share</button><button type="button" class="sec" onclick="Payroll.closeModal()">Close</button></div><div id="prl-mmsg"></div>');
+            modal('<style>' + SLIP_CSS + '</style>' + slipHtml(m) + '<div class="prl-form" style="margin:10px 0"><div><label>Approved by (type a name — it prints on the payslip)</label><input id="prl-appr" type="text" maxlength="60" value="' + esc(m.approvedBy || '') + '" placeholder="e.g. Jane Wanjiru, Director" oninput="Payroll.setApprovedBy(this.value)"></div></div><div class="prl-actions"><button type="button" onclick="Payroll.slipPrint()">🖨 Print</button><button type="button" onclick="Payroll.slipPdf()">⬇ Download PDF</button><button type="button" class="sec" onclick="Payroll.slipShare()">📤 Share</button><button type="button" class="sec" onclick="Payroll.closeModal()">Cancel</button><button type="button" onclick="Payroll.slipSave()">💾 Save</button><button type="button" class="sec" onclick="Payroll.slipOpenSaved()">📂 Saved copy</button></div><div id="prl-mmsg"></div>');
         } catch (e) { toast(e.message, true); }
     }
     function audit(how) { try { var d = S.slipData; api('payslip.get', { runId: d.run.run_id, empId: d.item.emp_id, audit: true, how: how }); } catch (e) { /* the slip is already open */ } }
@@ -598,7 +601,7 @@
         y -= 54; if (m.note) { text('Note: ' + m.note, M, y, 8.5, false, [0.48, 0.53, 0.57]); y -= 16; }
         var pf = [['Payment date', m.payDate || '-'], ['Payment method', m.method ? m.method.toUpperCase() : '-'], ['Payroll reference', m.payRef || m.ref]], pw = (W - 2 * M) / 3;
         pf.forEach(function (p, i) { text(p[0], M + i * pw, y, 7.5, false, [0.48, 0.53, 0.57]); text(p[1], M + i * pw, y - 13, 10, true); });
-        y -= 70; line(M, y, M + 200, y, [0.6, 0.65, 0.68], 0.8); line(W - M - 200, y, W - M, y, [0.6, 0.65, 0.68], 0.8); text('Employee signature', M, y - 11, 8, false, [0.48, 0.53, 0.57]); text('Approved by', W - M - 200, y - 11, 8, false, [0.48, 0.53, 0.57]);
+        y -= 70; line(M, y, M + 200, y, [0.6, 0.65, 0.68], 0.8); line(W - M - 200, y, W - M, y, [0.6, 0.65, 0.68], 0.8); text('Employee signature', M, y - 11, 8, false, [0.48, 0.53, 0.57]); text('Approved by', W - M - 200, y - 11, 8, false, [0.48, 0.53, 0.57]); if (m.approvedBy) text(m.approvedBy, W - M - 200, y + 5, 10, true, [0.11, 0.17, 0.21]);
         text('Generated by Create Payroll', W / 2, 24, 7.5, false, [0.65, 0.69, 0.72], 'c');
         var content = ops.join('\n'), parts = [], len = 0, offs = [];
         function push(x) { if (typeof x === 'string') { var b = new Uint8Array(x.length); for (var i = 0; i < x.length; i++) b[i] = x.charCodeAt(i) & 255; parts.push(b); len += b.length; } else { parts.push(x); len += x.length; } }
@@ -617,6 +620,29 @@
     async function slipPdf() {
         try { audit('pdf'); var blob = await slipPdfBlob(S.slipModel), url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = fileName(S.slipModel); document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 5000); }
         catch (e) { toast('Could not make the PDF: ' + e.message, true); }
+    }
+    function setApprovedBy(v) {
+        v = String(v || '').slice(0, 60); try { localStorage.setItem(APPR_KEY, v); } catch (e) { /* kept for this slip only */ }
+        if (S.slipModel) S.slipModel.approvedBy = v;
+        var el = document.querySelector('.ps .ps-apby'); if (el) el.textContent = v;
+    }
+    function b64OfBlob(blob) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(String(r.result).split(',')[1] || ''); }; r.onerror = function () { rej(new Error('Could not read the PDF')); }; r.readAsDataURL(blob); }); }
+    function b64ToBlob(b64) { var bin = atob(b64), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type: 'application/pdf' }); }
+    // Save: keep a PDF copy of this payslip on the server (replaces any earlier copy). Copies older than 90 days are archived to R2 automatically.
+    async function slipSave() {
+        try {
+            var d = S.slipData, m = S.slipModel, blob = await slipPdfBlob(m), pdf = await b64OfBlob(blob);
+            var r = await api('payslip.save', { runId: d.run.run_id, empId: d.item.emp_id, pdf: pdf, fileName: fileName(m) });
+            toast('Payslip saved (' + Math.max(1, Math.round(r.size / 1024)) + ' KB). Old copies are archived automatically.');
+        } catch (e) { toast('Could not save the payslip: ' + (e && e.message || e), true); }
+    }
+    async function slipOpenSaved() {
+        try {
+            var d = S.slipData, r = await api('payslip.saved', { runId: d.run.run_id, empId: d.item.emp_id });
+            if (!r.found) { toast('No saved copy yet — press Save first.', true); return; }
+            var url = URL.createObjectURL(b64ToBlob(r.pdf)), a = document.createElement('a'); a.href = url; a.download = r.file_name || fileName(S.slipModel); document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+            toast(r.archived ? 'Restored from the archive and downloaded.' : 'Saved copy downloaded.');
+        } catch (e) { toast(e && e.message || String(e), true); }
     }
     async function slipShare() {
         var m = S.slipModel;
@@ -708,14 +734,14 @@
         } catch (e) { /* the tab opens by its button anyway */ }
     }
     wire(); document.addEventListener('DOMContentLoaded', wire); window.addEventListener('load', function () { wire(); setTimeout(wire, 300); setTimeout(wire, 1500); });
-    window.addEventListener('online', function () { setTimeout(refreshAccess, 1500); });
+    window.addEventListener('online', function () { setTimeout(refreshAccess, 1500); setTimeout(function () { try { if ($('prl-unlock')) open(); } catch (e) { /* stays on the card */ } }, 3500); });
     setInterval(refreshAccess, 45000); setTimeout(refreshAccess, 2500); setTimeout(paintBtn, 600);
     document.addEventListener('click', function (ev) { if (ev.target && ev.target.id === 'prl-modal') closeModal(); });
 
     window.Payroll = { importPos: importPos, go: go, open: open, unlock: unlock, newEmp: newEmp, saveNew: saveNew, saveEmp: saveEmp, openEmp: openEmp, search: search, sub: sub, addLine: addLine, delLine: delLine,
         docPicked: docPicked, docUpload: docUpload, docView: docView, docReplace: docReplace, docReplaceGo: docReplaceGo, docArchive: docArchive, docDelete: docDelete, closeModal: closeModal,
         newRun: newRun, nrFreq: nrFreq, createRun: createRun, openRun: openRun, step: step, delRun: delRun, addEmpToRun: addEmpToRun, addEmpGo: addEmpGo, payForm: payForm, payGo: payGo, adjustForm: adjustForm, adjustPick: adjustPick, adjustGo: adjustGo,
-        editItem: editItem, eiAdd: eiAdd, eiDel: eiDel, eiSet: eiSet, eiSave: eiSave, eiRemove: eiRemove, slip: slip, slipPrint: slipPrint, slipPdf: slipPdf, slipShare: slipShare, printAll: printAll, csv: csv,
+        editItem: editItem, eiAdd: eiAdd, eiDel: eiDel, eiSet: eiSet, eiSave: eiSave, eiRemove: eiRemove, slip: slip, slipPrint: slipPrint, slipPdf: slipPdf, slipSave: slipSave, setApprovedBy: setApprovedBy, slipOpenSaved: slipOpenSaved, slipShare: slipShare, printAll: printAll, csv: csv,
         perm: perm, template: template, typeEdit: typeEdit, tyCalc: tyCalc, tySave: tySave, auditShow: auditShow, calc: { slipModel: slipModel, slipPdfBlob: slipPdfBlob, slipHtml: slipHtml, current: function () { return S.slipModel; } } };
 })();
 </script>
