@@ -813,6 +813,8 @@ The document will very often have NO column headers, no ruled dividers, and inco
 
 Skip lines that are clearly headers, totals, dates, addresses, or signatures — only return actual item lines. If a line is ambiguous (unclear quantity or cost), still include it with your best guess and a lower confidence_score. Put these lines in the top-level "items" array and leave "recipes" empty.
 
+VARIANT GRID (still KIND 1, document_type "items") — many shops (school uniforms, shoes, clothes, tracksuits) keep a ruled grid: one PRODUCT per row (its name on the left, e.g. "Navy blue/white Track"), and one column per SIZE or VARIANT. Above the columns there are two header lines: the SIZE / variant label (e.g. 22, 24, 26 ... 42, or S, M, L) and, above or beside it, that column's SELLING PRICE (e.g. 1200, 1300, 1500). Each cell holds the NUMBER IN STOCK of that product in that size; an empty cell means none of that size. The page may hold several such grids stacked, each with its own header lines — use the header that belongs to the grid a row sits in, and a column's price applies to every cell under it (two columns can share a size label or a price). When you see this layout return ONE entry per product row, never one per cell: detected_name = the row's product name, category = the title of the page/grid if there is one (e.g. "Tracksuits"), and a "variants" array with one entry per NON-EMPTY cell: name = that column's size/variant label exactly as written (e.g. "26"), quantity = the number in the cell, retail_price = the selling price printed for that column (0 if none is shown). Keep the columns' left-to-right order. Set the entry's own quantity to the sum of its variants' quantities and its own retail_price to 0. Do not invent cells: a faint or unreadable number gets a lower confidence_score (and your best guess) rather than being dropped, but empty cells are skipped. Rows with no counts at all still return the product with an empty variants array. Anything that is NOT a size grid keeps the normal rules above and has no variants.
+
 KIND 2 — a recipe / dish-costing sheet: a dish or menu-item name (e.g. "Chapati", "Ugali") acting as a section header, followed by a table of raw ingredients with columns such as Unit, Quantity, Unit Price, Total, and usually a "Yield" number nearby (how many finished units/plates the listed quantities make). A single photo may show more than one such dish block stacked vertically (e.g. Chapati then Ugali) — extract every one you can read. Set document_type to "recipe" for this kind, put each dish in the top-level "recipes" array, and leave "items" empty. For each dish:
 - dish_name: the dish/menu-item name heading that block (e.g. "Chapati").
 - yield_qty: the number next to "Yield" for that block, if shown.
@@ -848,6 +850,14 @@ Respond with a JSON object matching the schema exactly. For "items" lines, every
             unit_cost: { type: 'NUMBER' },
             retail_price: { type: 'NUMBER' },
             wholesale_price: { type: 'NUMBER' },
+            variants: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: { name: { type: 'STRING' }, quantity: { type: 'NUMBER' }, retail_price: { type: 'NUMBER' }, unit_cost: { type: 'NUMBER' }, wholesale_price: { type: 'NUMBER' }, confidence_score: { type: 'NUMBER' } },
+                required: ['name', 'quantity'],
+              },
+            },
             line_total: { type: 'NUMBER' },
             sold_time: { type: 'STRING' },
             sold_date: { type: 'STRING' },
@@ -901,7 +911,7 @@ Respond with a JSON object matching the schema exactly. For "items" lines, every
       systemPrompt: SYSTEM_PROMPT,
       userParts,
       responseSchema: RESPONSE_SCHEMA,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 16384,
       contextLabel: sourceKind === 'image' ? 'image' : 'spreadsheet',
     });
     if (!result.ok) return result.response;

@@ -43,7 +43,7 @@ async function umoja(extraSettings = {}) {
   };
   return { env, admin, people, login, call: (tok, body) => call(env, 'G1', tok, body) };
 }
-const pay = async (u, who, tok, code, amt) => { const r = await u.call(tok, { action: 'report.submit', text: sms(code, amt), requestId: rid() }); assert.ok(r.ok, JSON.stringify(r)); return r.id; };
+const pay = async (u, who, tok, code, amt) => { const r = await u.call(tok, { action: 'report.submit', force: true, text: sms(code, amt), requestId: rid() }); assert.ok(r.ok, JSON.stringify(r)); return r.id; };
 
 test('C1: the M-Pesa reader finds the code, amount, date and time — and drops the balance, the daily limit and the link', () => {
   const p = core.parseMpesa(SMS);
@@ -89,27 +89,27 @@ test('C3: a paid report only counts once the secretary verifies it; an M-Pesa co
   const u = await umoja(); const mary = await u.login('Mary'), john = await u.login('John'), sec = await u.login('Sec');
   const id = await pay(u, 'Mary', mary, 'DUP0000001', 100);
   assert.equal((await u.call(mary, { action: 'home' })).member.cycle.paidCents, 0, 'pending money is not counted');
-  const dup = await u.call(john, { action: 'report.submit', text: sms('DUP0000001', 100), requestId: rid() });
+  const dup = await u.call(john, { action: 'report.submit', force: true, text: sms('DUP0000001', 100), requestId: rid() });
   assert.equal(dup.ok, false); assert.equal(dup.error, 'This M-Pesa transaction has already been reported.'); assert.equal(dup.status, 409);
   assert.equal((await u.call(mary, { action: 'report.parse', text: sms('DUP0000001', 100) })).duplicate, true);
   // the same button pressed twice (same request id) is one report
-  const rq = rid(); const a = await u.call(john, { action: 'report.submit', text: sms('ONCE000001', 50), requestId: rq }), b = await u.call(john, { action: 'report.submit', text: sms('ONCE000001', 50), requestId: rq });
+  const rq = rid(); const a = await u.call(john, { action: 'report.submit', force: true, text: sms('ONCE000001', 50), requestId: rq }), b = await u.call(john, { action: 'report.submit', force: true, text: sms('ONCE000001', 50), requestId: rq });
   assert.equal(a.ok && b.ok, true); assert.equal(b.already, true);
   // verify twice = once
   assert.equal((await u.call(sec, { action: 'report.verify', id })).ok, true);
   const again = await u.call(sec, { action: 'report.verify', id }); assert.equal(again.ok, false); assert.equal(again.status, 409);
   assert.equal((await u.call(mary, { action: 'home' })).member.cycle.paidCents, 10000, 'counted exactly once');
-  assert.equal((await u.call(john, { action: 'report.submit', text: sms('DUP0000001', 100), requestId: rid() })).ok, false, 'a verified code stays blocked');
+  assert.equal((await u.call(john, { action: 'report.submit', force: true, text: sms('DUP0000001', 100), requestId: rid() })).ok, false, 'a verified code stays blocked');
   // reject -> member told, code free again
   const rj = (await u.call(john, { action: 'report.mine' })).reports.find((x) => x.code === 'ONCE000001').id;
   assert.equal((await u.call(sec, { action: 'report.reject', id: rj, reason: 'Not in the account' })).ok, true);
-  assert.equal((await u.call(john, { action: 'report.submit', text: sms('ONCE000001', 50), requestId: rid() })).ok, true, 'a rejected code can be reported again');
+  assert.equal((await u.call(john, { action: 'report.submit', force: true, text: sms('ONCE000001', 50), requestId: rid() })).ok, true, 'a rejected code can be reported again');
   const msgs = (await u.call(john, { action: 'messages.list' })).items; assert.ok(msgs.some((m) => /not confirmed/i.test(m.title)));
 });
 
 test('C4: the secretary sees only member, amount, code, date and status — never the balance, the limit, the link or the SMS', async () => {
   const u = await umoja(); const mary = await u.login('Mary'), sec = await u.login('Sec');
-  const r = await u.call(mary, { action: 'report.submit', text: SMS, requestId: rid() }); assert.ok(r.ok);
+  const r = await u.call(mary, { action: 'report.submit', force: true, text: SMS, requestId: rid() }); assert.ok(r.ok);
   const inbox = await u.call(sec, { action: 'report.inbox' });
   assert.equal(inbox.total, 1); const it = inbox.items[0];
   assert.deepEqual([it.memberName, it.amountCents, it.code, it.dateText, it.timeText, it.status], ['Mary Wanjiku', 10000, 'UJ4QY98MZL', '4 Oct 2026', '11:08 PM', 'pending']);
@@ -211,8 +211,8 @@ test('C8: the ledger is append-only; a mistake is a REVERSAL (once), the member 
   const after = (await u.call(tre, { action: 'ledger.list' })).items; assert.equal(after.length, 2); assert.ok(after.some((x) => x.reversalOf) && after.find((x) => x.id === led[0].id).reversed);
   assert.equal((await u.call(u.admin, { action: 'ledger.reverse', id: after.find((x) => x.reversalOf).id, reason: 'y' })).ok, false, 'a reversal is not reversed');
   // the correct entry follows (treasurer records it directly, a code can be reused once its report was reversed)
-  const rec = await u.call(sec, { action: 'payment.record', memberId: u.people.John.id, amount: 1000, method: 'cash', requestId: 'rec-cash-0001' });
-  assert.ok(rec.ok, JSON.stringify(rec)); assert.equal((await u.call(sec, { action: 'payment.record', memberId: u.people.John.id, amount: 1000, method: 'cash', requestId: 'rec-cash-0001' })).already, true, 'same request twice = once');
+  const rec = await u.call(sec, { action: 'payment.record', force: true, memberId: u.people.John.id, amount: 1000, method: 'cash', requestId: 'rec-cash-0001' });
+  assert.ok(rec.ok, JSON.stringify(rec)); assert.equal((await u.call(sec, { action: 'payment.record', force: true, memberId: u.people.John.id, amount: 1000, method: 'cash', requestId: 'rec-cash-0001' })).already, true, 'same request twice = once');
   assert.equal((await u.call(u.admin, { action: 'audit.list' })).items.some((a) => /reversed/.test(a.action)), true);
 });
 
@@ -303,13 +303,13 @@ test('C11: loans — request with guarantors, guarantor accepts, approve, pay ou
   assert.equal((await u.call(mary, { action: 'home' })).member.loans[0].outstandingCents, 2200000);
   const t = (await u.call(tre, { action: 'fund.list' })).funds.find((f) => f.kind === 'loan'); assert.equal(t.balanceCents, -2000000);
   // repay by the paste flow, verified; over-paying the loan is refused
-  const rid1 = (await u.call(mary, { action: 'report.submit', text: sms('LOAN000001', 11000), kind: 'loan', targetId: lr.id, requestId: rid() })).id;
+  const rid1 = (await u.call(mary, { action: 'report.submit', force: true, text: sms('LOAN000001', 11000), kind: 'loan', targetId: lr.id, requestId: rid() })).id;
   assert.ok((await u.call(sec, { action: 'report.verify', id: rid1 })).ok);
   mine = (await u.call(mary, { action: 'loan.mine' })).loans[0]; assert.equal(mine.outstandingCents, 1100000); assert.equal(mine.repaidCents, 1100000);
-  const over = (await u.call(mary, { action: 'report.submit', text: sms('LOAN000002', 50000), kind: 'loan', targetId: lr.id, requestId: rid() })).id;
+  const over = (await u.call(mary, { action: 'report.submit', force: true, text: sms('LOAN000002', 50000), kind: 'loan', targetId: lr.id, requestId: rid() })).id;
   assert.equal((await u.call(sec, { action: 'report.verify', id: over })).code, 'over_balance');
   await u.call(sec, { action: 'report.reject', id: over });
-  const fin = (await u.call(mary, { action: 'report.submit', text: sms('LOAN000003', 11000), kind: 'loan', targetId: lr.id, requestId: rid() })).id; assert.ok((await u.call(sec, { action: 'report.verify', id: fin })).ok);
+  const fin = (await u.call(mary, { action: 'report.submit', force: true, text: sms('LOAN000003', 11000), kind: 'loan', targetId: lr.id, requestId: rid() })).id; assert.ok((await u.call(sec, { action: 'report.verify', id: fin })).ok);
   mine = (await u.call(mary, { action: 'loan.mine' })).loans[0]; assert.equal(mine.status, 'cleared'); assert.equal(mine.outstandingCents, 0);
   const dash = (await u.call(tre, { action: 'home' })).staff.loans; assert.equal(dash.repaymentsCents, 2200000); assert.equal(dash.disbursedCents, 2000000);
   // rejected / changes
@@ -327,8 +327,8 @@ test('C12: merry-go-round — order, next recipient, collected vs expected, payo
   assert.equal((await u.call(tre, { action: 'mgr.save', perMember: 1000, startDate: start })).code, 'exists');
   const g = await u.call(john, { action: 'mgr.get' }); assert.equal(g.next.name, 'John Kamau'); assert.equal(g.next.isMe, true); assert.equal(g.next.expectedCents, 11 * 100000);
   assert.equal((await u.call(mary, { action: 'home' })).member.nextRecipient.name, 'John Kamau');
-  await u.call(sec, { action: 'report.verify', id: (await u.call(mary, { action: 'report.submit', text: sms('MGR0000001', 1000), kind: 'mgr', requestId: rid() })).id });
-  await u.call(sec, { action: 'report.verify', id: (await u.call(john, { action: 'report.submit', text: sms('MGR0000002', 1000), kind: 'mgr', requestId: rid() })).id });
+  await u.call(sec, { action: 'report.verify', id: (await u.call(mary, { action: 'report.submit', force: true, text: sms('MGR0000001', 1000), kind: 'mgr', requestId: rid() })).id });
+  await u.call(sec, { action: 'report.verify', id: (await u.call(john, { action: 'report.submit', force: true, text: sms('MGR0000002', 1000), kind: 'mgr', requestId: rid() })).id });
   const sg = await u.call(tre, { action: 'mgr.get' }); assert.equal(sg.next.collectedCents, 200000); assert.equal(sg.next.outstandingCents, 900000); assert.equal(sg.members.find((m) => m.name.startsWith('Mary')).remainingCents, 0); assert.equal(sg.members.filter((m) => m.remainingCents > 0).length, 9);
   assert.equal((await u.call(mary, { action: 'mgr.get' })).members, null, 'members do not see who still owes');
   assert.equal((await u.call(tre, { action: 'mgr.payout', turnId: sg.next.id, amount: 5000 })).code, 'over_collected');
@@ -346,13 +346,13 @@ test('C13: fundraisers — target / raised / remaining, named and anonymous givi
   const u = await umoja(); const tre = await u.login('Tre'), mary = await u.login('Mary'), sec = await u.login('Sec'), john = await u.login('John');
   const f = await u.call(tre, { action: 'fundraiser.save', title: 'Funeral support', category: 'funeral', target: 100000, allowAnonymous: true }); assert.ok(f.ok);
   assert.equal((await u.call(mary, { action: 'fundraiser.save', title: 'x', target: 1 })).status, 403);
-  await u.call(sec, { action: 'report.verify', id: (await u.call(mary, { action: 'report.submit', text: sms('FRD0000001', 65000), kind: 'fundraiser', targetId: f.id, requestId: rid() })).id });
-  await u.call(sec, { action: 'report.verify', id: (await u.call(john, { action: 'report.submit', text: sms('FRD0000002', 5000), kind: 'fundraiser', targetId: f.id, anonymous: true, requestId: rid() })).id });
+  await u.call(sec, { action: 'report.verify', id: (await u.call(mary, { action: 'report.submit', force: true, text: sms('FRD0000001', 65000), kind: 'fundraiser', targetId: f.id, requestId: rid() })).id });
+  await u.call(sec, { action: 'report.verify', id: (await u.call(john, { action: 'report.submit', force: true, text: sms('FRD0000002', 5000), kind: 'fundraiser', targetId: f.id, anonymous: true, requestId: rid() })).id });
   const l = (await u.call(mary, { action: 'fundraiser.list' })).fundraisers[0]; assert.deepEqual([l.targetCents, l.raisedCents, l.remainingCents], [10000000, 7000000, 3000000]);
   const d = await u.call(tre, { action: 'fundraiser.get', id: f.id }); assert.ok(d.givers.some((g) => g.name === 'Anonymous') && d.givers.some((g) => g.name === 'Mary Wanjiku'));
   assert.equal((await u.call(mary, { action: 'fundraiser.get', id: f.id })).givers.length, 0, 'members see the totals, not the givers');
   const hm = await u.call(mary, { action: 'home' }); assert.equal(hm.member.totalContributedCents, 0, 'a fundraiser is not chama savings'); assert.equal(hm.member.fundraisers.length, 1);
-  assert.equal((await u.call(mary, { action: 'report.submit', text: sms('FRD0000003', 100), kind: 'fundraiser', targetId: 'nope', requestId: rid() })).ok, false);
+  assert.equal((await u.call(mary, { action: 'report.submit', force: true, text: sms('FRD0000003', 100), kind: 'fundraiser', targetId: 'nope', requestId: rid() })).ok, false);
 });
 
 test('C14: settings make two different chamas work with no code change; auditing, reports, statements, pagination', async () => {

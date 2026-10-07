@@ -76,7 +76,7 @@ test('owner (shop): every group and tab is there, every permitted tab has an ent
   await withApp(async (browser, base) => {
     const { page, errors } = await open(browser, base, APPS[0]);
     const g = await groups(page);
-    for (const id of ['sales', 'stock', 'fin', 'rep', 'cust', 'staff', 'biz', 'sys']) assert.ok(g.includes(id), 'group ' + id);
+    for (const id of ['logistics', 'stock', 'fin', 'rep', 'cust', 'staff', 'biz', 'sys']) assert.ok(g.includes(id), 'group ' + id);
     const e = await entries(page);
     assert.ok(e.includes('sales-tab') && e.includes('dashboard-tab'));
     const real = await page.evaluate(() => Array.from(document.querySelectorAll('.tab-link[data-tab]')).filter((b) => b.style.display !== 'none').map((b) => b.dataset.tab));
@@ -160,7 +160,7 @@ test('phone: the sidebar is a drawer (hamburger opens it, choosing a page or tap
     assert.equal(await page.evaluate(() => getComputedStyle(document.body).paddingLeft), '0px');
     await page.tap('#snav-burger'); await page.waitForTimeout(400);
     assert.ok((await left()) > 200, 'opened over the page');
-    await page.tap('#snav .sn-parent[data-grp="stock"]'); await page.waitForTimeout(300);
+    await page.tap('#snav .sn-parent[data-grp="logistics"]'); await page.waitForTimeout(300);
     await page.tap('#snav [data-go="restock-tab"]'); await page.waitForTimeout(400);
     assert.equal(await page.evaluate(() => document.querySelector('.tab-content.active').id), 'restock-tab');
     assert.ok((await left()) <= 0, 'closed after choosing');
@@ -224,3 +224,15 @@ for (const app of APPS) {
     });
   });
 }
+
+test('accordion: opening one folder closes the others', { skip, timeout: 120000 }, async () => {
+  await withApp(async (browser, base) => {
+    const { page } = await open(browser, base, APPS[0]);
+    await page.evaluate(() => { document.querySelector('#snav .sn-parent[data-grp="fin"]').click(); });
+    await page.waitForTimeout(150);
+    await page.evaluate(() => { document.querySelector('#snav .sn-parent[data-grp="stock"]').click(); });
+    await page.waitForTimeout(150);
+    const opened = await page.evaluate(() => Array.from(document.querySelectorAll('#snav .sn-group.open')).map((g) => g.dataset.g));
+    assert.deepEqual(opened, ['stock']);
+  });
+});

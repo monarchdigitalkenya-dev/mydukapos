@@ -453,8 +453,10 @@ A['mgr.payout'] = { p: 'money', fn: async (ctx) => {
   if (!isFinite(cents) || cents <= 0) fail('Nothing has been collected for this turn yet.');
   if (cents > col.t) fail(`Only ${kes(col.t)} has been collected, so ${kes(cents)} cannot be paid out.`, 'over_collected', 409);
   const date = isDate(b.date) ? b.date : todayKey(), fund = await fundFor(ctx, 'mgr');
+  // zip 242: a payout that was undone leaves its (reversed) row behind, so a second payout of the same turn needs its own key
+  const prior = await ctx.db.prepare("SELECT COUNT(*) AS n FROM chama_ledger WHERE client_id = ? AND kind = 'mgr_payout' AND ref_id = ? AND reversal_of IS NULL").bind(ctx.c, t.id).first();
   await ctx.db.batch([
-    ctx.db.prepare("INSERT INTO chama_ledger (client_id, id, ts, entry_date, kind, fund_id, member_id, amount_cents, ref_type, ref_id, method, reference, note, created_by, idem_key) SELECT ?,?,?,?, 'mgr_payout', ?,?,?, 'mgr_turn', ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM chama_mgr_turn WHERE client_id = ? AND id = ? AND status = 'open')").bind(ctx.c, uid(), Date.now(), date, fund, t.member_id, -cents, t.id, strOf(b, 'method', 20) || 'mpesa', strOf(b, 'reference', 60) || null, 'Approved by ' + (strOf(b, 'approvedBy', 80) || ctx.me.name), ctx.me.id, 'mgr:pay:' + t.id, ctx.c, t.id),
+    ctx.db.prepare("INSERT INTO chama_ledger (client_id, id, ts, entry_date, kind, fund_id, member_id, amount_cents, ref_type, ref_id, method, reference, note, created_by, idem_key) SELECT ?,?,?,?, 'mgr_payout', ?,?,?, 'mgr_turn', ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM chama_mgr_turn WHERE client_id = ? AND id = ? AND status = 'open')").bind(ctx.c, uid(), Date.now(), date, fund, t.member_id, -cents, t.id, strOf(b, 'method', 20) || 'mpesa', strOf(b, 'reference', 60) || null, 'Approved by ' + (strOf(b, 'approvedBy', 80) || ctx.me.name), ctx.me.id, 'mgr:pay:' + t.id + (prior.n ? ':' + prior.n : ''), ctx.c, t.id),
     ctx.db.prepare("UPDATE chama_mgr_turn SET status = 'paid_out' WHERE client_id = ? AND id = ? AND status = 'open'").bind(ctx.c, t.id),
     noteStmt(ctx, t.member_id, 'mgr', 'Merry-go-round: your turn', `${kes(cents)} was paid out to you.`),
     auditStmt(ctx, `${ctx.me.name} paid out ${kes(cents)} to ${t.name} (merry-go-round)`, 'mgr_turn:' + t.id),

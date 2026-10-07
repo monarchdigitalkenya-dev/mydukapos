@@ -95,7 +95,7 @@ function payments(M) {
       { title: 'Hold a sale (customer not ready to pay)', steps: ['Build the customer\u2019s cart, then tap **⏸️ Hold sale**. The cart clears so you can serve the next person; **one** sale can be held at a time.', 'When the customer is ready, finish the sale you are on, then tap the **held sale** button that appears where Hold sale was — the held cart comes back exactly as it was.'] },
       ...(M.noPastSale ? [] : [{ title: 'Record a past sale (forgot to record it)', steps: ['On the Sales Counter tap **Record a Past Sale**, pick the item, date and time, quantity, price and payment method (cash, M-Pesa, card, split or Bill).', 'It is saved on that date and takes the stock off, like a normal sale.'] }]),
     ],
-    tips: ['Nothing is deducted from stock while a sale is only being built or held.', 'A wrong sale can be **voided** from Daily Sales (stock comes back).'],
+    tips: ['Nothing is deducted from stock while a sale is only being built or held.', 'A wrong sale can be **voided** from Daily Sales (stock comes back).', 'The **💰 Sales** panel (the day\u2019s Total / Cash / M-Pesa) can stay open all the time: tick **📌 Keep open** on the panel, or in **Settings ▸ View**. This is for the device you tick it on.', 'With category tiles on, **Settings ▸ Category Images & Order** lets you hide the "All items" / "All <category>" buttons and choose the order of categories, sub-categories and (Hotel) items: your own numbers, A–Z, most popular, price.'],
   });
 }
 function receipts(M) {
@@ -296,6 +296,7 @@ MODS.shop = {
       steps: [
         'Open **📦 Add New Items**. Choose **Add One Item**: type the name, the **selling price**, the **buying (cost) price**, the starting **quantity** and the unit (pieces, kg, litres, box…). Save.',
         'For many items at once use **Add Multiple Items (Bulk)**, or **⬆️ Import from Excel/CSV** on the Inventory tab (columns: Category, Code, Name, Price, Cost Price, Unit, Qty).',
+        '**Item already there?** If the name you typed (any capitals or spacing) or a bulk row matches an item you already have, the app does not give an error or add a second copy: it says so and asks — **✏️ Update the existing item** (the price you typed is applied and the quantity is **added** to its stock), **➕ Add as a variant** (a new size / colour of the same item; Hotel and Hospital save it as its own item named like "Mango Shake — Large"), or **Cancel**. In Bulk Add you choose per row, or set all rows at once.',
         '**📸 Capture List:** photograph a supplier invoice or handwritten stock list and the app reads the lines; check them and confirm.',
         'Give each item a **code** or scan its barcode (📷) so it can be found by scanning. **🔖 Barcode** prints labels.',
         'Items sold by the box **and** by the piece: tick **Dual unit**, enter pieces per box and the piece price. Bags sold whole **and** loose (cement in 50 kg bags and by the kilo): set the loose unit; one stock balance serves both.',
@@ -632,14 +633,15 @@ MODS.services = {
 MODS.water = {
   name: 'Aqua POS', title: 'Aqua POS — User Guide', tagline: 'Water refill stations, bottled-water producers and distributors — refills, sealed bottles, bales, bulk tanks, production and deliveries.',
   itemsPlural: 'products and materials', itemWord: 'product', addTab: '📋 Inventory', restockTab: '📥 Restocking',
-  tabs: ['🧾 Sales Counter', '📊 Dashboard', '📋 Inventory', '➕ Add New Items', '🧩 Materials', '📥 Restocking', '📋 Stock Take', '🚰 Bulk Tank', '🏭 Production', '📅 Bulk Orders', '↩️ Returned Goods', '🚚 Deliveries', '📊 Daily Sales', '🔍 Audit', '📦 Stock Report', '💰 Profits & Expenses', '📈 Demand Trends', '🧾 Bills', '📒 Debts', '👤 My Customers', '👥 Staff', '🕐 Attendance', '💼 Payroll', '⚙️ Settings', '☰ More'],
+  tabs: ['🧾 Sales Counter', '📊 Dashboard', '📋 Inventory', '➕ Add New Items', '🧩 Materials', '📥 Restocking', '📋 Stock Take', '🚰 Bulk Tank', '🏭 Production', '🚚 Dispatch', '📅 Bulk Orders', '↩️ Returned Goods', '🚚 Deliveries', '📊 Daily Sales', '🔍 Audit', '📦 Stock Report', '💰 Profits & Expenses', '📈 Demand Trends', '🧾 Bills', '📒 Debts', '👤 My Customers', '👥 Staff', '🕐 Attendance', '💼 Payroll', '⚙️ Settings', '☰ More'],
   tabText: {
     'Sales Counter': 'New sale: refills by size or custom litres, sealed bottles, dispensers, bales; walk-in or delivery.',
     'Inventory': 'Products (bottled water, bales, accessories), materials and refill sizes with prices and recipes.',
     'Restocking': 'Top up a material or product (decimals allowed) and see restock history.',
     'Stock Take': 'Count what is really at this site — products, bottles, tank litres, materials — and correct the system to it.',
     'Bulk Tank': 'Your bulk water tanks: add water, and see each site\u2019s level drop as refills are sold.',
-    'Production': 'Record what you produced; materials are deducted from its recipe; factory floor stock and dispatches.',
+    'Production': 'Record what you produced; materials are deducted from its recipe.',
+    'Dispatch': 'Under Logistics. Send stock and pre-filled refills from Production to a shop branch, see factory stock, shop requests and Dispatch History.',
     'Bulk Orders': 'Book large future orders with a deposit and delivery date.',
     'Daily Sales': 'Every sale for a day / week / month, filtered by payment method, for the site you are in.',
     'Demand Trends': 'Which sizes and products sell most, and when.',

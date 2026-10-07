@@ -252,6 +252,15 @@ const KIND_TEXT = { contribution: 'contribution', loan: 'loan repayment', fundra
 async function liveDuplicate(ctx, code) { return code ? await ctx.db.prepare("SELECT id FROM chama_report WHERE client_id = ? AND mpesa_code = ? AND status IN ('pending','verified')").bind(ctx.c, code).first() : null; }
 const DUP_MSG = 'This M-Pesa transaction has already been reported.';
 
+// zip 235: a payment that looks just like one recorded moments ago (same person, same thing, same amount, within 2 minutes) is most likely a double tap or two people
+// recording the same money. It is NOT forbidden: the person is asked once, and sends `force: true` if it really is a second payment.
+export const SIMILAR_WINDOW_MS = 120000;
+async function guardSimilar(ctx, memberId, kind, cents) {
+  if (ctx.body && ctx.body.force) return;
+  const s = await ctx.db.prepare("SELECT reported_at FROM chama_report WHERE client_id = ? AND member_id = ? AND kind = ? AND amount_cents = ? AND reported_at >= ? AND status IN ('pending','verified') ORDER BY reported_at DESC LIMIT 1")
+    .bind(ctx.c, memberId, kind, cents, Date.now() - SIMILAR_WINDOW_MS).first();
+  if (s) { const sec = Math.max(1, Math.round((Date.now() - s.reported_at) / 1000)); fail(`A payment of ${kes(cents)} for the same thing was recorded ${sec < 100 ? sec + ' seconds' : 'about 2 minutes'} ago. Is this a second payment?`, 'maybe_duplicate', 409); }
+}
 A['report.parse'] = { p: 'member', fn: async (ctx) => {
   const p = parseMpesa(ctx.body.text);
   if (!p.ok) return { ok: false, error: p.error };
@@ -283,6 +292,7 @@ async function submitCash(ctx) {
   const id = reqId(b);
   const existing = await ctx.db.prepare('SELECT id FROM chama_report WHERE client_id = ? AND id = ?').bind(ctx.c, id).first();
   if (existing) return { id, already: true };
+  await guardSimilar(ctx, ctx.me.id, kind, cents);
   await ctx.db.batch([
     ctx.db.prepare("INSERT INTO chama_report (client_id, id, member_id, kind, target_id, amount_cents, method, mpesa_code, tx_date, tx_time, recipient, anonymous, source, status, reported_at, reported_cents, received_by) VALUES (?,?,?,?,?,?, 'cash', NULL, ?, NULL, NULL, 0, 'member', 'pending', ?, ?, ?)")
       .bind(ctx.c, id, ctx.me.id, kind, target, cents, todayKey(), Date.now(), cents, rc.id),
@@ -299,6 +309,7 @@ A['report.submit'] = { p: 'member', fn: async (ctx) => {
   const id = reqId(b);
   const existing = await ctx.db.prepare('SELECT id, status FROM chama_report WHERE client_id = ? AND id = ?').bind(ctx.c, id).first();
   if (existing) return { id, already: true };
+  await guardSimilar(ctx, ctx.me.id, kind, p.amountCents);
   if (await liveDuplicate(ctx, p.code)) fail(DUP_MSG, 'duplicate_mpesa', 409);
   const g = await loadGroup(ctx);
   const anon = kind === 'fundraiser' && b.anonymous ? 1 : 0;
@@ -441,6 +452,7 @@ A['payment.record'] = { p: 'payments', fn: async (ctx) => {
   const id = reqId(b);
   const have = await ctx.db.prepare('SELECT status FROM chama_report WHERE client_id = ? AND id = ?').bind(ctx.c, id).first();
   if (have) return { id, already: true };
+  await guardSimilar(ctx, memberId, kind, cents);
   const date = isDate(b.date) ? b.date : todayKey();
   try {
     await ctx.db.prepare('INSERT INTO chama_report (client_id, id, member_id, kind, target_id, amount_cents, method, mpesa_code, tx_date, source, status, reported_at, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')

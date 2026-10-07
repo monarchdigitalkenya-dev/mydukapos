@@ -48,6 +48,10 @@
         .ctl-rname small { display: block; color: #7f8c8d; font-size: 12px; }
         .ctl-racts { display: flex; flex-wrap: wrap; gap: 8px; }
         .ctl-racts button { min-height: 44px; }
+        .ctl-ordlab { display: block; margin: 10px 0 4px; font-size: 14px; font-weight: 700; }
+        .ctl-ordsel { box-sizing: border-box; display: block; width: 100%; max-width: 420px; min-height: 44px; font-size: 16px; padding: 8px 10px; }
+        .ctl-pos { box-sizing: border-box; flex: 0 0 64px; width: 64px !important; min-height: 44px; padding: 4px 6px; font-size: 16px; font-weight: 800; text-align: center; border-radius: 10px; border: 2px solid var(--accent, #3498db); }
+        .ctl-iord { margin: 6px 0 14px; padding: 10px 12px; border-radius: 12px; background: var(--bg-surface-alt, #f4f6f7); }
         .ctl-hidden-file { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
         .ctl-msg { min-height: 20px; margin: 8px 0 0; font-size: 14px; }
         .ctl-msg.bad { color: var(--danger, #e74c3c); }
@@ -162,13 +166,20 @@
         }
         /* ---------- zip 219: the ORDER of categories and sub-categories ---------- */
         var LS_ORD = 'pos_cat_order', MODES = ['default', 'manual', 'name', 'name-desc', 'items', 'sales'];
-        var MODE_LABEL = { 'default': 'Standard (as before)', manual: 'My own order (arrange with ▲ ▼)', name: 'Name A → Z', 'name-desc': 'Name Z → A', items: 'Most items first', sales: 'Best selling first' };
+        var MODE_LABEL = { 'default': 'Standard (as before)', manual: 'My own order (type a number or use ▲ ▼)', name: 'Name A → Z', 'name-desc': 'Name Z → A', items: 'Most items first', sales: 'Most popular first (best selling)' };
+        /* zip 244: sub-categories can have their OWN way of lining up ('same' = follow the categories), and so can the ITEMS in the Hotel's grid */
+        var SMODES = ['same', 'default', 'manual', 'name', 'name-desc', 'items', 'sales'], SMODE_LABEL = Object.assign({ same: 'Same as the categories' }, MODE_LABEL);
+        var IMODES = ['default', 'manual', 'name', 'name-desc', 'sales', 'price-low', 'price-high'];
+        var IMODE_LABEL = { 'default': 'Standard (best sellers first, as before)', manual: 'My own order (type a number or use ▲ ▼)', name: 'Name A → Z', 'name-desc': 'Name Z → A', sales: 'Most popular first (best selling)', 'price-low': 'Price: lowest first', 'price-high': 'Price: highest first' };
+        function strList(a) { return Array.isArray(a) ? a.filter(function (x) { return typeof x === 'string'; }) : []; }
         function ordGet() {
             var o = null; try { o = JSON.parse(lsGet(LS_ORD) || 'null'); } catch (e) { o = null; }
             if (!o || typeof o !== 'object' || Array.isArray(o)) o = {};
-            var subs = {}; if (o.subs && typeof o.subs === 'object' && !Array.isArray(o.subs)) Object.keys(o.subs).forEach(function (k) { if (Array.isArray(o.subs[k])) subs[k] = o.subs[k].filter(function (x) { return typeof x === 'string'; }); });
-            return { mode: MODES.indexOf(o.mode) >= 0 ? o.mode : 'default', manual: Array.isArray(o.manual) ? o.manual.filter(function (x) { return typeof x === 'string'; }) : [], subs: subs };
+            var subs = {}; if (o.subs && typeof o.subs === 'object' && !Array.isArray(o.subs)) Object.keys(o.subs).forEach(function (k) { if (Array.isArray(o.subs[k])) subs[k] = strList(o.subs[k]); });
+            var items = {}; if (o.items && typeof o.items === 'object' && !Array.isArray(o.items)) Object.keys(o.items).forEach(function (k) { if (Array.isArray(o.items[k])) items[k] = strList(o.items[k]); });
+            return { mode: MODES.indexOf(o.mode) >= 0 ? o.mode : 'default', smode: SMODES.indexOf(o.smode) >= 0 ? o.smode : 'same', imode: IMODES.indexOf(o.imode) >= 0 ? o.imode : 'default', manual: strList(o.manual), subs: subs, items: items };
         }
+        function subMode(o) { o = o || ordGet(); return o.smode === 'same' ? o.mode : o.smode; }
         function ordSave(o) { lsSet(LS_ORD, JSON.stringify(o)); pushSoon(); lastMode = ''; try { renderPanel(); } catch (e) { /* not open */ } refresh(); }
         var soldCache = null, soldAt = 0;
         function soldByCat() {
@@ -182,11 +193,28 @@
             });
             soldCache = m; soldAt = Date.now(); return m;
         }
-        /* orders a list of { label, n } records. manualKeys = the saved order (labels); anything not in it goes after, A-Z. `last` stays at the end. */
-        function orderList(list, labelOf, nOf, manualKeys, isLast) {
-            var o = ordGet(), mode = o.mode; if (mode === 'default' || !list.length) return list;
+        /* Hotel: units sold per category id / per category+sub-category, and how many sellable items each holds (the Sales Counter's own list + its sold-units total) */
+        function hotelStats() {
+            var out = { cat: {}, sub: {}, subN: {} };
+            try {
+                var set = hospScreenSet('sales'), sold = soldTotalsMap();
+                set.all.forEach(function (e) {
+                    var u = Number(sold[e.rec.code]) || 0, cid = e.catId || 'none';
+                    out.cat[cid] = (out.cat[cid] || 0) + u;
+                    if (e.rec.subCat) { var k = cid + '|' + e.rec.subCat; out.sub[k] = (out.sub[k] || 0) + u; out.subN[k] = (out.subN[k] || 0) + 1; }
+                });
+            } catch (e) { /* no stats: the order falls back to the standard one */ }
+            return out;
+        }
+        function catSoldFn() {
+            if (hotelMode()) { var st = hotelStats(); return function (c) { return st.cat[c.id || 'none'] || 0; }; }
+            var m = soldByCat(); return function (c) { return m[normCat(c.label) || 'uncategorised'] || 0; };
+        }
+        /* orders a list of { label, n } records. manualKeys = the saved order (labels); anything not in it goes after, A-Z. `last` stays at the end. soldOf(x) = units sold. */
+        function orderList(list, labelOf, nOf, manualKeys, isLast, soldOf, modeIn) {
+            var o = ordGet(), mode = modeIn || o.mode; if (mode === 'default' || !list.length) return list;
             var idx = {}; (manualKeys || []).forEach(function (k, i) { if (idx[normCat(k)] === undefined) idx[normCat(k)] = i; });
-            var sold = mode === 'sales' ? soldByCat() : null, base = {}; list.forEach(function (x, i) { base[labelOf(x)] = i; });
+            var sold = mode === 'sales' ? (soldOf || catSoldFn()) : null, base = {}; list.forEach(function (x, i) { base[labelOf(x)] = i; });
             var arr = list.slice();
             arr.sort(function (a, b) {
                 var la = labelOf(a), lb = labelOf(b);
@@ -196,7 +224,7 @@
                 else if (mode === 'name') r = la.localeCompare(lb, undefined, { sensitivity: 'base' });
                 else if (mode === 'name-desc') r = lb.localeCompare(la, undefined, { sensitivity: 'base' });
                 else if (mode === 'items') r = (nOf ? (nOf(b) || 0) - (nOf(a) || 0) : 0);
-                else if (mode === 'sales') r = (sold[normCat(lb) || 'uncategorised'] || 0) - (sold[normCat(la) || 'uncategorised'] || 0);
+                else if (mode === 'sales') r = (sold(b) || 0) - (sold(a) || 0);
                 return r || (base[la] - base[lb]);
             });
             return arr;
@@ -216,18 +244,73 @@
             try {
                 if (!cat || cat.all || typeof hospSubList !== 'function') return [];
                 var l = hospSubList(cat.id); if (!Array.isArray(l)) return [];
-                var o = ordGet(), mode = o.mode === 'items' || o.mode === 'sales' ? 'default' : o.mode;   // sub-categories: manual or by name
+                var o = ordGet(), mode = subMode(o);   // zip 244: manual, A-Z, Z-A, most items, most popular (its own setting, or the categories')
                 if (mode === 'default') return l;
-                var arr = l.slice(), mk = o.subs[cat.key] || [];
+                var arr = l.slice(), mk = o.subs[cat.key] || [], st = (mode === 'items' || mode === 'sales') ? hotelStats() : null, cid = cat.id || 'none';
+                var cmp = function (a, b) { return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' }); };
                 arr.sort(function (a, b) {
                     var na = String(a.name), nb = String(b.name);
-                    if (mode === 'manual') { var ia = mk.indexOf(na), ib = mk.indexOf(nb); return (ia < 0 ? 1e6 : ia) - (ib < 0 ? 1e6 : ib) || na.localeCompare(nb, undefined, { sensitivity: 'base' }); }
-                    return mode === 'name-desc' ? nb.localeCompare(na, undefined, { sensitivity: 'base' }) : na.localeCompare(nb, undefined, { sensitivity: 'base' });
+                    if (mode === 'manual') { var ia = mk.indexOf(na), ib = mk.indexOf(nb); return (ia < 0 ? 1e6 : ia) - (ib < 0 ? 1e6 : ib) || cmp(a, b); }
+                    if (mode === 'items') return ((st.subN[cid + '|' + b.id] || 0) - (st.subN[cid + '|' + a.id] || 0)) || cmp(a, b);
+                    if (mode === 'sales') return ((st.sub[cid + '|' + b.id] || 0) - (st.sub[cid + '|' + a.id] || 0)) || cmp(a, b);
+                    return mode === 'name-desc' ? nb.localeCompare(na, undefined, { sensitivity: 'base' }) : cmp(a, b);
                 });
                 return arr;
             } catch (e) { return []; }
         }
         function allItemsCount(cats) { var n = 0; cats.forEach(function (c) { n += c.n; }); return n; }
+
+        /* ---------- zip 244: hide the "All items" / "All <category>" buttons (shop-wide) ---------- */
+        var LS_HIDE = 'pos_cat_hide_all';
+        function hideGet() {
+            var o = null; try { o = JSON.parse(lsGet(LS_HIDE) || 'null'); } catch (e) { o = null; }
+            o = o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+            return { items: o.items === true, cat: o.cat === true };
+        }
+        function hideSet(k, v) { var h = hideGet(); h[k] = !!v; lsSet(LS_HIDE, JSON.stringify(h)); pushSoon(); lastMode = ''; try { renderPanel(); } catch (e) { /* not open */ } refresh(); }
+
+        /* ---------- zip 244: the ORDER of the items inside a category (Hotel's Sales Counter grid and Orders menu) ---------- */
+        function sellEntries(catId) {
+            try { return hospScreenSet('sales').all.filter(function (e) { return catId === 'none' ? !e.catId : e.catId === catId; }); } catch (e) { return []; }
+        }
+        function itemEntriesOrdered(catId) {     // the entries of one category in the saved manual order (unlisted ones after, A-Z)
+            var saved = ordGet().items[catId] || [], idx = {};
+            saved.forEach(function (c, i) { if (idx[c] === undefined) idx[c] = i; });
+            return sellEntries(catId).sort(function (a, b) {
+                var ia = idx[String(a.rec.code)], ib = idx[String(b.rec.code)];
+                return (ia === undefined ? 1e6 : ia) - (ib === undefined ? 1e6 : ib) || String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+            });
+        }
+        // called by the Hotel's hospScreenItems with the list it just filtered; returns the same entries in the chosen order (sel = category chip id)
+        window.__ctlOrderItems = function (list, sel) {
+            try {
+                var o = ordGet(), mode = o.imode;
+                if (!Array.isArray(list) || list.length < 2 || mode === 'default') return list;
+                var sold = mode === 'sales' ? soldTotalsMap() : null, rank = null, posBy = {};
+                if (mode === 'manual' && sel === HOSP_CAT_ALL) { rank = {}; categories().forEach(function (c, i) { rank[c.id] = i; }); }
+                var posOf = function (e) {
+                    var cid = e.catId || 'none', m = posBy[cid];
+                    if (!m) { m = posBy[cid] = {}; (o.items[cid] || []).forEach(function (c, i) { if (m[c] === undefined) m[c] = i; }); }
+                    var p = m[String(e.rec.code)]; return p === undefined ? 1e6 : p;
+                };
+                var nm = function (a, b) { return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' }); };
+                var arr = list.map(function (e, i) { return { e: e, i: i }; });
+                arr.sort(function (A, B) {
+                    var a = A.e, b = B.e, r = 0;
+                    if (mode === 'manual') {
+                        if (rank) r = (rank[a.catId] === undefined ? 1e6 : rank[a.catId]) - (rank[b.catId] === undefined ? 1e6 : rank[b.catId]);
+                        if (!r) { var pa = posOf(a), pb = posOf(b); r = pa - pb; if (!r && pa === 1e6) r = nm(a, b); }
+                    }
+                    else if (mode === 'name') r = nm(a, b);
+                    else if (mode === 'name-desc') r = -nm(a, b);
+                    else if (mode === 'sales') r = (sold[b.rec.code] || 0) - (sold[a.rec.code] || 0);
+                    else if (mode === 'price-low') r = (Number(a.rec.price) || 0) - (Number(b.rec.price) || 0);
+                    else if (mode === 'price-high') r = (Number(b.rec.price) || 0) - (Number(a.rec.price) || 0);
+                    return r || (A.i - B.i);
+                });
+                return arr.map(function (x) { return x.e; });
+            } catch (e) { return list; }
+        };
 
         /* ---------- the app's own filter state ---------- */
         function selKey() { return 'pos_hosp_catsel_sales'; }
@@ -321,6 +404,12 @@
         }
         function setHost(h, html) { if (h.__h !== html) { h.__h = html; h.innerHTML = html; } h.classList.toggle('ctl-has', !!html); }
         function head(parts) { return '<div class="ctl-head">' + parts + '</div>'; }
+        // the tiles of a category's sub-category screen: "All <category>" first (unless the owner hid it and there is something else to show), then each sub-category, then "Other"
+        function subTiles(subs, counts, tot, none) {
+            var rest = subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); })
+                .concat(none > 0 ? [tileHtml('sub', 'none', 'Other', none, '')] : []);
+            return hideGet().cat && rest.length ? rest : [tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)].concat(rest);
+        }
         function sync(cats) {
             try {
                 cats = cats || categories(); normalize(cats);
@@ -330,15 +419,13 @@
                 if (m === 'off' || m === 'search') { setHost(h, ''); return; }
                 var html = '';
                 if (m === 'root') {
-                    html = layout(cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).concat([tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️')]), 'Categories');
+                    html = layout(cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).concat(hideGet().items ? [] : [tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️')]), 'Categories');   // zip 244: "All items" can be hidden
                 } else if (m === 'sub') {
                     var subs = hotelSubs(S.cat), counts = {}, tot = 0, none = 0;
                     try { var r = hospScreenItems('sales', ''); counts = r.subCounts || {}; } catch (e) { counts = {}; }
                     subs.forEach(function (x) { tot += counts[x.id] || 0; }); none = counts.none || 0; tot += none;
                     html = head('<button type="button" class="ctl-back" data-ctl="root">← All categories</button><span class="ctl-crumb">· ' + esc(S.cat.label) + '</span>')
-                        + layout([tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)]
-                            .concat(subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); }))
-                            .concat(none > 0 ? [tileHtml('sub', 'none', 'Other', none, '')] : []), 'Sub-categories of ' + S.cat.label);
+                        + layout(subTiles(subs, counts, tot, none), 'Sub-categories of ' + S.cat.label);
                 } else {
                     var parts = '<button type="button" class="ctl-back" data-ctl="root">← All categories</button>';
                     if (S.cat.all) parts += '<span class="ctl-crumb">· All items</span>';
@@ -411,7 +498,8 @@
             if (lsGet(LS_IMG) !== null) o.categoryImages = images();          // only a device that has its own copy sends one: a fresh phone must never blank the shop's pictures
             var on = lsGet(LS_ON); if (on !== null) o.catTilesOn = on === 'true';
             var pl = lsGet(LS_PLAIN); if (pl !== null) o.catPlainOn = pl === 'true';
-            if (lsGet(LS_ORD) !== null) o.catOrder = ordGet();                 // zip 219: the order of categories travels to every device
+            if (lsGet(LS_ORD) !== null) o.catOrder = ordGet();                 // zip 219: the order of categories travels to every device (zip 244: + sub-categories and items)
+            if (lsGet(LS_HIDE) !== null) o.catHideAll = hideGet();             // zip 244: hide "All items" / "All <category>"
             return o;
         }
         function applyRemote(data) {
@@ -425,6 +513,10 @@
             if (typeof data.catTilesOn === 'boolean' && data.catTilesOn !== enabled()) { lsSet(LS_ON, data.catTilesOn ? 'true' : 'false'); changed = true; }
             if (typeof data.catPlainOn === 'boolean' && data.catPlainOn !== plainOn()) { lsSet(LS_PLAIN, data.catPlainOn ? 'true' : 'false'); changed = true; }
             if (data.catOrder && typeof data.catOrder === 'object' && !Array.isArray(data.catOrder)) { var co = JSON.stringify(data.catOrder); if (co !== JSON.stringify(ordGet()) && co !== lsGet(LS_ORD)) { lsSet(LS_ORD, co); changed = true; } }
+            if (data.catHideAll && typeof data.catHideAll === 'object' && !Array.isArray(data.catHideAll)) {
+                var nh = { items: data.catHideAll.items === true, cat: data.catHideAll.cat === true };
+                if (JSON.stringify(nh) !== JSON.stringify(hideGet())) { lsSet(LS_HIDE, JSON.stringify(nh)); changed = true; }
+            }
             if (changed) { try { renderPanel(); } catch (e) { /* the page may not be open */ } refresh(); }
         }
         function installSync() {
@@ -516,43 +608,88 @@
             var im = images()[key];
             return '<span class="ctl-thumb">' + (im ? '<img src="' + esc(im) + '" alt="" loading="lazy">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(initials(label)) + '</span>') + '</span>';
         }
+        function selHtml(id, label, modes, labels, cur, ro) {
+            return '<label class="ctl-ordlab" for="' + id + '">' + label + '</label><select id="' + id + '" class="ctl-ordsel"' + (ro ? ' disabled' : '') + '>'
+                + modes.map(function (m) { return '<option value="' + m + '"' + (cur === m ? ' selected' : '') + '>' + esc(labels[m]) + '</option>'; }).join('') + '</select>';
+        }
         function ordHtml(cats, ro) {
-            var o = ordGet();
-            var opts = MODES.map(function (m) { return '<option value="' + m + '"' + (o.mode === m ? ' selected' : '') + '>' + esc(MODE_LABEL[m]) + '</option>'; }).join('');
-            return '<h3 style="margin-top:0;">↕️ Order of categories</h3><p class="ctl-note">Choose how categories (and sub-categories) are lined up on the Sales Counter. It applies to every device of the shop. “My own order” lets you move each one up or down below.</p>'
-                + '<label class="ctl-sw" style="display:block;"><select id="ctl-ord-mode"' + (ro ? ' disabled' : '') + ' style="max-width:100%;">' + opts + '</select></label>'
-                + (o.mode === 'manual' ? '<p class="ctl-note">Use ▲ ▼ on each category (and sub-category) in the list below.</p>' : '');
+            var o = ordGet(), hm = hotelMode();
+            return '<h3 style="margin-top:0;">↕️ Order &amp; sorting</h3><p class="ctl-note">Choose how things are lined up on the Sales Counter. It applies to every device of the shop. “My own order” lets you type a position number (1 = first) or use ▲ ▼ on each line.</p>'
+                + selHtml('ctl-ord-mode', 'Categories', MODES, MODE_LABEL, o.mode, ro)
+                + (hm ? selHtml('ctl-ord-smode', 'Sub-categories', SMODES, SMODE_LABEL, o.smode, ro) + selHtml('ctl-ord-imode', 'Items', IMODES, IMODE_LABEL, o.imode, ro) : '')
+                + (o.mode === 'manual' || (hm && subMode(o) === 'manual') ? '<p class="ctl-note">Type a position number or use ▲ ▼ on each category' + (hm ? ' and sub-category' : '') + ' in the list below.</p>' : '')
+                + (hm && o.imode === 'manual' ? itemEditorHtml(ro) : '');
+        }
+        function posBox(kind, key, pos, n, ro) {
+            return '<input type="number" class="ctl-pos" inputmode="numeric" min="1" max="' + n + '" value="' + pos + '" data-ctl-pos="' + kind + '" data-k="' + esc(encodeURIComponent(key)) + '" aria-label="Position (1 to ' + n + ')" title="Position (1 to ' + n + ')"' + (ro ? ' disabled' : '') + '>';
+        }
+        function arrows(act, k, ro) {
+            return '<button type="button" class="settings-small-btn" data-ctl-act="' + act + '" data-d="-1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move up">▲</button><button type="button" class="settings-small-btn" data-ctl-act="' + act + '" data-d="1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move down">▼</button>';
         }
         function moveBtns(key, sub, ro) {
-            if (ordGet().mode !== 'manual') return '';
-            var k = esc(encodeURIComponent(key));
-            return '<button type="button" class="settings-small-btn" data-ctl-act="mv" data-d="-1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move up">▲</button><button type="button" class="settings-small-btn" data-ctl-act="mv" data-d="1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move down">▼</button>';
+            var o = ordGet(); if ((sub ? subMode(o) : o.mode) !== 'manual') return '';
+            var parts = key.split(SEP), pos = 0, n = 0;
+            try {
+                if (!sub) { var l = categories(); n = l.length; pos = l.map(function (c) { return c.key; }).indexOf(key) + 1; }
+                else { var c = categories().filter(function (x) { return x.key === parts[0]; })[0], names = c ? hotelSubs(c).map(function (x) { return String(x.name); }) : []; n = names.length; pos = names.indexOf(parts.slice(1).join(SEP)) + 1; }
+            } catch (e) { /* the arrows still work */ }
+            return (pos > 0 ? posBox(sub ? 'sub' : 'cat', key, pos, n, ro) : '') + arrows('mv', esc(encodeURIComponent(key)), ro);
         }
-        function moveItem(key, d) {
-            var o = ordGet(), parts = key.split(SEP), cat = parts[0], sub = parts.length > 1 ? parts.slice(1).join(SEP) : null;
+        // moves `item` inside `order` by d places, or to the 1-based position toPos; returns a NEW array (or the same one when nothing moves)
+        function moveIn(order, item, d, toPos) {
+            var i = order.indexOf(item); if (i < 0) return order;
+            var j = toPos != null && isFinite(toPos) ? Math.max(0, Math.min(order.length - 1, Math.round(toPos) - 1)) : i + d;
+            if (j < 0 || j >= order.length || j === i) return order;
+            var a = order.slice(); a.splice(i, 1); a.splice(j, 0, item); return a;
+        }
+        function moveItem(key, d, toPos) {
+            var o = ordGet(), parts = key.split(SEP), cat = parts[0], sub = parts.length > 1 ? parts.slice(1).join(SEP) : null, next;
             if (sub === null) {
                 var cur = categories().map(function (c) { return c.label; });
                 var arr = o.manual.length ? o.manual.slice() : cur.slice();
                 cur.forEach(function (l) { if (arr.map(normCat).indexOf(normCat(l)) < 0) arr.push(l); });
                 var order = cur.slice().sort(function (a, b) { var ia = arr.map(normCat).indexOf(normCat(a)), ib = arr.map(normCat).indexOf(normCat(b)); return ia - ib; });
-                var i = order.indexOf(cat), j = i + d; if (i < 0 || j < 0 || j >= order.length) return;
-                var t = order[i]; order[i] = order[j]; order[j] = t;
-                o.manual = order;
+                next = moveIn(order, cat, d, toPos); if (next === order) { renderPanel(); return; }
+                o.manual = next;
             } else {
                 var c = categories().filter(function (x) { return x.key === cat; })[0]; if (!c) return;
-                var names = hotelSubs(c).map(function (x) { return String(x.name); }), i2 = names.indexOf(sub), j2 = i2 + d;
-                if (i2 < 0 || j2 < 0 || j2 >= names.length) return;
-                var t2 = names[i2]; names[i2] = names[j2]; names[j2] = t2;
-                o.subs[cat] = names;
+                var names = hotelSubs(c).map(function (x) { return String(x.name); });
+                next = moveIn(names, sub, d, toPos); if (next === names) { renderPanel(); return; }
+                o.subs[cat] = next;
             }
-            o.mode = 'manual'; ordSave(o);
+            ordSave(o);
+        }
+        function moveCatItem(catId, code, d, toPos) {      // the items of one category (Hotel)
+            var o = ordGet(), codes = itemEntriesOrdered(catId).map(function (e) { return String(e.rec.code); });
+            var next = moveIn(codes, String(code), d, toPos); if (next === codes) { renderPanel(); return; }
+            o.items[catId] = next; ordSave(o);
+        }
+        function itemEditorHtml(ro) {
+            var cats = categories().map(function (c) { return { id: c.id, label: c.label }; });
+            try { if (hospScreenSet('sales').none > 0) cats.push({ id: 'none', label: 'Uncategorized' }); } catch (e) { /* none */ }
+            if (!cats.length) return '';
+            if (!cats.some(function (c) { return c.id === window.__ctlIordCat; })) window.__ctlIordCat = cats[0].id;
+            var cur = window.__ctlIordCat, ents = itemEntriesOrdered(cur), n = ents.length;
+            return '<div class="ctl-iord"><label class="ctl-ordlab" for="ctl-iord-cat">Arrange the items of</label><select id="ctl-iord-cat" class="ctl-ordsel">'
+                + cats.map(function (c) { return '<option value="' + esc(c.id) + '"' + (c.id === cur ? ' selected' : '') + '>' + esc(c.label) + '</option>'; }).join('') + '</select>'
+                + '<p class="ctl-note">' + n + (n === 1 ? ' item' : ' items') + ' — type a position number (1 = first) or use ▲ ▼. Items you have not placed yet follow in A-Z order. Sub-category screens use this same order.</p>'
+                + ents.map(function (e, i) {
+                    var k = esc(encodeURIComponent(String(e.rec.code)));
+                    return '<div class="ctl-row ctl-subrow"><input type="number" class="ctl-pos" inputmode="numeric" min="1" max="' + n + '" value="' + (i + 1) + '" data-ctl-pos="item" data-k="' + k + '" aria-label="Position (1 to ' + n + ')"' + (ro ? ' disabled' : '') + '>'
+                        + '<span class="ctl-rname"><b>' + esc(e.name) + '</b><small>' + esc(String(Number(e.rec.price) || 0)) + '</small></span><span class="ctl-racts">' + arrows('mvi', k, ro) + '</span></div>';
+                }).join('') + '</div>';
         }
         window.__ctlSetOrderMode = function (m) {
             var o = ordGet(); if (MODES.indexOf(m) < 0) return;
             if (m === 'manual' && !o.manual.length) o.manual = categories().map(function (c) { return c.label; });   // start from the order on screen
-            if (m === 'manual') { categories().forEach(function (c) { if (!o.subs[c.key] || !o.subs[c.key].length) { var l = hotelSubs(c).map(function (x) { return String(x.name); }); if (l.length) o.subs[c.key] = l; } }); }
-            o.mode = m; ordSave(o);
+            o.mode = m; if (m === 'manual' && subMode(o) === 'manual') seedSubs(o); ordSave(o);
         };
+        function seedSubs(o) { categories().forEach(function (c) { if (!o.subs[c.key] || !o.subs[c.key].length) { var l = hotelSubs(c).map(function (x) { return String(x.name); }); if (l.length) o.subs[c.key] = l; } }); }
+        window.__ctlSetSubMode = function (m) {
+            var o = ordGet(); if (SMODES.indexOf(m) < 0) return;
+            o.smode = m; if (subMode(o) === 'manual') seedSubs(o); ordSave(o);
+        };
+        window.__ctlSetItemMode = function (m) { var o = ordGet(); if (IMODES.indexOf(m) < 0) return; o.imode = m; ordSave(o); };
         function rowHtml(label, key, sub, count, ro) {
             var has = images()[key] !== undefined, k = esc(encodeURIComponent(key));
             return '<div class="ctl-row' + (sub ? ' ctl-subrow' : '') + '">' + thumb(label, key)
@@ -574,6 +711,9 @@
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-switch"' + (enabled() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Show category image tiles on the Sales Counter</label>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-plain-switch"' + (plainOn() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Categories and sub-categories without a picture stay plain buttons</label>'
                 + '<p class="ctl-note">With this on, only the categories you gave a picture show as picture tiles; the others are ordinary buttons. Items always show their own pictures.</p>'
+                + '<h3 style="margin-top:16px;">🙈 Hide the “All” buttons</h3><p class="ctl-note">With the tiles on, the Sales Counter normally starts with an “All items” button, and each category with sub-categories starts with an “All &lt;category&gt;” button. Hide them to show only the categories / sub-categories. Searching still finds every item. Every till and phone follows this.</p>'
+                + '<label class="ctl-sw"><input type="checkbox" id="ctl-hide-items"' + (hideGet().items ? ' checked' : '') + (ro ? ' disabled' : '') + '> Hide the “All items” button</label>'
+                + (hotelMode() ? '<label class="ctl-sw"><input type="checkbox" id="ctl-hide-cat"' + (hideGet().cat ? ' checked' : '') + (ro ? ' disabled' : '') + '> Hide the “All &lt;category&gt;” button inside a category (for example “All Milkshakes”) — show only its sub-categories</label>' : '')
                 + '<p class="ctl-note">' + used + ' of ' + MAX_IMAGES + ' pictures used. Pictures are made small automatically.' + (ro ? ' Another branch is open: pictures can only be changed in your own branch.' : '') + '</p>'
                 + (rows || '<p class="ctl-note">No categories yet. Give items a category in Inventory, then come back.</p>')
                 + '<input type="file" id="ctl-file" class="ctl-hidden-file" accept="image/*" tabindex="-1" aria-hidden="true">'
@@ -585,10 +725,22 @@
             if (act === 'pick') { pendingKey = k; var f = $('ctl-file'); if (f) { f.value = ''; f.click(); } }
             else if (act === 'rm') { removeImage(k); msg('Picture removed.'); }
             else if (act === 'mv') { moveItem(k, parseInt(t.getAttribute('data-d'), 10) || 0); }
+            else if (act === 'mvi') { moveCatItem(window.__ctlIordCat, k, parseInt(t.getAttribute('data-d'), 10) || 0); }
         }
         function onPanelChange(ev) {
             var t = ev.target; if (!t) return;
             if (t.id === 'ctl-ord-mode') { window.__ctlSetOrderMode(t.value); return; }
+            if (t.id === 'ctl-ord-smode') { window.__ctlSetSubMode(t.value); return; }
+            if (t.id === 'ctl-ord-imode') { window.__ctlSetItemMode(t.value); return; }
+            if (t.id === 'ctl-iord-cat') { window.__ctlIordCat = t.value; renderPanel(); return; }
+            if (t.id === 'ctl-hide-items') { hideSet('items', !!t.checked); msg(t.checked ? 'The “All items” button is hidden.' : 'The “All items” button is back.'); return; }
+            if (t.id === 'ctl-hide-cat') { hideSet('cat', !!t.checked); msg(t.checked ? 'The “All <category>” buttons are hidden.' : 'The “All <category>” buttons are back.'); return; }
+            if (t.getAttribute && t.getAttribute('data-ctl-pos')) {          // a typed position number
+                var kind = t.getAttribute('data-ctl-pos'), key = ''; try { key = decodeURIComponent(t.getAttribute('data-k') || ''); } catch (e) { key = ''; }
+                var to = parseInt(t.value, 10); if (!isFinite(to)) { renderPanel(); return; }
+                if (kind === 'item') moveCatItem(window.__ctlIordCat, key, 0, to); else moveItem(key, 0, to);
+                return;
+            }
             if (t.id === 'ctl-plain-switch') { setPlain(!!t.checked); msg(t.checked ? 'Categories without a picture are plain buttons.' : 'Categories without a picture show a coloured letter tile.'); return; }
             if (t.id === 'ctl-switch') { setEnabled(!!t.checked); msg(t.checked ? 'Category tiles are ON for the Sales Counter.' : 'Category tiles are OFF. The Sales Counter is back to the usual list.'); return; }
             if (t.id === 'ctl-file') {
@@ -608,7 +760,7 @@
                 var sec = document.createElement('div'); sec.className = 'settings-section-content'; sec.id = 'settings-section-catimages';
                 sec.appendChild(panel); gen.parentNode.appendChild(sec);
                 var b = document.createElement('button'); b.type = 'button'; b.className = 'settings-subtab-btn'; b.setAttribute('data-section', 'settings-section-catimages');
-                b.textContent = '🖼️ Category Images'; b.setAttribute('onclick', "showSettingsSection('settings-section-catimages', this)");
+                b.textContent = '🖼️ Category Images & Order'; b.setAttribute('onclick', "showSettingsSection('settings-section-catimages', this)");
                 b.addEventListener('click', function () { renderPanel(); });
                 var after = nav.querySelector('[data-section="settings-section-paymethods"]') || nav.querySelector('[data-section="settings-section-receipts"]');
                 if (after && after.parentNode) after.parentNode.insertBefore(b, after.nextSibling); else nav.appendChild(b);

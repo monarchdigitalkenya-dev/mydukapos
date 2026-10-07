@@ -19695,6 +19695,10 @@ async function storageMeasureUnknown() {
         { id: 'sys', label: 'System', icon: '⚙️', tabs: ['audit-tab', 'settings-tab'] }
     ];
     var FLAT = ['sales-tab', 'dashboard-tab'];
+    /* zip 239: every tab where stock or water MOVES lives in one Logistics folder, in every app (a folder with no visible tab simply does not show) */
+    var LOGI = ['dispatch-tab', 'orders-tab', 'restock-tab', 'restocking-tab', 'deliveries-tab', 'returns-tab', 'tank-tab'];
+    GROUPS.forEach(function (g) { g.tabs = g.tabs.filter(function (id) { return LOGI.indexOf(id) < 0; }); });
+    GROUPS.splice(2, 0, { id: 'logistics', label: 'Logistics', icon: '🚚', tabs: LOGI });
     /* zip 219: the Owner Console gets the same sidebar, with its own folders */
     if ($owner()) {
         GROUPS = [
@@ -19787,6 +19791,14 @@ async function storageMeasureUnknown() {
         if (sig === lastSig) return;
         lastSig = sig;
         var h = '';
+        /* zip 240: one folder open at a time (the one holding the tab you are on; else the first remembered one) */
+        var actG = null, firstOpen = null;
+        m.items.forEach(function (it) {
+            if (it.kind !== 'group') return;
+            if (!actG && it.kids.some(function (k) { return m.byId[k].classList.contains('active'); })) actG = it.g.id;
+            if (!firstOpen && openGroups[it.g.id]) firstOpen = it.g.id;
+        });
+        var keep = actG || firstOpen; openGroups = keep ? (function (o) { o[keep] = true; return o; })({}) : {};
         m.items.forEach(function (it) {
             if (it.kind === 'item') { h += itemHtml(it.id, m.byId, 'sn-top'); return; }
             var active = it.kids.some(function (k) { return m.byId[k].classList.contains('active'); });
@@ -19843,7 +19855,8 @@ async function storageMeasureUnknown() {
             var gid = par.getAttribute('data-grp');
             if (body.classList.contains('snav-collapsed') && !phone()) { fly && fly.classList.contains('on') && fly.getAttribute('data-g') === gid ? hideFly() : (showFly(par, gid), fly.setAttribute('data-g', gid)); return; }
             var grp = par.parentNode, open = !grp.classList.contains('open');
-            grp.classList.toggle('open', open); par.setAttribute('aria-expanded', open ? 'true' : 'false'); openGroups[gid] = open;
+            if (open) Array.prototype.forEach.call(aside.querySelectorAll('.sn-group.open'), function (g2) { g2.classList.remove('open'); var p2 = g2.querySelector('[data-grp]'); if (p2) p2.setAttribute('aria-expanded', 'false'); });
+            grp.classList.toggle('open', open); par.setAttribute('aria-expanded', open ? 'true' : 'false'); openGroups = {}; if (open) openGroups[gid] = true;
             try { store(K_OPEN, JSON.stringify(openGroups)); } catch (e2) { /* not remembered */ }
         }
     }

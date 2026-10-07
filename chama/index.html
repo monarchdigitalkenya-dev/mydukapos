@@ -185,7 +185,7 @@ async function kindChanged() {
 }
 async function submitPay(b) {
   if (!S.payInfo || S.payInfo.duplicate) return; const kind = val('pk'); const t = $('#ptarget');
-  const r = await guard(() => api('report.submit', { text: val('pm'), kind, targetId: t ? t.value : undefined, anonymous: !!($('#panon') && $('#panon').checked), requestId: S.payRid || (S.payRid = rid()) }), b);
+  const r = await guard(() => dupAsk((force) => api('report.submit', { text: val('pm'), kind, targetId: t ? t.value : undefined, anonymous: !!($('#panon') && $('#panon').checked), requestId: S.payRid || (S.payRid = rid()), force })), b);
   if (r) { S.payRid = null; toast('Sent ✅ The secretary will confirm it.'); render(); }
 }
 VIEWS.meetings = async () => {
@@ -247,6 +247,7 @@ VIEWS.more = async () => {
   if (feat('penalties')) x += tile('⚠️', 'My penalties', 'Fines and waivers', "push('penalties')");
   if (feat('meetings')) x += tile('✅', 'My attendance', 'Meetings attended', "push('attendance')");
   x += tile('📜', 'Terms & conditions', 'Rules everyone agreed to', "push('terms')");
+  x += tile('📖', 'How to use this app', 'Training guide for members, officials and the admin', "push('guide')");
   x += tile('🔑', 'Change PIN', '', 'renderPinChange(false)') + `<button class="btn sec" onclick="signOut()">Sign out</button><p class="center mut">Signed in as ${esc(S.home.me.name)} (${esc(S.home.me.role)})</p>`;
   return shell('More', x);
 };
@@ -316,7 +317,7 @@ VIEWS.inbox = async () => {
 async function verify(id, b) { const r = await guard(() => api('report.verify', { id }), b); if (r) { toast('Confirmed ✅'); S.home = null; render(); } }
 async function rejectRep(id) { const reason = prompt('Why is it not confirmed? (the member will see this)'); if (reason === null) return; const r = await guard(() => api('report.reject', { id, reason })); if (r) { toast('Rejected'); S.home = null; render(); } }
 async function recordForm() { const n = await guard(() => api('members.names')); if (!n) return; sheet(`<h3>Record a payment</h3><label>Member</label><select id="rc-m">${n.members.map((m) => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select>${field('rc-a', 'Amount (KES)', '', 'number', 'inputmode="decimal"')}<label>Method</label><select id="rc-t"><option value="cash">Cash</option><option value="mpesa">M-Pesa</option><option value="bank">Bank</option><option value="other">Other</option></select>${field('rc-r', 'Reference (optional)', '')}<br><button class="btn" onclick="doRecord(this)">Save payment</button>`); }
-async function doRecord(b) { const r = await guard(() => api('payment.record', { memberId: val('rc-m'), amount: Number(val('rc-a')), method: val('rc-t'), reference: val('rc-r'), requestId: S.recRid || (S.recRid = rid()) }), b); if (r) { S.recRid = null; closeSheet(); toast('Recorded ✅'); S.home = null; render(); } }
+async function doRecord(b) { const r = await guard(() => dupAsk((force) => api('payment.record', { memberId: val('rc-m'), amount: Number(val('rc-a')), method: val('rc-t'), reference: val('rc-r'), requestId: S.recRid || (S.recRid = rid()), force })), b); if (r) { S.recRid = null; closeSheet(); toast('Recorded ✅'); S.home = null; render(); } }
 VIEWS.cycle = async () => {
   const cy = await api('cycle.list'); const id = S.cyc || cy.currentId; const r = await api('cycle.members', { cycleId: id, only: S.cOnly || '', limit: 100, offset: S.cOff || 0 });
   const pills = [['', 'All'], ['complete', 'Complete'], ['partial', 'Partial'], ['not_started', 'Not started']].map(([k, l]) => `<button class="${(S.cOnly || '') === k ? 'on' : ''}" onclick="S.cOnly='${k}';S.cOff=0;render()">${l}</button>`).join('');
@@ -329,8 +330,35 @@ VIEWS.members = async () => {
 function memberForm() { sheet(`<h3>Add member</h3>${field('am-n', 'Full name', '')}${field('am-p', 'Phone number', '', 'tel')}<label>Role</label><select id="am-r"><option value="member">Member</option><option value="secretary">Secretary</option><option value="treasurer">Treasurer</option><option value="admin">Admin</option></select><div id="am-e"></div><br><button class="btn" onclick="addMember(this)">Add</button>`); }
 async function addMember(b) { b.disabled = true; try { const r = await api('members.add', { name: val('am-n'), phone: val('am-p'), role: val('am-r') }); sheet(`<h3>Member added ✅</h3><div class="ok">Give ${esc(val('am-n') || 'them')} this temporary PIN:<div class="big" style="font-size:34px;font-weight:800;text-align:center">${esc(r.pin)}</div></div><p class="mut">They choose their own PIN when they first sign in.</p><button class="btn" onclick="closeSheet();render()">Done</button>`); } catch (e) { showErr('am-e', e.message); b.disabled = false; } }
 async function memberView(id) {
-  const [ml, dv] = await Promise.all([api('members.list'), api('devices.list', { memberId: id })]); const m = ml.members.find((x) => x.id === id); if (!m) return;
-  sheet(`<h3>${esc(m.name)}</h3><div class="mut">${esc(m.phone)} · ${esc(m.role)}</div><div class="row wrap" style="margin:12px 0"><button class="btn sec sm" onclick="resetPin('${id}')">🔑 Reset sign-in (new PIN)</button><button class="btn sec sm" onclick="signOutAll('${id}')">📵 Sign out all devices</button>${has('*') ? `<button class="btn sec sm" onclick="setRole('${id}')">Change role</button><button class="btn ${m.status === 'active' ? 'red' : ''} sm" onclick="toggleMember('${id}','${m.status === 'active' ? 'disabled' : 'active'}')">${m.status === 'active' ? 'Switch off' : 'Switch on'}</button>` : ''}<button class="btn sec sm" onclick="closeSheet();stmtOf('${id}')">Statement</button></div><h4>Signed-in devices</h4>${(dv.devices || []).map((d) => `<div class="item row sp"><span>${esc(d.label || 'Phone')}<div class="mut">${d.lastSeen ? 'Last used ' + new Date(d.lastSeen).toLocaleDateString('en-KE') : ''}</div></span>${!d.active ? '<span class="chip gray">Signed out</span>' : `<button class="btn sec sm" onclick="revokeDev('${d.id}')">Sign out</button>`}</div>`).join('') || '<div class="mut">None</div>'}<br><button class="btn sec" onclick="closeSheet()">Close</button>`);
+  const [ml, dv, pays] = await Promise.all([api('members.list'), api('devices.list', { memberId: id }), has('*') ? api('ledger.list', { memberId: id, limit: 12 }).catch(() => null) : null]); const m = ml.members.find((x) => x.id === id); if (!m) return;
+  sheet(`<h3>${esc(m.name)}</h3><div class="mut">${esc(m.phone)} · ${esc(m.role)}</div><div class="row wrap" style="margin:12px 0"><button class="btn sec sm" onclick="resetPin('${id}')">🔑 Reset sign-in (new PIN)</button><button class="btn sec sm" onclick="signOutAll('${id}')">📵 Sign out all devices</button>${has('*') ? `<button class="btn sec sm" onclick="setRole('${id}')">Change role</button><button class="btn ${m.status === 'active' ? 'red' : ''} sm" onclick="toggleMember('${id}','${m.status === 'active' ? 'disabled' : 'active'}')">${m.status === 'active' ? 'Switch off' : 'Switch on'}</button>` : ''}<button class="btn sec sm" onclick="closeSheet();stmtOf('${id}')">Statement</button></div>${has('*') ? payBlock(id, m.name, pays) : ''}<h4>Signed-in devices</h4>${(dv.devices || []).map((d) => `<div class="item row sp"><span>${esc(d.label || 'Phone')}<div class="mut">${d.lastSeen ? 'Last used ' + new Date(d.lastSeen).toLocaleDateString('en-KE') : ''}</div></span>${!d.active ? '<span class="chip gray">Signed out</span>' : `<button class="btn sec sm" onclick="revokeDev('${d.id}')">Sign out</button>`}</div>`).join('') || '<div class="mut">None</div>'}<br><button class="btn sec" onclick="closeSheet()">Close</button>`);
+}
+
+/* ---------- admin: undo a payment, reset test payments (zip 235) ---------- */
+function payBlock(id, name, pays) {
+  const items = pays && pays.items ? pays.items.filter((i) => ['contribution', 'mgr_contribution', 'fundraising', 'penalty', 'loan_repayment'].includes(i.kind) || i.reversalOf) : [];
+  return `<h4>Payments (admin)</h4><div class="mut" style="margin-bottom:6px">Recorded something twice? Tap <b>Undo</b> on it. The original stays in the history with a matching correction — nothing is erased.</div>${items.length ? items.map((i) => `<div class="item"><div class="row sp"><div class="b">${esc(i.kind.replace(/_/g, ' '))}${i.reversalOf ? ' (correction)' : ''}</div><b style="color:${i.amountCents < 0 ? 'var(--red)' : 'var(--g)'}">${kes(i.amountCents)}</b></div><div class="mut">${esc(i.dateText)} ${esc(i.reference)} ${esc(i.note)}</div>${!i.reversalOf && !i.reversed ? `<button class="btn sec sm" style="margin-top:6px" onclick="undoPay('${i.id}','${id}')">↩ Undo this payment</button>` : i.reversed ? '<span class="chip gray">Undone</span>' : ''}</div>`).join('') : '<div class="mut">No payments recorded yet.</div>'}<div class="row wrap" style="margin:10px 0"><button class="btn red sm" onclick="resetMember('${id}','${esc(name.replace(/'/g, ''))}')">🧹 Reset test payments for ${esc(name.split(' ')[0])}</button></div>`;
+}
+async function undoPay(id, memberId) {
+  const reason = prompt('Undo this payment — why? (for example: recorded twice). The original stays in the history and a matching correction is added.'); if (!reason) return;
+  const r = await guard(() => api('ledger.reverse', { id, reason })); if (r) { toast('Undone ✅'); S.homeAt = 0; store.del(homeKey()); try { await loadHome(true); } catch (e) { /* the next screen reloads it */ } memberView(memberId); }
+}
+async function undoTurn(id, name) {
+  if (!confirm('Undo "' + name + ' has received"?\n\nThey go back to waiting. If a payout was recorded for them it is cancelled by a matching correction (nothing is erased).')) return;
+  const r = await guard(() => api('mgr.undoTurn', { turnId: id, reason: 'Marked as received by mistake' })); if (r) { toast('Undone ✅ ' + name + ' is waiting again'); S.home = null; store.del(homeKey()); render(); }
+}
+async function resetMember(id, name) {
+  if (!confirm('Clear ALL the payments recorded for ' + name + '?\n\nUse this when someone was only testing. Every payment of theirs is cancelled by a matching correction (nothing is erased from the history), and their waiting reports are cleared. Loans, payouts and expenses are not touched.')) return;
+  const r = await guard(() => api('payments.reset', { memberId: id, reason: 'Test payments cleared' })); if (r) { toast(r.reversed ? r.reversed + ' payment' + (r.reversed === 1 ? '' : 's') + ' cleared ✅' : 'Nothing to clear'); S.home = null; closeSheet(); render(); }
+}
+async function resetAllTest() {
+  const t = prompt('This clears EVERY member\'s recorded payments (use it once, after a test run). Nothing is erased: each payment is cancelled by a matching correction, and loans, payouts and expenses are not touched.\n\nType RESET to continue.'); if (!t) return;
+  const r = await guard(() => api('payments.reset', { all: true, confirm: t, reason: 'Test payments cleared' })); if (r) { toast(r.reversed ? r.reversed + ' payment' + (r.reversed === 1 ? '' : 's') + ' cleared ✅' : 'Nothing to clear'); S.home = null; render(); }
+}
+// a payment that looks just like one recorded in the last 2 minutes: ask once, then record it if the person says it really is a second payment
+async function dupAsk(call) {
+  try { return await call(false); }
+  catch (e) { if (e && e.code === 'maybe_duplicate') { if (confirm(e.message + '\n\nOK = yes, record it again.\nCancel = no, it was a double tap.')) return await call(true); return null; } throw e; }
 }
 async function resetPin(id) { const r = await guard(() => api('members.resetPin', { id })); if (r) sheet(`<h3>New temporary PIN</h3><div class="ok"><div style="font-size:34px;font-weight:800;text-align:center">${esc(r.pin)}</div></div><button class="btn" onclick="closeSheet()">Done</button>`); }
 async function setRole(id) { const role = prompt('Role: admin, secretary, treasurer or member'); if (!role) return; const r = await guard(() => api('members.update', { id, role: role.trim().toLowerCase() })); if (r) { closeSheet(); toast('Role changed'); render(); } }
@@ -512,7 +540,7 @@ async function cashPayView() {
 async function submitCash(b) {
   const t = $('#ptarget'), amt = Number(val('cs-a'));
   if (!(amt > 0)) return toast('Type the amount you gave.');
-  const r = await guard(() => api('report.submit', { method: 'cash', amount: amt, receiverId: val('cs-r'), kind: val('pk'), targetId: t ? t.value : undefined, requestId: S.cashRid || (S.cashRid = rid()) }), b);
+  const r = await guard(() => dupAsk((force) => api('report.submit', { method: 'cash', amount: amt, receiverId: val('cs-r'), kind: val('pk'), targetId: t ? t.value : undefined, requestId: S.cashRid || (S.cashRid = rid()), force })), b);
   if (r) { S.cashRid = null; toast('Sent ✅ Waiting for ' + (r.receiverName || 'them') + ' to confirm.'); render(); }
 }
 
@@ -580,7 +608,7 @@ VIEWS.mgr = async () => {
     x += `<div class="card"><h3>Next payout collection</h3><div class="mut">${esc(n.name)} · expected ${kes(n.expectedCents)} · collected ${kes(n.collectedCents)} · outstanding ${kes(n.outstandingCents)}</div><div class="scroll"><table><tr><th>Member</th><th class="n">Required</th><th class="n">Paid</th><th class="n">Left</th><th></th></tr>${r.collection.map((m) => `<tr><td>${esc(m.name)}${m.pendingCents ? `<div class="mut">+${kes(m.pendingCents)} waiting</div>` : ''}</td><td class="n">${kes(m.requiredCents)}</td><td class="n">${kes(m.paidCents)}</td><td class="n">${kes(m.remainingCents)}</td><td>${STATUS_CHIP[m.status] || chipFor(m.status)}</td></tr>`).join('')}</table></div>${has('payments') ? '<br><button class="btn sec" onclick="mgrRecord()">➕ Record money received</button>' : ''}</div>`;
     x += `<div class="row wrap" style="gap:8px;margin-bottom:12px">${r.canPay ? `<button class="btn" style="flex:1" onclick="mgrPay('${n.turnId}')">Record payout</button>` : ''}<button class="btn sec" style="flex:1" onclick="mgrAdjust()">🗓 Adjust schedule</button></div>`;
   }
-  x += `<div class="card"><h3>${esc(r.mgr.name)} · ${kes(r.mgr.perMemberCents)} each</h3><div class="mut">${r.mgr.everyMonths ? 'Every ' + (r.mgr.everyMonths === 1 ? 'month' : r.mgr.everyMonths + ' months') : 'Every ' + (r.mgr.everyDays === 7 ? 'week' : r.mgr.everyDays + ' days')}${r.mgr.lastPayoutText ? ' · last payout ' + esc(r.mgr.lastPayoutText) : ''}</div>${r.turns.map((t) => `<div class="item row sp"><span>${t.seq}. ${esc(t.name)}${t.isMe ? ' (you)' : ''}<div class="mut">${t.status === 'paid_out' ? (t.opening ? 'Received before the system' : 'Received ' + esc(t.paidText || t.dueText)) : 'Due ' + esc(t.dueText)}</div></span>${t.status === 'paid_out' ? '<span class="chip">Received</span>' : n && t.id === n.turnId ? '<span class="chip blue">Next</span>' : '<span class="chip gray">Waiting</span>'}</div>`).join('')}</div>`;
+  x += `<div class="card"><h3>${esc(r.mgr.name)} · ${kes(r.mgr.perMemberCents)} each</h3><div class="mut">${r.mgr.everyMonths ? 'Every ' + (r.mgr.everyMonths === 1 ? 'month' : r.mgr.everyMonths + ' months') : 'Every ' + (r.mgr.everyDays === 7 ? 'week' : r.mgr.everyDays + ' days')}${r.mgr.lastPayoutText ? ' · last payout ' + esc(r.mgr.lastPayoutText) : ''}</div>${r.turns.map((t) => `<div class="item row sp"><span>${t.seq}. ${esc(t.name)}${t.isMe ? ' (you)' : ''}<div class="mut">${t.status === 'paid_out' ? (t.opening ? 'Received before the system' : 'Received ' + esc(t.paidText || t.dueText)) : 'Due ' + esc(t.dueText)}</div></span>${t.status === 'paid_out' ? '<span class="chip">Received</span>' + (has('*') ? ` <button class="btn sec sm" onclick="undoTurn('${t.id}', '${esc(t.name).replace(/'/g, '')}')">↩ Undo</button>` : '') : n && t.id === n.turnId ? '<span class="chip blue">Next</span>' : '<span class="chip gray">Waiting</span>'}</div>`).join('')}</div>`;
   S.mgr = r;
   return shell('Merry-go-round', x);
 };
@@ -650,7 +678,7 @@ const roleBoxes = (cur) => ['admin', 'secretary', 'treasurer', 'chairperson'].ma
 const pickedRoles = () => [...document.querySelectorAll('.rl')].filter((e) => e.checked).map((e) => e.value);
 VIEWS.members = async () => {
   const r = await api('members.list');
-  return shell('Members', `<button class="btn" onclick="memberForm()">➕ Add member</button><br>${r.members.map((m) => `<div class="card" onclick="memberView('${m.id}')"><div class="row"><div style="flex:0 0 auto">${avatar(m.name, 40)}</div><div style="flex:1"><div class="b">${esc(m.name)}${m.mustChangePin ? ' <span class="chip amb">PIN not set</span>' : ''}</div><div class="mut">${esc(m.phone)} · ${esc(roleText(m))}${m.status === 'active' ? '' : ' · switched off'}</div></div></div></div>`).join('')}`);
+  return shell('Members', `<button class="btn" onclick="memberForm()">➕ Add member</button><br>${r.members.map((m) => `<div class="card" onclick="memberView('${m.id}')"><div class="row"><div style="flex:0 0 auto">${avatar(m.name, 40)}</div><div style="flex:1"><div class="b">${esc(m.name)}${m.mustChangePin ? ' <span class="chip amb">PIN not set</span>' : ''}</div><div class="mut">${esc(m.phone)} · ${esc(roleText(m))}${m.status === 'active' ? '' : ' · switched off'}</div></div></div></div>`).join('')}${has('*') ? '<br><div class="card"><div class="b">🧹 Finished testing?</div><div class="mut" style="margin:4px 0 8px">Clear every practice payment in one go. Nothing is erased: each is cancelled by a matching correction. To clear just one person, open their name and use <b>Reset test payments</b>.</div><button class="btn red sm" onclick="resetAllTest()">Clear ALL test payments</button></div>' : ''}`);
 };
 function memberForm() { sheet(`<h3>Add member</h3>${field('am-n', 'Full name', '')}${field('am-p', 'Phone number', '', 'tel', 'placeholder="0712 345 678"')}${has('*') ? '<label>Roles</label>' + roleBoxes([]) : ''}<div id="am-e"></div><br><button class="btn" onclick="addMember(this)">Add</button><p class="mut">A sign-in account and a temporary PIN are made automatically.</p>`); }
 async function addMember(b) { b.disabled = true; try { const r = await api('members.add', { name: val('am-n'), phone: val('am-p'), roles: has('*') ? pickedRoles() : [] }); sheet(`<h3>Member added ✅</h3><div class="ok">Give ${esc(val('am-n') || 'them')} this temporary PIN:<div class="big" style="font-size:34px;font-weight:800;text-align:center">${esc(r.pin)}</div></div><p class="mut">They tap their name on the sign-in screen, enter this PIN, then choose their own. Write it down now — it is not shown again.</p><button class="btn" onclick="closeSheet();render()">Done</button>`); } catch (e) { showErr('am-e', e.message); b.disabled = false; } }
@@ -752,6 +780,36 @@ async function renderLogin() {
 }
 
 /* ---------- terms and conditions ---------- */
+
+/* ---------- training guide (zip 235): members, officials, admin. Printable. ---------- */
+VIEWS.guide = async () => {
+  await loadHome();
+  const admin = has('*'), official = admin || has('payments') || has('money');
+  const box = (title, steps, tip) => `<div class="card"><div class="b" style="font-size:16px;margin-bottom:6px">${title}</div><ol style="margin:0;padding-left:20px;line-height:1.55">${steps.map((x) => `<li>${x}</li>`).join('')}</ol>${tip ? `<div class="ok" style="margin-top:8px">💡 ${tip}</div>` : ''}</div>`;
+  const part = (icon, title, sub) => `<div class="card hero" style="margin-top:14px"><div class="b" style="font-size:18px">${icon} ${title}</div><div class="mut" style="color:inherit;opacity:.85">${sub}</div></div>`;
+  let h = `<div class="noprint row wrap" style="margin-bottom:6px"><button class="btn sm" onclick="printSheet()">🖨️ Print / Save as PDF</button></div>
+  <div class="card"><div class="b" style="font-size:17px">Welcome to ${esc(S.home.group.name || 'your chama')}</div><div class="mut">This app keeps every member's money honest and visible. Show people the part for them. Tip for trainers: do it together on one phone first, then let each person try.</div></div>`;
+  h += part('👤', 'For every member', 'What each person needs to know');
+  h += box('1. Sign in', ['Open the link the admin sent you and tap <b>your name</b>.', 'Type the <b>temporary PIN</b> the admin gave you.', 'Choose your <b>own PIN</b> (4 to 6 digits, not 1234). Write it somewhere safe.', 'Forgot it? Ask the admin to <b>Reset sign-in</b>. Never share your PIN.'], 'Add the app to your phone home screen: browser menu ▸ Add to Home screen.');
+  h += box('2. Pay by M-Pesa and report it', ['Send the money to the chama\'s Paybill / Till / number shown under <b>Pay</b>.', 'Open the M-Pesa confirmation message and <b>copy all of it</b>.', 'In the app tap <b>Report a payment</b>, <b>paste the message</b> — the amount, code and time are read for you.', 'Choose what it is for (contribution, loan, fundraiser, penalty) and tap <b>Send</b>.', 'An official checks it and confirms. You get a message when it is done.'], 'The same M-Pesa code can only be reported once. Do not tap Send twice.');
+  h += box('3. Pay by cash', ['Pay ▸ <b>Cash</b>. Type the amount and choose the official you handed it to.', 'That official confirms the amount they really received.'], null);
+  h += box('4. See where you stand', ['<b>Home</b> shows what you owe this period, what you have paid and any money paid ahead.', 'More ▸ <b>My contributions</b> lists every payment; <b>My statement</b> can be printed or saved as PDF.', 'More ▸ <b>Terms &amp; conditions</b> are the rules everyone agreed to — fines for late payment are applied automatically.'], null);
+  if (official) {
+    h += part('🧾', 'For officials (secretary, treasurer, chairperson)', 'Confirming money');
+    h += box('Confirm a payment', ['Open <b>Staff ▸ Payment inbox</b>. Each waiting payment shows who, how much and the M-Pesa code.', 'Look at the badge: <b>✅ Confirmed by Safaricom</b> is safe. <b>⚠ no record</b> or <b>different amount</b> — do not confirm until you have seen it on your M-Pesa statement. <b>ℹ Not checked</b> means no till is connected: compare with your statement.', 'Tap <b>Confirm</b> (or <b>Reject</b> and say why — the member sees it).', 'For cash, type the amount you really received; if it differs, say why.'], 'A pasted SMS can be faked. Safaricom checking works only when the chama\'s Paybill or Till is connected to Safaricom.');
+    h += box('Record a payment for someone', ['Staff ▸ <b>Record a payment</b>, choose the member, amount and method.', 'If it looks like a payment recorded a moment ago, the app asks <b>"Is this a second payment?"</b>. Tap OK only if it really is.'], null);
+  }
+  if (admin) {
+    h += part('🛡️', 'For the admin', 'Setting up, fixing mistakes, training');
+    h += box('Add members and give them access', ['Staff ▸ <b>Members ▸ Add member</b>: name and phone. A temporary PIN appears — write it down and give it to them in person.', 'Choose roles: secretary, treasurer, chairperson… A person can have several roles.', 'Locked out? Open their name ▸ <b>Reset sign-in (new PIN)</b>. Lost phone? <b>Sign out all devices</b>.'], null);
+    h += box('A payment was recorded twice (undo it)', ['Staff ▸ Members ▸ tap the member.', 'Under <b>Payments (admin)</b> find the extra payment and tap <b>↩ Undo this payment</b>.', 'Type the reason (for example "recorded twice"). Only the admin can do this.', 'The original stays in the history with a matching correction. The member is told. Nothing is erased.'], 'Check the member\'s Home afterwards: "paid ahead" should be gone.');
+    h += box('Some people were only testing (reset)', ['One person: Staff ▸ Members ▸ tap the member ▸ <b>🧹 Reset test payments</b>.', 'Everyone, after a practice run: Members screen ▸ <b>Clear ALL test payments</b> and type RESET.', 'Their payments are cancelled by matching corrections, waiting reports are cleared, and balances go back to zero. Loans, payouts and expenses are not touched.'], 'Do the reset before real money starts. After that, use Undo for single mistakes.');
+    h += box('Set up the rules once', ['Staff ▸ <b>Settings</b>: contribution amount and how often, late-payment fines, loan rules, features you want on.', 'More ▸ <b>Terms &amp; conditions</b>: type the rules everyone can read.', 'Chama already running? Staff ▸ <b>Set up an existing chama</b> — enter the real start date; you do not need old transactions.', 'Settings ▸ Logo: add your chama logo next to the name.'], null);
+    h += box('A 20-minute training session', ['Gather members. Show the <b>Sign in</b> steps on a projector or one phone.', 'Everyone signs in and chooses their own PIN <b>before they leave</b>.', 'Make a tiny test payment together: each member pastes the message and reports it; an official confirms.', 'Then run <b>Clear ALL test payments</b> so the real books start clean.', 'Print this guide (🖨️ at the top) and hand it out.'], 'People learn fastest by doing it once with you watching.');
+    h += box('Keeping the money honest', ['Never confirm from a screenshot. Check the code on the M-Pesa statement or look for the ✅ Safaricom badge.', 'The history can never be edited or deleted: mistakes are fixed with an Undo and a new entry.', 'Staff ▸ <b>Reports</b> prints the ledger, member statements and the audit trail of who did what.'], null);
+  }
+  return shell('How to use this app', h);
+};
 VIEWS.terms = async () => {
   const r = await api('terms.get');
   let x = '';

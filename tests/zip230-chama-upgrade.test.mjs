@@ -37,8 +37,8 @@ async function chama({ members = 6, amount = 100000, feats = { meetings: true, m
   };
   return { env, admin, people, login, call: (tok, body) => call(env, tok, body) };
 }
-const cashTo = async (u, tok, receiverId, amount, extra = {}) => { const r = await u.call(tok, { action: 'report.submit', method: 'cash', amount, receiverId, requestId: rid(), ...extra }); assert.ok(r.ok, JSON.stringify(r)); return r.id; };
-const mpesa = async (u, tok, code, amt) => { const r = await u.call(tok, { action: 'report.submit', text: sms(code, amt), requestId: rid() }); assert.ok(r.ok, JSON.stringify(r)); return r.id; };
+const cashTo = async (u, tok, receiverId, amount, extra = {}) => { const r = await u.call(tok, { action: 'report.submit', force: true, method: 'cash', amount, receiverId, requestId: rid(), ...extra }); assert.ok(r.ok, JSON.stringify(r)); return r.id; };
+const mpesa = async (u, tok, code, amt) => { const r = await u.call(tok, { action: 'report.submit', force: true, text: sms(code, amt), requestId: rid() }); assert.ok(r.ok, JSON.stringify(r)); return r.id; };
 
 test('A: split M-Pesa 600 + cash 400 on a KES 1,000 contribution -> paid 1,000, remaining 0, Complete (one obligation, two methods)', async () => {
   const u = await chama(); const sec = await u.login('Sec'), mary = await u.login('MemberA');
@@ -89,10 +89,10 @@ test('H: cash reported 1,000, receiver confirms 900 -> ledger 900, the report ke
 test('I: the same M-Pesa code twice is refused and nothing is added twice', async () => {
   const u = await chama(); const sec = await u.login('Sec'), mary = await u.login('MemberA'), john = await u.login('MemberB');
   const id = await mpesa(u, mary, 'DD11EE22FF', 500);
-  const again = await u.call(john, { action: 'report.submit', text: sms('DD11EE22FF', 500), requestId: rid() });
+  const again = await u.call(john, { action: 'report.submit', force: true, text: sms('DD11EE22FF', 500), requestId: rid() });
   assert.equal(again.ok, false); assert.match(again.error, /already/i);
   await u.call(sec, { action: 'report.verify', id });
-  const third = await u.call(mary, { action: 'report.submit', text: sms('DD11EE22FF', 500), requestId: rid() }); assert.equal(third.ok, false);
+  const third = await u.call(mary, { action: 'report.submit', force: true, text: sms('DD11EE22FF', 500), requestId: rid() }); assert.equal(third.ok, false);
   const b = await u.call(mary, { action: 'contrib.breakdown' }); assert.equal(b.paidCents, 50000);
 });
 
@@ -151,7 +151,7 @@ test('C + D + E: a chama that is already running — last payout 15 Aug 2026, ev
   assert.equal(st.next.collectedCents, 0);
   // 12.5 members' worth: 12 full shares + half
   const pays = ids.slice(0, 12).map((id) => ({ id, amount: 1000 })).concat([{ id: ids[12], amount: 500 }]);
-  for (const p of pays) { const r = await u.call(sec, { action: 'payment.record', memberId: p.id, amount: p.amount, kind: 'mgr', method: 'cash', requestId: rid() }); assert.ok(r.ok, JSON.stringify(r)); }
+  for (const p of pays) { const r = await u.call(sec, { action: 'payment.record', force: true, memberId: p.id, amount: p.amount, kind: 'mgr', method: 'cash', requestId: rid() }); assert.ok(r.ok, JSON.stringify(r)); }
   const st2 = await u.call(sec, { action: 'mgr.status' });
   assert.equal(st2.next.collectedCents, 1250000); assert.equal(st2.next.outstandingCents, 750000);
   const half = st2.collection.find((x) => x.memberId === ids[12]); assert.equal(half.status, 'partial'); assert.equal(half.remainingCents, 50000);

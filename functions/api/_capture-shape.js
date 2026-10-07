@@ -23,6 +23,26 @@ function cleanDate(v) {
   return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3]) ? m[1] + '-' + m[2] + '-' + m[3] : '';
 }
 
+// zip 241: a size grid (uniforms, shoes...) comes back as ONE item with its sizes. Cleans the sizes: a name is required, the same size at the same price
+// is merged (counts added), the same size at a different price keeps both ("36 (2500)"), so every variant name in one item is unique.
+export function cleanVariants(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const v of list) {
+    if (!v || typeof v !== 'object') continue;
+    const name = String(v.name == null ? '' : v.name).trim().slice(0, 60);
+    if (!name) continue;
+    const quantity = Math.max(0, num(v.quantity)), retail = Math.max(0, num(v.retail_price));
+    const same = out.find((x) => x.base === name && x.retail_price === retail);
+    if (same) { same.quantity += quantity; continue; }
+    const clash = out.some((x) => x.base === name);
+    out.push({ base: name, name: clash ? `${name} (${retail})` : name, quantity, retail_price: retail, unit_cost: Math.max(0, num(v.unit_cost)), wholesale_price: Math.max(0, num(v.wholesale_price)), confidence_score: conf(v.confidence_score) });
+  }
+  // a clash discovered late renames the earlier twin as well, so neither is ambiguous
+  out.forEach((x) => { if (x.name === x.base && out.some((y) => y !== x && y.base === x.base)) x.name = `${x.base} (${x.retail_price})`; });
+  return out.map(({ base, ...rest }) => rest);
+}
+
 export function shapeCaptureResult(parsed, opts = {}) {
   parsed = parsed || {};
   // A line is usable as long as it has a name OR a code — a delivery sheet that only lists SKUs is just as valid as one with only a name.
@@ -37,8 +57,11 @@ export function shapeCaptureResult(parsed, opts = {}) {
       retail_price: num(it.retail_price),
       wholesale_price: num(it.wholesale_price),
       confidence_score: conf(it.confidence_score),
+      ...(Array.isArray(it.variants) && !opts.pastSales && !opts.menu ? (() => { const variants = cleanVariants(it.variants); return variants.length ? { variants } : {}; })() : {}),
       ...(opts.pastSales ? { line_total: num(it.line_total), sold_time: cleanTime(it.sold_time), sold_date: cleanDate(it.sold_date) } : {}),
     })) : [];
+  // an item with sizes counts as the sum of its sizes
+  items.forEach((it) => { if (it.variants) it.quantity = it.variants.reduce((a, v) => a + v.quantity, 0); });
 
   // An ingredient line with no name at all isn't usable (unlike an items line, which can lean on a code).
   const recipes = Array.isArray(parsed.recipes) ? parsed.recipes

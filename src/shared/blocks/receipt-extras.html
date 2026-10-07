@@ -640,6 +640,7 @@
                 + 'body.hdr-hidden > header,body.hdr-hidden #app-container > header{display:none !important}body.hdr-hidden #hdr-show-bar{display:block}'
                 + '.pos-sq-bar{display:flex;align-items:center;gap:8px;margin-bottom:12px}.pos-sq-bar button{min-height:44px}.pos-sq-bar button.active{background:var(--success,#27ae60)}'
                 + '.pos-sq-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}.pos-sq-head label{font-weight:700;font-size:13px}.pos-sq-head input{font-size:16px;padding:6px 8px;min-height:38px}'
+                + '.pos-sq-pin{margin-left:auto;display:inline-flex;align-items:center;gap:6px;cursor:pointer;min-height:38px;white-space:nowrap}.pos-sq-head .pos-sq-pin input{width:22px;height:22px;min-height:0;padding:0;margin:0}'
                 + '.pos-sq-who{font-size:12px;color:var(--text-muted,#7f8c8d)}.pos-sq-staff{font-weight:700;margin:12px 0 6px}.pos-sq-staff:first-child{margin-top:0}'
                 + '.pos-sq-boxes{display:flex;gap:6px;flex-wrap:nowrap}.pos-sq-box{flex:1;min-width:0;border-radius:8px;padding:10px 8px;border-left:4px solid}'
                 + '.pos-sq-box .lbl{display:block;font-size:12px;font-weight:600}.pos-sq-box .val{display:block;font-weight:700;font-size:clamp(13px,calc(4.2vw / var(--pos-z,1)),20px);overflow-wrap:anywhere}'
@@ -673,9 +674,11 @@
         function refresh() {
             var btn = document.getElementById('my-sales-toggle-btn'), panel = document.getElementById('pos-sq-panel');
             if (!btn || !panel) return;
-            btn.classList.toggle('active', sqOpen); btn.setAttribute('aria-expanded', sqOpen ? 'true' : 'false');
-            panel.style.display = sqOpen ? '' : 'none';
-            if (!sqOpen) return;
+            var showing = sqOpen || pinned();                                   /* zip 244: pinned = always showing */
+            btn.classList.toggle('active', showing); btn.setAttribute('aria-expanded', showing ? 'true' : 'false');
+            panel.style.display = showing ? '' : 'none';
+            if (!showing) return;
+            var pinEl = document.getElementById('pos-sq-pin'); if (pinEl) pinEl.checked = pinned();
             if (!sqDay) sqDay = dayKey(new Date());
             var dayEl = document.getElementById('pos-sq-day'); if (dayEl && dayEl.value !== sqDay) dayEl.value = sqDay;
             var sv = cur(), who = document.getElementById('pos-sq-who');
@@ -685,7 +688,18 @@
             var all = tt.reduce(function (a, t) { return { total: r2(a.total + t.total), cash: r2(a.cash + t.cash), mpesa: r2(a.mpesa + t.mpesa), card: r2(a.card + t.card) }; }, zero);
             list.innerHTML = '<div class="pos-sq-staff">' + esc((sqDay === dayKey(new Date()) ? "Daily Sales" : 'Daily Sales — ' + sqDay)) + '</div>' + boxes(all) + tt.map(function (t) { return '<div class="pos-sq-staff">👤 ' + esc(t.server) + '</div>' + boxes(t); }).join('');
         }
-        window.posSqToggle = function () { sqOpen = !sqOpen; refresh(); };
+        /* zip 244: "Keep the Daily Sales panel open" - a choice of THIS device. ON: the panel is always showing; the 💰 button then tucks it away (and un-pins). */
+        function pinned() { try { return localStorage.getItem('pos_sales_pinned') === '1'; } catch (e) { return false; } }
+        window.posSqPin = function (on) {
+            try { if (typeof safeSetItem === 'function') safeSetItem('pos_sales_pinned', on ? '1' : '0'); else localStorage.setItem('pos_sales_pinned', on ? '1' : '0'); } catch (e) { /* only this visit */ }
+            if (!on) sqOpen = false;
+            refresh();
+            var c = document.getElementById('sales-pin-toggle'); if (c) c.checked = !!on;
+        };
+        window.posSqToggle = function () {
+            if (pinned()) { window.posSqPin(false); try { showToast('Daily Sales is tucked away again. Tick "Keep open" in Settings > View to pin it.'); } catch (e) { /* cosmetic */ } return; }
+            sqOpen = !sqOpen; refresh();
+        };
         window.posSqDay = function (v) { sqDay = v || dayKey(new Date()); refresh(); };
         function init() {
             try {
@@ -709,11 +723,13 @@
                     css();
                     var wrap = document.createElement('div');
                     wrap.innerHTML = '<div class="pos-sq-bar"><button type="button" id="my-sales-toggle-btn" class="settings-small-btn" aria-expanded="false" aria-controls="pos-sq-panel">💰 Sales</button></div>'
-                        + '<div id="pos-sq-panel" style="display:none;margin-bottom:14px;"><div class="panel"><div class="pos-sq-head"><label for="pos-sq-day">Day</label><input type="date" id="pos-sq-day"><span id="pos-sq-who" class="pos-sq-who"></span></div><div id="pos-sq-list"></div></div></div>';
+                        + '<div id="pos-sq-panel" style="display:none;margin-bottom:14px;"><div class="panel"><div class="pos-sq-head"><label for="pos-sq-day">Day</label><input type="date" id="pos-sq-day"><span id="pos-sq-who" class="pos-sq-who"></span><label class="pos-sq-pin" for="pos-sq-pin"><input type="checkbox" id="pos-sq-pin"> 📌 Keep open</label></div><div id="pos-sq-list"></div></div></div>';
                     while (wrap.lastChild) tab.insertBefore(wrap.lastChild, tab.firstChild);
                     document.getElementById('my-sales-toggle-btn').addEventListener('click', window.posSqToggle);
                     document.getElementById('pos-sq-day').addEventListener('change', function () { window.posSqDay(this.value); });
-                    setInterval(function () { if (sqOpen && !document.hidden) refresh(); }, 4000);
+                    document.getElementById('pos-sq-pin').addEventListener('change', function () { window.posSqPin(this.checked); });
+                    setInterval(function () { if ((sqOpen || pinned()) && !document.hidden) refresh(); }, 4000);
+                    if (pinned()) refresh();
                 }
             } catch (e) { /* the extras never break the till */ }
         }

@@ -10697,6 +10697,22 @@ function reportShowMore(key, all, rerender) {
 // scan the whole sales history and movement log once per item per column, re-reading every date each time: with 3,000 items and
 // 5,000 sales that took ~50 s on a phone. Same figures as before (same rules, same === code match). The totals are kept only
 // for the current task (cleared right after), so a sale or a stock change made afterwards is always counted.
+// zip 237: does this movement belong to the site the report is for? Stamped movements say so; older dispatch movements are told apart by their wording.
+function stockReportSiteOK(m) {
+            const cur = typeof activeSiteId !== 'undefined' ? activeSiteId : '';
+            if (!cur || cur === 'both' || !m) return true;
+            if (m.siteId) return m.siteId === cur;
+            let nm = '';
+            try { nm = currentSite().name; } catch (e) { nm = ''; }
+            if (nm) {
+                const r = String(m.reason || '');
+                let x = /^Dispatch received from (.+?)(?: \(via "|$)/.exec(r);
+                if (x && x[1] === nm) return false;
+                x = /^Dispatched to (.+?)(?: \(via "|$)/.exec(r);
+                if (x && x[1] === nm) return false;
+            }
+            return true;
+        }
 function stockReportTotals(kind, a, b) {
             let cache = window.__stockReportTotals;
             if (!cache) {
@@ -10705,7 +10721,7 @@ function stockReportTotals(kind, a, b) {
             }
             const sl = typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog.length : 0;
             const ml = typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog) ? stockMovementLog.length : 0;
-            const ck = kind + '|' + a + '|' + (b || '') + '|' + sl + '|' + ml;
+            const ck = kind + '|' + a + '|' + (b || '') + '|' + sl + '|' + ml + '|' + (typeof activeSiteId !== 'undefined' ? activeSiteId : '');
             if (cache.has(ck)) return cache.get(ck);
             const out = new Map();
             const add = (code, v) => { out.set(code, (out.get(code) || 0) + v); };
@@ -10717,7 +10733,7 @@ function stockReportTotals(kind, a, b) {
                 });
             } else {
                 (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog) ? stockMovementLog : []).forEach((m) => {
-                    if (!m || !inWin(dateKey(new Date(m.timestamp)))) return;
+                    if (!m || !inWin(dateKey(new Date(m.timestamp))) || !stockReportSiteOK(m)) return;
                     const d = stockMoveDelta(m);
                     if (kind === 'mvAfter') add(m.code, d);
                     else if (kind === 'mvAdded' ? d > 0 : d < 0) add(m.code, Math.abs(d));
@@ -13390,6 +13406,7 @@ function poActionsHtml(o) {
             if (o.status === 'pending') parts.push(btn('po-btn-transit', '🚚 In Transit', 'poMarkInTransit'));
             if (poIsOpen(o)) parts.push(btn('po-btn-arrived', '📦 Arrived', 'poOpenArriveModal'));
             if (o.status !== 'cancelled') parts.push(btn('po-btn-send', '💬 WhatsApp', 'poSendOrder'));
+            parts.push(btn('po-btn-edit', '⬇ Download', 'poDownloadOrder'));
             if (poCanEdit(o)) parts.push(btn('po-btn-edit', '✏️ Edit', 'poOpenForm'));
             if (poIsOpen(o) && stats.receivedLines > 0) parts.push(btn('po-btn-edit', '✔ Close order', 'poCloseShort'));
             if (poCanEdit(o)) parts.push(btn('po-btn-cancel', '✖ Cancel', 'poCancelOrder'));
@@ -15858,26 +15875,163 @@ function poOrderText(o) {
 
 //@fn poSendOrder
 function poSendOrder(orderId) {
-            // Opens WhatsApp with the order written out, addressed to the supplier (their number is asked for once and remembered).
+            // Opens WhatsApp with the order written out, addressed to the supplier when we know their number (otherwise WhatsApp lets you pick the chat).
+            // zip 237: no longer depends on a phone prompt or a short link: a long order (dozens of items) cannot travel inside a link, so the full list is
+            // copied and a short message is opened instead; a blocked pop-up falls back to opening WhatsApp in this tab.
             const o = purchaseOrders.find((x) => x.id === orderId && !x.removed);
             if (!o) return;
             const sup = poSupplierRecord(o);
             let phone = sup && sup.phone ? String(sup.phone) : '';
-            if (!phone) {
-                const typed = prompt(`${o.supplierName || 'The supplier'}'s phone number (for WhatsApp) — it is saved for next time:`, '');
-                if (typed === null) return;
-                phone = String(typed).trim();
-                if (phone && sup) { sup.phone = phone; safeSetItem('pos_suppliers', JSON.stringify(suppliers)); if (typeof renderSupplierDropdowns === 'function') renderSupplierDropdowns(); }
+            if (!phone && sup) {
+                let typed = null;
+                try { typed = prompt(`${o.supplierName || 'The supplier'}'s phone number (for WhatsApp). Leave blank to choose the chat in WhatsApp. It is saved for next time:`, ''); } catch (e) { typed = null; }
+                phone = typed ? String(typed).trim() : '';
+                if (phone) { sup.phone = phone; safeSetItem('pos_suppliers', JSON.stringify(suppliers)); if (typeof renderSupplierDropdowns === 'function') renderSupplierDropdowns(); }
             }
-            const norm = typeof normalizeKenyanPhone === 'function' ? normalizeKenyanPhone(phone) : phone;
-            const digits = String(norm || '').replace(/\D/g, '');
-            const text = poOrderText(o);
+            const norm = phone && typeof normalizeKenyanPhone === 'function' ? normalizeKenyanPhone(phone) : phone;
+            let digits = String(norm || '').replace(/\D/g, '');
+            if (digits.length < 9) digits = '';
+            const full = poOrderText(o);
+            const base = `https://api.whatsapp.com/send?${digits ? 'phone=' + digits + '&' : ''}text=`;
+            let text = full, copied = false;
+            if ((base + encodeURIComponent(full)).length > 1800) {
+                text = `*Order ${o.orderNo}* from ${typeof businessName !== 'undefined' && businessName ? businessName : 'our shop'}: ${(o.items || []).length} items, total KES ${poOrderTotal(o).toLocaleString('en-US')}. The full list follows:`;
+                try { if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(full).catch(() => {}); copied = true; } } catch (e) { /* the download button still has it */ }
+            }
             o.sentToSupplierAt = new Date().toISOString();
             poSave();
-            if (digits.length >= 9) window.open(`https://wa.me/${digits}?text=${encodeURIComponent(text)}`, '_blank');
-            else if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(() => showToast('No valid phone number — the order text is copied, paste it into a message.'), () => {});
-            else showToast('Add the supplier\u2019s phone number to send the order.', true);
+            const url = base + encodeURIComponent(text);
+            let w = null;
+            try { w = window.open(url, '_blank'); } catch (e) { w = null; }
+            if (!w) { try { window.location.href = url; } catch (e) { /* nothing more to try */ } }
+            if (text !== full) showToast(copied ? 'WhatsApp opened. The full item list is copied: paste it into the chat (or use ⬇ Download and attach the file).' : 'WhatsApp opened. This order is long: use ⬇ Download and attach the file.');
             renderOrdersList();
+        }
+
+//@fn poOrderPlainText
+function poOrderPlainText(o) {
+            const W = 34, pad = (t, n) => String(t).length > n ? String(t).slice(0, n - 1) + '.' : String(t).padEnd(n);
+            const money = (n) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const biz = typeof businessName !== 'undefined' && businessName ? businessName : 'Purchase order';
+            const rows = (o.items || []).map((it, k) => {
+                const q = `${formatQtyDisplay(it.qty, it.unit)} ${unitLabel(it.unit)}`;
+                return `${String(k + 1).padStart(2)} ${pad(it.name, W)} ${q.padStart(9)} ${money(it.cost).padStart(10)} ${money((Number(it.qty) || 0) * (Number(it.cost) || 0)).padStart(12)}`;
+            });
+            const bar = '-'.repeat(2 + 1 + W + 1 + 9 + 1 + 10 + 1 + 12);
+            return [biz, `ORDER ${o.orderNo}`, `Date: ${new Date(o.createdAt).toLocaleString('en-GB')}`, `Supplier: ${o.supplierName || 'not specified'}`, `Status: ${o.status}`, '', `${'No'} ${pad('Item', W)} ${'Qty'.padStart(9)} ${'Cost'.padStart(10)} ${'Total'.padStart(12)}`, bar, ...rows, bar, `${'TOTAL (KES)'.padStart(2 + 1 + W + 1 + 9 + 1 + 10)} ${money(poOrderTotal(o)).padStart(12)}`, o.note ? '' : null, o.note ? `Note: ${o.note}` : null].filter((x) => x !== null).join('\n');
+        }
+
+//@fn poDownloadOrder
+async function poDownloadOrder(orderId) {
+            const o = purchaseOrders.find((x) => x.id === orderId && !x.removed);
+            if (!o) return;
+            let blob = null;
+            try { blob = await textToPdfBlob(poOrderPlainText(o)); } catch (e) { blob = null; }
+            if (!blob) { showToast('Could not create the order PDF.', true); return; }
+            downloadBlob(blob, `order-${o.orderNo}.pdf`);
+            showToast(`${o.orderNo} saved to your Downloads as a PDF.`);
+        }
+
+//@fn captureVariantSum
+function captureVariantSum(it) {
+            return (it.variants || []).reduce((a, v) => a + (parseFloat(v.qty) || 0), 0);
+        }
+
+//@fn captureVariantUpdate
+function captureVariantUpdate(id, vid, field, value) {
+            const it = captureReviewState && captureReviewState.items.find((i) => i.id === id);
+            const v = it && (it.variants || []).find((x) => x.id === vid);
+            if (!v) return;
+            v[field] = value;
+            if (field === 'qty') { it.qty = captureVariantSum(it); const q = document.getElementById('capture-qty-' + id); if (q) q.value = it.qty; }
+        }
+
+//@fn captureVariantRemove
+function captureVariantRemove(id, vid) {
+            const it = captureReviewState && captureReviewState.items.find((i) => i.id === id);
+            if (!it) return;
+            it.variants = (it.variants || []).filter((x) => x.id !== vid);
+            it.qty = captureVariantSum(it);
+            renderCaptureReviewTable();
+        }
+
+//@fn captureVariantAdd
+function captureVariantAdd(id) {
+            const it = captureReviewState && captureReviewState.items.find((i) => i.id === id);
+            if (!it) return;
+            it.variants = it.variants || [];
+            it.variants.push({ id: 'v-' + Date.now() + '-' + it.variants.length, name: '', qty: '', retail: '', wholesale: '', cost: '' });
+            renderCaptureReviewTable();
+        }
+
+// zip 241: the review rows of one captured size grid (sub-table under the product row). Returns '' for a plain item.
+//@fn captureVariantRowsHtml
+function captureVariantRowsHtml(it) {
+            if (!Array.isArray(it.variants)) return '';
+            const iid = escapeJsAttr(it.id);
+            const rows = it.variants.map((v) => {
+                const vid = escapeJsAttr(v.id);
+                const noName = !String(v.name || '').trim();
+                const noPrice = !(parseFloat(v.retail) > 0);
+                return `<div style="display:flex; gap:6px; align-items:center; margin:3px 0; flex-wrap:wrap;">
+                    <input type="text" placeholder="size / variant" value="${escapeHtml(v.name || '')}" class="${noName ? 'capture-field-warn' : ''}" style="width:90px;" oninput="captureVariantUpdate('${iid}','${vid}','name',this.value)">
+                    <label style="font-size:11px;">Qty <input type="number" min="0" step="1" value="${escapeHtml(v.qty)}" style="width:64px;" oninput="captureVariantUpdate('${iid}','${vid}','qty',this.value)"></label>
+                    <label style="font-size:11px;">Price <input type="number" min="0" step="0.01" value="${escapeHtml(v.retail || '')}" class="${noPrice ? 'capture-field-warn' : ''}" style="width:84px;" oninput="captureVariantUpdate('${iid}','${vid}','retail',this.value)"></label>
+                    <button type="button" class="settings-small-btn" style="padding:0 8px;" onclick="captureVariantRemove('${iid}','${vid}')" title="Remove this size">✖</button>
+                </div>`;
+            }).join('');
+            return `<tr><td colspan="7" style="background:rgba(41,128,185,.07);"><b style="font-size:12px;">🧩 ${it.variants.length} size(s) of "${escapeHtml(it.name || '')}" - each becomes a variant with its own price and stock</b>${rows}<button type="button" class="settings-small-btn" onclick="captureVariantAdd('${iid}')">+ Add size</button></td></tr>`;
+        }
+
+// zip 241: creates (or tops up) products that have variants from reviewed capture lines. Returns { created, updated, variantsAdded, restocked }.
+//@fn commitCaptureVariantItems
+function commitCaptureVariantItems(list) {
+            const out = { created: 0, updated: 0, variantsAdded: 0, restocked: 0 };
+            const taken = (c) => inventory.some((p) => p && ((p.code || '').toLowerCase() === c.toLowerCase() || (Array.isArray(p.variants) && p.variants.some((v) => (v.code || '').toLowerCase() === c.toLowerCase()))));
+            const uniq = (base) => { let c = base, n = 1; while (taken(c)) c = base + '-' + (++n); return c; };
+            const pos = (x) => { const n = parseFloat(x); return isFinite(n) && n > 0 ? n : 0; };
+            list.forEach((it) => {
+                const vars = (it.variants || []).filter((v) => String(v.name || '').trim());
+                if (!vars.length) return;
+                let product = it.matchedItemId ? inventory.find((p) => p.code === it.matchedItemId) : null;
+                if (product && !(product.hasVariants && Array.isArray(product.variants))) product = null;
+                if (!product) {
+                    const slug = String(it.name || '').toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 16);
+                    product = { code: uniq((it.code || '').trim() || slug || genSaleId()), type: 'item', name: (it.name || '').trim() || (it.code || '').trim(), qty: 0, price: 0, unit: 'pcs', hasVariants: true, variants: [] };
+                    if (it.category) product.category = String(it.category).trim();
+                    inventory.push(product);
+                    out.created++;
+                } else out.updated++;
+                vars.forEach((v) => {
+                    const nm = String(v.name).trim(), q = parseFloat(v.qty) || 0, price = pos(v.retail);
+                    const ex = product.variants.find((x) => String(x.name || '').trim().toLowerCase() === nm.toLowerCase());
+                    if (ex) {
+                        if (q) { logStockMovement(ex.code, `${product.name} ${ex.name}`, q, 'Capture List (variants)'); ex.qty = stockRound3((ex.qty || 0) + q); out.restocked++; }
+                        if (price) ex.price = price;
+                    } else {
+                        const vc = uniq(`${product.code}-${nm}`.toUpperCase().replace(/[^A-Z0-9-]+/g, ''));
+                        product.variants.push({ id: genSaleId(), name: nm, code: vc, price: price || pos(it.retail), image: null, wholesaleSellingPrice: pos(v.wholesale) || pos(it.wholesale), wholesalePrice: pos(v.cost) || pos(it.unitCost), minimumPrice: 0, qty: q, dualUnit: false, unitsPerBox: null, pieceCode: null, piecePrice: 0, pieceWholesalePrice: 0, pieceQty: 0 });
+                        out.variantsAdded++;
+                    }
+                });
+                product.qty = stockRound3(product.variants.reduce((a, v) => a + (Number(v.qty) || 0), 0));
+                const prices = product.variants.map((v) => Number(v.price) || 0).filter((x) => x > 0);
+                product.price = prices.length ? Math.min(...prices) : 0;
+            });
+            return out;
+        }
+
+// zip 241: for Restock / Store (which only know plain lines) a size grid becomes one line per size ("Name - 26").
+//@fn captureFlattenVariantItems
+function captureFlattenVariantItems(items) {
+            const out = [];
+            items.forEach((it) => {
+                if (!Array.isArray(it.variants) || !it.variants.length) { out.push(it); return; }
+                it.variants.filter((v) => String(v.name || '').trim()).forEach((v, k) => {
+                    out.push(Object.assign({}, it, { id: it.id + '-v' + k, name: `${(it.name || '').trim()} - ${String(v.name).trim()}`, code: '', qty: v.qty, retail: v.retail || '', wholesale: v.wholesale || it.wholesale || '', unitCost: v.cost || it.unitCost || '', variants: undefined, matchedItemId: null, isNew: true }));
+                });
+            });
+            return out;
         }
 
 //@fn stockTakeState

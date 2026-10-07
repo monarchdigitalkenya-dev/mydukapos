@@ -1,0 +1,390 @@
+<!-- DUPLICATE ITEM (zip 244) ------------------------------------------------------------------------------------------------------
+         Add Item (one item) and Bulk Add (many rows) used to either refuse ("already exists - use a different name") or, in Bulk Add, quietly add a
+         SECOND item with a new code. Now both stop and SAY the item is already there, and let the person choose:
+           ✏️ Update the existing item   - new price(s) typed are applied, and the quantity typed is ADDED to its stock (or stock left alone)
+           ➕ Add as a variant           - Shop / Pharmacy / Production / Services: the new size/colour/flavour becomes a variant of the existing item
+                                           (an ordinary item is turned into a variants item: the old one becomes the first variant with its stock, under a new code of its own)
+              ➕ Add as a version         - Hotel / Hospital have no variant type: it is saved as its own item named "Name - Version"
+           ✖ Cancel / skip               - nothing changes
+         The match is on the NAME ignoring capitals, spaces and punctuation ("Mango  shake" = "mango-shake"), and on the CODE.
+         Nothing is ever deleted; an increase of stock is written to the stock history; a stock REDUCTION is never offered here (that needs the
+         management password in Inventory). Hooks (per app): saveInventoryItem calls dupAskSingle(existing) where it used to show the error;
+         saveBulkItems calls dupBulkCheck(rows, category, saveBulkItems) first and dupBulkSummary() for its message. Classes: dupi-*. -->
+<style>
+    .dupi-ov { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: flex-end; justify-content: center; background: rgba(15, 23, 42, .6); -webkit-tap-highlight-color: transparent; }
+    @media (min-width: 640px) { .dupi-ov { align-items: center; padding: 16px; } }
+    .dupi-box { box-sizing: border-box; width: 100%; max-width: 640px; max-height: 94vh; overflow: auto; padding: 18px 16px 16px; border-radius: 18px 18px 0 0; background: var(--bg-surface, #fff); color: var(--dark, #2c3e50); box-shadow: 0 -8px 40px rgba(0, 0, 0, .35); }
+    @media (min-width: 640px) { .dupi-box { border-radius: 18px; padding: 22px 22px 18px; } }
+    .dupi-title { margin: 0 0 4px; font-size: 20px; line-height: 1.25; }
+    .dupi-sub { margin: 0 0 12px; font-size: 14px; color: var(--text-muted, #7f8c8d); }
+    .dupi-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0 0 14px; }
+    @media (max-width: 480px) { .dupi-cards { grid-template-columns: 1fr; } }
+    .dupi-card { border-radius: 12px; padding: 10px 12px; font-size: 14px; line-height: 1.5; border: 2px solid transparent; }
+    .dupi-card b.dupi-h { display: block; font-size: 12px; letter-spacing: .4px; text-transform: uppercase; margin-bottom: 2px; }
+    .dupi-card.have { background: var(--tint-info-bg, #e8f1fb); border-color: #2980b9; }
+    .dupi-card.new { background: var(--tint-success-bg, #e6f6ea); border-color: #27ae60; }
+    .dupi-card .big { font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
+    .dupi-acts { display: flex; flex-direction: column; gap: 10px; margin: 0 0 6px; }
+    .dupi-btn { box-sizing: border-box; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 8px 16px; font: inherit; font-size: 16px; font-weight: 700; text-align: left; cursor: pointer; border-radius: 14px; border: 2px solid var(--border-color, #ccd1d6); background: var(--bg-surface-alt, #f4f6f7); color: var(--dark, #2c3e50); }
+    .dupi-btn small { display: block; font-size: 12px; font-weight: 500; color: var(--text-muted, #7f8c8d); }
+    .dupi-btn .ic { font-size: 22px; flex: 0 0 auto; }
+    .dupi-btn.upd { border-color: #2980b9; } .dupi-btn.var { border-color: #8e44ad; } .dupi-btn.on { box-shadow: 0 0 0 3px rgba(41, 128, 185, .35); }
+    .dupi-btn[disabled] { opacity: .5; cursor: not-allowed; }
+    .dupi-btn:focus-visible, .dupi-go:focus-visible, .dupi-x:focus-visible { outline: 3px solid var(--accent, #3498db); outline-offset: 2px; }
+    .dupi-panel { margin: 12px 0 0; padding: 12px; border-radius: 12px; background: var(--bg-surface-alt, #f4f6f7); }
+    .dupi-panel label { display: block; margin: 8px 0 4px; font-size: 13px; font-weight: 700; }
+    .dupi-panel input[type=text], .dupi-panel select, .dupi-sel, .dupi-in { box-sizing: border-box; width: 100%; min-height: 44px; font-size: 16px; padding: 8px 10px; }
+    .dupi-opt { display: flex; align-items: flex-start; gap: 10px; margin: 8px 0; font-size: 15px; font-weight: 600; cursor: pointer; }
+    .dupi-opt input { width: 22px !important; height: 22px; min-height: 0; margin: 2px 0 0; flex: 0 0 auto; }
+    .dupi-opt small { display: block; font-weight: 500; color: var(--text-muted, #7f8c8d); }
+    .dupi-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    .dupi-go { flex: 1 1 140px; min-height: 48px; padding: 0 16px; font: inherit; font-size: 16px; font-weight: 800; cursor: pointer; border: 0; border-radius: 12px; background: var(--success, #27ae60); color: #fff; }
+    .dupi-go.sec { background: var(--bg-surface-alt, #ecf0f1); color: var(--dark, #2c3e50); border: 1px solid var(--border-color, #ccd1d6); }
+    .dupi-err { min-height: 18px; margin: 8px 0 0; font-size: 14px; font-weight: 600; color: var(--danger, #e74c3c); }
+    .dupi-x { float: right; min-width: 44px; min-height: 44px; margin: -6px -6px 0 0; font-size: 22px; border: 0; background: none; cursor: pointer; color: inherit; }
+    .dupi-bulk { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .dupi-bulk td { padding: 8px 6px; vertical-align: top; border-top: 1px solid var(--border-color, #e1e6ea); }
+    .dupi-bulk .nm { font-weight: 700; overflow-wrap: anywhere; } .dupi-bulk .mut { font-size: 12px; color: var(--text-muted, #7f8c8d); }
+    @media (max-width: 560px) { .dupi-bulk, .dupi-bulk tbody, .dupi-bulk tr, .dupi-bulk td { display: block; width: 100%; } .dupi-bulk tr { padding: 8px 0; border-top: 2px solid var(--border-color, #e1e6ea); } .dupi-bulk td { border: 0; padding: 3px 0; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__dupItem) return;
+    window.__dupItem = { version: 1 };
+    var M = null, lastSummary = { updated: 0, variants: 0, versions: 0, skipped: 0 };
+    var UNI = true; try { new RegExp('\\p{L}', 'u'); } catch (e) { UNI = false; }
+
+    /* ---------- helpers ---------- */
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function norm(s) { s = String(s == null ? '' : s).toLowerCase(); return (UNI ? s.replace(new RegExp('[^\\p{L}\\p{N}]+', 'gu'), ' ') : s.replace(/[^a-z0-9]+/g, ' ')).trim(); }
+    function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
+    function fmt(v) { v = Number(v) || 0; try { if (typeof money === 'function') return money(v); } catch (e) { /* plain below */ } return 'KES ' + v.toFixed(2); }
+    function inv() { try { return Array.isArray(inventory) ? inventory : []; } catch (e) { return []; } }
+    function pos(n) { n = Number(n); return isFinite(n) && n > 0 ? n : 0; }
+    function r3(n) { return Math.round((Number(n) || 0) * 1000) / 1000; }
+    function isDec(u) { try { return typeof isDecimalUnit === 'function' ? !!isDecimalUnit(u) : true; } catch (e) { return true; } }
+    function gid() { try { if (typeof genSaleId === 'function') return String(genSaleId()); } catch (e) { /* fallback */ } return 'v-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+    function canVariants() { try { return typeof saveVariantsModal === 'function' && !!$('inv-has-variants'); } catch (e) { return false; } }
+    function hasVars(p) { return !!(p && p.hasVariants && Array.isArray(p.variants) && p.variants.length); }
+    function qtyShow(q, unit) { try { if (typeof formatQtyDisplay === 'function') return formatQtyDisplay(q, unit); } catch (e) { /* plain */ } return String(r3(q)); }
+    function taken(c) {
+        c = String(c).toLowerCase();
+        return inv().some(function (p) { return p && (String(p.code || '').toLowerCase() === c || (p.pieceCode && String(p.pieceCode).toLowerCase() === c) || (Array.isArray(p.variants) && p.variants.some(function (v) { return v && (String(v.code || '').toLowerCase() === c || (v.pieceCode && String(v.pieceCode).toLowerCase() === c)); }))); });
+    }
+    function uniq(base) { base = String(base || '').trim() || gid(); var c = base, n = 1; while (taken(c)) c = base + '-' + (++n); return c; }
+    function persist() {
+        try { safeSetItem('pos_inventory', JSON.stringify(inventory)); } catch (e) { /* the next save writes it */ }
+        try { queuePush(); } catch (e) { /* the next change sends it */ }
+        try { renderInventoryTable(); } catch (e) { /* not on screen */ }
+        try { renderNotifications(); } catch (e) { /* not on screen */ }
+    }
+    function recompute(p) {
+        if (!hasVars(p)) return;
+        p.qty = r3(p.variants.reduce(function (a, v) { return a + (Number(v.qty) || 0); }, 0));
+        p.price = Math.min.apply(null, p.variants.map(function (v) { return Number(v.price) || 0; }));
+    }
+    /* the same name with different capitals / spaces / punctuation is the same item (Add Item uses this instead of an exact compare) */
+    window.dupSameName = function (a, b) { var x = norm(a); return !!x && x === norm(b); };
+    window.dupNormName = norm;
+    // -> { item, by:'code'|'name' } or null. skipIdx = an inventory index that is "this very item" (never matches itself)
+    function findMatch(name, code, skipIdx) {
+        var list = inv(), i, p, c = String(code || '').trim().toLowerCase();
+        if (c) for (i = 0; i < list.length; i++) { p = list[i]; if (p && !p.removed && i !== skipIdx && String(p.code || '').toLowerCase() === c) return { item: p, by: 'code' }; }
+        var nn = norm(name); if (!nn) return null;
+        for (i = 0; i < list.length; i++) { p = list[i]; if (p && !p.removed && i !== skipIdx && norm(p.name) === nn) return { item: p, by: 'name' }; }
+        return null;
+    }
+    window.dupFindExisting = findMatch;
+
+    /* ---------- what the person typed in the Add Item form ---------- */
+    function pnum(id) { var el = $(id); if (!el) return NaN; var raw = String(el.value == null ? '' : el.value).trim(); if (raw === '') return NaN; var n = parseFloat(raw); return isFinite(n) ? n : NaN; }
+    function formValues() {
+        var qel = $('inv-qty'), q = qel ? String(qel.value || '').trim() : '', qty = NaN;
+        if (q !== '') { try { qty = typeof parseQtyInput === 'function' ? parseQtyInput(q) : parseFloat(q); } catch (e) { qty = parseFloat(q); } }
+        var u = $('inv-unit') && $('inv-unit').value ? $('inv-unit').value : 'pcs';
+        return { name: $('inv-name') ? $('inv-name').value.trim() : '', code: $('inv-code') ? $('inv-code').value.trim() : '', price: pnum('inv-price'), wholesaleSellingPrice: pnum('inv-wholesale-selling-price'), wholesalePrice: pnum('inv-wholesale-price'), minimumPrice: pnum('inv-min-price'), qty: isFinite(qty) && qty > 0 ? qty : NaN, unit: u };
+    }
+    function rowValues(row) {
+        function f(x) { var n = parseFloat(x); return isFinite(n) ? n : NaN; }
+        var q = f(row.qty);
+        return { price: f(row.price), wholesaleSellingPrice: f(row.wholesaleSellingPrice), wholesalePrice: f(row.wholesalePrice), minimumPrice: NaN, qty: q > 0 ? q : NaN, unit: String(row.unit || 'pcs').trim() || 'pcs' };
+    }
+
+    /* ---------- the three things that can happen to the existing item ---------- */
+    // e = typed values; o = { prices:bool, stock:'add'|'keep', variantId }. Returns a short text of what changed.
+    function applyUpdate(item, e, o) {
+        var tgt = item, parent = null, label = item.name, notes = [];
+        if (hasVars(item)) {      // a variants item has no stock of its own: the chosen variant (the first one when none was chosen) takes the change
+            var v = item.variants.filter(function (x) { return x.id === o.variantId; })[0] || item.variants[0];
+            tgt = v; parent = item; label = item.name + ' (' + v.name + ')';
+        }
+        if (o.prices) {
+            [['price', 'price'], ['wholesaleSellingPrice', 'wholesale price'], ['wholesalePrice', 'cost price'], ['minimumPrice', 'minimum price']].forEach(function (k) {
+                var n = e[k[0]];
+                if (pos(n) && Number(tgt[k[0]]) !== n) { tgt[k[0]] = n; notes.push(k[1] + ' ' + fmt(n)); }
+            });
+        }
+        if (o.stock === 'add' && pos(e.qty) && item.type !== 'service') {
+            var q = isDec(tgt.unit || item.unit) ? r3(e.qty) : Math.round(e.qty);
+            if (q > 0) {
+                tgt.qty = r3((Number(tgt.qty) || 0) + q);
+                try { logStockMovement(tgt.code, label, q, 'Added via Add Item (item already existed)'); } catch (er) { /* the stock itself is saved */ }
+                notes.push('+' + qtyShow(q, tgt.unit || item.unit) + ' in stock');
+            }
+        }
+        if (parent) recompute(parent);
+        try { if (typeof currentCapturedImageBase64 !== 'undefined' && currentCapturedImageBase64 && !tgt.image) tgt.image = currentCapturedImageBase64; } catch (er) { /* no photo taken */ }
+        return notes.length ? notes.join(', ') : 'nothing needed changing';
+    }
+    function canConvert(item) { return !!item && item.type !== 'service' && !item.dualUnit && !item.pieceCode && !hasVars(item); }
+    // Adds a variant to the item (turning a plain item into a variants item first). Returns { ok, text, error }
+    function applyVariant(item, e, o) {
+        var vname = String(o.variantName || '').trim();
+        if (!vname) return { ok: false, error: 'Type the variant name (for example Large, Red or 500 ml).' };
+        if (!hasVars(item)) {
+            if (!canConvert(item)) return { ok: false, error: '"' + item.name + '" is sold by box and piece (or is a service), so a variant cannot be added to it here. Choose Update instead.' };
+            var first = String(o.firstName || 'Original').trim() || 'Original';
+            if (norm(first) === norm(vname)) return { ok: false, error: 'The existing item and the new variant need different names.' };
+            // the first variant gets a code of its own: the server keeps a variants item's stock per VARIANT code and refuses a movement under the parent's code
+            item.variants = [{ id: gid(), name: first, code: uniq(String(item.code + '-' + first).toUpperCase().replace(/[^A-Z0-9-]+/g, '')), price: Number(item.price) || 0, image: item.image || null, wholesaleSellingPrice: Number(item.wholesaleSellingPrice) || 0, wholesalePrice: Number(item.wholesalePrice) || 0, minimumPrice: Number(item.minimumPrice) || 0, qty: Number(item.qty) || 0, dualUnit: false, unitsPerBox: null, pieceCode: null, piecePrice: 0, pieceWholesalePrice: 0, pieceQty: 0 }];
+            item.hasVariants = true;
+        }
+        var same = item.variants.filter(function (x) { return norm(x.name) === norm(vname); })[0];
+        if (same) return { ok: true, text: 'Variant "' + same.name + '" already existed: ' + applyUpdate(item, e, { prices: true, stock: 'add', variantId: same.id }) };
+        var qty = pos(e.qty) ? (isDec(e.unit || item.unit) ? r3(e.qty) : Math.round(e.qty)) : 0;
+        var src = item.variants[0] || {};
+        var nv = { id: gid(), name: vname, code: uniq(String(item.code + '-' + vname).toUpperCase().replace(/[^A-Z0-9-]+/g, '')), price: pos(e.price) || Number(src.price) || 0, image: null,
+            wholesaleSellingPrice: pos(e.wholesaleSellingPrice) || Number(src.wholesaleSellingPrice) || 0, wholesalePrice: pos(e.wholesalePrice) || Number(src.wholesalePrice) || 0, minimumPrice: pos(e.minimumPrice),
+            qty: qty, dualUnit: false, unitsPerBox: null, pieceCode: null, piecePrice: 0, pieceWholesalePrice: 0, pieceQty: 0 };
+        item.variants.push(nv);
+        recompute(item);
+        return { ok: true, text: 'Added variant "' + vname + '" to "' + item.name + '"' + (qty ? ' (' + qtyShow(qty, item.unit) + ' in stock)' : '') };
+    }
+    // Hotel / Hospital: no variant type, so the new version is its own item "Name — Version"
+    function versionName(item, v) { return String(item.name).trim() + ' — ' + String(v).trim(); }
+
+    /* ---------- the form is cleared the way a normal save clears it ---------- */
+    function resetForm() {
+        ['inv-code', 'inv-name', 'inv-price', 'inv-wholesale-selling-price', 'inv-wholesale-price', 'inv-min-price', 'inv-qty', 'inv-location', 'inv-expiry-date', 'inv-units-per-box', 'inv-piece-code', 'inv-piece-price', 'inv-piece-wholesale-price', 'inv-piece-qty'].forEach(function (id) { var el = $(id); if (el) el.value = ''; });
+        if ($('inv-unit')) $('inv-unit').value = 'pcs';
+        if ($('inv-vat-category')) $('inv-vat-category').value = 'A';
+        ['inv-has-dual-unit', 'inv-has-variants'].forEach(function (id) { var el = $(id); if (el) el.checked = false; });
+        ['dual-unit-builder', 'variants-builder'].forEach(function (id) { var el = $(id); if (el) el.style.display = 'none'; });
+        try { if (typeof variantsDraft !== 'undefined') variantsDraft = []; } catch (e) { /* not in this app */ }
+        try { if (typeof updateAddItemUnitHints === 'function') updateAddItemUnitHints(); } catch (e) { /* cosmetic */ }
+        try { if (typeof retakePhoto === 'function') retakePhoto(); } catch (e) { /* no photo */ }
+    }
+
+    /* ---------- the window ---------- */
+    function removeOverlay() { var o = $('dupi-ov'); if (o && o.parentNode) o.parentNode.removeChild(o); document.removeEventListener('keydown', onKey, true); }
+    function close() { removeOverlay(); M = null; }
+    function onKey(ev) { if (ev.key === 'Escape' && M) { ev.stopPropagation(); close(); } }
+    function open() {
+        removeOverlay();      // (M, the state of the window about to open, is kept)
+        var ov = document.createElement('div'); ov.id = 'dupi-ov'; ov.className = 'dupi-ov'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-label', 'Item already exists');
+        ov.innerHTML = '<div class="dupi-box" id="dupi-box"></div>';
+        ov.addEventListener('click', onClick); ov.addEventListener('change', onChange); ov.addEventListener('input', onInput);
+        document.body.appendChild(ov);
+        document.addEventListener('keydown', onKey, true);
+        render();
+        try { var f = ov.querySelector('.dupi-btn, .dupi-go, select, input'); if (f && f.focus) f.focus({ preventScroll: true }); } catch (e) { /* cosmetic */ }
+    }
+    function haveCard(ex) {
+        var vs = hasVars(ex), svc = ex.type === 'service';
+        return '<div class="dupi-card have"><b class="dupi-h">Already in your inventory</b><span class="big">' + esc(ex.name) + '</span><br>Code ' + esc(ex.code) + '<br>' + (vs ? ex.variants.length + ' variants · ' : '') + fmt(ex.price) + (svc ? '' : ' · ' + qtyShow(ex.qty, ex.unit) + ' in stock') + '</div>';
+    }
+    function newCard(name, e) {
+        var bits = [];
+        if (pos(e.price)) bits.push('Price ' + fmt(e.price)); if (pos(e.wholesalePrice)) bits.push('Cost ' + fmt(e.wholesalePrice)); if (pos(e.qty)) bits.push('Qty ' + qtyShow(e.qty, e.unit));
+        return '<div class="dupi-card new"><b class="dupi-h">What you just typed</b><span class="big">' + esc(name) + '</span><br>' + (bits.length ? bits.join(' · ') : 'No price or quantity typed') + '</div>';
+    }
+    function render() {
+        if (!M) return;
+        var box = $('dupi-box'); if (!box) return;
+        box.innerHTML = M.kind === 'single' ? renderSingle() : renderBulk();
+    }
+    function renderSingle() {
+        var ex = M.existing, e = M.entered, svc = ex.type === 'service', cv = canVariants(), vs = hasVars(ex), p = M.panel, err = M.err || '';
+        var h = '<button type="button" class="dupi-x" data-act="close" aria-label="Close">✕</button><h3 class="dupi-title">⚠️ “' + esc(ex.name) + '” already exists</h3>'
+            + '<p class="dupi-sub">' + (M.by === 'code' ? 'This code belongs to an item you already have.' : 'An item with this name is already in your inventory.') + ' Nothing has been added yet. What would you like to do?</p>'
+            + '<div class="dupi-cards">' + haveCard(ex) + newCard(e.name, e) + '</div><div class="dupi-acts">'
+            + '<button type="button" class="dupi-btn upd' + (p === 'upd' ? ' on' : '') + '" data-act="panel" data-p="upd"><span class="ic">✏️</span><span>Update the existing item<small>Use the price and quantity you typed on “' + esc(ex.name) + '”</small></span></button>';
+        if (!svc) {
+            if (cv) h += '<button type="button" class="dupi-btn var' + (p === 'var' ? ' on' : '') + '" data-act="panel" data-p="var"' + (!vs && !canConvert(ex) ? ' disabled' : '') + '><span class="ic">➕</span><span>Add as a new variant<small>' + (vs ? 'A new size / colour / option of this item' : 'Turns “' + esc(ex.name) + '” into an item with variants') + (!vs && !canConvert(ex) ? ' (not possible: sold by box and piece)' : '') + '</small></span></button>';
+            else h += '<button type="button" class="dupi-btn var' + (p === 'ver' ? ' on' : '') + '" data-act="panel" data-p="ver"><span class="ic">➕</span><span>Add as another version<small>Saved as its own item, for example “' + esc(ex.name) + ' — Large”</small></span></button>';
+        }
+        h += '<button type="button" class="dupi-btn" data-act="close"><span class="ic">✖</span><span>Cancel<small>Go back and change what you typed</small></span></button></div>';
+        if (p === 'upd') {
+            var priceBits = [];
+            if (pos(e.price)) priceBits.push('Retail ' + fmt(e.price) + ' (now ' + fmt(vs ? (M.vid ? (ex.variants.filter(function (x) { return x.id === M.vid; })[0] || {}).price : ex.price) : ex.price) + ')');
+            if (pos(e.wholesalePrice)) priceBits.push('Cost ' + fmt(e.wholesalePrice));
+            if (pos(e.wholesaleSellingPrice)) priceBits.push('Wholesale ' + fmt(e.wholesaleSellingPrice));
+            h += '<div class="dupi-panel">';
+            if (vs) h += '<label for="dupi-vsel">Which variant is this?</label><select id="dupi-vsel">' + ex.variants.map(function (v) { return '<option value="' + esc(v.id) + '"' + (v.id === M.vid ? ' selected' : '') + '>' + esc(v.name) + ' — ' + qtyShow(v.qty, ex.unit) + ' in stock</option>'; }).join('') + '</select>';
+            if (priceBits.length) h += '<label class="dupi-opt"><input type="checkbox" id="dupi-prices"' + (M.prices ? ' checked' : '') + '><span>Use the price(s) I typed<small>' + esc(priceBits.join(' · ')) + '</small></span></label>';
+            if (!svc && pos(e.qty)) {
+                var cur = vs ? ((ex.variants.filter(function (x) { return x.id === M.vid; })[0] || {}).qty || 0) : ex.qty;
+                h += '<label class="dupi-opt"><input type="radio" name="dupi-stock" value="add"' + (M.stock === 'add' ? ' checked' : '') + '><span>Add ' + qtyShow(e.qty, e.unit) + ' to the stock<small>' + qtyShow(cur, ex.unit) + ' → ' + qtyShow(r3((Number(cur) || 0) + e.qty), ex.unit) + '</small></span></label>'
+                    + '<label class="dupi-opt"><input type="radio" name="dupi-stock" value="keep"' + (M.stock === 'keep' ? ' checked' : '') + '><span>Leave the stock as it is</span></label>';
+            }
+            if (!priceBits.length && !(pos(e.qty) && !svc)) h += '<p class="dupi-sub" style="margin:0;">You did not type a price or quantity, so there is nothing to update. Cancel and fill them in, or choose another option.</p>';
+            h += '<p class="dupi-err" id="dupi-err" role="alert">' + esc(err) + '</p><div class="dupi-row"><button type="button" class="dupi-go" data-act="do-upd"' + (!priceBits.length && !(pos(e.qty) && !svc) ? ' disabled' : '') + '>✓ Update item</button><button type="button" class="dupi-go sec" data-act="panel" data-p="">Back</button></div></div>';
+        } else if (p === 'var') {
+            h += '<div class="dupi-panel">';
+            if (!vs) h += '<label for="dupi-first">What should the existing “' + esc(ex.name) + '” be called as a variant?</label><input type="text" id="dupi-first" maxlength="60" value="' + esc(M.first) + '" placeholder="Original">';
+            h += '<label for="dupi-vname">Name of the NEW variant</label><input type="text" id="dupi-vname" maxlength="60" value="' + esc(M.vname) + '" placeholder="e.g. Large, Red, 500 ml, Size 30">'
+                + '<p class="dupi-sub" style="margin:8px 0 0;">It gets the price' + (pos(e.price) ? ' ' + fmt(e.price) : '') + (pos(e.qty) ? ' and ' + qtyShow(e.qty, e.unit) + ' in stock' : '') + ' you typed. Its code is made from “' + esc(ex.code) + '”.</p>'
+                + '<p class="dupi-err" id="dupi-err" role="alert">' + esc(err) + '</p><div class="dupi-row"><button type="button" class="dupi-go" data-act="do-var">✓ Add variant</button><button type="button" class="dupi-go sec" data-act="panel" data-p="">Back</button></div></div>';
+        } else if (p === 'ver') {
+            h += '<div class="dupi-panel"><label for="dupi-vname">Version name</label><input type="text" id="dupi-vname" maxlength="60" value="' + esc(M.vname) + '" placeholder="e.g. Large, Family, Double">'
+                + '<p class="dupi-sub" style="margin:8px 0 0;">It will be saved as “' + esc(versionName(ex, M.vname || '…')) + '” with the details you typed.</p>'
+                + '<p class="dupi-err" id="dupi-err" role="alert">' + esc(err) + '</p><div class="dupi-row"><button type="button" class="dupi-go" data-act="do-ver">✓ Save as new version</button><button type="button" class="dupi-go sec" data-act="panel" data-p="">Back</button></div></div>';
+        }
+        return h;
+    }
+    function bulkActions(c) {
+        var cv = canVariants(), vs = hasVars(c.item), svc = c.item.type === 'service', a = [['upd', vs ? 'Update a variant of it' : 'Update the existing item']];
+        if (!svc) { if (cv && (vs || canConvert(c.item))) a.push(['var', 'Add as a new variant']); else if (!cv) a.push(['ver', 'Add as another version']); }
+        a.push(['skip', 'Skip this row']);
+        return a;
+    }
+    function renderBulk() {
+        var rows = M.conflicts.map(function (c, i) {
+            var ex = c.item, vs = hasVars(ex), sel = '<select class="dupi-sel" data-act="bact" data-i="' + i + '">' + bulkActions(c).map(function (a) { return '<option value="' + a[0] + '"' + (c.action === a[0] ? ' selected' : '') + '>' + esc(a[1]) + '</option>'; }).join('') + '</select>';
+            var extra = '';
+            if (c.action === 'upd' && vs) extra = '<select class="dupi-sel" data-act="bvar" data-i="' + i + '" style="margin-top:6px;">' + ex.variants.map(function (v) { return '<option value="' + esc(v.id) + '"' + (v.id === c.vid ? ' selected' : '') + '>' + esc(v.name) + ' (' + qtyShow(v.qty, ex.unit) + ')</option>'; }).join('') + '</select>';
+            else if (c.action === 'var') extra = (!vs ? '<input type="text" class="dupi-in" data-act="bfirst" data-i="' + i + '" maxlength="60" value="' + esc(c.first) + '" placeholder="Name for the existing one (Original)" style="margin-top:6px;">' : '') + '<input type="text" class="dupi-in" data-act="bname" data-i="' + i + '" maxlength="60" value="' + esc(c.vname) + '" placeholder="New variant name (e.g. Large)" style="margin-top:6px;">';
+            else if (c.action === 'ver') extra = '<input type="text" class="dupi-in" data-act="bname" data-i="' + i + '" maxlength="60" value="' + esc(c.vname) + '" placeholder="Version name (e.g. Large)" style="margin-top:6px;">';
+            return '<tr><td style="width:46%"><div class="nm">' + esc(c.name) + '</div><div class="mut">typed: ' + [pos(c.e.price) ? fmt(c.e.price) : '', pos(c.e.qty) ? 'qty ' + qtyShow(c.e.qty, c.e.unit) : ''].filter(Boolean).join(' · ') + (c.code ? ' · code ' + esc(c.code) : '') + '</div></td>'
+                + '<td><div class="mut">Already: <b>' + esc(ex.name) + '</b> · ' + esc(ex.code) + ' · ' + fmt(ex.price) + (ex.type === 'service' ? '' : ' · ' + qtyShow(ex.qty, ex.unit) + ' in stock') + '</div>' + sel + extra + '</td></tr>';
+        }).join('');
+        var all = '<select class="dupi-sel" data-act="ball" style="margin:0 0 10px;"><option value="">Set every row to…</option><option value="upd">Update the existing items</option>' + (canVariants() ? '<option value="var">Add as variants</option>' : '<option value="ver">Add as versions</option>') + '<option value="skip">Skip all of them</option></select>';
+        return '<button type="button" class="dupi-x" data-act="close" aria-label="Close">✕</button><h3 class="dupi-title">⚠️ ' + M.conflicts.length + (M.conflicts.length === 1 ? ' item already exists' : ' items already exist') + '</h3>'
+            + '<p class="dupi-sub">Nothing has been saved yet. Choose what to do with each one — rows that are not listed here are added as new items.</p>' + (M.conflicts.length > 1 ? all : '')
+            + '<table class="dupi-bulk"><tbody>' + rows + '</tbody></table><p class="dupi-err" id="dupi-err" role="alert">' + esc(M.err || '') + '</p>'
+            + '<div class="dupi-row"><button type="button" class="dupi-go" data-act="do-bulk">✓ Continue</button><button type="button" class="dupi-go sec" data-act="close">Cancel</button></div>';
+    }
+
+    /* ---------- events ---------- */
+    function setErr(t) { if (M) M.err = t; var el = $('dupi-err'); if (el) el.textContent = t || ''; }
+    function onInput(ev) {
+        var t = ev.target; if (!M || !t) return;
+        if (t.id === 'dupi-vname') { M.vname = t.value; if (M.panel === 'ver') { var s = t.parentNode.querySelector('.dupi-sub'); if (s) s.innerHTML = 'It will be saved as “' + esc(versionName(M.existing, t.value || '…')) + '” with the details you typed.'; } }
+        else if (t.id === 'dupi-first') M.first = t.value;
+        else if (t.getAttribute && t.getAttribute('data-act') === 'bname') M.conflicts[+t.getAttribute('data-i')].vname = t.value;
+        else if (t.getAttribute && t.getAttribute('data-act') === 'bfirst') M.conflicts[+t.getAttribute('data-i')].first = t.value;
+    }
+    function onChange(ev) {
+        var t = ev.target; if (!M || !t) return;
+        if (t.id === 'dupi-vsel') { M.vid = t.value; render(); }
+        else if (t.id === 'dupi-prices') M.prices = !!t.checked;
+        else if (t.name === 'dupi-stock') M.stock = t.value;
+        else if (t.getAttribute && t.getAttribute('data-act') === 'bact') { var c = M.conflicts[+t.getAttribute('data-i')]; c.action = t.value; render(); }
+        else if (t.getAttribute && t.getAttribute('data-act') === 'bvar') M.conflicts[+t.getAttribute('data-i')].vid = t.value;
+        else if (t.getAttribute && t.getAttribute('data-act') === 'ball' && t.value) { M.conflicts.forEach(function (c) { if (bulkActions(c).some(function (a) { return a[0] === t.value; })) c.action = t.value; }); render(); }
+    }
+    function onClick(ev) {
+        var el = ev.target && ev.target.closest ? ev.target.closest('[data-act]') : null;
+        if (ev.target && ev.target.id === 'dupi-ov') { close(); return; }
+        if (!el || !M || el.tagName === 'SELECT' || el.tagName === 'INPUT') return;
+        var act = el.getAttribute('data-act');
+        if (act === 'close') close();
+        else if (act === 'panel') { M.panel = el.getAttribute('data-p') || ''; M.err = ''; render(); }
+        else if (act === 'do-upd') doUpdate();
+        else if (act === 'do-var') doVariant();
+        else if (act === 'do-ver') doVersion();
+        else if (act === 'do-bulk') doBulk();
+    }
+    function doUpdate() {
+        var ex = M.existing, e = M.entered;
+        if (hasVars(ex) && !M.vid) { setErr('Choose which variant this is.'); return; }
+        var prices = $('dupi-prices') ? !!$('dupi-prices').checked : false;
+        var stockEl = document.querySelector('input[name="dupi-stock"]:checked');
+        var text = applyUpdate(ex, e, { prices: prices, stock: stockEl ? stockEl.value : 'keep', variantId: M.vid });
+        persist(); close(); resetForm(); toast('Updated “' + ex.name + '”: ' + text + '.');
+    }
+    function doVariant() {
+        var ex = M.existing, r = applyVariant(ex, M.entered, { variantName: M.vname, firstName: M.first });
+        if (!r.ok) { setErr(r.error); return; }
+        persist(); close(); resetForm(); toast(r.text + '.');
+    }
+    function doVersion() {
+        var v = String(M.vname || '').trim();
+        if (!v) { setErr('Type the version name (for example Large).'); return; }
+        var nm = versionName(M.existing, v);
+        if (!$('inv-name') || typeof saveInventoryItem !== 'function') { setErr('Cannot save a version from here.'); return; }
+        close(); $('inv-name').value = nm; saveInventoryItem();      // the normal save, so category / VAT / photo / recipe all work; a code that is the same as the old item's still asks first
+    }
+    function doBulk() {
+        var bad = '';
+        M.conflicts.forEach(function (c) {
+            if (bad) return;
+            if ((c.action === 'var' || c.action === 'ver') && !String(c.vname || '').trim()) bad = 'Type a ' + (c.action === 'var' ? 'variant' : 'version') + ' name for “' + c.name + '”.';
+        });
+        if (bad) { setErr(bad); return; }
+        if (!M.done) { M.done = { updated: 0, variants: 0, versions: 0, skipped: 0 }; M.handled = new Set(); }
+        // rows are applied one after another (two rows can point at the same existing item). A row that is applied is taken OUT of the list at once, so if a
+        // later row stops with a message, pressing Continue again can never apply the same row twice (stock would be added twice).
+        var failed = '';
+        while (M.conflicts.length && !failed) {
+            var c = M.conflicts[0], ex = c.item;
+            if (c.action === 'skip') { M.done.skipped++; }
+            else if (c.action === 'upd') {
+                if (hasVars(ex) && !c.vid) c.vid = ex.variants[0].id;
+                applyUpdate(ex, c.e, { prices: true, stock: 'add', variantId: hasVars(ex) ? c.vid : '' }); M.done.updated++;
+            } else if (c.action === 'var') {
+                var r = applyVariant(ex, c.e, { variantName: c.vname, firstName: c.first });
+                if (!r.ok) { failed = c.name + ': ' + r.error; break; }
+                M.done.variants++;
+            } else if (c.action === 'ver') {
+                var nm = versionName(ex, c.vname);
+                if (findMatch(nm, '')) { failed = '“' + nm + '” already exists too. Use a different version name.'; break; }
+                var p = { type: ex.type === 'ingredient' ? 'ingredient' : 'item', code: uniq(c.code || gid()), name: nm, price: pos(c.e.price) || Number(ex.price) || 0, wholesalePrice: pos(c.e.wholesalePrice) || Number(ex.wholesalePrice) || 0, unit: c.e.unit || ex.unit || 'pcs', qty: pos(c.e.qty) || 0, vatCategory: ex.vatCategory || 'A' };
+                if (ex.category) p.category = ex.category; if (ex.categoryId) p.categoryId = ex.categoryId; if (ex.subCat) p.subCat = ex.subCat;
+                inventory.push(p); M.done.versions++;
+            }
+            M.handled.add(c.row.id); M.conflicts.shift();
+        }
+        if (failed) { persist(); M.err = failed; render(); return; }
+        lastSummary = M.done; var proceed = M.proceed, handled = M.handled; close(); persist();
+        try { proceed(handled); } catch (e) { toast('Could not finish the bulk add: ' + (e && e.message || e), true); }
+    }
+
+    /* ---------- entry points the apps call ---------- */
+    // Add Item (one): the existing item the typed name / code matched. Returns true when the window opened (the caller then stops).
+    window.dupAskSingle = function (existing) {
+        try {
+            if (!existing) return false;
+            var e = formValues(), sug = '';
+            var by = e.code && String(existing.code || '').toLowerCase() === e.code.toLowerCase() ? 'code' : 'name';
+            M = { kind: 'single', existing: existing, entered: e, by: by, panel: '', err: '', vid: hasVars(existing) ? existing.variants[0].id : '', prices: true, stock: pos(e.qty) ? 'add' : 'keep', vname: sug, first: 'Original' };
+            open(); return true;
+        } catch (er) { M = null; return false; }
+    };
+    // Bulk Add: rows = bulkAddRows; the rows that match an existing item get the window. proceed(handledRowIds) re-runs the app's own save for the rest.
+    window.dupBulkCheck = function (rows, category, proceed) {
+        try {
+            var conflicts = [];
+            (rows || []).forEach(function (row) {
+                var code = String(row.code || '').trim(), name = '';
+                try { name = buildInventoryItemName(row.name, category, code); } catch (e) { name = String(row.name || '').trim(); }
+                if (!name) return;
+                var m = findMatch(name, code);
+                if (!m) return;
+                conflicts.push({ row: row, name: name, code: code, item: m.item, by: m.by, e: rowValues(row), action: 'upd', vid: hasVars(m.item) ? m.item.variants[0].id : '', vname: '', first: 'Original' });
+            });
+            if (!conflicts.length) return false;
+            M = { kind: 'bulk', conflicts: conflicts, rows: rows, proceed: proceed, err: '' };
+            open(); return true;
+        } catch (er) { M = null; return false; }
+    };
+    window.dupBulkSummary = function () {
+        var s = lastSummary, b = [];
+        if (s.updated) b.push(s.updated + ' existing updated'); if (s.variants) b.push(s.variants + ' added as variant' + (s.variants === 1 ? '' : 's')); if (s.versions) b.push(s.versions + ' added as version' + (s.versions === 1 ? '' : 's')); if (s.skipped) b.push(s.skipped + ' skipped');
+        return b.length ? ', ' + b.join(', ') : '';
+    };
+    Object.assign(window.__dupItem, { norm: norm, findMatch: findMatch, applyUpdate: applyUpdate, applyVariant: applyVariant, canConvert: canConvert, close: close });
+})();
+</script>

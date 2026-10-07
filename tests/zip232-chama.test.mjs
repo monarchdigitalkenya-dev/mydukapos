@@ -43,7 +43,7 @@ test('T3: a late contribution is fined automatically, once, and a prompt payer i
   const sv = await call(w.env, w.admin, { action: 'settings.save', settings: { contribution: { amountCents: 100000, freq: 'monthly', startDate: start }, features: { penalties: true }, penalties: { lateContribution: { enabled: true, amountCents: 20000, graceDays: 0, since: start } } } });
   assert.ok(sv.ok, JSON.stringify(sv));
   // Paul pays the first period on time (entered as a staff payment dated inside the period); Mary pays nothing
-  const rec = await call(w.env, w.admin, { action: 'payment.record', memberId: w.paul.id, amount: 1000, date: start, method: 'cash', requestId: 'r1' });
+  const rec = await call(w.env, w.admin, { action: 'payment.record', force: true, memberId: w.paul.id, amount: 1000, date: start, method: 'cash', requestId: 'r1' });
   assert.ok(rec.ok, JSON.stringify(rec));
   const h = await call(w.env, w.admin, { action: 'home' }); assert.ok(h.ok, JSON.stringify(h));
   const list = await call(w.env, w.admin, { action: 'penalty.list' });

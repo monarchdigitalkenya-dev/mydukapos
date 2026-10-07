@@ -2300,13 +2300,15 @@
         <button id="inventory-tab-btn" class="tab-link tab-group-start" data-tab="inventory-tab" onclick="guardedSwitchTab(event, 'inventory-tab')">📋 Inventory</button>
         <button id="add-item-tab-btn" class="tab-link" data-tab="add-item-tab" onclick="guardedSwitchTab(event, 'add-item-tab')">➕ Add New Items</button>
         <button id="materials-tab-btn" class="tab-link" data-tab="materials-tab" onclick="guardedSwitchTab(event, 'materials-tab')">🧩 Materials</button>
-        <button id="restocking-tab-btn" class="tab-link" data-tab="restocking-tab" onclick="guardedSwitchTab(event, 'restocking-tab')">📥 Restocking</button>
         <button id="stock-take-tab-btn" class="tab-link" data-tab="stock-take-tab" onclick="guardedSwitchTab(event, 'stock-take-tab')">📋 Stock Take</button>
-        <button id="tank-tab-btn" class="tab-link" data-tab="tank-tab" onclick="guardedSwitchTab(event, 'tank-tab')">🚰 Bulk Tank</button>
         <button id="production-tab-btn" class="tab-link" data-tab="production-tab" onclick="guardedSwitchTab(event, 'production-tab')">🏭 Production</button>
         <button id="bookings-tab-btn" class="tab-link" data-tab="bookings-tab" onclick="guardedSwitchTab(event, 'bookings-tab')">📅 Bulk Orders</button>
-        <button id="returns-tab-btn" class="tab-link" data-tab="returns-tab" onclick="guardedSwitchTab(event, 'returns-tab')">↩️ Returned Goods</button>
+        <!-- Logistics: every tab where stock or water MOVES (zip 237) -->
+        <button id="dispatch-tab-btn" class="tab-link tab-group-start" data-tab="dispatch-tab" onclick="guardedSwitchTab(event, 'dispatch-tab')">🚚 Dispatch</button>
         <button id="deliveries-tab-btn" class="tab-link" data-tab="deliveries-tab" onclick="guardedSwitchTab(event, 'deliveries-tab')">🚚 Deliveries<span id="deliveries-notif-badge" class="deliveries-badge" style="display:none;">0</span></button>
+        <button id="returns-tab-btn" class="tab-link" data-tab="returns-tab" onclick="guardedSwitchTab(event, 'returns-tab')">↩️ Returned Goods</button>
+        <button id="restocking-tab-btn" class="tab-link" data-tab="restocking-tab" onclick="guardedSwitchTab(event, 'restocking-tab')">📥 Restocking</button>
+        <button id="tank-tab-btn" class="tab-link" data-tab="tank-tab" onclick="guardedSwitchTab(event, 'tank-tab')">🚰 Bulk Tank</button>
         <!-- Money -->
         <button id="daily-sales-tab-btn" class="tab-link tab-group-start" data-tab="daily-sales-tab" onclick="guardedSwitchTab(event, 'daily-sales-tab')">📊 Daily Sales</button>
         <button id="audit-tab-btn" class="tab-link" data-tab="audit-tab" onclick="guardedSwitchTab(event, 'audit-tab'); renderAuditTab();">🔍 Audit</button>
@@ -3320,6 +3322,29 @@
                     <button class="btn-main" onclick="submitProduction()">💾 Record Production</button>
                 </div>
 
+                <div class="panel" style="border-left:5px solid #2980b9;">
+                    <h3>🚚 Sending stock to the shop?</h3>
+                    <p style="font-size:13px; color:#7f8c8d; margin-top:-6px;">Dispatching (items and pre-filled refills) now lives in its own tab under <b>Logistics</b>. Factory stock and Dispatch History are there too.</p>
+                    <button type="button" class="btn-main" style="background:#2980b9;" onclick="openDispatchTabFromProduction()">🚚 Go to Dispatch</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB: DISPATCH (zip 237) - Production -> Shop, items and pre-filled refills -->
+        <div id="dispatch-tab" class="tab-content">
+            <div class="pos-grid">
+                <div class="panel" style="border-left:5px solid #2980b9;">
+                    <h3>🚚 Dispatch: Production → Shop</h3>
+                    <div id="dispatch-route-banner" style="font-size:14px; margin:-4px 0 12px;"></div>
+                    <div style="display:flex; flex-wrap:wrap; gap:10px;">
+                        <button type="button" class="btn-main" style="background:#2980b9; flex:1 1 220px; margin:0;" onclick="openRefillDispatchModal()">💧 Dispatch Refills (pre-filled bottles or litres)</button>
+                    </div>
+                    <p style="font-size:12.5px; color:#7f8c8d; margin:10px 0 0;">For bottled water, bales and other items press <b>🚚 Dispatch</b> on the item below. Stock leaves Production and lands on the shop branch at the same moment, and it is recorded in Dispatch History.</p>
+                </div>
+                <div class="panel" id="dispatch-requests-panel" style="display:none;">
+                    <h3>🔔 Requests from shops</h3>
+                    <div id="dispatch-requests-list"></div>
+                </div>
                 <div class="panel factory-stock-card">
                     <h3>🏭 Factory Floor Stock</h3>
                     <p style="font-size:13px; color:#7f8c8d; margin-top:-6px;">Production's current stock, at a glance — the exact same numbers as Inventory. Sell straight from here, or dispatch some/all of it to a Shop branch.</p>
@@ -15799,6 +15824,22 @@ function stockRecSig(it) {
 // scan the whole sales history and movement log once per item per column, re-reading every date each time: with 3,000 items and
 // 5,000 sales that took ~50 s on a phone. Same figures as before (same rules, same === code match). The totals are kept only
 // for the current task (cleared right after), so a sale or a stock change made afterwards is always counted.
+// zip 237: does this movement belong to the site the report is for? Stamped movements say so; older dispatch movements are told apart by their wording.
+function stockReportSiteOK(m) {
+            const cur = typeof activeSiteId !== 'undefined' ? activeSiteId : '';
+            if (!cur || cur === 'both' || !m) return true;
+            if (m.siteId) return m.siteId === cur;
+            let nm = '';
+            try { nm = currentSite().name; } catch (e) { nm = ''; }
+            if (nm) {
+                const r = String(m.reason || '');
+                let x = /^Dispatch received from (.+?)(?: \(via "|$)/.exec(r);
+                if (x && x[1] === nm) return false;
+                x = /^Dispatched to (.+?)(?: \(via "|$)/.exec(r);
+                if (x && x[1] === nm) return false;
+            }
+            return true;
+        }
 function stockReportTotals(kind, a, b) {
             let cache = window.__stockReportTotals;
             if (!cache) {
@@ -15807,7 +15848,7 @@ function stockReportTotals(kind, a, b) {
             }
             const sl = typeof salesLog !== 'undefined' && Array.isArray(salesLog) ? salesLog.length : 0;
             const ml = typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog) ? stockMovementLog.length : 0;
-            const ck = kind + '|' + a + '|' + (b || '') + '|' + sl + '|' + ml;
+            const ck = kind + '|' + a + '|' + (b || '') + '|' + sl + '|' + ml + '|' + (typeof activeSiteId !== 'undefined' ? activeSiteId : '');
             if (cache.has(ck)) return cache.get(ck);
             const out = new Map();
             const add = (code, v) => { out.set(code, (out.get(code) || 0) + v); };
@@ -15819,7 +15860,7 @@ function stockReportTotals(kind, a, b) {
                 });
             } else {
                 (typeof stockMovementLog !== 'undefined' && Array.isArray(stockMovementLog) ? stockMovementLog : []).forEach((m) => {
-                    if (!m || !inWin(dateKey(new Date(m.timestamp)))) return;
+                    if (!m || !inWin(dateKey(new Date(m.timestamp))) || !stockReportSiteOK(m)) return;
                     const d = stockMoveDelta(m);
                     if (kind === 'mvAfter') add(m.code, d);
                     else if (kind === 'mvAdded' ? d > 0 : d < 0) add(m.code, Math.abs(d));
@@ -17332,6 +17373,7 @@ async function zReportPreflight() {
             { id: 'restocking-tab', label: '📥 Restocking' },
             { id: 'stock-take-tab', label: '📋 Stock Take' },
             { id: 'production-tab', label: '🏭 Production' },
+            { id: 'dispatch-tab', label: '🚚 Dispatch' },
             { id: 'bookings-tab', label: '📅 Bulk Orders' },
             { id: 'bills-tab', label: '🧾 Bills' },
             { id: 'debts-tab', label: '📒 Debts' },
@@ -19337,6 +19379,7 @@ async function zReportPreflight() {
             if (tabId === 'restocking-tab') renderRestockingTab();
             if (tabId === 'stock-take-tab') renderAquaStockTake();
             if (tabId === 'production-tab') renderProductionTab();
+            if (tabId === 'dispatch-tab') renderDispatchTab();
             if (tabId === 'bookings-tab') renderBookingsTable();
             if (tabId === 'daily-sales-tab') renderDailySalesScoped();
             if (tabId === 'stock-report-tab') renderStockReportScoped();
@@ -23279,6 +23322,39 @@ async function zReportPreflight() {
             renderDispatchHistoryTable();
         }
 
+        /* ---------- DISPATCH TAB (zip 237) ----------
+           The Dispatch panels used to sit at the bottom of Production. They now live in their own tab under Logistics. Nothing about HOW stock moves changed:
+           the same confirmSiteDispatch / confirmRefillDispatch run, so stock, tanks, history and shop requests behave exactly as before. */
+        function renderDispatchTab() {
+            const ban = document.getElementById('dispatch-route-banner');
+            if (ban) {
+                const prod = sites.find(x => x.id === productionSiteId());
+                const here = currentSite();
+                const shops = shopBranches();
+                const route = `<b>${escapeHtml(prod ? prod.name : 'Production')}</b> → <b>${shops.length ? shops.map(b => escapeHtml(b.name)).join(', ') : '(no shop branch yet)'}</b>`;
+                ban.innerHTML = here && here.type === 'production'
+                    ? `✅ You are at Production. Route: ${route}`
+                    : `⚠️ You are viewing <b>${escapeHtml(here ? here.name : '?')}</b>. Dispatching starts at Production. <button type="button" class="settings-small-btn" onclick="openDispatchTabFromProduction(true)">Switch to Production</button>`;
+            }
+            renderFactoryStockTable();
+            renderDispatchHistoryTable();
+            renderDispatchRequests();
+        }
+        function renderDispatchRequests() {
+            const panel = document.getElementById('dispatch-requests-panel'), box = document.getElementById('dispatch-requests-list');
+            if (!panel || !box) return;
+            const open = (typeof stockRequests !== 'undefined' ? stockRequests : []).filter(r => r && r.status === 'pending');
+            panel.style.display = open.length ? '' : 'none';
+            box.innerHTML = open.map(r => `<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--light); flex-wrap:wrap;"><span style="flex:1 1 160px;"><b>${escapeHtml(r.name || r.code)}</b><br><small style="color:#7f8c8d;">${escapeHtml(r.fromSiteName || 'Shop')} · ${new Date(r.timestamp).toLocaleString('en-GB')} · ${escapeHtml(r.requestedBy || '')}</small></span><button type="button" class="settings-small-btn" onclick="openDispatchModal('${escapeJsAttr(r.code)}')">🚚 Dispatch</button></div>`).join('');
+        }
+        function openDispatchTabFromProduction(switchOnly) {
+            if (currentSite().type !== 'production') { try { setActiveSite(productionSiteId()); } catch (e) { /* stays where it is */ } }
+            if (switchOnly) { renderDispatchTab(); return; }
+            const b = document.getElementById('dispatch-tab-btn');
+            if (b && b.style.display !== 'none') { b.click(); return; }
+            showToast('Dispatch is not available to your login. Ask the owner to give you the Dispatch tab.', true);
+        }
+
         function renderDispatchHistoryTable() {
             const tbody = document.querySelector('#dispatch-history-table tbody');
             if (!tbody) return;
@@ -23752,12 +23828,14 @@ async function zReportPreflight() {
         // "how much was added/removed" for any period — something the
         // live qty on its own can't do. Sold quantities are never logged
         // here; salesLog already has those with full accuracy.
-        function logStockMovement(code, name, delta, reason) {
+        function logStockMovement(code, name, delta, reason, siteId) {
             if (!delta) return;
-            stockMovementLog.push({
+            // zip 237: stamp the SITE the movement happened at (a dispatch's "received" half belongs to the shop, not Production), so the Stock Report of one site never counts the other site's half
+            const at = siteId || (typeof activeSiteId !== 'undefined' && activeSiteId !== 'both' ? activeSiteId : '');
+            stockMovementLog.push(Object.assign({
                 id: genSaleId(), timestamp: new Date().toISOString(),
                 code, name, delta, type: delta > 0 ? 'added' : 'removed', reason,
-            });
+            }, at ? { siteId: at } : {}));
         }
         // Same cost snapshot as saleCogs(), scoped to a single line item —
         // lets the Profits & Expenses breakdown show accurate per-item cost
@@ -30218,7 +30296,7 @@ async function zReportPreflight() {
                 addStockAt(bottle, branchId, bottlesToMove);
                 bottle.updatedAt = Date.now();
                 logStockMovement(bottle.code, bottle.name, -bottlesToMove, `Dispatched to ${branch.name} (via "${product.name}")`);
-                logStockMovement(bottle.code, bottle.name, bottlesToMove, `Dispatch received from ${currentSite().name} (via "${product.name}")`);
+                logStockMovement(bottle.code, bottle.name, bottlesToMove, `Dispatch received from ${currentSite().name} (via "${product.name}")`, branchId);
                 syncLinkedBaleQuantities();
                 movedQty = bottlesToMove / productBottlesPerBale(product);
             } else if (product.trackBottles) {
@@ -30240,7 +30318,7 @@ async function zReportPreflight() {
             if (!(product.category === 'bale' && product.linkedBottleCode && !product.trackBottles)) {
                 logStockMovement(product.code, product.name, -qty, `Dispatched to ${branch.name}`);
                 product.updatedAt = Date.now();
-                logStockMovement(product.code, product.name, qty, `Dispatch received from ${currentSite().name}`);
+                logStockMovement(product.code, product.name, qty, `Dispatch received from ${currentSite().name}`, branchId);
             }
 
             dispatchLog.push({
@@ -34634,6 +34712,7 @@ async function zReportPreflight() {
                 + 'body.hdr-hidden > header,body.hdr-hidden #app-container > header{display:none !important}body.hdr-hidden #hdr-show-bar{display:block}'
                 + '.pos-sq-bar{display:flex;align-items:center;gap:8px;margin-bottom:12px}.pos-sq-bar button{min-height:44px}.pos-sq-bar button.active{background:var(--success,#27ae60)}'
                 + '.pos-sq-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}.pos-sq-head label{font-weight:700;font-size:13px}.pos-sq-head input{font-size:16px;padding:6px 8px;min-height:38px}'
+                + '.pos-sq-pin{margin-left:auto;display:inline-flex;align-items:center;gap:6px;cursor:pointer;min-height:38px;white-space:nowrap}.pos-sq-head .pos-sq-pin input{width:22px;height:22px;min-height:0;padding:0;margin:0}'
                 + '.pos-sq-who{font-size:12px;color:var(--text-muted,#7f8c8d)}.pos-sq-staff{font-weight:700;margin:12px 0 6px}.pos-sq-staff:first-child{margin-top:0}'
                 + '.pos-sq-boxes{display:flex;gap:6px;flex-wrap:nowrap}.pos-sq-box{flex:1;min-width:0;border-radius:8px;padding:10px 8px;border-left:4px solid}'
                 + '.pos-sq-box .lbl{display:block;font-size:12px;font-weight:600}.pos-sq-box .val{display:block;font-weight:700;font-size:clamp(13px,calc(4.2vw / var(--pos-z,1)),20px);overflow-wrap:anywhere}'
@@ -34667,9 +34746,11 @@ async function zReportPreflight() {
         function refresh() {
             var btn = document.getElementById('my-sales-toggle-btn'), panel = document.getElementById('pos-sq-panel');
             if (!btn || !panel) return;
-            btn.classList.toggle('active', sqOpen); btn.setAttribute('aria-expanded', sqOpen ? 'true' : 'false');
-            panel.style.display = sqOpen ? '' : 'none';
-            if (!sqOpen) return;
+            var showing = sqOpen || pinned();                                   /* zip 244: pinned = always showing */
+            btn.classList.toggle('active', showing); btn.setAttribute('aria-expanded', showing ? 'true' : 'false');
+            panel.style.display = showing ? '' : 'none';
+            if (!showing) return;
+            var pinEl = document.getElementById('pos-sq-pin'); if (pinEl) pinEl.checked = pinned();
             if (!sqDay) sqDay = dayKey(new Date());
             var dayEl = document.getElementById('pos-sq-day'); if (dayEl && dayEl.value !== sqDay) dayEl.value = sqDay;
             var sv = cur(), who = document.getElementById('pos-sq-who');
@@ -34679,7 +34760,18 @@ async function zReportPreflight() {
             var all = tt.reduce(function (a, t) { return { total: r2(a.total + t.total), cash: r2(a.cash + t.cash), mpesa: r2(a.mpesa + t.mpesa), card: r2(a.card + t.card) }; }, zero);
             list.innerHTML = '<div class="pos-sq-staff">' + esc((sqDay === dayKey(new Date()) ? "Daily Sales" : 'Daily Sales — ' + sqDay)) + '</div>' + boxes(all) + tt.map(function (t) { return '<div class="pos-sq-staff">👤 ' + esc(t.server) + '</div>' + boxes(t); }).join('');
         }
-        window.posSqToggle = function () { sqOpen = !sqOpen; refresh(); };
+        /* zip 244: "Keep the Daily Sales panel open" - a choice of THIS device. ON: the panel is always showing; the 💰 button then tucks it away (and un-pins). */
+        function pinned() { try { return localStorage.getItem('pos_sales_pinned') === '1'; } catch (e) { return false; } }
+        window.posSqPin = function (on) {
+            try { if (typeof safeSetItem === 'function') safeSetItem('pos_sales_pinned', on ? '1' : '0'); else localStorage.setItem('pos_sales_pinned', on ? '1' : '0'); } catch (e) { /* only this visit */ }
+            if (!on) sqOpen = false;
+            refresh();
+            var c = document.getElementById('sales-pin-toggle'); if (c) c.checked = !!on;
+        };
+        window.posSqToggle = function () {
+            if (pinned()) { window.posSqPin(false); try { showToast('Daily Sales is tucked away again. Tick "Keep open" in Settings > View to pin it.'); } catch (e) { /* cosmetic */ } return; }
+            sqOpen = !sqOpen; refresh();
+        };
         window.posSqDay = function (v) { sqDay = v || dayKey(new Date()); refresh(); };
         function init() {
             try {
@@ -34703,11 +34795,13 @@ async function zReportPreflight() {
                     css();
                     var wrap = document.createElement('div');
                     wrap.innerHTML = '<div class="pos-sq-bar"><button type="button" id="my-sales-toggle-btn" class="settings-small-btn" aria-expanded="false" aria-controls="pos-sq-panel">💰 Sales</button></div>'
-                        + '<div id="pos-sq-panel" style="display:none;margin-bottom:14px;"><div class="panel"><div class="pos-sq-head"><label for="pos-sq-day">Day</label><input type="date" id="pos-sq-day"><span id="pos-sq-who" class="pos-sq-who"></span></div><div id="pos-sq-list"></div></div></div>';
+                        + '<div id="pos-sq-panel" style="display:none;margin-bottom:14px;"><div class="panel"><div class="pos-sq-head"><label for="pos-sq-day">Day</label><input type="date" id="pos-sq-day"><span id="pos-sq-who" class="pos-sq-who"></span><label class="pos-sq-pin" for="pos-sq-pin"><input type="checkbox" id="pos-sq-pin"> 📌 Keep open</label></div><div id="pos-sq-list"></div></div></div>';
                     while (wrap.lastChild) tab.insertBefore(wrap.lastChild, tab.firstChild);
                     document.getElementById('my-sales-toggle-btn').addEventListener('click', window.posSqToggle);
                     document.getElementById('pos-sq-day').addEventListener('change', function () { window.posSqDay(this.value); });
-                    setInterval(function () { if (sqOpen && !document.hidden) refresh(); }, 4000);
+                    document.getElementById('pos-sq-pin').addEventListener('change', function () { window.posSqPin(this.checked); });
+                    setInterval(function () { if ((sqOpen || pinned()) && !document.hidden) refresh(); }, 4000);
+                    if (pinned()) refresh();
                 }
             } catch (e) { /* the extras never break the till */ }
         }
@@ -35551,7 +35645,7 @@ async function zReportPreflight() {
 
 <!-- @shared-block:guide-data:begin -->
 <!-- GUIDE DATA (water) — generated by tools/build-guides.mjs; edit that file, not this one. -->
-<script>window.__GUIDE_DATA = {"key":"water","title":"Aqua POS — User Guide","tagline":"Water refill stations, bottled-water producers and distributors — refills, sealed bottles, bales, bulk tanks, production and deliveries.","module":"Aqua POS","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Aqua POS works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"setup","icon":"🧭","title":"Set up your business (first 20 minutes)","intro":"Do these once, in this order, as the Admin:","steps":["**⚙️ Settings ▸ General** — business name, logo, phone and address. They print on every receipt.","**Settings ▸ 🧾 Receipt Settings** — header and footer lines, **🔠 Adjust receipt size** (paper 58 mm, 80 mm or custom, and how big the letters are), how many copies, whether to print the reference number and its barcode.","**Settings ▸ 🧾 Tax & Alerts** — VAT rates, and the **low-stock level** (items at or below it are flagged and offered as buttons when you restock).","**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Paystack, or Safaricom Daraja with your Till/Paybill) so you can send payment prompts to customers.","**Settings ▸ 🖨️ Hardware** — connect your receipt printer (see the **Printers & hardware** chapter).","Add your products and materials (see **📋 Inventory**), then **Settings ▸ 👥 Staff Accounts** to invite your staff.","**Settings ▸ 🗄️ Backups** — check that backups are on. **Settings ▸ 📥 Data Import** brings in data from another system."],"tips":["Settings ▸ 🔒 Security & Access lets the Admin lock tabs behind the management password.","Settings ▸ 🧾 eTIMS (KRA) is only for businesses registered for KRA eTIMS — leave it off otherwise."]},{"id":"sale","icon":"🧾","title":"Making a sale","steps":["Open **🧾 Sales Counter**. Use the filters **🧺 All / 🔄 Refill / 🍼 Sealed Bottles / 🚰 Dispensers & Accessories / 📦 Bales (Cases)** or search.","Tap a **refill size** to add it, or use **Custom Refill — Litres Needed** for any volume. Tap sealed bottles, dispensers or bales to add them.","Choose **🚶 Walk-In** or **🚚 Delivery** (address, zone, fee, driver). For delivery pick **💰 Paid Now** or **🧾 Pay on Delivery**.","Choose the payment method (see **Taking payment**) and **Complete**. Water is drawn from the site’s **bulk tank**; the app warns you if the tank is short."]},{"id":"sites","icon":"🏭","title":"Sites: Shop and Production","steps":["Aqua POS can run more than one **site** — for example the **Shop** and the **Production** plant. Pick the site you are working at from the switcher at the top.","Each site has **its own bulk tanks, refill sizes/prices and stock** — water at one site is never drawn down by a sale at another. **Both sites** is a way of *looking* at the reports; sales made while it is selected belong to the Shop."]},{"id":"sizes","icon":"💧","title":"Refill sizes and prices","steps":["Open **⚙️ Settings ▸ General**. Set the **Price per Litre (KES)**; every size on **Auto (× 1L rate)** follows it (a 20 L refill is 20 × the litre price).","Untick **Auto** on a size to type its own price. Tap **+ Add a Size Not Listed** to add a new size (a label, its volume in **millilitres** — 2.5 L is 2500 — and a price). It appears in the list and on the counter at once; a duplicate size is refused.","Set the VAT category per size, and the 🧩 **Recipe** (materials used per refill) so materials are tracked."]},{"id":"tank","icon":"🚰","title":"Bulk tanks","steps":["Open **🚰 Bulk Tank**. **+ Add Tank** for each tank at the site. When a water delivery arrives choose the tank, type the **litres added** (and cost and supplier if you like) ▸ **💾 Record Tank Refill**.","Every refill sale reduces the tank; **📜 Tank Refill History** lists all additions and corrections. A tank must be empty before you remove it, and each site keeps at least one."]},{"id":"prod","icon":"🏭","title":"Production","steps":["Open **🏭 Production**. Pick the item and how many you produced ▸ **💾 Record Production**; its saved **recipe** (set in Inventory ▸ 🏭 Recipe) deducts the materials and adds the finished stock.","For multi-stage products use **🧙 Multi-Step Production Wizard**. **Factory Floor Stock**, **Production History** and **Dispatch History** follow what was made and sent out."]},{"id":"bulk","icon":"📅","title":"Bulk orders","steps":["Open **📅 Bulk Orders**. Type the client, business, phone, **delivery date**, address, **deposit paid** and notes, add the products and quantities and **💾 Save Booking**.","On the delivery day fulfil the order; the deposit is counted against the total."]},{"id":"stocktakew","icon":"📋","title":"Stock Take (per site)","steps":["Pick the site you are counting at the top (a stock take counts **one site at a time**), then open **📋 Stock Take**. It lists that site’s products (a bottle-tracked bale is counted in **bottles**), its **tank litres** and its **materials**.","Type what you actually counted next to each line — lines left blank are not touched. Tap **💾 Update** on one line, or **✔ Update stock to my counts** for all of them.","Each change is recorded once as a **count** (\"there are 12\"), not as a +/−, so refreshing, going offline or opening another device can never apply it again. **Recent stock takes** shows Was / Counted / Now for every device, with ✓ applied or ⏳ waiting to sync."]},{"id":"stockw","icon":"📥","title":"Inventory and restocking","steps":["**📋 Inventory** holds bottled products, bales, accessories, materials and refill prices. Edit stock and prices by tapping an item.","**📥 Restocking** tops up a material or product (decimals are fine, e.g. 0.5 bale, 10.5 litres) — record the supplier and cost; **⬆️ Import Excel/CSV** loads a whole list; history shows below."]},{"id":"payments","icon":"💳","title":"Taking payment","steps":["**Cash** — type the amount the customer gave; the change shows.","**M-Pesa** — enter the customer’s number and tap **Send M-Pesa Prompt**, or type the M-Pesa code if they paid to your till.","**Split** — part cash, part M-Pesa; the two amounts must add up to the total.","**Bill (Pay Later)** — the customer’s name and phone; the sale waits in **🧾 Bills** until you **Settle** it.","**Delivery orders:** choose **💰 Paid Now** or **🧾 Pay on Delivery**; the driver collects and you settle from Bills or Deliveries."],"sections":[{"title":"Hold a sale","steps":["Tap **⏸️ Hold sale** to park the customer’s cart while you serve someone else (one held sale at a time); bring it back when they are ready."]}]},{"id":"receipts","icon":"🧾","title":"Receipts: print, share, reprint","steps":["When a sale completes a **receipt preview** opens. Tap **🖨️ Print** — it prints **once**, and the preview closes so it cannot be printed twice by accident.","The sale is **saved before the receipt appears** — the preview says \"✓ Sale saved\". **Cancel / Save** only closes the screen: it never cancels the sale (to reverse one, **void** it in Daily Sales).","Every receipt of the day carries a **Customer number** (Customer 1, 2, 3…) just above the reference number. It starts again at 1 each day, so the last receipt of the day tells you how many customers you served.","To print the same receipt again later, open it from **Daily Sales** and tap Print — the app asks \"already printed at 14:32 — print another copy?\" so copies are always deliberate.","**📤 Share** sends the receipt as a **PDF** (WhatsApp shows it as a document). On a phone it opens your apps. On computers and some browsers that cannot hand a file to another app, the PDF is **saved to Downloads** instead — attach it in WhatsApp or email yourself.","**⬇️ Download** always saves the PDF."],"tips":["If the print fails (printer off, paper out) the preview stays open so you can try again — the sale is already saved.","Settings ▸ 🧾 Receipt Settings controls what appears on the receipt."]},{"id":"bills","icon":"📒","title":"Bills, Pay on Delivery and Debts","steps":["**Pay Later / Pay on Delivery** sales wait in **🧾 Bills**. Tap **Settle** when the money is collected (full or part).","**📒 Debts** records other money customers owe.","A settled bill stays visible under **Show closed bills**."],"tips":["Pay-Later sales are not counted as sales until money is paid on them."]},{"id":"stock","icon":"📥","title":"Restocking and stock control","steps":["**📥 Restocking:** choose the material or product (or type a new name), type the quantity (decimals allowed) and the cost ▸ **💾 Record Restock**. Use **⬆️ Import Excel/CSV** for a list.","**📋 Inventory:** tap any item to correct its quantity or price. Materials used by refills and production are deducted automatically from their recipes.","**📦 Stock Report** shows movement for the period; **↩️ Returned Goods** puts returned bottles/bales back or records faulty ones."],"tips":["Check the **🚰 Bulk Tank** level regularly — refill sales draw from it."]},{"id":"reports","icon":"📊","title":"Reports and Daily Sales","steps":["**📊 Daily Sales** lists every sale for Today, a Week, a Month or a Custom range, by payment method, for the **site you are in**. Print the report from there; a wrong sale can be voided (stock and tank litres come back).","On the same tab, **📋 X Report** gives an interim reading of today’s trading (transactions, sales, tax breakdown) that can be generated any number of times without closing anything; **🔒 Z Report** shows the same totals and lets the Admin **finalize** the trading day once, behind the management password.","**🔍 Audit** is a searchable, read-only timeline of sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes — who did what, and when.","**📦 Stock Report** — movement of products and materials.","**💰 Profits & Expenses** — add expenses (fuel, wages, electricity…) and see profit.","**📈 Demand Trends** — which refill sizes and products sell most, and when.","**📊 Dashboard** — today’s figures the moment you open the app."]},{"id":"people","icon":"👥","title":"Staff, access and security","steps":["Open **⚙️ Settings ▸ 👥 Staff Accounts** (or the **👥 Staff** tab) and add a staff member’s name. Tick the tabs they may use — the Sales Counter too; a staff member sees only the tabs ticked for them. Tap **Generate invite link**.","Send the link to them. They open it, choose a **PIN** (4+ characters) and they are in — no shop password needed. The link then turns into their personal login link: they should bookmark it.","A staff member is listed once: a double tap on \"Create my account\" cannot make two copies.","**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.","**💼 Payroll** — add staff and their documents, run payroll (review ▸ approve ▸ pay) and give out payslips. Needs internet; a paid or approved run is never edited — corrections are a reversal run.","**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.","**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.","**⬇️ Sync to this device** (Settings ▸ 🔐 Devices & Security) sends this device's unsent sales first, then fetches everything the shop has on the server — step by step, with nothing deleted or duplicated.","**Settings ▸ 🔐 Devices & security** lists every device that syncs your shop (its till number, app release and last sync). Tap **🔒 Only paired devices may sync** so that knowing your shop link is no longer enough to see or change your data. Your devices pair themselves; a new one needs the shop password once, or a **6-digit pairing code** made here (so staff never need the password). Revoke a lost phone from the same list. Signing in and selling always work offline either way.","**👤 My Customers** keeps your customers and their purchases; **🎟️ Loyalty Tokens** (Settings) rewards repeat customers where enabled."],"tips":["To remove a staff member, remove them under Staff Accounts — their old sales stay in the records.","If someone forgets the Admin password, use **Forgot it? Email me a reset link** on the login screen (needs the recovery email set up)."]},{"id":"hardware","icon":"🖨️","title":"Printers & hardware","intro":"Open **⚙️ Settings ▸ 🖨️ Hardware** (or tap the small printer icon at the top). There are three ways to print:","sections":[{"title":"1. System print dialog (works with any installed printer)","steps":["Set **Printer mode** to **System print dialog**.","Print a receipt: the device’s print window opens — choose your receipt printer once. The receipt prints on a slip only as long as its lines (paper is not wasted).","Browsers never allow silent printing, so this mode always shows that window. Use Bluetooth or USB to avoid it."]},{"title":"2. USB thermal printer (computer or Android)","steps":["Plug the printer in and switch it on.","Set **Printer mode** to **USB**, tap **Connect USB Printer**, choose your printer and allow access.","From then on the app **reconnects by itself** whenever the printer is switched off and on, unplugged and replugged, or the app is reopened — it keeps checking every few seconds and prints the moment the printer is back. You do not go back to Settings."]},{"title":"3. Bluetooth thermal printer (phones and tablets)","steps":["Switch the printer on and pair it in the phone’s Bluetooth settings if it asks.","Set **Printer mode** to **Bluetooth**, tap **Connect Bluetooth Printer** and pick it from the list (once).","After a power cut or the printer going out of range, the app reopens the same printer by itself (no chooser). Some browsers cannot reopen a remembered Bluetooth printer after the page reloads — the screen then says **Tap Connect once**."]},{"title":"Paper, copies and the cash drawer","steps":["**Receipt Settings ▸ 🔠 Adjust receipt size** opens a window where you choose the paper (58 mm, 80 mm or custom) and the letter size in points (7 is the standard; try 9, 10, 11 if receipts look too small). A sample receipt with items changes as you tap **−** or **+**; press **🖨️ Print test receipt** to check it on your printer, then **Save** — that is how every receipt will print. **Cancel** throws the changes away, **Reset to standard** goes back to 7 pt. The number of copies is set in Receipt Settings too.","Each till can have a different printer: under **THIS device's printer paper** choose 58 mm or 80 mm for the printer on this device (or tap **58 mm / 80 mm** at the top of any receipt). **If words break or numbers jump to the next line, the printer is 58 mm on an 80 mm setting — choose 58 mm.** The receipt preview is exactly what will print.","**📏 Print a width test** (USB / Bluetooth) prints a 32- and a 48-character line: if the 48 one breaks in two, the printer is 58 mm.","The **cash drawer** plugs into the **printer** (RJ11/RJ12 port), not the computer; turn on \"open drawer on print\" in Hardware settings.","To check paper width and the drawer, print a small sale receipt, or reprint one from Daily Sales."]},{"title":"Barcode scanners","steps":["A USB or Bluetooth **scanner** works like a keyboard: click the search box on the Sales Counter and scan.","The 📷 button next to search scans with the phone camera."]}],"tips":["Printing waits up to 4 seconds for a printer that has just been switched on before saying it is not connected.","If a print fails half-way the receipt is **not** sent again automatically (so you never get a doubled half-receipt) — reprint from Daily Sales."]},{"id":"offline","icon":"📶","title":"Offline, sync and backups","steps":["**Offline:** the app keeps working with no internet; sales, tank levels and receipts are saved on the device.","**Sync:** when the internet returns the dot turns green and every device catches up.","**Backups:** ⚙️ Settings ▸ 🗄️ Backups. Your data is also stored on the server, so a lost phone does not lose your business.","**Sites:** switching between the Shop and Production only changes what you look at and record; both are always saved."],"tips":["Use **Settings ▸ Install App ▸ 🔄 Re-download for Offline Use** after an update if the app ever fails to open offline."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**Printer does not print:** check paper and power, then Settings ▸ Hardware ▸ status. Switch it off and on — the app finds it again by itself. As a fallback use the system print dialog.","**\"Only 0 available\" when selling:** the product has no stock. Record it in Restocking, or correct it on the Inventory tab.","**A sale is missing from Daily Sales:** tap **🔎 Check for missing sales** under the list. Pay-Later bills only count when paid; check Bills. In Aqua POS check the site selected at the top.","**The login window appears again:** just log in; it will not reappear over a running session.","**Forgot the password:** tap **Forgot the password?** on the login screen and use **Email me a reset link**.","**Something looks out of date on a device:** wait for the green dot, then reload the page once.","**Still stuck:** the Owner sees errors from every shop in the Owner Console ▸ Errors tab — tell your provider what you were doing and roughly when."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Aqua POS, in the order they appear:","tabs":[["Sales Counter","New sale: refills by size or custom litres, sealed bottles, dispensers, bales; walk-in or delivery."],["Dashboard","Today at a glance: sales, money in by payment method, low stock and what needs attention."],["Inventory","Products (bottled water, bales, accessories), materials and refill sizes with prices and recipes."],["Add New Items","Add items one by one, many at once (bulk), or from a photo of a list (Capture List)."],["Materials","Raw materials and their suppliers: stock levels, costs and restocking."],["Restocking","Top up a material or product (decimals allowed) and see restock history."],["Stock Take","Count what is really at this site — products, bottles, tank litres, materials — and correct the system to it."],["Bulk Tank","Your bulk water tanks: add water, and see each site’s level drop as refills are sold."],["Production","Record what you produced; materials are deducted from its recipe; factory floor stock and dispatches."],["Bulk Orders","Book large future orders with a deposit and delivery date."],["Returned Goods","Customer returns and exchanges: refund, swap, faulty items."],["Deliveries","Delivery orders assigned to drivers: picked up, on route, delivered."],["Daily Sales","Every sale for a day / week / month, filtered by payment method, for the site you are in."],["Audit","A searchable, read-only timeline of who did what and when — sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes."],["Stock Report","Stock movement of products and materials."],["Profits & Expenses","Record expenses and see gross and net profit for any period."],["Demand Trends","Which sizes and products sell most, and when."],["Bills","Pay-Later sales still owing: settle in full or in part, see closed bills."],["Debts","Money customers owe you outside of bills; record and settle."],["My Customers","Your customer list with purchase history and loyalty."],["Staff","Add staff, choose which tabs each can use, send invite links, see who is serving."],["Attendance","Staff clock in / out and hours worked."],["Payroll","Create Payroll: staff register and documents, pay runs, payslips. Admin / payroll rights only; a worker sees just their own payslips. Needs internet and a staff PIN sign-in."],["Settings","Business details, receipts, tax, hardware, security, backups and more."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
+<script>window.__GUIDE_DATA = {"key":"water","title":"Aqua POS — User Guide","tagline":"Water refill stations, bottled-water producers and distributors — refills, sealed bottles, bales, bulk tanks, production and deliveries.","module":"Aqua POS","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Aqua POS works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"setup","icon":"🧭","title":"Set up your business (first 20 minutes)","intro":"Do these once, in this order, as the Admin:","steps":["**⚙️ Settings ▸ General** — business name, logo, phone and address. They print on every receipt.","**Settings ▸ 🧾 Receipt Settings** — header and footer lines, **🔠 Adjust receipt size** (paper 58 mm, 80 mm or custom, and how big the letters are), how many copies, whether to print the reference number and its barcode.","**Settings ▸ 🧾 Tax & Alerts** — VAT rates, and the **low-stock level** (items at or below it are flagged and offered as buttons when you restock).","**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Paystack, or Safaricom Daraja with your Till/Paybill) so you can send payment prompts to customers.","**Settings ▸ 🖨️ Hardware** — connect your receipt printer (see the **Printers & hardware** chapter).","Add your products and materials (see **📋 Inventory**), then **Settings ▸ 👥 Staff Accounts** to invite your staff.","**Settings ▸ 🗄️ Backups** — check that backups are on. **Settings ▸ 📥 Data Import** brings in data from another system."],"tips":["Settings ▸ 🔒 Security & Access lets the Admin lock tabs behind the management password.","Settings ▸ 🧾 eTIMS (KRA) is only for businesses registered for KRA eTIMS — leave it off otherwise."]},{"id":"sale","icon":"🧾","title":"Making a sale","steps":["Open **🧾 Sales Counter**. Use the filters **🧺 All / 🔄 Refill / 🍼 Sealed Bottles / 🚰 Dispensers & Accessories / 📦 Bales (Cases)** or search.","Tap a **refill size** to add it, or use **Custom Refill — Litres Needed** for any volume. Tap sealed bottles, dispensers or bales to add them.","Choose **🚶 Walk-In** or **🚚 Delivery** (address, zone, fee, driver). For delivery pick **💰 Paid Now** or **🧾 Pay on Delivery**.","Choose the payment method (see **Taking payment**) and **Complete**. Water is drawn from the site’s **bulk tank**; the app warns you if the tank is short."]},{"id":"sites","icon":"🏭","title":"Sites: Shop and Production","steps":["Aqua POS can run more than one **site** — for example the **Shop** and the **Production** plant. Pick the site you are working at from the switcher at the top.","Each site has **its own bulk tanks, refill sizes/prices and stock** — water at one site is never drawn down by a sale at another. **Both sites** is a way of *looking* at the reports; sales made while it is selected belong to the Shop."]},{"id":"sizes","icon":"💧","title":"Refill sizes and prices","steps":["Open **⚙️ Settings ▸ General**. Set the **Price per Litre (KES)**; every size on **Auto (× 1L rate)** follows it (a 20 L refill is 20 × the litre price).","Untick **Auto** on a size to type its own price. Tap **+ Add a Size Not Listed** to add a new size (a label, its volume in **millilitres** — 2.5 L is 2500 — and a price). It appears in the list and on the counter at once; a duplicate size is refused.","Set the VAT category per size, and the 🧩 **Recipe** (materials used per refill) so materials are tracked."]},{"id":"tank","icon":"🚰","title":"Bulk tanks","steps":["Open **🚰 Bulk Tank**. **+ Add Tank** for each tank at the site. When a water delivery arrives choose the tank, type the **litres added** (and cost and supplier if you like) ▸ **💾 Record Tank Refill**.","Every refill sale reduces the tank; **📜 Tank Refill History** lists all additions and corrections. A tank must be empty before you remove it, and each site keeps at least one."]},{"id":"prod","icon":"🏭","title":"Production","steps":["Open **🏭 Production**. Pick the item and how many you produced ▸ **💾 Record Production**; its saved **recipe** (set in Inventory ▸ 🏭 Recipe) deducts the materials and adds the finished stock.","For multi-stage products use **🧙 Multi-Step Production Wizard**. **Factory Floor Stock**, **Production History** and **Dispatch History** follow what was made and sent out."]},{"id":"bulk","icon":"📅","title":"Bulk orders","steps":["Open **📅 Bulk Orders**. Type the client, business, phone, **delivery date**, address, **deposit paid** and notes, add the products and quantities and **💾 Save Booking**.","On the delivery day fulfil the order; the deposit is counted against the total."]},{"id":"stocktakew","icon":"📋","title":"Stock Take (per site)","steps":["Pick the site you are counting at the top (a stock take counts **one site at a time**), then open **📋 Stock Take**. It lists that site’s products (a bottle-tracked bale is counted in **bottles**), its **tank litres** and its **materials**.","Type what you actually counted next to each line — lines left blank are not touched. Tap **💾 Update** on one line, or **✔ Update stock to my counts** for all of them.","Each change is recorded once as a **count** (\"there are 12\"), not as a +/−, so refreshing, going offline or opening another device can never apply it again. **Recent stock takes** shows Was / Counted / Now for every device, with ✓ applied or ⏳ waiting to sync."]},{"id":"stockw","icon":"📥","title":"Inventory and restocking","steps":["**📋 Inventory** holds bottled products, bales, accessories, materials and refill prices. Edit stock and prices by tapping an item.","**📥 Restocking** tops up a material or product (decimals are fine, e.g. 0.5 bale, 10.5 litres) — record the supplier and cost; **⬆️ Import Excel/CSV** loads a whole list; history shows below."]},{"id":"payments","icon":"💳","title":"Taking payment","steps":["**Cash** — type the amount the customer gave; the change shows.","**M-Pesa** — enter the customer’s number and tap **Send M-Pesa Prompt**, or type the M-Pesa code if they paid to your till.","**Split** — part cash, part M-Pesa; the two amounts must add up to the total.","**Bill (Pay Later)** — the customer’s name and phone; the sale waits in **🧾 Bills** until you **Settle** it.","**Delivery orders:** choose **💰 Paid Now** or **🧾 Pay on Delivery**; the driver collects and you settle from Bills or Deliveries."],"sections":[{"title":"Hold a sale","steps":["Tap **⏸️ Hold sale** to park the customer’s cart while you serve someone else (one held sale at a time); bring it back when they are ready."]}]},{"id":"receipts","icon":"🧾","title":"Receipts: print, share, reprint","steps":["When a sale completes a **receipt preview** opens. Tap **🖨️ Print** — it prints **once**, and the preview closes so it cannot be printed twice by accident.","The sale is **saved before the receipt appears** — the preview says \"✓ Sale saved\". **Cancel / Save** only closes the screen: it never cancels the sale (to reverse one, **void** it in Daily Sales).","Every receipt of the day carries a **Customer number** (Customer 1, 2, 3…) just above the reference number. It starts again at 1 each day, so the last receipt of the day tells you how many customers you served.","To print the same receipt again later, open it from **Daily Sales** and tap Print — the app asks \"already printed at 14:32 — print another copy?\" so copies are always deliberate.","**📤 Share** sends the receipt as a **PDF** (WhatsApp shows it as a document). On a phone it opens your apps. On computers and some browsers that cannot hand a file to another app, the PDF is **saved to Downloads** instead — attach it in WhatsApp or email yourself.","**⬇️ Download** always saves the PDF."],"tips":["If the print fails (printer off, paper out) the preview stays open so you can try again — the sale is already saved.","Settings ▸ 🧾 Receipt Settings controls what appears on the receipt."]},{"id":"bills","icon":"📒","title":"Bills, Pay on Delivery and Debts","steps":["**Pay Later / Pay on Delivery** sales wait in **🧾 Bills**. Tap **Settle** when the money is collected (full or part).","**📒 Debts** records other money customers owe.","A settled bill stays visible under **Show closed bills**."],"tips":["Pay-Later sales are not counted as sales until money is paid on them."]},{"id":"stock","icon":"📥","title":"Restocking and stock control","steps":["**📥 Restocking:** choose the material or product (or type a new name), type the quantity (decimals allowed) and the cost ▸ **💾 Record Restock**. Use **⬆️ Import Excel/CSV** for a list.","**📋 Inventory:** tap any item to correct its quantity or price. Materials used by refills and production are deducted automatically from their recipes.","**📦 Stock Report** shows movement for the period; **↩️ Returned Goods** puts returned bottles/bales back or records faulty ones."],"tips":["Check the **🚰 Bulk Tank** level regularly — refill sales draw from it."]},{"id":"reports","icon":"📊","title":"Reports and Daily Sales","steps":["**📊 Daily Sales** lists every sale for Today, a Week, a Month or a Custom range, by payment method, for the **site you are in**. Print the report from there; a wrong sale can be voided (stock and tank litres come back).","On the same tab, **📋 X Report** gives an interim reading of today’s trading (transactions, sales, tax breakdown) that can be generated any number of times without closing anything; **🔒 Z Report** shows the same totals and lets the Admin **finalize** the trading day once, behind the management password.","**🔍 Audit** is a searchable, read-only timeline of sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes — who did what, and when.","**📦 Stock Report** — movement of products and materials.","**💰 Profits & Expenses** — add expenses (fuel, wages, electricity…) and see profit.","**📈 Demand Trends** — which refill sizes and products sell most, and when.","**📊 Dashboard** — today’s figures the moment you open the app."]},{"id":"people","icon":"👥","title":"Staff, access and security","steps":["Open **⚙️ Settings ▸ 👥 Staff Accounts** (or the **👥 Staff** tab) and add a staff member’s name. Tick the tabs they may use — the Sales Counter too; a staff member sees only the tabs ticked for them. Tap **Generate invite link**.","Send the link to them. They open it, choose a **PIN** (4+ characters) and they are in — no shop password needed. The link then turns into their personal login link: they should bookmark it.","A staff member is listed once: a double tap on \"Create my account\" cannot make two copies.","**🕐 Attendance** — staff clock in and out; hours worked show in Reports ▸ Staff performance.","**💼 Payroll** — add staff and their documents, run payroll (review ▸ approve ▸ pay) and give out payslips. Needs internet; a paid or approved run is never edited — corrections are a reversal run.","**Settings ▸ 🔒 Security & Access** — change the password, lock tabs behind the management password, and use fingerprint where the device supports it.","**Settings ▸ 🔐 Admin Activity Log** shows what was changed and by whom.","**⬇️ Sync to this device** (Settings ▸ 🔐 Devices & Security) sends this device's unsent sales first, then fetches everything the shop has on the server — step by step, with nothing deleted or duplicated.","**Settings ▸ 🔐 Devices & security** lists every device that syncs your shop (its till number, app release and last sync). Tap **🔒 Only paired devices may sync** so that knowing your shop link is no longer enough to see or change your data. Your devices pair themselves; a new one needs the shop password once, or a **6-digit pairing code** made here (so staff never need the password). Revoke a lost phone from the same list. Signing in and selling always work offline either way.","**👤 My Customers** keeps your customers and their purchases; **🎟️ Loyalty Tokens** (Settings) rewards repeat customers where enabled."],"tips":["To remove a staff member, remove them under Staff Accounts — their old sales stay in the records.","If someone forgets the Admin password, use **Forgot it? Email me a reset link** on the login screen (needs the recovery email set up)."]},{"id":"hardware","icon":"🖨️","title":"Printers & hardware","intro":"Open **⚙️ Settings ▸ 🖨️ Hardware** (or tap the small printer icon at the top). There are three ways to print:","sections":[{"title":"1. System print dialog (works with any installed printer)","steps":["Set **Printer mode** to **System print dialog**.","Print a receipt: the device’s print window opens — choose your receipt printer once. The receipt prints on a slip only as long as its lines (paper is not wasted).","Browsers never allow silent printing, so this mode always shows that window. Use Bluetooth or USB to avoid it."]},{"title":"2. USB thermal printer (computer or Android)","steps":["Plug the printer in and switch it on.","Set **Printer mode** to **USB**, tap **Connect USB Printer**, choose your printer and allow access.","From then on the app **reconnects by itself** whenever the printer is switched off and on, unplugged and replugged, or the app is reopened — it keeps checking every few seconds and prints the moment the printer is back. You do not go back to Settings."]},{"title":"3. Bluetooth thermal printer (phones and tablets)","steps":["Switch the printer on and pair it in the phone’s Bluetooth settings if it asks.","Set **Printer mode** to **Bluetooth**, tap **Connect Bluetooth Printer** and pick it from the list (once).","After a power cut or the printer going out of range, the app reopens the same printer by itself (no chooser). Some browsers cannot reopen a remembered Bluetooth printer after the page reloads — the screen then says **Tap Connect once**."]},{"title":"Paper, copies and the cash drawer","steps":["**Receipt Settings ▸ 🔠 Adjust receipt size** opens a window where you choose the paper (58 mm, 80 mm or custom) and the letter size in points (7 is the standard; try 9, 10, 11 if receipts look too small). A sample receipt with items changes as you tap **−** or **+**; press **🖨️ Print test receipt** to check it on your printer, then **Save** — that is how every receipt will print. **Cancel** throws the changes away, **Reset to standard** goes back to 7 pt. The number of copies is set in Receipt Settings too.","Each till can have a different printer: under **THIS device's printer paper** choose 58 mm or 80 mm for the printer on this device (or tap **58 mm / 80 mm** at the top of any receipt). **If words break or numbers jump to the next line, the printer is 58 mm on an 80 mm setting — choose 58 mm.** The receipt preview is exactly what will print.","**📏 Print a width test** (USB / Bluetooth) prints a 32- and a 48-character line: if the 48 one breaks in two, the printer is 58 mm.","The **cash drawer** plugs into the **printer** (RJ11/RJ12 port), not the computer; turn on \"open drawer on print\" in Hardware settings.","To check paper width and the drawer, print a small sale receipt, or reprint one from Daily Sales."]},{"title":"Barcode scanners","steps":["A USB or Bluetooth **scanner** works like a keyboard: click the search box on the Sales Counter and scan.","The 📷 button next to search scans with the phone camera."]}],"tips":["Printing waits up to 4 seconds for a printer that has just been switched on before saying it is not connected.","If a print fails half-way the receipt is **not** sent again automatically (so you never get a doubled half-receipt) — reprint from Daily Sales."]},{"id":"offline","icon":"📶","title":"Offline, sync and backups","steps":["**Offline:** the app keeps working with no internet; sales, tank levels and receipts are saved on the device.","**Sync:** when the internet returns the dot turns green and every device catches up.","**Backups:** ⚙️ Settings ▸ 🗄️ Backups. Your data is also stored on the server, so a lost phone does not lose your business.","**Sites:** switching between the Shop and Production only changes what you look at and record; both are always saved."],"tips":["Use **Settings ▸ Install App ▸ 🔄 Re-download for Offline Use** after an update if the app ever fails to open offline."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**Printer does not print:** check paper and power, then Settings ▸ Hardware ▸ status. Switch it off and on — the app finds it again by itself. As a fallback use the system print dialog.","**\"Only 0 available\" when selling:** the product has no stock. Record it in Restocking, or correct it on the Inventory tab.","**A sale is missing from Daily Sales:** tap **🔎 Check for missing sales** under the list. Pay-Later bills only count when paid; check Bills. In Aqua POS check the site selected at the top.","**The login window appears again:** just log in; it will not reappear over a running session.","**Forgot the password:** tap **Forgot the password?** on the login screen and use **Email me a reset link**.","**Something looks out of date on a device:** wait for the green dot, then reload the page once.","**Still stuck:** the Owner sees errors from every shop in the Owner Console ▸ Errors tab — tell your provider what you were doing and roughly when."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Aqua POS, in the order they appear:","tabs":[["Sales Counter","New sale: refills by size or custom litres, sealed bottles, dispensers, bales; walk-in or delivery."],["Dashboard","Today at a glance: sales, money in by payment method, low stock and what needs attention."],["Inventory","Products (bottled water, bales, accessories), materials and refill sizes with prices and recipes."],["Add New Items","Add items one by one, many at once (bulk), or from a photo of a list (Capture List)."],["Materials","Raw materials and their suppliers: stock levels, costs and restocking."],["Restocking","Top up a material or product (decimals allowed) and see restock history."],["Stock Take","Count what is really at this site — products, bottles, tank litres, materials — and correct the system to it."],["Bulk Tank","Your bulk water tanks: add water, and see each site’s level drop as refills are sold."],["Production","Record what you produced; materials are deducted from its recipe."],["Dispatch","Under Logistics. Send stock and pre-filled refills from Production to a shop branch, see factory stock, shop requests and Dispatch History."],["Bulk Orders","Book large future orders with a deposit and delivery date."],["Returned Goods","Customer returns and exchanges: refund, swap, faulty items."],["Deliveries","Delivery orders assigned to drivers: picked up, on route, delivered."],["Daily Sales","Every sale for a day / week / month, filtered by payment method, for the site you are in."],["Audit","A searchable, read-only timeline of who did what and when — sales, voids, discounts, stock changes, X/Z Reports and KRA/eTIMS classification changes."],["Stock Report","Stock movement of products and materials."],["Profits & Expenses","Record expenses and see gross and net profit for any period."],["Demand Trends","Which sizes and products sell most, and when."],["Bills","Pay-Later sales still owing: settle in full or in part, see closed bills."],["Debts","Money customers owe you outside of bills; record and settle."],["My Customers","Your customer list with purchase history and loyalty."],["Staff","Add staff, choose which tabs each can use, send invite links, see who is serving."],["Attendance","Staff clock in / out and hours worked."],["Payroll","Create Payroll: staff register and documents, pay runs, payslips. Admin / payroll rights only; a worker sees just their own payslips. Needs internet and a staff PIN sign-in."],["Settings","Business details, receipts, tax, hardware, security, backups and more."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
 <!-- @shared-block:guide-data:end -->
 
 <!-- @shared-block:hardware-quick-access:begin -->
@@ -41744,6 +41838,10 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         { id: 'sys', label: 'System', icon: '⚙️', tabs: ['audit-tab', 'settings-tab'] }
     ];
     var FLAT = ['sales-tab', 'dashboard-tab'];
+    /* zip 239: every tab where stock or water MOVES lives in one Logistics folder, in every app (a folder with no visible tab simply does not show) */
+    var LOGI = ['dispatch-tab', 'orders-tab', 'restock-tab', 'restocking-tab', 'deliveries-tab', 'returns-tab', 'tank-tab'];
+    GROUPS.forEach(function (g) { g.tabs = g.tabs.filter(function (id) { return LOGI.indexOf(id) < 0; }); });
+    GROUPS.splice(2, 0, { id: 'logistics', label: 'Logistics', icon: '🚚', tabs: LOGI });
     /* zip 219: the Owner Console gets the same sidebar, with its own folders */
     if ($owner()) {
         GROUPS = [
@@ -41836,6 +41934,14 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         if (sig === lastSig) return;
         lastSig = sig;
         var h = '';
+        /* zip 240: one folder open at a time (the one holding the tab you are on; else the first remembered one) */
+        var actG = null, firstOpen = null;
+        m.items.forEach(function (it) {
+            if (it.kind !== 'group') return;
+            if (!actG && it.kids.some(function (k) { return m.byId[k].classList.contains('active'); })) actG = it.g.id;
+            if (!firstOpen && openGroups[it.g.id]) firstOpen = it.g.id;
+        });
+        var keep = actG || firstOpen; openGroups = keep ? (function (o) { o[keep] = true; return o; })({}) : {};
         m.items.forEach(function (it) {
             if (it.kind === 'item') { h += itemHtml(it.id, m.byId, 'sn-top'); return; }
             var active = it.kids.some(function (k) { return m.byId[k].classList.contains('active'); });
@@ -41892,7 +41998,8 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             var gid = par.getAttribute('data-grp');
             if (body.classList.contains('snav-collapsed') && !phone()) { fly && fly.classList.contains('on') && fly.getAttribute('data-g') === gid ? hideFly() : (showFly(par, gid), fly.setAttribute('data-g', gid)); return; }
             var grp = par.parentNode, open = !grp.classList.contains('open');
-            grp.classList.toggle('open', open); par.setAttribute('aria-expanded', open ? 'true' : 'false'); openGroups[gid] = open;
+            if (open) Array.prototype.forEach.call(aside.querySelectorAll('.sn-group.open'), function (g2) { g2.classList.remove('open'); var p2 = g2.querySelector('[data-grp]'); if (p2) p2.setAttribute('aria-expanded', 'false'); });
+            grp.classList.toggle('open', open); par.setAttribute('aria-expanded', open ? 'true' : 'false'); openGroups = {}; if (open) openGroups[gid] = true;
             try { store(K_OPEN, JSON.stringify(openGroups)); } catch (e2) { /* not remembered */ }
         }
     }
@@ -42004,6 +42111,10 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         .ctl-rname small { display: block; color: #7f8c8d; font-size: 12px; }
         .ctl-racts { display: flex; flex-wrap: wrap; gap: 8px; }
         .ctl-racts button { min-height: 44px; }
+        .ctl-ordlab { display: block; margin: 10px 0 4px; font-size: 14px; font-weight: 700; }
+        .ctl-ordsel { box-sizing: border-box; display: block; width: 100%; max-width: 420px; min-height: 44px; font-size: 16px; padding: 8px 10px; }
+        .ctl-pos { box-sizing: border-box; flex: 0 0 64px; width: 64px !important; min-height: 44px; padding: 4px 6px; font-size: 16px; font-weight: 800; text-align: center; border-radius: 10px; border: 2px solid var(--accent, #3498db); }
+        .ctl-iord { margin: 6px 0 14px; padding: 10px 12px; border-radius: 12px; background: var(--bg-surface-alt, #f4f6f7); }
         .ctl-hidden-file { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
         .ctl-msg { min-height: 20px; margin: 8px 0 0; font-size: 14px; }
         .ctl-msg.bad { color: var(--danger, #e74c3c); }
@@ -42118,13 +42229,20 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         }
         /* ---------- zip 219: the ORDER of categories and sub-categories ---------- */
         var LS_ORD = 'pos_cat_order', MODES = ['default', 'manual', 'name', 'name-desc', 'items', 'sales'];
-        var MODE_LABEL = { 'default': 'Standard (as before)', manual: 'My own order (arrange with ▲ ▼)', name: 'Name A → Z', 'name-desc': 'Name Z → A', items: 'Most items first', sales: 'Best selling first' };
+        var MODE_LABEL = { 'default': 'Standard (as before)', manual: 'My own order (type a number or use ▲ ▼)', name: 'Name A → Z', 'name-desc': 'Name Z → A', items: 'Most items first', sales: 'Most popular first (best selling)' };
+        /* zip 244: sub-categories can have their OWN way of lining up ('same' = follow the categories), and so can the ITEMS in the Hotel's grid */
+        var SMODES = ['same', 'default', 'manual', 'name', 'name-desc', 'items', 'sales'], SMODE_LABEL = Object.assign({ same: 'Same as the categories' }, MODE_LABEL);
+        var IMODES = ['default', 'manual', 'name', 'name-desc', 'sales', 'price-low', 'price-high'];
+        var IMODE_LABEL = { 'default': 'Standard (best sellers first, as before)', manual: 'My own order (type a number or use ▲ ▼)', name: 'Name A → Z', 'name-desc': 'Name Z → A', sales: 'Most popular first (best selling)', 'price-low': 'Price: lowest first', 'price-high': 'Price: highest first' };
+        function strList(a) { return Array.isArray(a) ? a.filter(function (x) { return typeof x === 'string'; }) : []; }
         function ordGet() {
             var o = null; try { o = JSON.parse(lsGet(LS_ORD) || 'null'); } catch (e) { o = null; }
             if (!o || typeof o !== 'object' || Array.isArray(o)) o = {};
-            var subs = {}; if (o.subs && typeof o.subs === 'object' && !Array.isArray(o.subs)) Object.keys(o.subs).forEach(function (k) { if (Array.isArray(o.subs[k])) subs[k] = o.subs[k].filter(function (x) { return typeof x === 'string'; }); });
-            return { mode: MODES.indexOf(o.mode) >= 0 ? o.mode : 'default', manual: Array.isArray(o.manual) ? o.manual.filter(function (x) { return typeof x === 'string'; }) : [], subs: subs };
+            var subs = {}; if (o.subs && typeof o.subs === 'object' && !Array.isArray(o.subs)) Object.keys(o.subs).forEach(function (k) { if (Array.isArray(o.subs[k])) subs[k] = strList(o.subs[k]); });
+            var items = {}; if (o.items && typeof o.items === 'object' && !Array.isArray(o.items)) Object.keys(o.items).forEach(function (k) { if (Array.isArray(o.items[k])) items[k] = strList(o.items[k]); });
+            return { mode: MODES.indexOf(o.mode) >= 0 ? o.mode : 'default', smode: SMODES.indexOf(o.smode) >= 0 ? o.smode : 'same', imode: IMODES.indexOf(o.imode) >= 0 ? o.imode : 'default', manual: strList(o.manual), subs: subs, items: items };
         }
+        function subMode(o) { o = o || ordGet(); return o.smode === 'same' ? o.mode : o.smode; }
         function ordSave(o) { lsSet(LS_ORD, JSON.stringify(o)); pushSoon(); lastMode = ''; try { renderPanel(); } catch (e) { /* not open */ } refresh(); }
         var soldCache = null, soldAt = 0;
         function soldByCat() {
@@ -42138,11 +42256,28 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             });
             soldCache = m; soldAt = Date.now(); return m;
         }
-        /* orders a list of { label, n } records. manualKeys = the saved order (labels); anything not in it goes after, A-Z. `last` stays at the end. */
-        function orderList(list, labelOf, nOf, manualKeys, isLast) {
-            var o = ordGet(), mode = o.mode; if (mode === 'default' || !list.length) return list;
+        /* Hotel: units sold per category id / per category+sub-category, and how many sellable items each holds (the Sales Counter's own list + its sold-units total) */
+        function hotelStats() {
+            var out = { cat: {}, sub: {}, subN: {} };
+            try {
+                var set = hospScreenSet('sales'), sold = soldTotalsMap();
+                set.all.forEach(function (e) {
+                    var u = Number(sold[e.rec.code]) || 0, cid = e.catId || 'none';
+                    out.cat[cid] = (out.cat[cid] || 0) + u;
+                    if (e.rec.subCat) { var k = cid + '|' + e.rec.subCat; out.sub[k] = (out.sub[k] || 0) + u; out.subN[k] = (out.subN[k] || 0) + 1; }
+                });
+            } catch (e) { /* no stats: the order falls back to the standard one */ }
+            return out;
+        }
+        function catSoldFn() {
+            if (hotelMode()) { var st = hotelStats(); return function (c) { return st.cat[c.id || 'none'] || 0; }; }
+            var m = soldByCat(); return function (c) { return m[normCat(c.label) || 'uncategorised'] || 0; };
+        }
+        /* orders a list of { label, n } records. manualKeys = the saved order (labels); anything not in it goes after, A-Z. `last` stays at the end. soldOf(x) = units sold. */
+        function orderList(list, labelOf, nOf, manualKeys, isLast, soldOf, modeIn) {
+            var o = ordGet(), mode = modeIn || o.mode; if (mode === 'default' || !list.length) return list;
             var idx = {}; (manualKeys || []).forEach(function (k, i) { if (idx[normCat(k)] === undefined) idx[normCat(k)] = i; });
-            var sold = mode === 'sales' ? soldByCat() : null, base = {}; list.forEach(function (x, i) { base[labelOf(x)] = i; });
+            var sold = mode === 'sales' ? (soldOf || catSoldFn()) : null, base = {}; list.forEach(function (x, i) { base[labelOf(x)] = i; });
             var arr = list.slice();
             arr.sort(function (a, b) {
                 var la = labelOf(a), lb = labelOf(b);
@@ -42152,7 +42287,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
                 else if (mode === 'name') r = la.localeCompare(lb, undefined, { sensitivity: 'base' });
                 else if (mode === 'name-desc') r = lb.localeCompare(la, undefined, { sensitivity: 'base' });
                 else if (mode === 'items') r = (nOf ? (nOf(b) || 0) - (nOf(a) || 0) : 0);
-                else if (mode === 'sales') r = (sold[normCat(lb) || 'uncategorised'] || 0) - (sold[normCat(la) || 'uncategorised'] || 0);
+                else if (mode === 'sales') r = (sold(b) || 0) - (sold(a) || 0);
                 return r || (base[la] - base[lb]);
             });
             return arr;
@@ -42172,18 +42307,73 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             try {
                 if (!cat || cat.all || typeof hospSubList !== 'function') return [];
                 var l = hospSubList(cat.id); if (!Array.isArray(l)) return [];
-                var o = ordGet(), mode = o.mode === 'items' || o.mode === 'sales' ? 'default' : o.mode;   // sub-categories: manual or by name
+                var o = ordGet(), mode = subMode(o);   // zip 244: manual, A-Z, Z-A, most items, most popular (its own setting, or the categories')
                 if (mode === 'default') return l;
-                var arr = l.slice(), mk = o.subs[cat.key] || [];
+                var arr = l.slice(), mk = o.subs[cat.key] || [], st = (mode === 'items' || mode === 'sales') ? hotelStats() : null, cid = cat.id || 'none';
+                var cmp = function (a, b) { return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' }); };
                 arr.sort(function (a, b) {
                     var na = String(a.name), nb = String(b.name);
-                    if (mode === 'manual') { var ia = mk.indexOf(na), ib = mk.indexOf(nb); return (ia < 0 ? 1e6 : ia) - (ib < 0 ? 1e6 : ib) || na.localeCompare(nb, undefined, { sensitivity: 'base' }); }
-                    return mode === 'name-desc' ? nb.localeCompare(na, undefined, { sensitivity: 'base' }) : na.localeCompare(nb, undefined, { sensitivity: 'base' });
+                    if (mode === 'manual') { var ia = mk.indexOf(na), ib = mk.indexOf(nb); return (ia < 0 ? 1e6 : ia) - (ib < 0 ? 1e6 : ib) || cmp(a, b); }
+                    if (mode === 'items') return ((st.subN[cid + '|' + b.id] || 0) - (st.subN[cid + '|' + a.id] || 0)) || cmp(a, b);
+                    if (mode === 'sales') return ((st.sub[cid + '|' + b.id] || 0) - (st.sub[cid + '|' + a.id] || 0)) || cmp(a, b);
+                    return mode === 'name-desc' ? nb.localeCompare(na, undefined, { sensitivity: 'base' }) : cmp(a, b);
                 });
                 return arr;
             } catch (e) { return []; }
         }
         function allItemsCount(cats) { var n = 0; cats.forEach(function (c) { n += c.n; }); return n; }
+
+        /* ---------- zip 244: hide the "All items" / "All <category>" buttons (shop-wide) ---------- */
+        var LS_HIDE = 'pos_cat_hide_all';
+        function hideGet() {
+            var o = null; try { o = JSON.parse(lsGet(LS_HIDE) || 'null'); } catch (e) { o = null; }
+            o = o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+            return { items: o.items === true, cat: o.cat === true };
+        }
+        function hideSet(k, v) { var h = hideGet(); h[k] = !!v; lsSet(LS_HIDE, JSON.stringify(h)); pushSoon(); lastMode = ''; try { renderPanel(); } catch (e) { /* not open */ } refresh(); }
+
+        /* ---------- zip 244: the ORDER of the items inside a category (Hotel's Sales Counter grid and Orders menu) ---------- */
+        function sellEntries(catId) {
+            try { return hospScreenSet('sales').all.filter(function (e) { return catId === 'none' ? !e.catId : e.catId === catId; }); } catch (e) { return []; }
+        }
+        function itemEntriesOrdered(catId) {     // the entries of one category in the saved manual order (unlisted ones after, A-Z)
+            var saved = ordGet().items[catId] || [], idx = {};
+            saved.forEach(function (c, i) { if (idx[c] === undefined) idx[c] = i; });
+            return sellEntries(catId).sort(function (a, b) {
+                var ia = idx[String(a.rec.code)], ib = idx[String(b.rec.code)];
+                return (ia === undefined ? 1e6 : ia) - (ib === undefined ? 1e6 : ib) || String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+            });
+        }
+        // called by the Hotel's hospScreenItems with the list it just filtered; returns the same entries in the chosen order (sel = category chip id)
+        window.__ctlOrderItems = function (list, sel) {
+            try {
+                var o = ordGet(), mode = o.imode;
+                if (!Array.isArray(list) || list.length < 2 || mode === 'default') return list;
+                var sold = mode === 'sales' ? soldTotalsMap() : null, rank = null, posBy = {};
+                if (mode === 'manual' && sel === HOSP_CAT_ALL) { rank = {}; categories().forEach(function (c, i) { rank[c.id] = i; }); }
+                var posOf = function (e) {
+                    var cid = e.catId || 'none', m = posBy[cid];
+                    if (!m) { m = posBy[cid] = {}; (o.items[cid] || []).forEach(function (c, i) { if (m[c] === undefined) m[c] = i; }); }
+                    var p = m[String(e.rec.code)]; return p === undefined ? 1e6 : p;
+                };
+                var nm = function (a, b) { return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' }); };
+                var arr = list.map(function (e, i) { return { e: e, i: i }; });
+                arr.sort(function (A, B) {
+                    var a = A.e, b = B.e, r = 0;
+                    if (mode === 'manual') {
+                        if (rank) r = (rank[a.catId] === undefined ? 1e6 : rank[a.catId]) - (rank[b.catId] === undefined ? 1e6 : rank[b.catId]);
+                        if (!r) { var pa = posOf(a), pb = posOf(b); r = pa - pb; if (!r && pa === 1e6) r = nm(a, b); }
+                    }
+                    else if (mode === 'name') r = nm(a, b);
+                    else if (mode === 'name-desc') r = -nm(a, b);
+                    else if (mode === 'sales') r = (sold[b.rec.code] || 0) - (sold[a.rec.code] || 0);
+                    else if (mode === 'price-low') r = (Number(a.rec.price) || 0) - (Number(b.rec.price) || 0);
+                    else if (mode === 'price-high') r = (Number(b.rec.price) || 0) - (Number(a.rec.price) || 0);
+                    return r || (A.i - B.i);
+                });
+                return arr.map(function (x) { return x.e; });
+            } catch (e) { return list; }
+        };
 
         /* ---------- the app's own filter state ---------- */
         function selKey() { return 'pos_hosp_catsel_sales'; }
@@ -42277,6 +42467,12 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
         }
         function setHost(h, html) { if (h.__h !== html) { h.__h = html; h.innerHTML = html; } h.classList.toggle('ctl-has', !!html); }
         function head(parts) { return '<div class="ctl-head">' + parts + '</div>'; }
+        // the tiles of a category's sub-category screen: "All <category>" first (unless the owner hid it and there is something else to show), then each sub-category, then "Other"
+        function subTiles(subs, counts, tot, none) {
+            var rest = subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); })
+                .concat(none > 0 ? [tileHtml('sub', 'none', 'Other', none, '')] : []);
+            return hideGet().cat && rest.length ? rest : [tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)].concat(rest);
+        }
         function sync(cats) {
             try {
                 cats = cats || categories(); normalize(cats);
@@ -42286,15 +42482,13 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
                 if (m === 'off' || m === 'search') { setHost(h, ''); return; }
                 var html = '';
                 if (m === 'root') {
-                    html = layout(cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).concat([tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️')]), 'Categories');
+                    html = layout(cats.map(function (c) { return tileHtml('cat', c.key, c.label, c.n, c.key); }).concat(hideGet().items ? [] : [tileHtml('cat', ALL_KEY, 'All items', allItemsCount(cats), '', '🛍️')]), 'Categories');   // zip 244: "All items" can be hidden
                 } else if (m === 'sub') {
                     var subs = hotelSubs(S.cat), counts = {}, tot = 0, none = 0;
                     try { var r = hospScreenItems('sales', ''); counts = r.subCounts || {}; } catch (e) { counts = {}; }
                     subs.forEach(function (x) { tot += counts[x.id] || 0; }); none = counts.none || 0; tot += none;
                     html = head('<button type="button" class="ctl-back" data-ctl="root">← All categories</button><span class="ctl-crumb">· ' + esc(S.cat.label) + '</span>')
-                        + layout([tileHtml('sub', 'all', 'All ' + S.cat.label, tot, S.cat.key)]
-                            .concat(subs.filter(function (x) { return (counts[x.id] || 0) > 0; }).map(function (x) { return tileHtml('sub', x.id, x.name, counts[x.id] || 0, S.cat.key + SEP + x.name); }))
-                            .concat(none > 0 ? [tileHtml('sub', 'none', 'Other', none, '')] : []), 'Sub-categories of ' + S.cat.label);
+                        + layout(subTiles(subs, counts, tot, none), 'Sub-categories of ' + S.cat.label);
                 } else {
                     var parts = '<button type="button" class="ctl-back" data-ctl="root">← All categories</button>';
                     if (S.cat.all) parts += '<span class="ctl-crumb">· All items</span>';
@@ -42367,7 +42561,8 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             if (lsGet(LS_IMG) !== null) o.categoryImages = images();          // only a device that has its own copy sends one: a fresh phone must never blank the shop's pictures
             var on = lsGet(LS_ON); if (on !== null) o.catTilesOn = on === 'true';
             var pl = lsGet(LS_PLAIN); if (pl !== null) o.catPlainOn = pl === 'true';
-            if (lsGet(LS_ORD) !== null) o.catOrder = ordGet();                 // zip 219: the order of categories travels to every device
+            if (lsGet(LS_ORD) !== null) o.catOrder = ordGet();                 // zip 219: the order of categories travels to every device (zip 244: + sub-categories and items)
+            if (lsGet(LS_HIDE) !== null) o.catHideAll = hideGet();             // zip 244: hide "All items" / "All <category>"
             return o;
         }
         function applyRemote(data) {
@@ -42381,6 +42576,10 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             if (typeof data.catTilesOn === 'boolean' && data.catTilesOn !== enabled()) { lsSet(LS_ON, data.catTilesOn ? 'true' : 'false'); changed = true; }
             if (typeof data.catPlainOn === 'boolean' && data.catPlainOn !== plainOn()) { lsSet(LS_PLAIN, data.catPlainOn ? 'true' : 'false'); changed = true; }
             if (data.catOrder && typeof data.catOrder === 'object' && !Array.isArray(data.catOrder)) { var co = JSON.stringify(data.catOrder); if (co !== JSON.stringify(ordGet()) && co !== lsGet(LS_ORD)) { lsSet(LS_ORD, co); changed = true; } }
+            if (data.catHideAll && typeof data.catHideAll === 'object' && !Array.isArray(data.catHideAll)) {
+                var nh = { items: data.catHideAll.items === true, cat: data.catHideAll.cat === true };
+                if (JSON.stringify(nh) !== JSON.stringify(hideGet())) { lsSet(LS_HIDE, JSON.stringify(nh)); changed = true; }
+            }
             if (changed) { try { renderPanel(); } catch (e) { /* the page may not be open */ } refresh(); }
         }
         function installSync() {
@@ -42472,43 +42671,88 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             var im = images()[key];
             return '<span class="ctl-thumb">' + (im ? '<img src="' + esc(im) + '" alt="" loading="lazy">' : '<span class="ctl-ph" style="--h:' + hue(label) + '">' + esc(initials(label)) + '</span>') + '</span>';
         }
+        function selHtml(id, label, modes, labels, cur, ro) {
+            return '<label class="ctl-ordlab" for="' + id + '">' + label + '</label><select id="' + id + '" class="ctl-ordsel"' + (ro ? ' disabled' : '') + '>'
+                + modes.map(function (m) { return '<option value="' + m + '"' + (cur === m ? ' selected' : '') + '>' + esc(labels[m]) + '</option>'; }).join('') + '</select>';
+        }
         function ordHtml(cats, ro) {
-            var o = ordGet();
-            var opts = MODES.map(function (m) { return '<option value="' + m + '"' + (o.mode === m ? ' selected' : '') + '>' + esc(MODE_LABEL[m]) + '</option>'; }).join('');
-            return '<h3 style="margin-top:0;">↕️ Order of categories</h3><p class="ctl-note">Choose how categories (and sub-categories) are lined up on the Sales Counter. It applies to every device of the shop. “My own order” lets you move each one up or down below.</p>'
-                + '<label class="ctl-sw" style="display:block;"><select id="ctl-ord-mode"' + (ro ? ' disabled' : '') + ' style="max-width:100%;">' + opts + '</select></label>'
-                + (o.mode === 'manual' ? '<p class="ctl-note">Use ▲ ▼ on each category (and sub-category) in the list below.</p>' : '');
+            var o = ordGet(), hm = hotelMode();
+            return '<h3 style="margin-top:0;">↕️ Order &amp; sorting</h3><p class="ctl-note">Choose how things are lined up on the Sales Counter. It applies to every device of the shop. “My own order” lets you type a position number (1 = first) or use ▲ ▼ on each line.</p>'
+                + selHtml('ctl-ord-mode', 'Categories', MODES, MODE_LABEL, o.mode, ro)
+                + (hm ? selHtml('ctl-ord-smode', 'Sub-categories', SMODES, SMODE_LABEL, o.smode, ro) + selHtml('ctl-ord-imode', 'Items', IMODES, IMODE_LABEL, o.imode, ro) : '')
+                + (o.mode === 'manual' || (hm && subMode(o) === 'manual') ? '<p class="ctl-note">Type a position number or use ▲ ▼ on each category' + (hm ? ' and sub-category' : '') + ' in the list below.</p>' : '')
+                + (hm && o.imode === 'manual' ? itemEditorHtml(ro) : '');
+        }
+        function posBox(kind, key, pos, n, ro) {
+            return '<input type="number" class="ctl-pos" inputmode="numeric" min="1" max="' + n + '" value="' + pos + '" data-ctl-pos="' + kind + '" data-k="' + esc(encodeURIComponent(key)) + '" aria-label="Position (1 to ' + n + ')" title="Position (1 to ' + n + ')"' + (ro ? ' disabled' : '') + '>';
+        }
+        function arrows(act, k, ro) {
+            return '<button type="button" class="settings-small-btn" data-ctl-act="' + act + '" data-d="-1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move up">▲</button><button type="button" class="settings-small-btn" data-ctl-act="' + act + '" data-d="1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move down">▼</button>';
         }
         function moveBtns(key, sub, ro) {
-            if (ordGet().mode !== 'manual') return '';
-            var k = esc(encodeURIComponent(key));
-            return '<button type="button" class="settings-small-btn" data-ctl-act="mv" data-d="-1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move up">▲</button><button type="button" class="settings-small-btn" data-ctl-act="mv" data-d="1" data-k="' + k + '"' + (ro ? ' disabled' : '') + ' aria-label="Move down">▼</button>';
+            var o = ordGet(); if ((sub ? subMode(o) : o.mode) !== 'manual') return '';
+            var parts = key.split(SEP), pos = 0, n = 0;
+            try {
+                if (!sub) { var l = categories(); n = l.length; pos = l.map(function (c) { return c.key; }).indexOf(key) + 1; }
+                else { var c = categories().filter(function (x) { return x.key === parts[0]; })[0], names = c ? hotelSubs(c).map(function (x) { return String(x.name); }) : []; n = names.length; pos = names.indexOf(parts.slice(1).join(SEP)) + 1; }
+            } catch (e) { /* the arrows still work */ }
+            return (pos > 0 ? posBox(sub ? 'sub' : 'cat', key, pos, n, ro) : '') + arrows('mv', esc(encodeURIComponent(key)), ro);
         }
-        function moveItem(key, d) {
-            var o = ordGet(), parts = key.split(SEP), cat = parts[0], sub = parts.length > 1 ? parts.slice(1).join(SEP) : null;
+        // moves `item` inside `order` by d places, or to the 1-based position toPos; returns a NEW array (or the same one when nothing moves)
+        function moveIn(order, item, d, toPos) {
+            var i = order.indexOf(item); if (i < 0) return order;
+            var j = toPos != null && isFinite(toPos) ? Math.max(0, Math.min(order.length - 1, Math.round(toPos) - 1)) : i + d;
+            if (j < 0 || j >= order.length || j === i) return order;
+            var a = order.slice(); a.splice(i, 1); a.splice(j, 0, item); return a;
+        }
+        function moveItem(key, d, toPos) {
+            var o = ordGet(), parts = key.split(SEP), cat = parts[0], sub = parts.length > 1 ? parts.slice(1).join(SEP) : null, next;
             if (sub === null) {
                 var cur = categories().map(function (c) { return c.label; });
                 var arr = o.manual.length ? o.manual.slice() : cur.slice();
                 cur.forEach(function (l) { if (arr.map(normCat).indexOf(normCat(l)) < 0) arr.push(l); });
                 var order = cur.slice().sort(function (a, b) { var ia = arr.map(normCat).indexOf(normCat(a)), ib = arr.map(normCat).indexOf(normCat(b)); return ia - ib; });
-                var i = order.indexOf(cat), j = i + d; if (i < 0 || j < 0 || j >= order.length) return;
-                var t = order[i]; order[i] = order[j]; order[j] = t;
-                o.manual = order;
+                next = moveIn(order, cat, d, toPos); if (next === order) { renderPanel(); return; }
+                o.manual = next;
             } else {
                 var c = categories().filter(function (x) { return x.key === cat; })[0]; if (!c) return;
-                var names = hotelSubs(c).map(function (x) { return String(x.name); }), i2 = names.indexOf(sub), j2 = i2 + d;
-                if (i2 < 0 || j2 < 0 || j2 >= names.length) return;
-                var t2 = names[i2]; names[i2] = names[j2]; names[j2] = t2;
-                o.subs[cat] = names;
+                var names = hotelSubs(c).map(function (x) { return String(x.name); });
+                next = moveIn(names, sub, d, toPos); if (next === names) { renderPanel(); return; }
+                o.subs[cat] = next;
             }
-            o.mode = 'manual'; ordSave(o);
+            ordSave(o);
+        }
+        function moveCatItem(catId, code, d, toPos) {      // the items of one category (Hotel)
+            var o = ordGet(), codes = itemEntriesOrdered(catId).map(function (e) { return String(e.rec.code); });
+            var next = moveIn(codes, String(code), d, toPos); if (next === codes) { renderPanel(); return; }
+            o.items[catId] = next; ordSave(o);
+        }
+        function itemEditorHtml(ro) {
+            var cats = categories().map(function (c) { return { id: c.id, label: c.label }; });
+            try { if (hospScreenSet('sales').none > 0) cats.push({ id: 'none', label: 'Uncategorized' }); } catch (e) { /* none */ }
+            if (!cats.length) return '';
+            if (!cats.some(function (c) { return c.id === window.__ctlIordCat; })) window.__ctlIordCat = cats[0].id;
+            var cur = window.__ctlIordCat, ents = itemEntriesOrdered(cur), n = ents.length;
+            return '<div class="ctl-iord"><label class="ctl-ordlab" for="ctl-iord-cat">Arrange the items of</label><select id="ctl-iord-cat" class="ctl-ordsel">'
+                + cats.map(function (c) { return '<option value="' + esc(c.id) + '"' + (c.id === cur ? ' selected' : '') + '>' + esc(c.label) + '</option>'; }).join('') + '</select>'
+                + '<p class="ctl-note">' + n + (n === 1 ? ' item' : ' items') + ' — type a position number (1 = first) or use ▲ ▼. Items you have not placed yet follow in A-Z order. Sub-category screens use this same order.</p>'
+                + ents.map(function (e, i) {
+                    var k = esc(encodeURIComponent(String(e.rec.code)));
+                    return '<div class="ctl-row ctl-subrow"><input type="number" class="ctl-pos" inputmode="numeric" min="1" max="' + n + '" value="' + (i + 1) + '" data-ctl-pos="item" data-k="' + k + '" aria-label="Position (1 to ' + n + ')"' + (ro ? ' disabled' : '') + '>'
+                        + '<span class="ctl-rname"><b>' + esc(e.name) + '</b><small>' + esc(String(Number(e.rec.price) || 0)) + '</small></span><span class="ctl-racts">' + arrows('mvi', k, ro) + '</span></div>';
+                }).join('') + '</div>';
         }
         window.__ctlSetOrderMode = function (m) {
             var o = ordGet(); if (MODES.indexOf(m) < 0) return;
             if (m === 'manual' && !o.manual.length) o.manual = categories().map(function (c) { return c.label; });   // start from the order on screen
-            if (m === 'manual') { categories().forEach(function (c) { if (!o.subs[c.key] || !o.subs[c.key].length) { var l = hotelSubs(c).map(function (x) { return String(x.name); }); if (l.length) o.subs[c.key] = l; } }); }
-            o.mode = m; ordSave(o);
+            o.mode = m; if (m === 'manual' && subMode(o) === 'manual') seedSubs(o); ordSave(o);
         };
+        function seedSubs(o) { categories().forEach(function (c) { if (!o.subs[c.key] || !o.subs[c.key].length) { var l = hotelSubs(c).map(function (x) { return String(x.name); }); if (l.length) o.subs[c.key] = l; } }); }
+        window.__ctlSetSubMode = function (m) {
+            var o = ordGet(); if (SMODES.indexOf(m) < 0) return;
+            o.smode = m; if (subMode(o) === 'manual') seedSubs(o); ordSave(o);
+        };
+        window.__ctlSetItemMode = function (m) { var o = ordGet(); if (IMODES.indexOf(m) < 0) return; o.imode = m; ordSave(o); };
         function rowHtml(label, key, sub, count, ro) {
             var has = images()[key] !== undefined, k = esc(encodeURIComponent(key));
             return '<div class="ctl-row' + (sub ? ' ctl-subrow' : '') + '">' + thumb(label, key)
@@ -42530,6 +42774,9 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-switch"' + (enabled() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Show category image tiles on the Sales Counter</label>'
                 + '<label class="ctl-sw"><input type="checkbox" id="ctl-plain-switch"' + (plainOn() ? ' checked' : '') + (ro ? ' disabled' : '') + '> Categories and sub-categories without a picture stay plain buttons</label>'
                 + '<p class="ctl-note">With this on, only the categories you gave a picture show as picture tiles; the others are ordinary buttons. Items always show their own pictures.</p>'
+                + '<h3 style="margin-top:16px;">🙈 Hide the “All” buttons</h3><p class="ctl-note">With the tiles on, the Sales Counter normally starts with an “All items” button, and each category with sub-categories starts with an “All &lt;category&gt;” button. Hide them to show only the categories / sub-categories. Searching still finds every item. Every till and phone follows this.</p>'
+                + '<label class="ctl-sw"><input type="checkbox" id="ctl-hide-items"' + (hideGet().items ? ' checked' : '') + (ro ? ' disabled' : '') + '> Hide the “All items” button</label>'
+                + (hotelMode() ? '<label class="ctl-sw"><input type="checkbox" id="ctl-hide-cat"' + (hideGet().cat ? ' checked' : '') + (ro ? ' disabled' : '') + '> Hide the “All &lt;category&gt;” button inside a category (for example “All Milkshakes”) — show only its sub-categories</label>' : '')
                 + '<p class="ctl-note">' + used + ' of ' + MAX_IMAGES + ' pictures used. Pictures are made small automatically.' + (ro ? ' Another branch is open: pictures can only be changed in your own branch.' : '') + '</p>'
                 + (rows || '<p class="ctl-note">No categories yet. Give items a category in Inventory, then come back.</p>')
                 + '<input type="file" id="ctl-file" class="ctl-hidden-file" accept="image/*" tabindex="-1" aria-hidden="true">'
@@ -42541,10 +42788,22 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             if (act === 'pick') { pendingKey = k; var f = $('ctl-file'); if (f) { f.value = ''; f.click(); } }
             else if (act === 'rm') { removeImage(k); msg('Picture removed.'); }
             else if (act === 'mv') { moveItem(k, parseInt(t.getAttribute('data-d'), 10) || 0); }
+            else if (act === 'mvi') { moveCatItem(window.__ctlIordCat, k, parseInt(t.getAttribute('data-d'), 10) || 0); }
         }
         function onPanelChange(ev) {
             var t = ev.target; if (!t) return;
             if (t.id === 'ctl-ord-mode') { window.__ctlSetOrderMode(t.value); return; }
+            if (t.id === 'ctl-ord-smode') { window.__ctlSetSubMode(t.value); return; }
+            if (t.id === 'ctl-ord-imode') { window.__ctlSetItemMode(t.value); return; }
+            if (t.id === 'ctl-iord-cat') { window.__ctlIordCat = t.value; renderPanel(); return; }
+            if (t.id === 'ctl-hide-items') { hideSet('items', !!t.checked); msg(t.checked ? 'The “All items” button is hidden.' : 'The “All items” button is back.'); return; }
+            if (t.id === 'ctl-hide-cat') { hideSet('cat', !!t.checked); msg(t.checked ? 'The “All <category>” buttons are hidden.' : 'The “All <category>” buttons are back.'); return; }
+            if (t.getAttribute && t.getAttribute('data-ctl-pos')) {          // a typed position number
+                var kind = t.getAttribute('data-ctl-pos'), key = ''; try { key = decodeURIComponent(t.getAttribute('data-k') || ''); } catch (e) { key = ''; }
+                var to = parseInt(t.value, 10); if (!isFinite(to)) { renderPanel(); return; }
+                if (kind === 'item') moveCatItem(window.__ctlIordCat, key, 0, to); else moveItem(key, 0, to);
+                return;
+            }
             if (t.id === 'ctl-plain-switch') { setPlain(!!t.checked); msg(t.checked ? 'Categories without a picture are plain buttons.' : 'Categories without a picture show a coloured letter tile.'); return; }
             if (t.id === 'ctl-switch') { setEnabled(!!t.checked); msg(t.checked ? 'Category tiles are ON for the Sales Counter.' : 'Category tiles are OFF. The Sales Counter is back to the usual list.'); return; }
             if (t.id === 'ctl-file') {
@@ -42564,7 +42823,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
                 var sec = document.createElement('div'); sec.className = 'settings-section-content'; sec.id = 'settings-section-catimages';
                 sec.appendChild(panel); gen.parentNode.appendChild(sec);
                 var b = document.createElement('button'); b.type = 'button'; b.className = 'settings-subtab-btn'; b.setAttribute('data-section', 'settings-section-catimages');
-                b.textContent = '🖼️ Category Images'; b.setAttribute('onclick', "showSettingsSection('settings-section-catimages', this)");
+                b.textContent = '🖼️ Category Images & Order'; b.setAttribute('onclick', "showSettingsSection('settings-section-catimages', this)");
                 b.addEventListener('click', function () { renderPanel(); });
                 var after = nav.querySelector('[data-section="settings-section-paymethods"]') || nav.querySelector('[data-section="settings-section-receipts"]');
                 if (after && after.parentNode) after.parentNode.insertBefore(b, after.nextSibling); else nav.appendChild(b);
