@@ -34,6 +34,8 @@ import { mirrorClient, mirrorRemove } from './_owner-db.js';   // zip 187: best-
 // specific client (owner-lock, owner-confirm, license-claim-payment).
 
 const LICENSE_PREFIX = 'license:';
+const GONE_PREFIX = 'license-gone:';           // zip 245: tombstone of a permanently deleted link, by id
+const GONE_SLUG_PREFIX = 'license-gone-slug:'; // ... and by subdomain label
 const SLUG_PREFIX = 'slug:'; // slug:<slug> -> clientId, for O(1) subdomain resolution
 const INDEX_KEY = 'license-index:v1'; // array of SUMMARY objects, not just ids — see note above
 
@@ -604,6 +606,13 @@ const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 // behind and harmless since nothing can reach them without the deleted id, but could be reclaimed here
 // later if that ever matters. Only reached via purgeExpiredTrash() once 30 days have passed unrestored.
 async function permanentlyDeleteClient(env, clientId, record) {
+  // zip 245: leave a tombstone, so a link that really was deleted can be told apart from one that was never found (no token, a mistyped
+  // address, a lookup that missed for a moment). "This link no longer exists" is only ever said on the strength of a tombstone or a Trash record.
+  try {
+    const t = JSON.stringify({ at: Date.now(), slug: record && record.slug || '' });
+    await env.mydukapos_kv.put(GONE_PREFIX + clientId, t);
+    if (record && record.slug) await env.mydukapos_kv.put(GONE_SLUG_PREFIX + String(record.slug).toLowerCase(), clientId);
+  } catch (e) { /* the deletion itself must still go through */ }
   await env.mydukapos_kv.delete(LICENSE_PREFIX + clientId);
   forgetLicense(env, clientId, record && record.slug);
   if (record && record.slug) {
@@ -712,32 +721,40 @@ async function resolveIdAndRecord(request, env) {
   const label = subdomainLabel(hostname, rootDomain);
 
   if (label) {
-    const id = await slugToIdCached(env, label);
-    const record = id ? await getLicenseCached(env, id) : null;
+    // zip 245: a lookup that comes back empty is looked at again (twice, a moment apart) before it is believed: KV is eventually consistent and
+    // a read can miss for an instant. A shop that is really there must never be told it is not.
+    let id = null, record = null;
+    for (let attempt = 0; attempt < 3 && !record; attempt++) {
+      if (attempt) { clearLicenseCache(env); await new Promise((r) => setTimeout(r, 120 * attempt)); }
+      id = await slugToIdCached(env, label);
+      record = id ? await getLicenseCached(env, id) : null;
+    }
     if (record) return { clientId: record.id, record };
 
-    // Subdomain lookup came up empty. Normally that's a genuine typo/stale
-    // link and we report "not_found" — see the comment above about not
-    // trusting a query param on someone else's link. But Workers KV writes
-    // are only eventually consistent across edge locations (the docs note
-    // up to ~60s to fully propagate): claimSlug() in createClient() can
-    // still be invisible to the colo serving THIS request for a few
-    // seconds right after a demo is generated, even though the record
-    // itself and its slug were written successfully. That race showed up
-    // as the freshly-created demo loading for an instant, then the
-    // license-lock screen taking over almost immediately ("appears for
-    // less than a second and disappears").
-    //
-    // Safe to bridge with the ?c= param ONLY when the record it points to
-    // actually claims THIS SAME slug — that check means a stale/garbage or
-    // someone-else's c= value can never grant access to a subdomain it
-    // doesn't belong to; it only ever rescues the narrow propagation-delay
-    // case where the id and slug genuinely agree.
+    // zip 245: the slug entry itself can be missing (lost, or never written for an older link) while the shop is alive and listed in the
+    // Licenses index with this very slug. The index is the second source of truth: find it there and write the slug entry back (self-healing).
+    try {
+      const hit = (await readIndex(env)).find((e) => e && e.slug && String(e.slug).toLowerCase() === label.toLowerCase());
+      if (hit && hit.id) {
+        const rec = await getLicenseCached(env, hit.id);
+        if (rec && rec.slug && String(rec.slug).toLowerCase() === label.toLowerCase()) {
+          try { await claimSlug(env, String(rec.slug).toLowerCase(), rec.id); } catch (e) { /* healing is best effort */ }
+          return { clientId: rec.id, record: rec };
+        }
+      }
+    } catch (e) { /* index unreadable: fall through to the c fallback */ }
+
+    // Subdomain lookup came up empty. Workers KV writes are only eventually consistent (up to ~60s), and older links may have no slug entry at
+    // all, so the ?c= the link carries is used when it points at a real licence record AND the subdomain is not another shop's: either the
+    // record claims this very slug, or nobody has claimed this subdomain (no slug entry exists for it - the same trust as opening ?c= on the
+    // apex). A subdomain that DOES belong to another shop never accepts someone else's c.
     const fallbackId = url.searchParams.get('c') || '';
     if (fallbackId) {
       const fallbackRecord = await getLicenseCached(env, fallbackId);
-      if (fallbackRecord && fallbackRecord.slug && fallbackRecord.slug.toLowerCase() === label.toLowerCase()) {
-        return { clientId: fallbackRecord.id, record: fallbackRecord };
+      if (fallbackRecord) {
+        const sameSlug = fallbackRecord.slug && fallbackRecord.slug.toLowerCase() === label.toLowerCase();
+        const labelUnclaimed = !id;
+        if (sameSlug || labelUnclaimed) return { clientId: fallbackRecord.id, record: fallbackRecord };
       }
     }
     return { clientId: '', record: null };
@@ -761,4 +778,14 @@ export async function requireValidLicense(request, env) {
   const { clientId, record } = await resolveLicense(request, env);
   const result = evaluateLicense(record);
   return { ...result, clientId };
+}
+
+
+// zip 245: was this id / subdomain label PERMANENTLY deleted (a tombstone exists)? Only that, or a Trash record, proves a link was removed.
+export async function wasPermanentlyDeleted(env, clientId, slugLabel) {
+  try {
+    if (clientId && await env.mydukapos_kv.get(GONE_PREFIX + clientId)) return true;
+    if (slugLabel && await env.mydukapos_kv.get(GONE_SLUG_PREFIX + String(slugLabel).toLowerCase())) return true;
+  } catch (e) { /* cannot tell: not proof */ }
+  return false;
 }

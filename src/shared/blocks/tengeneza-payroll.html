@@ -179,6 +179,7 @@
     async function render() {
         try {
             var v = S.view, html = '';
+            if ((v === 'overview' || v === 'staff') && !S.empId) await autoSyncPos();      // zip 245: POS staff are in the register without being added a second time
             if (v === 'overview') html = await vOverview();
             else if (v === 'staff') html = S.empId ? await vEmployee() : await vStaff();
             else if (v === 'runs') html = S.runId ? await vRun() : await vRuns();
@@ -218,11 +219,27 @@
             return '<div class="prl-row" onclick="Payroll.openEmp(\'' + e.emp_id + '\')"><div class="l"><b>' + esc(e.name) + '</b><span>' + esc(e.emp_no) + ' · ' + esc(e.job_title || 'No position yet') + (e.branch_name ? ' · ' + esc(e.branch_name) : '') + '</span></div>' +
                 '<div class="r"><span class="prl-chip ' + e.status + '">' + (ESTAT[e.status] || e.status) + '</span>' + (money && e.basic_pay != null ? '<div><b>' + kes(e.basic_pay) + '</b> <span class="prl-muted">' + (e.rate_unit === 'day' ? '/day' : e.rate_unit === 'hour' ? '/hour' : '/' + (FREQ[e.pay_frequency] || e.pay_frequency).toLowerCase()) + '</span></div>' : '') + '</div></div>';
         }).join('');
-        return '<div class="prl-actions"><input id="prl-q" placeholder="🔍 Search name, number, position…" value="' + esc(S.q) + '" oninput="Payroll.search(this.value)" style="flex:1 1 220px;margin:0">' + (has('staff') ? '<button type="button" onclick="Payroll.newEmp()">➕ Add staff</button><button type="button" class="sec" onclick="Payroll.importPos()">⬇ Add my POS staff</button>' : '') + '</div>' +
-            (rows ? '<div class="prl-list">' + rows + '</div>' : empty('No staff yet', has('staff') ? 'Press “Add staff” to create the first employee.' : ''));
+        return '<div class="prl-actions"><input id="prl-q" placeholder="🔍 Search name, number, position…" value="' + esc(S.q) + '" oninput="Payroll.search(this.value)" style="flex:1 1 220px;margin:0">' + (has('staff') ? '<button type="button" onclick="Payroll.newEmp()">➕ Add staff</button><button type="button" class="sec" onclick="Payroll.importPos()">⬇ Re-check my POS staff</button>' : '') + '</div>' +
+            (rows ? '<div class="prl-list">' + rows + '</div>' : empty('No staff yet', has('staff') ? 'Your POS staff appear here by themselves; press “Add staff” only for someone who is not a POS user.' : ''));
     }
     var qTimer = 0;
     function search(v) { S.q = v; clearTimeout(qTimer); qTimer = setTimeout(function () { render().then(function () { var el = $('prl-q'); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); } }); }, 300); }
+    /* zip 245: the people already in Staff Accounts are put into the payroll register by themselves (once a minute at most, only for someone allowed to
+       edit staff): nobody is typed in twice. Someone already there (linked, or the same name added by hand) is never added again. */
+    async function autoSyncPos() {
+        if (!has('staff') || S.autoBusy || Date.now() - (S.autoAt || 0) < 60000) return 0;
+        S.autoBusy = true; S.autoAt = Date.now();
+        try {
+            var list = []; try { list = (typeof staff !== 'undefined' && Array.isArray(staff)) ? staff.filter(function (x) { return x && !x.removed && x.name; }) : []; } catch (e) { list = []; }
+            if (!list.length) return 0;
+            var d = await api('employee.list', {}), emps = d.employees || [], linked = {}, named = {}, lc = function (t) { return String(t || '').trim().toLowerCase(); };
+            emps.forEach(function (e) { if (e.pos_staff_id) linked[String(e.pos_staff_id)] = 1; named[lc(e.name)] = 1; });
+            var todo = list.filter(function (x) { return !linked[String(x.id)] && !named[lc(x.name)]; }), ok = 0;
+            for (var i = 0; i < todo.length; i++) { try { await api('employee.save', { employee: { name: todo[i].name, pos_staff_id: todo[i].id, basic_pay: 0, branch_name: branchDefault() } }); ok++; } catch (e) { /* the button below shows the reason */ } }
+            if (ok) toast(ok + ' POS staff added to payroll — open each person to set their salary.');
+            return ok;
+        } catch (e) { return 0; } finally { S.autoBusy = false; }
+    }
     async function importPos() {
         var list = []; try { list = (typeof staff !== 'undefined' && Array.isArray(staff)) ? staff.filter(function (x) { return x && !x.removed; }) : []; } catch (e) { list = []; }
         var have = {}; (S.emps || []).forEach(function (e) { if (e.pos_staff_id) have[String(e.pos_staff_id)] = 1; });
@@ -738,7 +755,7 @@
     setInterval(refreshAccess, 45000); setTimeout(refreshAccess, 2500); setTimeout(paintBtn, 600);
     document.addEventListener('click', function (ev) { if (ev.target && ev.target.id === 'prl-modal') closeModal(); });
 
-    window.Payroll = { importPos: importPos, go: go, open: open, unlock: unlock, newEmp: newEmp, saveNew: saveNew, saveEmp: saveEmp, openEmp: openEmp, search: search, sub: sub, addLine: addLine, delLine: delLine,
+    window.Payroll = { __t: { S: S, autoSyncPos: autoSyncPos }, importPos: importPos, go: go, open: open, unlock: unlock, newEmp: newEmp, saveNew: saveNew, saveEmp: saveEmp, openEmp: openEmp, search: search, sub: sub, addLine: addLine, delLine: delLine,
         docPicked: docPicked, docUpload: docUpload, docView: docView, docReplace: docReplace, docReplaceGo: docReplaceGo, docArchive: docArchive, docDelete: docDelete, closeModal: closeModal,
         newRun: newRun, nrFreq: nrFreq, createRun: createRun, openRun: openRun, step: step, delRun: delRun, addEmpToRun: addEmpToRun, addEmpGo: addEmpGo, payForm: payForm, payGo: payGo, adjustForm: adjustForm, adjustPick: adjustPick, adjustGo: adjustGo,
         editItem: editItem, eiAdd: eiAdd, eiDel: eiDel, eiSet: eiSet, eiSave: eiSave, eiRemove: eiRemove, slip: slip, slipPrint: slipPrint, slipPdf: slipPdf, slipSave: slipSave, setApprovedBy: setApprovedBy, slipOpenSaved: slipOpenSaved, slipShare: slipShare, printAll: printAll, csv: csv,

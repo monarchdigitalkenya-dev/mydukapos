@@ -17,7 +17,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { evaluateLicense, resolveLicense } from './_license.js';
+import { evaluateLicense, resolveLicense, getLicense as getLicenseNoCache, wasPermanentlyDeleted, hostnameFromRequest, subdomainLabel, getRootDomain } from './_license.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -38,10 +38,25 @@ export async function onRequestOptions() {
 
 export async function onRequestGet(context) {
   const { request, env } = context;
-  let clientId, record, result;
+  let clientId, record, result, diag = null;
   try {
     ({ clientId, record } = await resolveLicense(request, env));          // zip 159: one cached lookup, not three KV reads every 30 s per device
     result = evaluateLicense(record);
+    // zip 245: "not found" is not "deleted". Say 'deleted' only with proof (a tombstone left when a link was permanently removed);
+    // a request that names no shop at all is 'no_link'; anything else stays 'not_found' (the app then says it could not confirm the link,
+    // never that it was removed).
+    if (!record) {
+      let label = '';
+      try { label = subdomainLabel(hostnameFromRequest(request, env), getRootDomain(env)); } catch (e2) { /* none */ }
+      // a plain-words reason for support (never says "deleted"): which part of the lookup missed
+      try {
+        const cq = new URL(request.url).searchParams.get('c') || '';
+        const cRec = cq ? await getLicenseNoCache(env, cq) : null;
+        diag = { host: hostnameFromRequest(request, env), label, hasToken: !!cq, tokenKnown: !!cRec, tokenSlug: cRec ? cRec.slug || '' : '', tokenDeleted: !!(cRec && cRec.deleted) };
+      } catch (e3) { diag = { error: String(e3 && e3.message || e3).slice(0, 80) }; }
+      if (await wasPermanentlyDeleted(env, new URL(request.url).searchParams.get('c') || clientId || '', label)) result = { ...result, reason: 'deleted' };
+      else if (!clientId && !label) result = { ...result, reason: 'no_link' };
+    }
   } catch (e) {
     // zip 143: storage briefly failing is "try again", never an answer about the licence (no `valid` field on purpose)
     return new Response(JSON.stringify({ error: 'The licence could not be checked right now — try again in a moment.', code: 'busy' }), {
@@ -53,6 +68,7 @@ export async function onRequestGet(context) {
     serverNow: Date.now(),
     valid: result.valid,
     reason: result.reason,
+    diag,
     clientId: record ? record.id : '',
     slug: record ? record.slug || '' : '',
     type: record ? record.type : null,

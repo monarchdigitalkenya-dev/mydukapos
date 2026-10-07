@@ -1,0 +1,124 @@
+<!-- INSTALL LINK GUARD (zip 245) ------------------------------------------------------------------------------------------------
+         An INSTALLED app opens at its manifest's start_url, which used to carry no shop token. A device that did not hold the token (a phone's
+         "Add to Home Screen" has its own storage, a cleared browser, a different browser profile) then asked the server "which shop?" with no
+         answer and showed "This link no longer exists" - for a link that was perfectly alive.
+         1. The manifest is rebuilt in the page with THIS shop's token inside start_url, so the installed app opens straight into the shop
+            (the id stays the same, so an app already installed is not duplicated). Never on a shop subdomain: there the address names the shop.
+         2. "This link no longer exists" is said ONLY for a link proven deleted (reason 'deleted'). "Not found" / "no link" never locks a shop that
+            was working, is double-checked first, and when shown says nothing was removed and offers: paste the link, try again, message us. -->
+<script>
+(function () {
+    var SUB = /^[^.]+\.mydukapos\.store$/i.test(location.hostname) && !/^www\./i.test(location.hostname);
+    function tok() { try { return typeof clientToken === 'string' ? clientToken : ''; } catch (e) { return ''; } }
+
+    /* 1. a manifest that carries the token */
+    function carryTokenInManifest() {
+        try {
+            var t = tok();
+            if (!t || SUB || !window.fetch || !window.Blob || !window.URL || !URL.createObjectURL) return;
+            var link = document.querySelector('link[rel="manifest"]');
+            if (!link || link.getAttribute('data-link-token')) return;
+            var base = new URL(link.getAttribute('href'), location.href).href;
+            fetch(base).then(function (r) { return r && r.ok ? r.json() : null; }).then(function (m) {
+                if (!m || typeof m !== 'object' || !m.start_url) return;
+                var abs = function (u) { return new URL(u, base).href; };
+                var s = new URL(abs(m.start_url)); s.searchParams.set('c', t);
+                m.start_url = s.href;
+                if (m.id) m.id = abs(m.id);
+                m.scope = abs(m.scope || './');
+                (m.icons || []).forEach(function (i) { if (i && i.src) i.src = abs(i.src); });
+                (m.shortcuts || []).forEach(function (sc) {
+                    if (sc && sc.url) { var u = new URL(abs(sc.url)); u.searchParams.set('c', t); sc.url = u.href; }
+                    (sc && sc.icons || []).forEach(function (i) { if (i && i.src) i.src = abs(i.src); });
+                });
+                link.setAttribute('data-link-token', '1');
+                link.setAttribute('href', URL.createObjectURL(new Blob([JSON.stringify(m)], { type: 'application/manifest+json' })));
+            }).catch(function () { /* offline or blocked: the plain manifest stays */ });
+        } catch (e) { /* cosmetic */ }
+    }
+
+    /* 2. "not found" is NOT "deleted". The server says 'deleted' only with proof (a Trash record or a tombstone); everything else
+          ('not_found', 'no_link') means "could not confirm". Such an answer never locks a shop that was working, is double-checked before it is
+          shown to anyone, and when it is shown it says nothing was removed. */
+    var streak = 0, lastOk = null, retryTimer = null;
+    function uncertain(li) { return !!li && li.valid === false && !li.offlineEstimate && (li.reason === 'not_found' || li.reason === 'no_link'); }
+    function knownGood() {
+        try { var cp = JSON.parse(localStorage.getItem('pos_license_checkpoint') || 'null'); return !!(cp && cp.valid === true && cp.link === (tok() || location.host)); } catch (e) { return false; }
+    }
+    function recheckSoon(ms) {
+        if (retryTimer) return;
+        retryTimer = setTimeout(function () { retryTimer = null; try { if (typeof checkLicenseStatus === 'function') checkLicenseStatus(); } catch (e) { /* next poll */ } }, ms);
+    }
+    window.ilgOpenShop = function () {
+        var el = document.getElementById('ilg-input'); var v = el ? String(el.value || '').trim() : '';
+        if (!v) { if (el) el.focus(); return; }
+        try {
+            var u = new URL(v, location.href);
+            if (/(^|\.)mydukapos\.store$/i.test(u.hostname) || u.host === location.host) { location.href = u.href; return; }
+        } catch (e) { /* not a link: treat it as the link code */ }
+        location.href = location.pathname + '?c=' + encodeURIComponent(v.replace(/^.*[?&]c=/, ''));
+    };
+    window.ilgRetry = function () { streak = 0; try { checkLicenseStatus(); } catch (e) { location.reload(); } };
+    window.ilgWhatsapp = function () {
+        var msg = 'Hi, my MyDukaPOS app says it could not confirm my shop link (' + location.href + '). Nothing was deleted on my side. Could you check it for me?';
+        window.open('https://wa.me/254791598506?text=' + encodeURIComponent(msg), '_blank');
+    };
+    function couldNotConfirmScreen() {
+        var li = typeof licenseInfo !== 'undefined' ? licenseInfo : null;
+        if (!uncertain(li)) return;
+        var box = document.querySelector('#license-lock-screen .license-lock-box'); if (!box) return;
+        var noLink = !tok() && !SUB;
+        var title = document.getElementById('license-lock-title'); if (title) title.textContent = noLink ? '🔗 Open your shop link' : '🔗 We could not confirm this link';
+        var why = document.getElementById('license-lock-reason');
+        if (why) why.textContent = noLink
+            ? 'This app was opened without your shop’s link, so it does not know which shop it belongs to. Nothing was removed. Paste the link you were given (or just its code) and tap Open — after that this device remembers it.'
+            : 'We could not confirm this link right now. Nothing has been removed or deleted. Check that the device is online and tap Try again. If it keeps happening, message us.';
+        ['license-lock-hint', 'license-lock-alt-payment'].forEach(function (id) { var e = document.getElementById(id) || document.querySelector('.' + id); if (e) e.style.display = 'none'; });
+        var wa = document.getElementById('license-whatsapp-btn'); if (wa) { wa.style.display = 'block'; wa.setAttribute('onclick', 'ilgWhatsapp()'); }
+        var dg = document.getElementById('ilg-diag');
+        if (!dg) { dg = document.createElement('div'); dg.id = 'ilg-diag'; dg.style.cssText = 'font-size:11px;color:#7f8c8d;margin:6px 0;word-break:break-all;'; box.insertBefore(dg, document.getElementById('license-whatsapp-btn') || box.lastElementChild); }
+        var d = li && li.diag; dg.textContent = d ? 'Support ref: ' + (d.label || d.host || '-') + ' · link code ' + (d.hasToken ? (d.tokenKnown ? 'known' : 'not recognised') : 'missing') : '';
+        var f = document.getElementById('ilg-form');
+        if (!f) { f = document.createElement('div'); f.id = 'ilg-form'; f.style.cssText = 'margin:12px 0;'; box.insertBefore(f, wa || box.lastElementChild); }
+        f.innerHTML = '<input id="ilg-input" type="text" inputmode="url" autocomplete="off" placeholder="Paste your shop link here" style="width:100%;box-sizing:border-box;padding:12px;font-size:16px;border-radius:8px;border:1px solid #bbb;margin-bottom:8px;">'
+            + '<button type="button" class="btn-main" style="width:100%;margin-bottom:8px;" onclick="ilgOpenShop()">Open my shop</button>'
+            + '<button type="button" class="btn-main" style="width:100%;background:#2c3e50;" onclick="ilgRetry()">↻ Try again</button>';
+        var inp = document.getElementById('ilg-input'); if (inp) inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') window.ilgOpenShop(); });
+    }
+    function wrap() {
+        var oa = window.applyLicenseUI;
+        if (typeof oa === 'function' && !oa.__ilg) {
+            var na = function () {
+                try {
+                    if (uncertain(licenseInfo)) {
+                        streak++;
+                        if (knownGood() || lastOk || streak < 2) {
+                            // not proof of anything: keep what this device knew (or the optimistic start) and look again
+                            var est = null; try { est = estimateLicenseOffline(); } catch (e) { /* none */ }
+                            licenseInfo = lastOk || (est && est.valid ? est : { valid: true, type: 'permanent' });
+                            recheckSoon(streak < 2 ? 4000 : 20000);
+                            return oa.apply(this, arguments);
+                        }
+                    } else if (licenseInfo && licenseInfo.valid) { streak = 0; }
+                } catch (e) { /* fall through to the normal behaviour */ }
+                var r = oa.apply(this, arguments);
+                try { couldNotConfirmScreen(); } catch (e) { /* cosmetic */ }
+                return r;
+            };
+            na.__ilg = true; window.applyLicenseUI = na;
+        }
+        var os = window.saveLicenseCheckpoint;
+        if (typeof os === 'function' && !os.__ilg) {
+            var ns = function (data) {
+                if (data && data.valid === true) lastOk = data;
+                if (data && data.valid === false && (data.reason === 'not_found' || data.reason === 'no_link')) return;   // not an answer worth keeping for later offline estimates
+                return os.apply(this, arguments);
+            };
+            ns.__ilg = true; window.saveLicenseCheckpoint = ns;
+        }
+    }
+    wrap();
+    window.ilgCheck = couldNotConfirmScreen;
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', carryTokenInManifest); else carryTokenInManifest();
+})();
+</script>

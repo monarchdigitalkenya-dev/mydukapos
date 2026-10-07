@@ -6104,6 +6104,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
     async function render() {
         try {
             var v = S.view, html = '';
+            if ((v === 'overview' || v === 'staff') && !S.empId) await autoSyncPos();      // zip 245: POS staff are in the register without being added a second time
             if (v === 'overview') html = await vOverview();
             else if (v === 'staff') html = S.empId ? await vEmployee() : await vStaff();
             else if (v === 'runs') html = S.runId ? await vRun() : await vRuns();
@@ -6143,11 +6144,27 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
             return '<div class="prl-row" onclick="Payroll.openEmp(\'' + e.emp_id + '\')"><div class="l"><b>' + esc(e.name) + '</b><span>' + esc(e.emp_no) + ' · ' + esc(e.job_title || 'No position yet') + (e.branch_name ? ' · ' + esc(e.branch_name) : '') + '</span></div>' +
                 '<div class="r"><span class="prl-chip ' + e.status + '">' + (ESTAT[e.status] || e.status) + '</span>' + (money && e.basic_pay != null ? '<div><b>' + kes(e.basic_pay) + '</b> <span class="prl-muted">' + (e.rate_unit === 'day' ? '/day' : e.rate_unit === 'hour' ? '/hour' : '/' + (FREQ[e.pay_frequency] || e.pay_frequency).toLowerCase()) + '</span></div>' : '') + '</div></div>';
         }).join('');
-        return '<div class="prl-actions"><input id="prl-q" placeholder="🔍 Search name, number, position…" value="' + esc(S.q) + '" oninput="Payroll.search(this.value)" style="flex:1 1 220px;margin:0">' + (has('staff') ? '<button type="button" onclick="Payroll.newEmp()">➕ Add staff</button><button type="button" class="sec" onclick="Payroll.importPos()">⬇ Add my POS staff</button>' : '') + '</div>' +
-            (rows ? '<div class="prl-list">' + rows + '</div>' : empty('No staff yet', has('staff') ? 'Press “Add staff” to create the first employee.' : ''));
+        return '<div class="prl-actions"><input id="prl-q" placeholder="🔍 Search name, number, position…" value="' + esc(S.q) + '" oninput="Payroll.search(this.value)" style="flex:1 1 220px;margin:0">' + (has('staff') ? '<button type="button" onclick="Payroll.newEmp()">➕ Add staff</button><button type="button" class="sec" onclick="Payroll.importPos()">⬇ Re-check my POS staff</button>' : '') + '</div>' +
+            (rows ? '<div class="prl-list">' + rows + '</div>' : empty('No staff yet', has('staff') ? 'Your POS staff appear here by themselves; press “Add staff” only for someone who is not a POS user.' : ''));
     }
     var qTimer = 0;
     function search(v) { S.q = v; clearTimeout(qTimer); qTimer = setTimeout(function () { render().then(function () { var el = $('prl-q'); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); } }); }, 300); }
+    /* zip 245: the people already in Staff Accounts are put into the payroll register by themselves (once a minute at most, only for someone allowed to
+       edit staff): nobody is typed in twice. Someone already there (linked, or the same name added by hand) is never added again. */
+    async function autoSyncPos() {
+        if (!has('staff') || S.autoBusy || Date.now() - (S.autoAt || 0) < 60000) return 0;
+        S.autoBusy = true; S.autoAt = Date.now();
+        try {
+            var list = []; try { list = (typeof staff !== 'undefined' && Array.isArray(staff)) ? staff.filter(function (x) { return x && !x.removed && x.name; }) : []; } catch (e) { list = []; }
+            if (!list.length) return 0;
+            var d = await api('employee.list', {}), emps = d.employees || [], linked = {}, named = {}, lc = function (t) { return String(t || '').trim().toLowerCase(); };
+            emps.forEach(function (e) { if (e.pos_staff_id) linked[String(e.pos_staff_id)] = 1; named[lc(e.name)] = 1; });
+            var todo = list.filter(function (x) { return !linked[String(x.id)] && !named[lc(x.name)]; }), ok = 0;
+            for (var i = 0; i < todo.length; i++) { try { await api('employee.save', { employee: { name: todo[i].name, pos_staff_id: todo[i].id, basic_pay: 0, branch_name: branchDefault() } }); ok++; } catch (e) { /* the button below shows the reason */ } }
+            if (ok) toast(ok + ' POS staff added to payroll — open each person to set their salary.');
+            return ok;
+        } catch (e) { return 0; } finally { S.autoBusy = false; }
+    }
     async function importPos() {
         var list = []; try { list = (typeof staff !== 'undefined' && Array.isArray(staff)) ? staff.filter(function (x) { return x && !x.removed; }) : []; } catch (e) { list = []; }
         var have = {}; (S.emps || []).forEach(function (e) { if (e.pos_staff_id) have[String(e.pos_staff_id)] = 1; });
@@ -6663,7 +6680,7 @@ html[data-theme="dark"] .dp-chip.on { background:var(--dp-c1); border-color:var(
     setInterval(refreshAccess, 45000); setTimeout(refreshAccess, 2500); setTimeout(paintBtn, 600);
     document.addEventListener('click', function (ev) { if (ev.target && ev.target.id === 'prl-modal') closeModal(); });
 
-    window.Payroll = { importPos: importPos, go: go, open: open, unlock: unlock, newEmp: newEmp, saveNew: saveNew, saveEmp: saveEmp, openEmp: openEmp, search: search, sub: sub, addLine: addLine, delLine: delLine,
+    window.Payroll = { __t: { S: S, autoSyncPos: autoSyncPos }, importPos: importPos, go: go, open: open, unlock: unlock, newEmp: newEmp, saveNew: saveNew, saveEmp: saveEmp, openEmp: openEmp, search: search, sub: sub, addLine: addLine, delLine: delLine,
         docPicked: docPicked, docUpload: docUpload, docView: docView, docReplace: docReplace, docReplaceGo: docReplaceGo, docArchive: docArchive, docDelete: docDelete, closeModal: closeModal,
         newRun: newRun, nrFreq: nrFreq, createRun: createRun, openRun: openRun, step: step, delRun: delRun, addEmpToRun: addEmpToRun, addEmpGo: addEmpGo, payForm: payForm, payGo: payGo, adjustForm: adjustForm, adjustPick: adjustPick, adjustGo: adjustGo,
         editItem: editItem, eiAdd: eiAdd, eiDel: eiDel, eiSet: eiSet, eiSave: eiSave, eiRemove: eiRemove, slip: slip, slipPrint: slipPrint, slipPdf: slipPdf, slipSave: slipSave, setApprovedBy: setApprovedBy, slipOpenSaved: slipOpenSaved, slipShare: slipShare, printAll: printAll, csv: csv,
@@ -25738,7 +25755,7 @@ async function zReportPreflight() {
                     // nothing to pay for or wait out here — swap the whole screen
                     // for a plain "this is gone" message and a way to reach a
                     // human, instead of the usual trial/lock copy below.
-                    const isGone = licenseInfo.reason === 'not_found';
+                    const isGone = licenseInfo.reason === 'deleted'; // zip 245: ONLY a link that is proven deleted says "no longer exists"
                     const titleEl = document.getElementById('license-lock-title');
                     if (titleEl) titleEl.textContent = isGone ? '🔒 This link no longer exists' : '🔒 This link is no longer active';
                     const reasonEl = document.getElementById('license-lock-reason');
@@ -54133,6 +54150,132 @@ function msOpenPurchasesReport(days) {
 })();
 </script>
 <!-- @shared-block:dup-item:end -->
+<!-- @shared-block:install-link:begin -->
+<!-- INSTALL LINK GUARD (zip 245) ------------------------------------------------------------------------------------------------
+         An INSTALLED app opens at its manifest's start_url, which used to carry no shop token. A device that did not hold the token (a phone's
+         "Add to Home Screen" has its own storage, a cleared browser, a different browser profile) then asked the server "which shop?" with no
+         answer and showed "This link no longer exists" - for a link that was perfectly alive.
+         1. The manifest is rebuilt in the page with THIS shop's token inside start_url, so the installed app opens straight into the shop
+            (the id stays the same, so an app already installed is not duplicated). Never on a shop subdomain: there the address names the shop.
+         2. "This link no longer exists" is said ONLY for a link proven deleted (reason 'deleted'). "Not found" / "no link" never locks a shop that
+            was working, is double-checked first, and when shown says nothing was removed and offers: paste the link, try again, message us. -->
+<script>
+(function () {
+    var SUB = /^[^.]+\.mydukapos\.store$/i.test(location.hostname) && !/^www\./i.test(location.hostname);
+    function tok() { try { return typeof clientToken === 'string' ? clientToken : ''; } catch (e) { return ''; } }
+
+    /* 1. a manifest that carries the token */
+    function carryTokenInManifest() {
+        try {
+            var t = tok();
+            if (!t || SUB || !window.fetch || !window.Blob || !window.URL || !URL.createObjectURL) return;
+            var link = document.querySelector('link[rel="manifest"]');
+            if (!link || link.getAttribute('data-link-token')) return;
+            var base = new URL(link.getAttribute('href'), location.href).href;
+            fetch(base).then(function (r) { return r && r.ok ? r.json() : null; }).then(function (m) {
+                if (!m || typeof m !== 'object' || !m.start_url) return;
+                var abs = function (u) { return new URL(u, base).href; };
+                var s = new URL(abs(m.start_url)); s.searchParams.set('c', t);
+                m.start_url = s.href;
+                if (m.id) m.id = abs(m.id);
+                m.scope = abs(m.scope || './');
+                (m.icons || []).forEach(function (i) { if (i && i.src) i.src = abs(i.src); });
+                (m.shortcuts || []).forEach(function (sc) {
+                    if (sc && sc.url) { var u = new URL(abs(sc.url)); u.searchParams.set('c', t); sc.url = u.href; }
+                    (sc && sc.icons || []).forEach(function (i) { if (i && i.src) i.src = abs(i.src); });
+                });
+                link.setAttribute('data-link-token', '1');
+                link.setAttribute('href', URL.createObjectURL(new Blob([JSON.stringify(m)], { type: 'application/manifest+json' })));
+            }).catch(function () { /* offline or blocked: the plain manifest stays */ });
+        } catch (e) { /* cosmetic */ }
+    }
+
+    /* 2. "not found" is NOT "deleted". The server says 'deleted' only with proof (a Trash record or a tombstone); everything else
+          ('not_found', 'no_link') means "could not confirm". Such an answer never locks a shop that was working, is double-checked before it is
+          shown to anyone, and when it is shown it says nothing was removed. */
+    var streak = 0, lastOk = null, retryTimer = null;
+    function uncertain(li) { return !!li && li.valid === false && !li.offlineEstimate && (li.reason === 'not_found' || li.reason === 'no_link'); }
+    function knownGood() {
+        try { var cp = JSON.parse(localStorage.getItem('pos_license_checkpoint') || 'null'); return !!(cp && cp.valid === true && cp.link === (tok() || location.host)); } catch (e) { return false; }
+    }
+    function recheckSoon(ms) {
+        if (retryTimer) return;
+        retryTimer = setTimeout(function () { retryTimer = null; try { if (typeof checkLicenseStatus === 'function') checkLicenseStatus(); } catch (e) { /* next poll */ } }, ms);
+    }
+    window.ilgOpenShop = function () {
+        var el = document.getElementById('ilg-input'); var v = el ? String(el.value || '').trim() : '';
+        if (!v) { if (el) el.focus(); return; }
+        try {
+            var u = new URL(v, location.href);
+            if (/(^|\.)mydukapos\.store$/i.test(u.hostname) || u.host === location.host) { location.href = u.href; return; }
+        } catch (e) { /* not a link: treat it as the link code */ }
+        location.href = location.pathname + '?c=' + encodeURIComponent(v.replace(/^.*[?&]c=/, ''));
+    };
+    window.ilgRetry = function () { streak = 0; try { checkLicenseStatus(); } catch (e) { location.reload(); } };
+    window.ilgWhatsapp = function () {
+        var msg = 'Hi, my MyDukaPOS app says it could not confirm my shop link (' + location.href + '). Nothing was deleted on my side. Could you check it for me?';
+        window.open('https://wa.me/254791598506?text=' + encodeURIComponent(msg), '_blank');
+    };
+    function couldNotConfirmScreen() {
+        var li = typeof licenseInfo !== 'undefined' ? licenseInfo : null;
+        if (!uncertain(li)) return;
+        var box = document.querySelector('#license-lock-screen .license-lock-box'); if (!box) return;
+        var noLink = !tok() && !SUB;
+        var title = document.getElementById('license-lock-title'); if (title) title.textContent = noLink ? '🔗 Open your shop link' : '🔗 We could not confirm this link';
+        var why = document.getElementById('license-lock-reason');
+        if (why) why.textContent = noLink
+            ? 'This app was opened without your shop’s link, so it does not know which shop it belongs to. Nothing was removed. Paste the link you were given (or just its code) and tap Open — after that this device remembers it.'
+            : 'We could not confirm this link right now. Nothing has been removed or deleted. Check that the device is online and tap Try again. If it keeps happening, message us.';
+        ['license-lock-hint', 'license-lock-alt-payment'].forEach(function (id) { var e = document.getElementById(id) || document.querySelector('.' + id); if (e) e.style.display = 'none'; });
+        var wa = document.getElementById('license-whatsapp-btn'); if (wa) { wa.style.display = 'block'; wa.setAttribute('onclick', 'ilgWhatsapp()'); }
+        var dg = document.getElementById('ilg-diag');
+        if (!dg) { dg = document.createElement('div'); dg.id = 'ilg-diag'; dg.style.cssText = 'font-size:11px;color:#7f8c8d;margin:6px 0;word-break:break-all;'; box.insertBefore(dg, document.getElementById('license-whatsapp-btn') || box.lastElementChild); }
+        var d = li && li.diag; dg.textContent = d ? 'Support ref: ' + (d.label || d.host || '-') + ' · link code ' + (d.hasToken ? (d.tokenKnown ? 'known' : 'not recognised') : 'missing') : '';
+        var f = document.getElementById('ilg-form');
+        if (!f) { f = document.createElement('div'); f.id = 'ilg-form'; f.style.cssText = 'margin:12px 0;'; box.insertBefore(f, wa || box.lastElementChild); }
+        f.innerHTML = '<input id="ilg-input" type="text" inputmode="url" autocomplete="off" placeholder="Paste your shop link here" style="width:100%;box-sizing:border-box;padding:12px;font-size:16px;border-radius:8px;border:1px solid #bbb;margin-bottom:8px;">'
+            + '<button type="button" class="btn-main" style="width:100%;margin-bottom:8px;" onclick="ilgOpenShop()">Open my shop</button>'
+            + '<button type="button" class="btn-main" style="width:100%;background:#2c3e50;" onclick="ilgRetry()">↻ Try again</button>';
+        var inp = document.getElementById('ilg-input'); if (inp) inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') window.ilgOpenShop(); });
+    }
+    function wrap() {
+        var oa = window.applyLicenseUI;
+        if (typeof oa === 'function' && !oa.__ilg) {
+            var na = function () {
+                try {
+                    if (uncertain(licenseInfo)) {
+                        streak++;
+                        if (knownGood() || lastOk || streak < 2) {
+                            // not proof of anything: keep what this device knew (or the optimistic start) and look again
+                            var est = null; try { est = estimateLicenseOffline(); } catch (e) { /* none */ }
+                            licenseInfo = lastOk || (est && est.valid ? est : { valid: true, type: 'permanent' });
+                            recheckSoon(streak < 2 ? 4000 : 20000);
+                            return oa.apply(this, arguments);
+                        }
+                    } else if (licenseInfo && licenseInfo.valid) { streak = 0; }
+                } catch (e) { /* fall through to the normal behaviour */ }
+                var r = oa.apply(this, arguments);
+                try { couldNotConfirmScreen(); } catch (e) { /* cosmetic */ }
+                return r;
+            };
+            na.__ilg = true; window.applyLicenseUI = na;
+        }
+        var os = window.saveLicenseCheckpoint;
+        if (typeof os === 'function' && !os.__ilg) {
+            var ns = function (data) {
+                if (data && data.valid === true) lastOk = data;
+                if (data && data.valid === false && (data.reason === 'not_found' || data.reason === 'no_link')) return;   // not an answer worth keeping for later offline estimates
+                return os.apply(this, arguments);
+            };
+            ns.__ilg = true; window.saveLicenseCheckpoint = ns;
+        }
+    }
+    wrap();
+    window.ilgCheck = couldNotConfirmScreen;
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', carryTokenInManifest); else carryTokenInManifest();
+})();
+</script>
+<!-- @shared-block:install-link:end -->
 <!-- @shared-block:accounts:begin -->
 <!-- ACCOUNTS (zip 227) ------------------------------------------------------------------------------------------------------------
          A real set of books for the shop, built from what the till already records, plus the things only the owner can add.

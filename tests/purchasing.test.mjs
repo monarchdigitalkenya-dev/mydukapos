@@ -14,7 +14,7 @@ const INV = JSON.stringify([
 const SUP = JSON.stringify([{ id: 's1', name: 'EABL', phone: '0712345678' }]);
 async function session(app) {
   const b = await boot(app, { storage: { pos_inventory: INV, pos_suppliers: SUP }, wait: 1500 });
-  b.w.eval("showToast = function (m) { window.__toasts = (window.__toasts || []).concat(m); }; window.confirm = () => true; window.__opened = []; window.open = (u) => { window.__opened.push(u); return null; }");
+  b.w.eval("showToast = function (m) { window.__toasts = (window.__toasts || []).concat(m); }; window.confirm = () => true; window.__opened = []; window.open = (u) => { window.__opened.push(u); return { closed: false, focus() {} }; }");
   return b;
 }
 const chipNames = (d, id) => [...d.querySelectorAll(`#${id} .lowstock-chip`)].map((c) => c.textContent.replace(/\s+/g, ' ').trim());
@@ -71,7 +71,7 @@ for (const app of APPS) {
     // send on WhatsApp
     w.eval(`poSendOrder('${o.id}')`);
     const url = w.eval('window.__opened[0]');
-    assert.match(url, /^https:\/\/wa\.me\/254712345678\?text=/);
+    assert.match(url, /^https:\/\/(wa\.me\/254712345678\?|api\.whatsapp\.com\/send\?phone=254712345678&)text=/);
     const text = decodeURIComponent(url.split('text=')[1]);
     assert.match(text, new RegExp(o.orderNo.replace(/[-]/g, '\\-'))); assert.match(text, /Alpha Tin × 10 pcs @ KES 60/); assert.match(text, /Total: KES 900/);
     assert.ok(w.eval(`purchaseOrders[0].sentToSupplierAt`), 'remembered that it was sent');
@@ -87,7 +87,7 @@ for (const app of APPS) {
     assert.match(d.getElementById('po-form-panel').innerHTML, /Save &amp; send on WhatsApp/);
     w.eval('poSaveOrder(true)');
     assert.equal(w.eval('purchaseOrders.length'), 2, 'saved');
-    assert.match(w.eval('window.__opened[0]'), /^https:\/\/wa\.me\/254712345678\?text=/, 'and sent');
+    assert.match(w.eval('window.__opened[0]'), /^https:\/\/(wa\.me\/254712345678\?|api\.whatsapp\.com\/send\?phone=254712345678&)text=/, 'and sent');
     assert.deepEqual(errors, []);
     b.close();
   });
@@ -98,7 +98,7 @@ test('sending an order to a supplier with no phone number asks for it once and r
   b.w.eval("showToast = function () {}; window.__opened = []; window.open = (u) => { window.__opened.push(u); return null; }; window.prompt = () => '0722000111'");
   b.w.eval("purchaseOrders.push({ id: 'po-1', orderNo: 'PO-0001', supplierName: 'New Supplier', items: [{ id: 'l1', name: 'Alpha Tin', qty: 2, cost: 60, unit: 'pcs' }], status: 'pending', statusHistory: [] }); suppliers.push({ id: 's9', name: 'New Supplier', phone: '' })");
   b.w.eval("poSendOrder('po-1')");
-  assert.match(b.w.eval('window.__opened[0]'), /wa\.me\/254722000111/);
+  assert.match(b.w.eval('window.__opened[0]'), /(wa\.me\/|phone=)254722000111/);
   assert.equal(b.w.eval("suppliers.find(s => s.id === 's9').phone"), '0722000111');
   b.close();
 });
