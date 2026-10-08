@@ -27,7 +27,16 @@ const NAVIGATION_NETWORK_TIMEOUT_MS = 3500;
 // zip 145 — BUMP THIS WITH EVERY RELEASE. A service worker only updates when THIS file changes; it had not changed for many releases,
 // so installed apps kept the service worker (and the old cached page) they were installed with. A new version here makes every
 // installed app install this worker, which re-downloads the whole shell (refreshShell) — the stuck phones catch up by themselves.
-const SW_VERSION = 'zip-219';
+const SW_VERSION = 'zip-248';
+
+// zip 247 - "UPDATE AVAILABLE" WHEN NOTHING WAS PUBLISHED. The notice used to be decided by the page's ETag, and (1) a changed ETag with identical bytes
+// (Cloudflare re-labels a compressed copy as weak, another edge answers with another tag) announced an update that did not exist, (2) ANY page opened
+// under this worker - a receipt link, the QR-order page, a help page - was stored as the app's page and its tag compared with the app's, so the next
+// open of the app "found" a difference, and (3) the notice went to every open window of the site, including OTHER apps' windows. Now the decision is
+// the page's own bytes (a fingerprint), only this app's page counts, and only this app's windows are told.
+const APP_ROOT = (() => { try { return new URL('./', self.location.href).pathname; } catch (e) { return null; } })();   // e.g. "/" or "/hotel/"
+const isAppPagePath = (pathname) => APP_ROOT === null || pathname === APP_ROOT || pathname === APP_ROOT + 'index.html';
+const isAppClientUrl = (u) => { try { return !u || isAppPagePath(new URL(u).pathname); } catch (e) { return true; } };
 
 // Paths are relative to the service worker's own location, not the site root.
 // Using absolute '/index.html' style paths silently breaks on any deployment
@@ -124,30 +133,31 @@ async function currentCache() {
   return caches.open(name || `${APP_ID}-shell-fallback`);
 }
 
-// Stores a fresh copy of the page (only when it really changed — its ETag) and tells the open app that a newer version is ready.
+// Stores a fresh copy of the page and tells the open app that a newer version is ready - but ONLY when the page's own bytes changed (a fingerprint of
+// the content, never the ETag: a tag can change with identical bytes).
 async function savePageCopy(copyPromise) {
   const got = await copyPromise;
   if (!got) return;
   try {
     const copy = got.copy;
-    const tag = got.headers.get('etag') || got.headers.get('last-modified') || '';
+    const hash = await sha256Hex([await copy.clone().arrayBuffer()]);
     const pointer = await caches.open(POINTER_CACHE);
-    const prev = await pointer.match('https://sw-internal/page-etag');
-    const prevTag = prev ? await prev.text() : null;
-    if (tag && tag === prevTag) return;
+    const prev = await pointer.match('https://sw-internal/page-hash');
+    const prevHash = prev ? await prev.text() : null;
+    if (prevHash && prevHash === hash) return;                      // the very page already held: nothing to store, nothing to announce
     const cache = await currentCache();
     // zip 219 - the open page may have come from the cached copy (slow line, or the first open after a release). It must ALWAYS be told when the
-    // new copy differs from the one it was shown - before, no notice was sent when no earlier tag was stored, so the old view stayed on screen.
+    // new copy differs from the one it was shown. With no fingerprint remembered yet (the first run of this release), the stored copy is compared by content.
     const old = await cache.match('./index.html');
-    let differs = !!prevTag;
-    if (!differs && old) { try { const [a, b] = await Promise.all([old.clone().text(), copy.clone().text()]); differs = a !== b; } catch (e) { differs = true; } }
+    let differs = !!prevHash;
+    if (!differs && old) { try { differs = (await sha256Hex([await old.clone().arrayBuffer()])) !== hash; } catch (e) { differs = true; } }
     await cache.put('./index.html', copy);
-    if (tag) await pointer.put('https://sw-internal/page-etag', new Response(tag));
+    await pointer.put('https://sw-internal/page-hash', new Response(hash));
     if (differs) {
       const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      wins.forEach((c) => { try { c.postMessage({ type: 'app-update-ready', sw: SW_VERSION }); } catch (e) { /* closed */ } });
+      wins.forEach((c) => { if (isAppClientUrl(c.url)) { try { c.postMessage({ type: 'app-update-ready', sw: SW_VERSION }); } catch (e) { /* closed */ } } });
     }
-  } catch (e) { /* quota — not fatal */ }
+  } catch (e) { /* quota - not fatal */ }
 }
 
 self.addEventListener('install', (event) => {
@@ -204,14 +214,18 @@ self.addEventListener('fetch', (event) => {
   const isNavigation = req.mode === 'navigate';
   const isShellAsset = SHELL_ASSETS.some((p) => {
     const tail = p.replace(/^\.\//, '');
-    return tail && url.pathname.endsWith(tail);
+    if (!tail) return false;
+    return APP_ROOT === null ? url.pathname.endsWith(tail) : url.pathname === APP_ROOT + tail;       // zip 247: THIS app's files only (not another app's index.html / manifest)
   });
   if (!isNavigation && !isShellAsset) return;
   if (isNavigation) {
     event.__pageNetwork = fetch(new Request(req.url, { cache: 'no-cache', credentials: 'same-origin' }));
     // the copy for the cache is cloned FIRST (before the browser starts reading the page), in the very first handler attached
-    const pageCopy = event.__pageNetwork.then((r) => (r && r.ok ? { copy: r.clone(), headers: r.headers } : null), () => null);
-    event.waitUntil(savePageCopy(pageCopy));                  // keeps the worker alive until the new copy is stored
+    // zip 247: only THIS app's own page is kept as the app's page (a receipt, QR-order or help page opened under this worker is not)
+    if (isAppPagePath(url.pathname)) {
+      const pageCopy = event.__pageNetwork.then((r) => (r && r.ok ? { copy: r.clone(), headers: r.headers } : null), () => null);
+      event.waitUntil(savePageCopy(pageCopy));                // keeps the worker alive until the new copy is stored
+    }
   }
 
   event.respondWith(

@@ -31,10 +31,10 @@ test('owner console: the grouped sidebar is built from its tabs', async () => {
   assert.ok(!/Clock Out/.test(txt), 'no staff clock-out on the owner console');
 });
 
-test('every service worker tells an open page when a newer copy differs (zip 219)', async () => {
+test('every service worker tells an open page when a newer copy differs (zip 219, content-based since zip 247)', async () => {
   const fs = await import('node:fs');
   for (const f of ['sw.js', 'hotel/sw.js', 'owner/sw.js', 'water/sw.js', 'chama/sw.js']) {
     const s = fs.readFileSync(f, 'utf8');
-    assert.match(s, /SW_VERSION = 'zip-219'/, f); assert.match(s, /let differs = !!prevTag/, f);
+    assert.match(s, /SW_VERSION = 'zip-248'/, f); assert.match(s, /let differs = !!prevHash/, f);   // zip 247: decided by the page's own bytes, not its ETag
   }
 });

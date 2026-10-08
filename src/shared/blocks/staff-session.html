@@ -107,6 +107,30 @@
             if (pending[sid]) pending[sid].busy = false;
             return false;
         }
+        // zip 247 — SILENT RENEWAL. A session that is about to run out (or ran out while the phone was offline / off, up to 3 days) is renewed by the
+        // server from the token this device already holds: no password, no PIN, nothing to type — so a shaky connection never means signing in again.
+        // The server refuses only when the password / PIN was changed, the person was removed or locked, or the last typed sign-in is over 14 days old.
+        var renewing = {};
+        async function renew(sid) {
+            var s = readJ(KEY)[sid];
+            if (!s || !s.token || renewing[sid] || !online()) return false;
+            if (s.exp - Date.now() > 4 * 3600000 || Date.now() - s.exp > 3 * 86400000) return false;      // not due yet / too old: asks once
+            if (s.noRenew && Date.now() - s.noRenew < 6 * 3600000) return false;                          // the server said no recently: do not hammer it
+            renewing[sid] = true;
+            try {
+                var res = await fetch(apiUrlOf('/api/staff-session'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Staff-Token': s.token }, body: JSON.stringify({ action: 'renew' }) });
+                var d = await res.json().catch(function () { return {}; });
+                var all = readJ(KEY);
+                if (res.ok && d.ok && d.sessionId) {
+                    all[sid] = { sessionId: d.sessionId, token: d.token, secret: d.secret, exp: d.exp, name: d.name, perms: d.perms || [], since: (s.since || Date.now()), at: Date.now() };
+                    writeJ(KEY, all); signWaiting(sid); return true;
+                }
+                if (res.status === 401 || res.status === 403) { if (all[sid]) { all[sid].noRenew = Date.now(); writeJ(KEY, all); } }   // a real "no": one sign-in is needed
+            } catch (e) { /* offline / flaky: tried again on the next tick */ }
+            finally { renewing[sid] = false; }
+            return false;
+        }
+        window.staffSessionRenew = renew;
         // Called right after a PIN (or the Admin password) was checked on this device. `proof` = SHA-256 of what was typed.
         window.staffSessionStart = function (sid, proof) {
             sid = String(sid || 'admin');
@@ -116,19 +140,20 @@
             pending[sid] = { proof: proof, since: Date.now() }; savePending();
             request(sid);
         };
-        function retryAll() { Object.keys(pending).forEach(function (sid) { if (Date.now() - pending[sid].since > 16 * 3600000 || sid !== currentSid()) { delete pending[sid]; savePending(); } else request(sid); }); }
+        function retryAll() { renew(currentSid()); Object.keys(pending).forEach(function (sid) { if (Date.now() - pending[sid].since > 16 * 3600000 || sid !== currentSid()) { delete pending[sid]; savePending(); } else request(sid); }); }
         // Anything that needs the server session (payroll...) calls this instead of asking the person to sign in again: if they signed in
         // offline, the PIN proof is still held, so the session is simply requested now. Resolves true when a session is held.
         window.staffSessionEnsure = async function (sid) {
             sid = String(sid || currentSid());
-            if (sessionFor(sid)) return true;
+            if (sessionFor(sid)) { renew(sid); return true; }
+            if (await renew(sid)) return true;
             if (!pending[sid]) return false;
             for (var i = 0; i < 4 && !sessionFor(sid) && pending[sid]; i++) { await request(sid); if (!sessionFor(sid) && pending[sid]) await new Promise(function (r) { setTimeout(r, 700); }); }
             return !!sessionFor(sid);
         };
         window.staffSessionClearPending = function () { pending = {}; savePending(); };
         window.addEventListener('online', function () { setTimeout(retryAll, 1500); });
-        setInterval(retryAll, 60000);
+        setInterval(retryAll, 60000); setTimeout(retryAll, 4000);
 
         /* ---- signing sales (called by the sales journal when it sees a NEW sale made on this device) ---- */
         function signWith(s, r) {

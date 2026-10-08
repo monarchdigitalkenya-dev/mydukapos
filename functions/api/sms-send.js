@@ -62,6 +62,7 @@ import { requireValidLicense } from './_license.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { readSmsConfigFull } from './_sms-store.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -330,6 +331,55 @@ async function sendViaTalkSasa(config, recipients, message) {
   };
 }
 
+const VALID_SMS_PROVIDERS = ['africastalking', 'mobitech', 'celcom', 'advanta', 'talksasa'];
+// Existing shops never saved a `provider` field, so no value here means Africa's Talking — the only provider that ever existed until now.
+export const smsProviderOf = (config) => (VALID_SMS_PROVIDERS.includes(config && config.provider) ? config.provider : 'africastalking');
+const PROVIDER_LABELS = {
+  africastalking: 'Africa\u2019s Talking',
+  mobitech: 'Mobitech',
+  celcom: 'Celcom Africa',
+  advanta: 'Advanta SMS',
+  talksasa: 'TalkSasa',
+};
+
+// zip 247: the provider dispatch, shared with other server code (the "your payment settings changed" alert goes out through the shop's own SMS
+// account the same way). `config` is the shop's saved SMS account, `recipients` already normalised. -> the provider's result, or
+// { status: 400, error } when the shop has not saved an account for its provider, or { error, raw } when the provider refused.
+export async function dispatchSms(config, recipients, message, from = '') {
+  const provider = smsProviderOf(config);
+  const missing = (what) => ({ status: 400, error: `No SMS account saved for this shop yet \u2014 add your ${what} in Settings first.` });
+  if (provider === 'mobitech') {
+    if (!config.mobitechApiKey || !config.mobitechSenderName) return missing('Mobitech API key and Sender Name');
+    return sendViaMobitech(config, recipients, message);
+  }
+  if (provider === 'celcom') {
+    if (!config.celcomApiKey || !config.celcomPartnerId || !config.celcomShortcode) return missing('Celcom Africa API key, Partner ID, and Shortcode');
+    return sendViaCelcomStyle('Celcom Africa', 'https://isms.celcomafrica.com/api/services/sendsms/', config, 'celcomApiKey', 'celcomPartnerId', 'celcomShortcode', recipients, message);
+  }
+  if (provider === 'advanta') {
+    if (!config.advantaApiKey || !config.advantaPartnerId || !config.advantaShortcode) return missing('Advanta SMS API key, Partner ID, and Shortcode');
+    return sendViaCelcomStyle('Advanta SMS', 'https://quicksms.advantasms.com/api/services/sendsms/', config, 'advantaApiKey', 'advantaPartnerId', 'advantaShortcode', recipients, message);
+  }
+  if (provider === 'talksasa') {
+    if (!config.talksasaApiKey || !config.talksasaSenderId) return missing('TalkSasa API key and Sender ID');
+    return sendViaTalkSasa(config, recipients, message);
+  }
+  if (!config.atUsername || !config.atApiKey) return missing('Africa\u2019s Talking username and API key');
+  return sendViaAfricasTalking(config, recipients, message, from);
+}
+
+// A short message to ONE phone through the shop's own SMS account (used for security alerts). -> { ok, error? }
+export async function sendShopSms(env, config, phone, message) {
+  try {
+    const to = normalizeToE164Kenya(phone);
+    if (!/^\+\d{10,15}$/.test(to)) return { ok: false, error: 'bad_number' };
+    const r = await dispatchSms(config || {}, [to], message, '');
+    return r && !r.error ? { ok: true } : { ok: false, error: (r && r.error) || 'failed' };
+  } catch (e) { return { ok: false, error: 'failed' }; }
+}
+
+export function normalizePhoneForSms(raw) { return normalizeToE164Kenya(raw); }
+
 export async function onRequestPost(context) {
   const { request, env } = context;
   const license = await requireValidLicense(request, env);
@@ -378,50 +428,14 @@ export async function onRequestPost(context) {
   const limited = await checkRateLimit(env, 'sms', clientId, filteredRecipients.length);
   if (!limited.ok) return rateLimitResponse('text messages', limited);
 
-  const configRaw = await env.mydukapos_kv.get(`sms-config:${clientId}`);
-  const config = configRaw ? JSON.parse(configRaw) : {};
-
-  // Existing shops never saved a `provider` field, so no value here means
-  // Africa's Talking — the only provider that ever existed until now.
-  const VALID_PROVIDERS = ['africastalking', 'mobitech', 'celcom', 'advanta', 'talksasa'];
-  const provider = VALID_PROVIDERS.includes(config.provider) ? config.provider : 'africastalking';
-
-  const PROVIDER_LABELS = {
-    africastalking: 'Africa\u2019s Talking',
-    mobitech: 'Mobitech',
-    celcom: 'Celcom Africa',
-    advanta: 'Advanta SMS',
-    talksasa: 'TalkSasa',
-  };
+  const full = await readSmsConfigFull(env, clientId);
+  if (!full.ok) return jsonResponse({ error: 'The SMS account cannot be read right now — contact support.', code: 'secrets_unreadable' }, 503);
+  const config = full.config;
+  const provider = smsProviderOf(config);
 
   try {
-    let result;
-    if (provider === 'mobitech') {
-      if (!config.mobitechApiKey || !config.mobitechSenderName) {
-        return jsonResponse({ error: 'No SMS account saved for this shop yet \u2014 add your Mobitech API key and Sender Name in Settings first.' }, 400);
-      }
-      result = await sendViaMobitech(config, filteredRecipients, message);
-    } else if (provider === 'celcom') {
-      if (!config.celcomApiKey || !config.celcomPartnerId || !config.celcomShortcode) {
-        return jsonResponse({ error: 'No SMS account saved for this shop yet \u2014 add your Celcom Africa API key, Partner ID, and Shortcode in Settings first.' }, 400);
-      }
-      result = await sendViaCelcomStyle('Celcom Africa', 'https://isms.celcomafrica.com/api/services/sendsms/', config, 'celcomApiKey', 'celcomPartnerId', 'celcomShortcode', filteredRecipients, message);
-    } else if (provider === 'advanta') {
-      if (!config.advantaApiKey || !config.advantaPartnerId || !config.advantaShortcode) {
-        return jsonResponse({ error: 'No SMS account saved for this shop yet \u2014 add your Advanta SMS API key, Partner ID, and Shortcode in Settings first.' }, 400);
-      }
-      result = await sendViaCelcomStyle('Advanta SMS', 'https://quicksms.advantasms.com/api/services/sendsms/', config, 'advantaApiKey', 'advantaPartnerId', 'advantaShortcode', filteredRecipients, message);
-    } else if (provider === 'talksasa') {
-      if (!config.talksasaApiKey || !config.talksasaSenderId) {
-        return jsonResponse({ error: 'No SMS account saved for this shop yet \u2014 add your TalkSasa API key and Sender ID in Settings first.' }, 400);
-      }
-      result = await sendViaTalkSasa(config, filteredRecipients, message);
-    } else {
-      if (!config.atUsername || !config.atApiKey) {
-        return jsonResponse({ error: 'No SMS account saved for this shop yet \u2014 add your Africa\u2019s Talking username and API key in Settings first.' }, 400);
-      }
-      result = await sendViaAfricasTalking(config, filteredRecipients, message, typeof body.from === 'string' ? body.from.trim() : '');
-    }
+    const result = await dispatchSms(config, filteredRecipients, message, typeof body.from === 'string' ? body.from.trim() : '');
+    if (result.status === 400) return jsonResponse({ error: result.error }, 400);
 
     if (result.error) {
       return jsonResponse({ error: result.error, raw: result.raw }, 502);

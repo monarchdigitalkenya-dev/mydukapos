@@ -61,7 +61,7 @@ test('R3: refused dispatches change nothing — more than Production has, more t
 test('R4: only from Production; a branch with no tank refuses; the data stays after a reload', async () => {
   const b = await app(); const { w } = b;
   w.eval("activeSiteId = 'site-shop-1'");
-  w.eval('openRefillDispatchModal()'); assert.match(J(w, '__toasts.at(-1)'), /Switch to .*Production/);
+  w.eval('openRefillDispatchModal()'); assert.equal(w.eval('activeSiteId'), 'site-production');   // zip 248: opens at Production by itself instead of refusing
   w.eval("activeSiteId = 'site-production'; tanks.find(t => t.id === 'tank-s').removed = true");
   assert.match(go(b, 'litres', 10).error, /no metered bulk tank/);
   b.close();

@@ -18,6 +18,11 @@ import { readState, shopMode, shopCall } from './_state-store.js';
 import { randomToken } from './_device-auth.js';
 
 export const SESSION_MS = 16 * 3600 * 1000;                       // one working day (a long shift)
+// zip 247: a session is RENEWED silently (no password) while the device holds its token: up to RENEW_GRACE_MS after it ran out (a phone that was
+// offline / switched off overnight) and for at most RENEW_MAX_MS since the last typed password. A changed password / PIN, a removed or locked staff
+// member ends it at once (the `pf` fingerprint below), so renewal never outlives a change of credentials.
+export const RENEW_GRACE_MS = 3 * 24 * 3600 * 1000;
+export const RENEW_MAX_MS = 14 * 24 * 3600 * 1000;
 const MODE_KEY = (c) => `staff-auth-mode:${c}`;
 const KEY_KEY = (c) => `staff-key:${c}`;
 const enc = new TextEncoder();
@@ -66,9 +71,10 @@ export async function issueSession(env, clientId, who, now = Date.now()) {
   // sales made since that sign-in, at most one working day back.
   const since = Number(who.since);
   const iat = Number.isFinite(since) && since < now && since > now - SESSION_MS ? Math.floor(since) : now;
-  const claims = { v: 1, c: clientId, sid: String(who.id), name: String(who.name || '').slice(0, 60), perms: who.perms, mgr: !!who.mgr, iat, exp: now + SESSION_MS };
-  const body = b64u(JSON.stringify(claims));
   const key = await shopKey(env, clientId);
+  const pf = who.pfSrc ? (await hmacHex(key, 'pf|' + who.pfSrc)).slice(0, 12) : '';
+  const claims = { v: 1, c: clientId, sid: String(who.id), name: String(who.name || '').slice(0, 60), perms: who.perms, mgr: !!who.mgr, iat, exp: now + SESSION_MS, orig: Number(who.orig) || now, ...(pf ? { pf } : {}) };
+  const body = b64u(JSON.stringify(claims));
   const sig = await hmacHex(key, 'tok|' + body);
   const sessionId = sig.slice(0, 20);
   // Sales carry only this short id (not the whole token), so the server keeps the claims for the time a sale may take to arrive.
@@ -180,4 +186,11 @@ export async function staffRecord(env, clientId, staffId) {
   }
   const st = (await readState(env, 'pos-data:state:' + clientId, {})) || {};
   return (Array.isArray(st.staff) ? st.staff : []).find((s) => s && String(s.id) === String(staffId)) || null;
+}
+
+// A fingerprint source for a credential (what the key-bound `pf` claim is made from): changes whenever the password / PIN does.
+export const pfSourceOf = (...hashes) => hashes.filter(Boolean).join('|');
+export async function pfMatches(env, clientId, claims, src) {
+  if (!claims || !claims.pf) return false;
+  return safeEq((await hmacHex(await shopKey(env, clientId), 'pf|' + src)).slice(0, 12), claims.pf);
 }

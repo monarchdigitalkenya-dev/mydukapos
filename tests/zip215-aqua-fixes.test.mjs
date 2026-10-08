@@ -31,12 +31,12 @@ test('1. the recipe window shows every material cost, lets it be edited, and a f
   b.close();
 });
 
-test('2. the plain link is the Shop (shop staff only); #production is Production; removed staff are never listed or let in', async () => {
+test('2. the plain link lists everyone (zip 248); #production is Production; removed staff are never listed or let in', async () => {
   let b = await open(''); let w = b.w; quiet(w);
   assert.equal(w.eval('activeSiteId'), SHOP, 'no hash = shop even if the device last used production');
   w.eval('renderLoginPicker()');
   let list = w.eval("document.getElementById('login-picker-list').textContent");
-  assert.match(list, /Nelly/); assert.doesNotMatch(list, /Plant/); assert.doesNotMatch(list, /Gone/);
+  assert.match(list, /Nelly/); assert.match(list, /Plant/); assert.doesNotMatch(list, /Gone/);   // zip 248: the plain link shows all staff
   b.close();
   b = await open('', { aqua_active_site_id: PROD }); w = b.w; quiet(w);
   assert.equal(w.eval('activeSiteId'), SHOP, 'a remembered production site does not take over the plain link');

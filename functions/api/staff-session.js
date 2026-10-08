@@ -12,7 +12,7 @@ import { corsHeadersFor } from './_cors.js';
 import { deviceGuard, proofMatches, isSealedProof } from './_device-auth.js';
 import { readState, shopMode, shopCall } from './_state-store.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
-import { issueSession, permsOf, staffRecord, readMode, writeMode, verifyToken, staffTokenOf, hasPerm } from './_staff-auth.js';
+import { issueSession, permsOf, staffRecord, readMode, writeMode, verifyToken, staffTokenOf, hasPerm, pfMatches, pfSourceOf, RENEW_GRACE_MS, RENEW_MAX_MS } from './_staff-auth.js';
 
 const CORS = { headers: 'Content-Type, X-Device-Id, X-Device-Token, X-Staff-Token' };
 
@@ -65,6 +65,31 @@ export async function onRequestPost(context) {
     return reply({ ok: true, mode: body.mode === 'enforce' ? 'enforce' : 'off' });
   }
 
+  // zip 247 — SILENT RENEWAL: a device holding a session token gets a fresh one without typing anything (so a shaky connection never means
+  // re-entering the password). Refused when the token is forged, too old, the credential changed, or the person was removed / locked.
+  if (body.action === 'renew') {
+    const tok = staffTokenOf(request);
+    const old = tok ? await verifyToken(env, clientId, tok) : null;
+    const now = Date.now();
+    if (!old || !old.pf || (old.expired && now > old.exp + RENEW_GRACE_MS) || now - (old.orig || old.iat) > RENEW_MAX_MS) return reply({ error: 'Please sign in again.', code: 'renew_refused' }, 401);
+    const rl = await checkRateLimit(env, 'staffShop', clientId);
+    if (!rl.ok) return rateLimitResponse('staff sign-ins', rl, cors);
+    if (old.sid === 'admin') {
+      let s;
+      try { s = await shopSecrets(env, clientId); } catch (e) { return reply({ error: 'busy', code: 'busy' }, 503); }
+      if (!(s.pwHash || s.adminPwHash) || !(await pfMatches(env, clientId, old, pfSourceOf(s.pwHash, s.adminPwHash)))) return reply({ error: 'Please sign in again.', code: 'renew_refused' }, 401);
+      const out = await issueSession(env, clientId, { id: 'admin', name: 'Admin', perms: ['*'], mgr: true, orig: old.orig || old.iat, pfSrc: pfSourceOf(s.pwHash, s.adminPwHash) });
+      return reply({ ok: true, renewed: true, token: out.token, sessionId: out.sessionId, secret: out.secret, exp: out.claims.exp, sid: 'admin', name: 'Admin', perms: ['*'], mgr: true });
+    }
+    let m;
+    try { m = await staffRecord(env, clientId, old.sid); } catch (e) { return reply({ error: 'busy', code: 'busy' }, 503); }
+    if (!m || m.outdated || m.removed || !m.pinHash || !(await pfMatches(env, clientId, old, pfSourceOf(m.pinHash)))) return reply({ error: 'Please sign in again.', code: 'renew_refused' }, 401);
+    if (Array.isArray(m.lockedDates) && m.lockedDates.includes(kenyaDay()) && m.openAccountOverrideDate !== kenyaDay()) return reply({ error: 'This account is locked for today.', code: 'locked' }, 403);
+    const perms = permsOf(m);
+    const out = await issueSession(env, clientId, { id: m.id, name: m.name, perms, mgr: !!m.isManager, orig: old.orig || old.iat, pfSrc: pfSourceOf(m.pinHash) });
+    return reply({ ok: true, renewed: true, token: out.token, sessionId: out.sessionId, secret: out.secret, exp: out.claims.exp, sid: String(m.id), name: m.name, perms, mgr: !!m.isManager, canPay: hasPerm(out.claims, 'payments') });
+  }
+
   const proof = String(body.proof || '');
   // Only the typed PIN / password proves who is here. The sealed hash every device keeps is NOT accepted (it is not the PIN).
   if (proof.length < 32 || proof.length > 300 || isSealedProof(proof)) return reply({ error: 'Enter your PIN.', code: 'bad_proof' }, 400);
@@ -77,7 +102,7 @@ export async function onRequestPost(context) {
     const s = await shopSecrets(env, clientId);
     // the shop password (what the Admin signs in with) or the management password
     if (!((s.pwHash && (await proofMatches(proof, s.pwHash))) || (s.adminPwHash && (await proofMatches(proof, s.adminPwHash))))) return reply({ error: 'Incorrect password.', code: 'wrong_pin' }, 401);
-    const out = await issueSession(env, clientId, { id: 'admin', name: 'Admin', perms: ['*'], mgr: true, since: body.since });
+    const out = await issueSession(env, clientId, { id: 'admin', name: 'Admin', perms: ['*'], mgr: true, since: body.since, pfSrc: pfSourceOf(s.pwHash, s.adminPwHash) });
     return reply({ ok: true, token: out.token, sessionId: out.sessionId, secret: out.secret, exp: out.claims.exp, sid: 'admin', name: 'Admin', perms: ['*'] });
   }
 
@@ -94,6 +119,6 @@ export async function onRequestPost(context) {
   if (Array.isArray(m.lockedDates) && m.lockedDates.includes(kenyaDay()) && m.openAccountOverrideDate !== kenyaDay()) return reply({ error: 'This account is locked for today.', code: 'locked' }, 403);
   if (!(await proofMatches(proof, m.pinHash))) return reply({ error: 'Incorrect PIN.', code: 'wrong_pin' }, 401);
   const perms = permsOf(m);
-  const out = await issueSession(env, clientId, { id: m.id, name: m.name, perms, mgr: !!m.isManager, since: body.since });
+  const out = await issueSession(env, clientId, { id: m.id, name: m.name, perms, mgr: !!m.isManager, since: body.since, pfSrc: pfSourceOf(m.pinHash) });
   return reply({ ok: true, token: out.token, sessionId: out.sessionId, secret: out.secret, exp: out.claims.exp, sid: String(m.id), name: m.name, perms, mgr: !!m.isManager, canPay: hasPerm(out.claims, 'payments') });
 }

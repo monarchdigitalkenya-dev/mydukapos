@@ -63,17 +63,16 @@ import { requireValidLicense, resolveClientId } from './_license.js';
 import { checkRateLimit, rateLimitResponse } from './_ratelimit.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { staffGuard } from './_staff-auth.js';
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-};
+// zip 247: no more `Access-Control-Allow-Origin: *`. The apps call this endpoint on their own origin; a browser on any OTHER site is not handed the answer
+// (corsHeadersFor names only this deployment, the root domain and its subdomains, and localhost). Each handler builds `cors` for its own request.
+const CORS_OPTS = { methods: 'GET, POST, OPTIONS', headers: 'Content-Type, X-Device-Id, X-Device-Token, X-Staff-Token' };
 
-function jsonResponse(body, status = 200) {
+function jsonResponse(body, status = 200, cors = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+    headers: { 'Content-Type': 'application/json', ...cors },
   });
 }
 
@@ -416,39 +415,49 @@ async function sendViaPaystack({ phone, amount, accountRef }, cfg) {
   };
 }
 
-export async function onRequestOptions() {
-  return new Response(null, { status: 204, headers: CORS_HEADERS });
+export async function onRequestOptions(context) {
+  return new Response(null, { status: 204, headers: corsHeadersFor(context.request, context.env, CORS_OPTS) });
 }
 
 // Lightweight status check used by the Settings panel — no charge is made.
 export async function onRequestGet(context) {
   const { request, env } = context;
+  const cors = corsHeadersFor(request, env, CORS_OPTS);
+  const reply = (b, st = 200) => jsonResponse(b, st, cors);
   // zip 185: this used to answer for ANY id (it disclosed which provider a shop uses without a licence check). Same guards as the POST below.
   const license = await requireValidLicense(request, env);
-  if (!license.valid) return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
+  if (!license.valid) return reply({ error: 'This link is not active.', reason: license.reason }, 403);
   const clientId = license.clientId;
-  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  const deviceDenied = await deviceGuard(request, env, clientId, cors);
   if (deviceDenied) return deviceDenied;
   const cfg = await loadGatewayConfig(env, clientId);
-  return jsonResponse({ provider: resolveProvider(cfg) });
+  if (cfg.secretsUnreadable) return reply({ error: 'The saved payment keys cannot be read right now — contact support.', code: 'secrets_unreadable' }, 503);
+  return reply({ provider: resolveProvider(cfg) });
 }
 
 export async function onRequestPost(context) {
   const { request, env } = context;
+  const cors = corsHeadersFor(request, env, CORS_OPTS);
+  const reply = (b, st = 200) => jsonResponse(b, st, cors);
 
   const license = await requireValidLicense(request, env);
   if (!license.valid) {
-    return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
+    return reply({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
   // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
-  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  const deviceDenied = await deviceGuard(request, env, clientId, cors);
   if (deviceDenied) return deviceDenied;
 
+  // zip 247: a shop that requires staff sessions only lets a signed-in staff member WITH the payments permission send payment prompts (no change for other shops)
+  const sg = await staffGuard(request, env, clientId, 'payments', cors);
+  if (sg.denied) return sg.denied;
+
   const cfg = await loadGatewayConfig(env, clientId);
+  if (cfg.secretsUnreadable) return reply({ error: 'The saved payment keys cannot be read right now — contact support.', code: 'secrets_unreadable' }, 503);
   const provider = resolveProvider(cfg);
   if (!provider) {
-    return jsonResponse({
+    return reply({
       error: 'No payment gateway configured. Go to Settings -> Payment Gateway and save your Paystack secret key, your Daraja credentials, your KCB Buni credentials, your Paywave Express API key, your Pesapal keys or your Co-op Bank details.',
     }, 500);
   }
@@ -457,7 +466,7 @@ export async function onRequestPost(context) {
   try {
     body = await request.json();
   } catch (e) {
-    return jsonResponse({ error: 'Invalid request body.' }, 400);
+    return reply({ error: 'Invalid request body.' }, 400);
   }
 
   const phone = normalizePhone(body.phone);
@@ -466,15 +475,18 @@ export async function onRequestPost(context) {
   const description = String(body.description || 'POS Sale').slice(0, 13);
 
   if (!/^254(7|1)\d{8}$/.test(phone)) {
-    return jsonResponse({ error: 'Invalid phone number. Use format 07XXXXXXXX or 2547XXXXXXXX.' }, 400);
+    return reply({ error: 'Invalid phone number. Use format 07XXXXXXXX or 2547XXXXXXXX.' }, 400);
   }
   if (!amount) {
-    return jsonResponse({ error: 'Invalid amount.' }, 400);
+    return reply({ error: 'Invalid amount.' }, 400);
   }
 
   // Per-shop hourly cap — a leaked link must not be able to spam customers' phones with payment prompts.
   const limited = await checkRateLimit(env, 'stk', clientId, 1);
-  if (!limited.ok) return rateLimitResponse('M-Pesa payment prompts', limited, CORS_HEADERS);
+  if (!limited.ok) return rateLimitResponse('M-Pesa payment prompts', limited, cors);
+  // zip 247: ...and a cap per customer phone, so one number cannot be pestered with prompts (a customer who cancels can still be asked a few times)
+  const limitedPhone = await checkRateLimit(env, 'stkPhone', clientId + ':' + phone, 1);
+  if (!limitedPhone.ok) return rateLimitResponse('payment prompts to this phone number', limitedPhone, cors);
 
   try {
     const origin = new URL(request.url).origin;
@@ -509,13 +521,13 @@ export async function onRequestPost(context) {
       createdAt: Date.now(),
     }));
 
-    return jsonResponse({
+    return reply({
       checkoutRequestId: result.id,
       merchantRequestId: result.merchantRequestId,
       customerMessage: result.customerMessage,
       ...(result.paymentUrl ? { paymentUrl: result.paymentUrl } : {}),
     });
   } catch (err) {
-    return jsonResponse({ error: err.message || 'Unexpected error contacting the payment gateway.' }, 500);
+    return reply({ error: err.message || 'Unexpected error contacting the payment gateway.' }, 500);
   }
 }

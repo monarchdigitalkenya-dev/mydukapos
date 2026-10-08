@@ -27,15 +27,25 @@
 
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-const KV_KEY_PREFIX = 'gateway-config:v1:';
+import { openRecord, sealRecord } from './_secret-box.js';
 
-async function readStored(env, clientId) {
+const KV_KEY_PREFIX = 'gateway-config:v1:';
+const aadOf = (clientId) => 'gateway|' + clientId;
+
+// zip 247: the record is sealed (AES-GCM, key = the PAYMENT_SECRETS_KEY Cloudflare secret) whenever that secret is set; plain records are read as before
+// and sealed the next time they are touched. `ok:false` = sealed but unreadable (key missing / rotated away): it must never be written over.
+async function readStoredFull(env, clientId) {
   try {
     const raw = await env.mydukapos_kv.get(KV_KEY_PREFIX + clientId);
-    return raw ? JSON.parse(raw) : {};
+    const r = await openRecord(env, aadOf(clientId), raw);
+    return { stored: r.ok ? r.value : {}, ok: r.ok, encrypted: r.encrypted, needsSeal: r.needsSeal };
   } catch (e) {
-    return {};
+    return { stored: {}, ok: true, encrypted: false, needsSeal: false };
   }
+}
+async function readStored(env, clientId) { return (await readStoredFull(env, clientId)).stored; }
+async function writeStored(env, clientId, obj) {
+  await env.mydukapos_kv.put(KV_KEY_PREFIX + clientId, await sealRecord(env, aadOf(clientId), obj));
 }
 
 const PROVIDER_FIELDS = {
@@ -54,7 +64,15 @@ export function envFallbackAllowed(env, clientId) {
 
 // One config object every other function reads fields off of — this shop's own credentials only (see above).
 export async function loadGatewayConfig(env, clientId) {
-  const stored = await readStored(env, clientId);
+  const full = await readStoredFull(env, clientId);
+  let stored = full.stored;
+  // zip 247: a held change (see saveGatewayConfig) whose waiting time is over takes effect here, the first time anything reads the settings
+  if (full.ok && stored._pending && Number(stored._pending.effectiveAt) <= Date.now()) {
+    stored = applyPending(stored);
+    try { await writeStored(env, clientId, stored); } catch (e) { /* applied in memory; written next time */ }
+  } else if (full.ok && full.needsSeal) {
+    try { await writeStored(env, clientId, stored); } catch (e) { /* sealed next time */ }      // plain (or old-key) record -> sealed with the current key
+  }
   const allowEnv = envFallbackAllowed(env, clientId);
   const creds = {};
   for (const fields of Object.values(PROVIDER_FIELDS)) {
@@ -65,6 +83,7 @@ export async function loadGatewayConfig(env, clientId) {
   }
   return {
     ...creds,
+    secretsUnreadable: !full.ok,
     mpesaEnv: stored.mpesaEnv || env.MPESA_ENV || 'sandbox',
     mpesaTransactionType: stored.mpesaTransactionType || env.MPESA_TRANSACTION_TYPE || 'CustomerPayBillOnline',
     // KCB Buni — a second way to send the exact same kind of M-Pesa STK
@@ -84,15 +103,59 @@ export async function loadGatewayConfig(env, clientId) {
   };
 }
 
-// Saves only the fields present in `updates`, merged field-by-field into
-// whatever's already stored for this client — never wipes fields the caller
-// didn't send.
-export async function saveGatewayConfig(env, clientId, updates) {
-  const stored = await readStored(env, clientId);
-  const merged = { ...stored };
+const FIELD_PROVIDER = {};
+Object.entries(PROVIDER_FIELDS).forEach(([prov, f]) => Object.keys(f).forEach((k) => { FIELD_PROVIDER[k] = prov; }));
+export const providerOfField = (k) => FIELD_PROVIDER[k] || null;
 
-  if (updates.provider !== undefined) merged.forcedProvider = updates.provider;
-  if (updates.kcbSharedShortCode !== undefined) merged.kcbSharedShortCode = !!updates.kcbSharedShortCode;
+// A held change whose time has come: its fields become the saved values.
+export function applyPending(stored) {
+  const out = { ...stored };
+  const p = out._pending;
+  delete out._pending;
+  if (p && p.fields && typeof p.fields === 'object') Object.keys(p.fields).forEach((k) => { if (FIELD_PROVIDER[k] && p.fields[k]) out[k] = p.fields[k]; });
+  return out;
+}
+
+// What is waiting (never the values): { effectiveAt, providers } or null.
+export async function getPendingChange(env, clientId) {
+  const { stored, ok } = await readStoredFull(env, clientId);
+  const p = ok ? stored._pending : null;
+  if (!p || !p.fields || !Object.keys(p.fields).length) return null;
+  return { effectiveAt: Number(p.effectiveAt) || 0, providers: Array.isArray(p.providers) ? p.providers : [], at: Number(p.at) || 0 };
+}
+
+export async function cancelPendingChange(env, clientId) {
+  const { stored, ok } = await readStoredFull(env, clientId);
+  if (!ok) { const e = new Error('secrets_unreadable'); e.code = 'secrets_unreadable'; throw e; }
+  if (!stored._pending) return false;
+  const merged = { ...stored };
+  delete merged._pending;
+  await writeStored(env, clientId, merged);
+  return true;
+}
+
+// Saves only the fields present in `updates`, merged field-by-field into whatever's already stored for this client — never wipes fields the
+// caller didn't send.
+//
+// zip 247 — A CHANGED KEY IS HELD. Replacing a credential a provider ALREADY has (the destination of the shop's money) does not take effect at
+// once: it waits `opts.cooldownMs` (default in gateway-config.js: 60 minutes), during which the old keys keep working, the owner is told, and the
+// change can be cancelled. First-time setup of a provider, filling a blank field, and non-credential settings (sandbox/production, the provider
+// choice, transaction type) apply immediately.
+// -> { immediate: [providers/settings changed now], held: { providers, effectiveAt } | null }
+export async function saveGatewayConfig(env, clientId, updates, opts = {}) {
+  const full = await readStoredFull(env, clientId);
+  if (!full.ok) { const e = new Error('secrets_unreadable'); e.code = 'secrets_unreadable'; throw e; }
+  const stored = full.stored;
+  const merged = { ...stored };
+  const now = Date.now();
+  const cooldownMs = Math.max(0, Number(opts.cooldownMs) || 0);
+  const immediate = new Set();
+  const heldProviders = new Set();
+  const held = (stored._pending && stored._pending.fields && typeof stored._pending.fields === 'object') ? { ...stored._pending.fields } : {};
+  const priorHeldProviders = (stored._pending && Array.isArray(stored._pending.providers)) ? stored._pending.providers : [];
+
+  if (updates.provider !== undefined && merged.forcedProvider !== updates.provider) { merged.forcedProvider = updates.provider; immediate.add('provider'); }
+  if (updates.kcbSharedShortCode !== undefined && merged.kcbSharedShortCode !== !!updates.kcbSharedShortCode) { merged.kcbSharedShortCode = !!updates.kcbSharedShortCode; immediate.add('kcbSharedShortCode'); }
 
   const fields = [
     'paystackSecretKey',
@@ -113,19 +176,40 @@ export async function saveGatewayConfig(env, clientId, updates) {
     'coopConsumerKey', 'coopConsumerSecret', 'coopTokenUrl', 'coopStkUrl', 'coopShortcode', 'coopPasskey', 'coopTransactionType',
   ];
   fields.forEach((key) => {
-    if (updates[key] !== undefined && updates[key] !== '') merged[key] = updates[key];
+    const v = updates[key];
+    if (v === undefined || v === '') return;
+    const prov = FIELD_PROVIDER[key];
+    if (!prov) {                                            // sandbox/production, transaction type: not a destination
+      if (merged[key] !== v) { merged[key] = v; immediate.add(key); }
+      return;
+    }
+    if (stored[key] === v) { delete held[key]; return; }    // the value that is already saved: nothing changes (and a held replacement of it is dropped)
+    const replacing = !!stored[key];                       // a value is already there -> this would move the money
+    if (replacing && cooldownMs > 0) { held[key] = v; heldProviders.add(prov); }
+    else { merged[key] = v; delete held[key]; immediate.add(prov); }
   });
 
-  await env.mydukapos_kv.put(KV_KEY_PREFIX + clientId, JSON.stringify(merged));
-  return merged;
+  if (Object.keys(held).length) {
+    const providers = Array.from(new Set([...priorHeldProviders, ...heldProviders]));
+    merged._pending = { at: now, effectiveAt: now + cooldownMs, fields: held, providers, by: String(opts.who || '').slice(0, 60) };
+  } else {
+    delete merged._pending;
+  }
+
+  await writeStored(env, clientId, merged);
+  return {
+    immediate: Array.from(immediate),
+    held: merged._pending ? { providers: merged._pending.providers, effectiveAt: merged._pending.effectiveAt } : null,
+  };
 }
 
 // Used by the Settings panel's "Reset" button for one provider — clears just
 // that provider's fields (and, if it was the forced choice, the force too)
 // without touching the other providers' saved config.
 export async function clearGatewayProvider(env, clientId, which) {
-  const stored = await readStored(env, clientId);
-  const merged = { ...stored };
+  const full = await readStoredFull(env, clientId);
+  if (!full.ok) { const e = new Error('secrets_unreadable'); e.code = 'secrets_unreadable'; throw e; }
+  const merged = { ...full.stored };
 
   const fieldsByProvider = {
     paystack: ['paystackSecretKey'],
@@ -138,8 +222,14 @@ export async function clearGatewayProvider(env, clientId, which) {
   const fields = fieldsByProvider[which] || [];
   fields.forEach((key) => { delete merged[key]; });
   if (merged.forcedProvider === which) delete merged.forcedProvider;
+  if (merged._pending && merged._pending.fields) {                      // a held change for this provider goes with it
+    const keep = {};
+    Object.keys(merged._pending.fields).forEach((k) => { if (!fields.includes(k)) keep[k] = merged._pending.fields[k]; });
+    if (Object.keys(keep).length) merged._pending = { ...merged._pending, fields: keep, providers: (merged._pending.providers || []).filter((x) => x !== which) };
+    else delete merged._pending;
+  }
 
-  await env.mydukapos_kv.put(KV_KEY_PREFIX + clientId, JSON.stringify(merged));
+  await writeStored(env, clientId, merged);
   return merged;
 }
 

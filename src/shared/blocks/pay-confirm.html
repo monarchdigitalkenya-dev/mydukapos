@@ -1,0 +1,181 @@
+<!-- PAY CONFIRM (zip 247) ------------------------------------------------------------------------------------------------------------
+     Changing WHERE A SHOP'S MONEY GOES (Settings > Payment Gateway keys, the SMS account) now needs a typed proof on the server, every time:
+     the Admin password or a manager's PIN. This block adds the pop-up and attaches the proof, so none of the existing Save / Reset buttons had to
+     change: any call to /api/gateway-config (save, reset, cancel) or an /api/sms-config save that carries account keys asks first, then sends the
+     proof in the X-Pay-Proof header (SHA-256 of what was typed - the password itself never leaves the device). It is asked only while online
+     (changing these settings needs the internet anyway), kept in memory for 90 seconds so one sitting of several saves asks once, never stored.
+     It also tells the person what the server did: a changed key is HELD for a while (the old one keeps working), the owner was alerted, and a
+     "waiting change" card in Settings can cancel it. Selling, signing in and everything else are untouched. -->
+<script>
+(function () {
+    'use strict';
+    if (window.__payConfirm) return; window.__payConfirm = true;
+
+    var TTL_MS = 90 * 1000;
+    var cache = null;                       // { hdr, at } - memory only
+    var asking = null;                      // the open pop-up's promise (one at a time)
+    var SMS_CRED = /^(atUsername|atApiKey|mobitech(ApiKey|SenderName)|celcom(ApiKey|PartnerId|Shortcode)|advanta(ApiKey|PartnerId|Shortcode)|talksasa(ApiKey|SenderId)|provider)$/;
+
+    function $(id) { return document.getElementById(id); }
+    function toast(text, bad) { try { if (typeof showToast === 'function') { showToast(text, !!bad); return; } } catch (e) { /* fall through */ } try { console.log(text); } catch (e2) { /* none */ } }
+    function eat(t) { var d = new Date(Number(t) + 3 * 3600000); if (isNaN(d.getTime())) return ''; var M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']; var p = function (n) { return (n < 10 ? '0' : '') + n; }; return p(d.getUTCDate()) + ' ' + M[d.getUTCMonth()] + ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()); }
+    var NAMES = { paystack: 'Paystack', daraja: 'M-Pesa Daraja', kcb: 'KCB Buni', paywave: 'Paywave', pesapal: 'Pesapal', coop: 'Co-op Bank', sms: 'SMS account' };
+    function names(list) { return (list || []).map(function (p) { return NAMES[p] || p; }).join(', '); }
+
+    function sha256Hex(text) {
+        try {
+            if (window.crypto && crypto.subtle && crypto.subtle.digest) {
+                return crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text))).then(function (buf) {
+                    return Array.prototype.map.call(new Uint8Array(buf), function (b) { return (b < 16 ? '0' : '') + b.toString(16); }).join('');
+                });
+            }
+        } catch (e) { /* fallback below */ }
+        return Promise.resolve(typeof sha256HexFallback === 'function' ? sha256HexFallback(text) : '');
+    }
+
+    /* which calls need the proof */
+    function needsProof(url, method, init) {
+        if (navigator.onLine === false) return false;                       // offline: the call fails by itself, no point asking
+        if (/\/api\/gateway-config(\?|$)/.test(url)) return method === 'POST' || method === 'DELETE';
+        if (/\/api\/sms-config(\?|$)/.test(url) && method === 'POST') {
+            try { var b = JSON.parse(init && init.body); return !!b && Object.keys(b).some(function (k) { return SMS_CRED.test(k); }); } catch (e) { return false; }
+        }
+        return false;
+    }
+
+    /* the pop-up */
+    function managers() {
+        var out = [];
+        try { if (typeof staff !== 'undefined' && Array.isArray(staff)) staff.forEach(function (m) { if (m && m.isManager && !m.removed && m.id != null) out.push({ id: String(m.id), name: String(m.name || 'Manager') }); }); } catch (e) { /* admin only */ }
+        return out;
+    }
+    function ask(reason) {
+        if (cache && Date.now() - cache.at < TTL_MS) return Promise.resolve(cache.hdr);
+        if (asking) return asking;
+        asking = new Promise(function (resolve) {
+            var ov = document.createElement('div');
+            ov.id = 'pay-confirm-ov';
+            ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-label', 'Confirm it is you');
+            ov.style.cssText = 'position:fixed;inset:0;z-index:100001;background:rgba(15,25,35,.62);display:flex;align-items:center;justify-content:center;padding:16px;';
+            var card = document.createElement('div');
+            card.style.cssText = 'background:var(--bg-surface,#fff);color:var(--text-main,#2c3e50);width:min(420px,100%);border-radius:16px;box-shadow:0 18px 50px rgba(0,0,0,.35);padding:22px 20px;font:15px system-ui,sans-serif;border-top:5px solid #27ae60;';
+            var ms = managers();
+            var opts = '<option value="admin">Admin (shop / management password)</option>' + ms.map(function (m) { return '<option value="s:' + m.id.replace(/[&<>"']/g, '') + '">' + m.name.replace(/[&<>"']/g, '') + ' (manager PIN)</option>'; }).join('');
+            card.innerHTML = '<div style="font-size:34px;line-height:1;margin-bottom:6px;">🔐</div>'
+                + '<div style="font-size:19px;font-weight:700;margin-bottom:6px;">Confirm it is you</div>'
+                + '<div style="font-size:14px;opacity:.85;margin-bottom:12px;">' + (reason || 'Changing payment settings decides where your customers’ money goes, so it needs your password every time. This protects your money.') + '</div>'
+                + '<label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;">Who is confirming?</label>'
+                + '<select id="pay-confirm-who" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-color,#ccd);margin-bottom:10px;font-size:15px;background:var(--bg-surface,#fff);color:inherit;">' + opts + '</select>'
+                + '<label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;" id="pay-confirm-lbl">Password</label>'
+                + '<input id="pay-confirm-pw" type="password" autocomplete="off" inputmode="text" style="width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid var(--border-color,#ccd);font-size:17px;background:var(--bg-surface,#fff);color:inherit;">'
+                + '<div id="pay-confirm-err" role="alert" style="color:#c0392b;font-size:13px;min-height:18px;margin-top:6px;"></div>'
+                + '<div style="display:flex;gap:10px;margin-top:8px;"><button type="button" id="pay-confirm-ok" style="flex:1;padding:12px;border:0;border-radius:10px;background:#27ae60;color:#fff;font-weight:700;font-size:16px;cursor:pointer;">Confirm</button>'
+                + '<button type="button" id="pay-confirm-no" style="padding:12px 16px;border:1px solid var(--border-color,#ccd);border-radius:10px;background:transparent;color:inherit;font-size:15px;cursor:pointer;">Cancel</button></div>';
+            ov.appendChild(card);
+            (document.body || document.documentElement).appendChild(ov);
+            var who = card.querySelector('#pay-confirm-who'), pw = card.querySelector('#pay-confirm-pw'), err = card.querySelector('#pay-confirm-err'), lbl = card.querySelector('#pay-confirm-lbl');
+            function finish(v) { try { document.removeEventListener('keydown', onKey, true); ov.remove(); } catch (e) { /* gone */ } asking = null; resolve(v); }
+            function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); finish(null); } else if (e.key === 'Enter' && document.activeElement === pw) { e.preventDefault(); go(); } }
+            who.addEventListener('change', function () { lbl.textContent = who.value === 'admin' ? 'Password' : 'PIN'; pw.value = ''; pw.focus(); });
+            function go() {
+                var typed = pw.value;
+                if (!typed) { err.textContent = 'Type it first.'; pw.focus(); return; }
+                sha256Hex(typed).then(function (h) {
+                    if (!h) { err.textContent = 'This device cannot check passwords. Use another device.'; return; }
+                    var o = who.value === 'admin' ? { a: true, p: h } : { s: who.value.slice(2), p: h };
+                    var hdr = btoa(JSON.stringify(o));
+                    cache = { hdr: hdr, at: Date.now() };
+                    finish(hdr);
+                });
+            }
+            card.querySelector('#pay-confirm-ok').addEventListener('click', go);
+            card.querySelector('#pay-confirm-no').addEventListener('click', function () { finish(null); });
+            ov.addEventListener('mousedown', function (e) { if (e.target === ov) finish(null); });
+            document.addEventListener('keydown', onKey, true);
+            setTimeout(function () { try { pw.focus(); } catch (e) { /* none */ } }, 50);
+        });
+        return asking;
+    }
+
+    /* a refusal the caller reads like any other failed answer (nothing was sent) */
+    function cancelled() {
+        var d = { error: 'Cancelled - nothing was changed.', code: 'pay_confirm_cancelled' };
+        if (typeof Response === 'function') return new Response(JSON.stringify(d), { status: 403, headers: { 'Content-Type': 'application/json' } });
+        return { ok: false, status: 403, json: function () { return Promise.resolve(d); }, clone: function () { return this; } };
+    }
+
+    /* the fetch wrapper */
+    var prev = window.fetch;
+    if (typeof prev === 'function' && !prev.__payConfirm) {
+        var wrapped = function (input, init) {
+            var url = '', method = 'GET';
+            try { url = typeof input === 'string' ? input : (input && input.url) || ''; method = String((init && init.method) || (typeof input !== 'string' && input && input.method) || 'GET').toUpperCase(); } catch (e) { /* GET */ }
+            var self = this;
+            if (!/\/api\/(gateway|sms)-config/.test(url)) return prev.apply(self, arguments);
+            if (needsProof(url, method, init)) {
+                return ask().then(function (hdr) {
+                    if (!hdr) return cancelled();
+                    var i2 = Object.assign({}, init || {});
+                    var h = new Headers(i2.headers || (typeof input !== 'string' && input && input.headers) || undefined);
+                    h.set('X-Pay-Proof', hdr); i2.headers = h;
+                    return prev.call(self, input, i2).then(function (res) { report(res, method); return res; });
+                });
+            }
+            return prev.apply(self, arguments).then(function (res) { if (/\/api\/gateway-config(\?|$)/.test(url) && method === 'GET') pending(res); return res; });
+        };
+        Object.keys(prev).forEach(function (k) { try { wrapped[k] = prev[k]; } catch (e) { /* none */ } });
+        wrapped.__payConfirm = true;
+        window.fetch = wrapped;
+    }
+
+    /* what the server did */
+    function report(res, method) {
+        try {
+            res.clone().json().then(function (d) {
+                if (!d) return;
+                if (res.status === 401 || res.status === 403) {
+                    if (d.code === 'pay_confirm_failed' || d.code === 'pay_confirm_required') { cache = null; toast(d.error || 'Incorrect password.', true); }
+                    return;
+                }
+                if (res.status === 429 && d.error) { toast(d.error, true); return; }
+                if (!res.ok) { if (d.error) toast(d.error, true); return; }
+                if (d.held && d.held.effectiveAt) {
+                    toast('Saved. For your safety the new ' + (names(d.held.providers) || 'payment') + ' keys start at ' + eat(d.held.effectiveAt) + ' - your current keys keep working until then.' + (d.alerted === false ? ' No alert could be sent: add the owner’s phone number.' : ' The owner has been alerted.'));
+                    try { if (typeof checkPaymentGatewayStatus === 'function') checkPaymentGatewayStatus(); } catch (e) { /* none */ }
+                } else if (d.cancelled) {
+                    toast('The waiting change was cancelled. Your current keys stay.');
+                    try { if (typeof checkPaymentGatewayStatus === 'function') checkPaymentGatewayStatus(); } catch (e) { /* none */ }
+                } else if (d.alerted === false && method !== 'GET') {
+                    toast('Saved. No alert could be sent to the owner - add the owner’s phone number in the shop’s details.');
+                }
+            }).catch(function () { /* not JSON */ });
+        } catch (e) { /* cosmetic */ }
+    }
+
+    /* the "waiting change" card in Settings > Payment Gateway */
+    function pending(res) {
+        try {
+            res.clone().json().then(function (d) {
+                var host = $('payment-gateway-status');
+                if (!host || !d) return;
+                var card = $('pay-pending-card');
+                var p = d.pendingChange, recent = Array.isArray(d.recentChanges) ? d.recentChanges.slice(0, 3) : [];
+                if (!p && !recent.length) { if (card) card.remove(); return; }
+                if (!card) {
+                    card = document.createElement('div'); card.id = 'pay-pending-card';
+                    card.style.cssText = 'margin:10px 0;padding:12px 14px;border-radius:12px;border:1px solid rgba(127,140,141,.35);background:rgba(127,140,141,.08);font-size:14px;';
+                    host.parentNode.insertBefore(card, host);
+                }
+                var html = '';
+                if (p) html += '<div style="padding:10px 12px;border-radius:10px;background:#fef5e7;border:1px solid #f5cba7;color:#7e5109;margin-bottom:8px;"><b>⏳ New keys waiting</b><br>' + names(p.providers).replace(/[&<>]/g, '') + ' keys start at <b>' + eat(p.effectiveAt) + '</b>. Until then your current keys keep working. <div style="margin-top:8px;"><button type="button" id="pay-pending-cancel" style="background:#c0392b;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer;">Not me - cancel this change</button></div></div>';
+                if (recent.length) html += '<div style="font-size:12.5px;opacity:.85;"><b>Recent changes</b>' + recent.map(function (r) { return '<div>' + eat(r.at) + ' · ' + (r.kind === 'reset' ? 'removed ' : r.kind === 'held' ? 'new keys saved for ' : r.kind === 'cancelled' ? 'cancelled' : 'changed ') + names(r.providers).replace(/[&<>]/g, '') + (r.by ? ' · by ' + String(r.by).replace(/[&<>]/g, '') : '') + (r.alerted ? ' · owner alerted ✓' : ' · no alert sent') + '</div>'; }).join('') + '</div>';
+                card.innerHTML = html;
+                var b = $('pay-pending-cancel');
+                if (b) b.addEventListener('click', function () {
+                    fetch((typeof apiUrl === 'function' ? apiUrl('/api/gateway-config') : '/api/gateway-config'), { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cancelPending: true }) });
+                });
+            }).catch(function () { /* none */ });
+        } catch (e) { /* cosmetic */ }
+    }
+})();
+</script>

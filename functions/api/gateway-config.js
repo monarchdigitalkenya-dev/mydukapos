@@ -20,17 +20,35 @@
 //           | 'daraja' | 'kcb' }), used by the Settings panel's "Reset"
 //           button for that provider.
 //
+// zip 247 — CHANGING PAYMENT SETTINGS NEEDS A TYPED PROOF, EVERY TIME (POST and DELETE): the Admin / management password or a manager's PIN, sent in
+// the X-Pay-Proof header and checked on the server (_pay-guard.js) — a shop's link alone can no longer redirect its money. Replacing a key the shop
+// ALREADY has is also HELD for PAYMENT_CHANGE_COOLDOWN_MIN minutes (default 60; the old keys keep working meanwhile): the owner is told by SMS /
+// WhatsApp / email (_pay-alert.js) and the change can be cancelled (DELETE { cancelPending: true }). First-time setup applies at once. Saved keys are
+// kept encrypted (_secret-box.js) when the PAYMENT_SECRETS_KEY secret is set.
+//
 // Blocked with 403 if this link's license isn't currently valid.
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { loadGatewayConfig, saveGatewayConfig, clearGatewayProvider, hasPaystackConfig, hasDarajaConfig, hasKcbConfig, hasPaywaveConfig, hasPesapalConfig, hasCoopConfig } from './_gateway-config.js';
+import { loadGatewayConfig, saveGatewayConfig, clearGatewayProvider, getPendingChange, cancelPendingChange, hasPaystackConfig, hasDarajaConfig, hasKcbConfig, hasPaywaveConfig, hasPesapalConfig, hasCoopConfig } from './_gateway-config.js';
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
-import { getCallbackKey, ensureCallbackKey, withKey } from './_callback-key.js';
+import { getCallbackKey, ensureCallbackKey, ensureShopCallbackKeysGrace, withKey } from './_callback-key.js';
 import { managerGuard, secLimit, secNum } from './_sec-guard.js';
 import { readMode, verifyToken, staffTokenOf } from './_staff-auth.js';
+import { requirePayProof } from './_pay-guard.js';
+import { notifyPayChange, recentPayChanges, alertable } from './_pay-alert.js';
+
+// zip 247: a shop that has no payment-callback keys yet is given them the first time its Settings > Payment Gateway opens (see _callback-key.js)
+const keysEnsured = new Set();
+const cooldownMinutes = (env) => { const m = Number(env && env.PAYMENT_CHANGE_COOLDOWN_MIN); return Number.isFinite(m) && m >= 0 ? m : 60; };
+// the alert may take a few seconds (SMS / email providers): the save does not wait longer than that, and the alert still finishes in the background
+async function alertWithin(context, clientId, ev, ms = 5000) {
+  const p = notifyPayChange(context.env, clientId, ev, context.request).catch(() => ({ alerted: false }));
+  try { if (context.waitUntil) context.waitUntil(p); } catch (e) { /* none */ }
+  return Promise.race([p, new Promise((r) => setTimeout(() => r({ alerted: null }), ms))]);
+}
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -51,6 +69,7 @@ export async function onRequestGet(context) {
   const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
   if (deviceDenied) return deviceDenied;
 
+  if (!keysEnsured.has(clientId)) { try { await ensureShopCallbackKeysGrace(env, clientId); keysEnsured.add(clientId); } catch (e) { /* tried again next time */ } }
   const cfg = await loadGatewayConfig(env, clientId);
   const origin = new URL(request.url).origin;
 
@@ -67,7 +86,11 @@ export async function onRequestGet(context) {
   } catch (e) { showKey = false; }
   const shown = (u) => (showKey ? u : u.replace(/&k=[^&]*/, '&k=•••'));
 
+  if (cfg.secretsUnreadable) return jsonResponse({ error: 'The saved payment keys cannot be read right now — contact support.', code: 'secrets_unreadable' }, 503);
   return jsonResponse({
+    pendingChange: await getPendingChange(env, clientId),          // zip 247: { effectiveAt, providers } for a held change (never the values)
+    recentChanges: await recentPayChanges(env, clientId, 5),
+    changeHoldMinutes: cooldownMinutes(env),
     hasPaystackKey: hasPaystackConfig(cfg),
     hasDarajaConfig: hasDarajaConfig(cfg),
     hasKcbConfig: hasKcbConfig(cfg),
@@ -116,6 +139,7 @@ export async function onRequestPost(context) {
   } catch (e) {
     return jsonResponse({ error: 'Invalid JSON body' }, 400);
   }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonResponse({ error: 'Invalid JSON body' }, 400);
 
   // zip 210: Co-op's token / STK addresses come from the owner, so they must be plain public https addresses (never a local / private one)
   for (const k of ['coopTokenUrl', 'coopStkUrl']) {
@@ -125,11 +149,27 @@ export async function onRequestPost(context) {
       if (u.protocol !== 'https:' || !h.includes('.') || /^(localhost|.*\.local|.*\.internal)$/.test(h) || /^[\d.]+$/.test(h) || h.startsWith('[')) return jsonResponse({ error: 'Use the full https:// address of the bank (a website name, not an IP).' }, 400);
     }
   }
-  await saveGatewayConfig(env, clientId, body);
+  // zip 247: the typed Admin password / manager PIN — every change, every time (see _pay-guard.js)
+  const proof = await requirePayProof(request, env, clientId, {});
+  if (proof.denied) return proof.denied;
+
+  let result;
+  try {
+    result = await saveGatewayConfig(env, clientId, body, { cooldownMs: cooldownMinutes(env) * 60000, who: proof.who.name });
+  } catch (e) {
+    if (e && e.code === 'secrets_unreadable') return jsonResponse({ error: 'The saved payment keys cannot be opened right now, so nothing was changed — contact support.', code: 'secrets_unreadable' }, 503);
+    throw e;
+  }
   if (body && Object.keys(body).some((k) => /^pesapal/i.test(k))) { try { await ensureCallbackKey(env, clientId, 'pesapal'); } catch (e) { /* URL stays unsigned */ } }
   // zip 143: KCB settings saved -> this shop's IPN URL (shown in Settings, given to KCB) carries a secret key from now on
   if (body && Object.keys(body).some((k) => /^kcb/i.test(k))) { try { await ensureCallbackKey(env, clientId, 'kcb'); } catch (e) { /* URL stays unsigned */ } }
-  return jsonResponse({ ok: true });
+
+  // zip 247: tell the owner (what changed, never the values)
+  const now = result.immediate.filter(alertable);
+  let alerted = null;
+  if (result.held) alerted = (await alertWithin(context, clientId, { kind: 'held', providers: result.held.providers, who: proof.who, effectiveAt: result.held.effectiveAt })).alerted;
+  else if (now.length) alerted = (await alertWithin(context, clientId, { kind: 'changed', providers: now, who: proof.who })).alerted;
+  return jsonResponse({ ok: true, held: result.held, alerted, confirmedBy: proof.who.name });
 }
 
 export async function onRequestDelete(context) {
@@ -156,9 +196,24 @@ export async function onRequestDelete(context) {
     return jsonResponse({ error: 'Invalid JSON body' }, 400);
   }
 
-  const which = ['paystack', 'daraja', 'kcb', 'paywave', 'pesapal', 'coop'].includes(body.which) ? body.which : null;
+  const proof = await requirePayProof(request, env, clientId, {});     // zip 247: typed Admin password / manager PIN, every time
+  if (proof.denied) return proof.denied;
+
+  // zip 247: cancel a held change before it starts
+  if (body && body.cancelPending === true) {
+    let had = false;
+    try { had = await cancelPendingChange(env, clientId); } catch (e) { return jsonResponse({ error: 'The saved payment keys cannot be opened right now — contact support.', code: 'secrets_unreadable' }, 503); }
+    if (had) await alertWithin(context, clientId, { kind: 'cancelled', providers: [], who: proof.who });
+    return jsonResponse({ ok: true, cancelled: had });
+  }
+
+  const which = ['paystack', 'daraja', 'kcb', 'paywave', 'pesapal', 'coop'].includes(body && body.which) ? body.which : null;
   if (!which) return jsonResponse({ error: 'Unknown provider.' }, 400);
 
-  await clearGatewayProvider(env, clientId, which);
-  return jsonResponse({ ok: true });
+  try { await clearGatewayProvider(env, clientId, which); } catch (e) {
+    if (e && e.code === 'secrets_unreadable') return jsonResponse({ error: 'The saved payment keys cannot be opened right now, so nothing was changed — contact support.', code: 'secrets_unreadable' }, 503);
+    throw e;
+  }
+  const alerted = (await alertWithin(context, clientId, { kind: 'reset', providers: [which], who: proof.who })).alerted;
+  return jsonResponse({ ok: true, alerted });
 }

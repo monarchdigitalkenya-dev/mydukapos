@@ -27,6 +27,10 @@ export const LIMITS = {
   // zip 177: verification codes sent, per account per hour
   otp: (env) => num(env && env.OTP_HOURLY_LIMIT, 6),
   contact: (env) => num(env && env.CONTACT_HOURLY_LIMIT, 5),
+  // zip 247: typed Admin password / manager PIN checks when changing payment or SMS credentials, per shop per hour (a guessing brake)
+  payProof: (env) => num(env && env.PAY_PROOF_HOURLY_LIMIT, 12),
+  // zip 247: payment prompts to ONE phone number (per shop + number), per hour — stops a leaked link being used to pester a customer
+  stkPhone: (env) => num(env && env.STK_PHONE_HOURLY_LIMIT, 6),
 };
 
 // -> { ok, used, limit, retryAfter }   `cost` = how many units this request would consume (e.g. recipients).

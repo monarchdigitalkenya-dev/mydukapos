@@ -18166,6 +18166,7 @@ async function storageMeasureUnknown() {
                 if (!m) { clear(); return false; }
                 if (typeof isStaffLockedToday === 'function' && isStaffLockedToday(m)) { clear(); return false; }
                 currentServer = { id: m.id, name: m.name };
+                try { if (typeof staffHomeSiteApply === 'function') staffHomeSiteApply(m); } catch (e) { /* stays */ }   // zip 248 (Aqua: back onto the person's own site)
                 try { sessionStorage.setItem('pos_current_server', JSON.stringify(currentServer)); if (s.viaLink) sessionStorage.setItem('pos_via_staff_link', '1'); } catch (e) { /* ignore */ }
                 if (typeof loggedInViaStaffLink !== 'undefined') loggedInViaStaffLink = !!s.viaLink;
             } else {
@@ -20091,4 +20092,231 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
 @media print { html body:not(#z186) :is(input, select, textarea) { box-shadow: none; } }
 </style>
 <!-- @shared-block:form-controls:end -->
+<script>
+/* zip 247 - 🔐 Payment safety sweep (Storage tab): are the shops' payment keys and SMS accounts stored encrypted, and which shops still use an unsigned
+   payment-callback URL (accepted only until the cutoff)? Runs /api/owner-secrets a few shops at a time. Never shows a key. */
+(function () {
+    'use strict';
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function mount() {
+        var tab = document.getElementById('storage-tab');
+        if (!tab || document.getElementById('sweep-card')) return;
+        var card = document.createElement('div');
+        card.id = 'sweep-card'; card.className = 'panel';
+        card.innerHTML = '<h3 style="margin-top:0;">🔐 Payment safety sweep</h3>'
+            + '<p style="margin:0 0 10px;font-size:14px;color:#7f8c8d;">Shows whether every shop’s payment keys and SMS account are stored <b>encrypted</b>, and which shops still use an <b>unsigned payment-callback address</b> (accepted only until the cutoff). Never shows a key.</p>'
+            + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;"><button type="button" class="btn-main" id="sweep-check" style="width:auto;margin:0;padding:9px 16px;">🔎 Check all shops</button>'
+            + '<button type="button" class="btn-main" id="sweep-fix" style="width:auto;margin:0;padding:9px 16px;background:#27ae60;">🔒 Lock secrets &amp; issue callback keys</button></div>'
+            + '<div id="sweep-out" style="font-size:14px;"></div>';
+        tab.insertBefore(card, tab.firstChild);
+        document.getElementById('sweep-check').addEventListener('click', function () { run('status'); });
+        document.getElementById('sweep-fix').addEventListener('click', function () { if (confirm('Encrypt every shop’s saved payment keys and SMS account now, and give shops without callback keys their keys? Nothing stops working: unsigned callbacks stay accepted until the cutoff.')) run('migrate'); });
+    }
+    async function run(action) {
+        var out = document.getElementById('sweep-out');
+        var tot = null, offset = 0, shops = [], sealing = true, cutoff = '', total = 0;
+        out.innerHTML = '⏳ Working…';
+        try {
+            for (var guard = 0; guard < 400; guard++) {
+                var res = await fetch('/api/owner-secrets', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, ownerAuthHeaders()), body: JSON.stringify({ action: action, offset: offset, limit: 5 }) });
+                var d = await res.json().catch(function () { return {}; });
+                if (!res.ok) throw new Error(d.error || ('Request failed (' + res.status + ').'));
+                sealing = d.sealing; cutoff = d.cutoff; total = d.total;
+                if (!tot) tot = d.totals; else Object.keys(d.totals).forEach(function (k) { tot[k] = (tot[k] || 0) + d.totals[k]; });
+                shops = shops.concat(d.shops || []);
+                out.innerHTML = '⏳ ' + Math.min(d.next == null ? total : d.next, total) + ' of ' + total + ' shops…';
+                if (d.done) break;
+                offset = d.next;
+            }
+            render(out, tot, shops, sealing, cutoff, total, action);
+        } catch (e) { out.innerHTML = '<span style="color:#c0392b;">' + esc(e.message || e) + '</span>'; }
+    }
+    function chip(t, bg, fg) { return '<span style="display:inline-block;padding:2px 9px;border-radius:10px;font-size:12px;font-weight:600;background:' + bg + ';color:' + fg + ';margin:1px 3px 1px 0;">' + t + '</span>'; }
+    function render(out, t, shops, sealing, cutoff, total, action) {
+        var plain = (t.gatewayPlain || 0) + (t.smsPlain || 0), bad = (t.gatewayUnreadable || 0) + (t.smsUnreadable || 0);
+        var h = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px;">'
+            + box('Encrypted', (t.gatewaySealed || 0) + (t.smsSealed || 0), '#eafaf1', '#1e7e45') + box('Still plain', plain, plain ? '#fef5e7' : '#eafaf1', plain ? '#9a5b00' : '#1e7e45')
+            + box('Cannot open', bad, bad ? '#fdecea' : '#eafaf1', bad ? '#a93226' : '#1e7e45') + box('Callback on grace', t.railsGrace || 0, (t.railsGrace || 0) ? '#fef5e7' : '#eafaf1', (t.railsGrace || 0) ? '#9a5b00' : '#1e7e45') + '</div>';
+        if (!sealing) h += '<div style="padding:10px 12px;border-radius:10px;background:#fdecea;border:1px solid #e6b0aa;color:#7b241c;margin-bottom:10px;">⚠️ The secret <b>PAYMENT_SECRETS_KEY</b> is not set on this project, so nothing can be encrypted yet. Set it, deploy, then press “Lock secrets”.</div>';
+        if (action === 'migrate') h += '<div style="padding:10px 12px;border-radius:10px;background:#eafaf1;border:1px solid #a9dfbf;color:#1e4d2b;margin-bottom:10px;">✅ Done: ' + (t.sealedNow || 0) + ' record(s) encrypted, ' + (t.keysIssued || 0) + ' callback key(s) issued.</div>';
+        h += '<div style="font-size:13px;color:#7f8c8d;margin-bottom:8px;">Unsigned callbacks stop being accepted on <b>' + esc(String(cutoff).slice(0, 10)) + '</b> (set CALLBACK_LEGACY_CUTOFF to move it). ' + total + ' shop(s) checked.</div>';
+        if (!shops.length) h += '<div>🎉 Every shop is encrypted and signed.</div>';
+        else {
+            h += '<div style="font-weight:600;margin:6px 0;">Shops that still need attention (' + shops.length + '):</div><div style="max-height:320px;overflow:auto;border:1px solid var(--border-color,#ddd);border-radius:10px;">';
+            shops.forEach(function (s) {
+                var rails = Object.keys(s.rails).filter(function (r) { return s.rails[r] !== 'signed'; }).map(function (r) { return chip(r + ': ' + (s.rails[r] === 'grace' ? 'unsigned until cutoff' : 'no key'), '#fef5e7', '#9a5b00'); }).join('');
+                h += '<div style="padding:9px 12px;border-bottom:1px solid var(--border-color,#eee);"><b>' + esc(s.label || s.slug || s.id) + '</b> <span style="color:#7f8c8d;font-size:12px;">' + esc(s.slug) + '</span><br>'
+                    + (s.gateway === 'plain' ? chip('payment keys: plain', '#fef5e7', '#9a5b00') : s.gateway === 'unreadable' ? chip('payment keys: CANNOT OPEN', '#fdecea', '#a93226') : '')
+                    + (s.sms === 'plain' ? chip('SMS account: plain', '#fef5e7', '#9a5b00') : s.sms === 'unreadable' ? chip('SMS account: CANNOT OPEN', '#fdecea', '#a93226') : '') + rails + '</div>';
+            });
+            h += '</div>';
+        }
+        out.innerHTML = h;
+    }
+    function box(label, n, bg, fg) { return '<div style="padding:10px 12px;border-radius:12px;background:' + bg + ';color:' + fg + ';"><div style="font-size:24px;font-weight:700;">' + n + '</div><div style="font-size:12.5px;">' + label + '</div></div>'; }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount); else mount();
+    setTimeout(mount, 1200);
+})();
+</script>
+<!-- @shared-block:dark-fix:begin -->
+<!-- DARK MODE FIX (zip 247) ------------------------------------------------------------------------------------------------------
+         Dark mode (Settings > theme) changes the page and the inputs, but many small notes, tips, tinted boxes and grey captions were written with
+         fixed light colours (a pale yellow / green / red / grey box with the page's now-LIGHT text on it, or dark-grey text on the dark page),
+         so parts of the screen were unreadable. This one rule set only applies in dark mode: pale boxes become dark tinted boxes, dark text
+         that sat on them becomes light, and grey captions are lifted to a readable grey. Light mode is untouched. -->
+    <style id="dark-fix-css">
+    /* pale grey / white boxes -> the dark surface */
+    html[data-theme="dark"] [style*="background:#f8f9fa"], html[data-theme="dark"] [style*="background: #f8f9fa"],
+    html[data-theme="dark"] [style*="background:#f7f9fb"], html[data-theme="dark"] [style*="background: #f7f9fb"],
+    html[data-theme="dark"] [style*="background:#f4f6f7"], html[data-theme="dark"] [style*="background: #f4f6f7"],
+    html[data-theme="dark"] [style*="background:#f5f5f5"], html[data-theme="dark"] [style*="background: #f5f5f5"],
+    html[data-theme="dark"] [style*="background:#fafafa"], html[data-theme="dark"] [style*="background: #fafafa"],
+    html[data-theme="dark"] [style*="background:#f0f0f0"], html[data-theme="dark"] [style*="background: #f0f0f0"],
+    html[data-theme="dark"] [style*="background:#eee"], html[data-theme="dark"] [style*="background: #eee"],
+    html[data-theme="dark"] [style*="background:#ecf0f1"], html[data-theme="dark"] [style*="background: #ecf0f1"],
+    html[data-theme="dark"] #guide-body details, html[data-theme="dark"] #guide-body code, html[data-theme="dark"] #guide-body .g-tip, html[data-theme="dark"] .g-tip {
+        background: var(--bg-surface-alt, #262b32) !important; color: var(--dark, #ecf0f1); }
+    /* pale green boxes */
+    html[data-theme="dark"] [style*="background:#eafaf1"], html[data-theme="dark"] [style*="background: #eafaf1"],
+    html[data-theme="dark"] [style*="background:#e8f6ef"], html[data-theme="dark"] [style*="background: #e8f6ef"],
+    html[data-theme="dark"] [style*="background:#e6f6ea"], html[data-theme="dark"] [style*="background: #e6f6ea"],
+    html[data-theme="dark"] #accounts-tab .acc-ok { background: var(--tint-success-bg, #16352a) !important; color: var(--tint-success-text, #5fd99b); }
+    /* pale yellow / orange boxes */
+    html[data-theme="dark"] [style*="background:#fff3cd"], html[data-theme="dark"] [style*="background: #fff3cd"],
+    html[data-theme="dark"] [style*="background:#fdf6e8"], html[data-theme="dark"] [style*="background: #fdf6e8"],
+    html[data-theme="dark"] [style*="background:#fff8ec"], html[data-theme="dark"] [style*="background: #fff8ec"],
+    html[data-theme="dark"] [style*="background:#fff8e1"], html[data-theme="dark"] [style*="background: #fff8e1"],
+    html[data-theme="dark"] [style*="background:#fef9e7"], html[data-theme="dark"] [style*="background: #fef9e7"],
+    html[data-theme="dark"] #accounts-tab .acc-warn { background: var(--tint-warning-bg, #3a300f) !important; color: var(--tint-warning-text, #ffcf5c); }
+    /* pale red boxes */
+    html[data-theme="dark"] [style*="background:#fdecea"], html[data-theme="dark"] [style*="background: #fdecea"],
+    html[data-theme="dark"] [style*="background:#fdedec"], html[data-theme="dark"] [style*="background: #fdedec"],
+    html[data-theme="dark"] [style*="background:#fadbd8"], html[data-theme="dark"] [style*="background: #fadbd8"] { background: var(--tint-danger-bg, #3a2222) !important; color: #ffb4ab; }
+    /* pale blue boxes */
+    html[data-theme="dark"] [style*="background:#e8f1fb"], html[data-theme="dark"] [style*="background: #e8f1fb"],
+    html[data-theme="dark"] [style*="background:#eaf2f8"], html[data-theme="dark"] [style*="background: #eaf2f8"],
+    html[data-theme="dark"] [style*="background:#ebf5fb"], html[data-theme="dark"] [style*="background: #ebf5fb"],
+    html[data-theme="dark"] #accounts-tab .acc-tip { background: var(--tint-info-bg, #16293a) !important; color: var(--dark, #ecf0f1); }
+    /* dark text that was written for a pale box */
+    html[data-theme="dark"] [style*="color:#7a5c00"], html[data-theme="dark"] [style*="color: #7a5c00"], html[data-theme="dark"] [style*="color:#7e5109"], html[data-theme="dark"] [style*="color:#5c4400"],
+    html[data-theme="dark"] [style*="color:#b9770e"], html[data-theme="dark"] [style*="color:#b8860b"] { color: #ffcf5c !important; }
+    html[data-theme="dark"] [style*="color:#922b21"], html[data-theme="dark"] [style*="color:#b3261e"], html[data-theme="dark"] [style*="color:#b00"], html[data-theme="dark"] [style*="color: #b00"] { color: #ff8a80 !important; }
+    html[data-theme="dark"] [style*="color:#1e8449"], html[data-theme="dark"] [style*="color:#1e6b3a"], html[data-theme="dark"] [style*="color:#5b6b60"] { color: #5fd99b !important; }
+    html[data-theme="dark"] [style*="color:#2874a6"] { color: #6cb4e8 !important; }
+    html[data-theme="dark"] [style*="color:#333"], html[data-theme="dark"] [style*="color: #333"], html[data-theme="dark"] [style*="color:#2c3e50"], html[data-theme="dark"] [style*="color: #2c3e50"],
+    html[data-theme="dark"] [style*="color:#34495e"], html[data-theme="dark"] [style*="color:#1d2b36"], html[data-theme="dark"] [style*="color:#222"], html[data-theme="dark"] [style*="color:#000"] { color: var(--dark, #ecf0f1) !important; }
+    /* grey captions that were too dim on the dark page */
+    html[data-theme="dark"] [style*="color:#555"], html[data-theme="dark"] [style*="color: #555"], html[data-theme="dark"] [style*="color:#666"], html[data-theme="dark"] [style*="color: #666"],
+    html[data-theme="dark"] [style*="color:#777"], html[data-theme="dark"] [style*="color:#888"], html[data-theme="dark"] [style*="color:#889"],
+    html[data-theme="dark"] [style*="color:#5f6b76"], html[data-theme="dark"] [style*="color:#566573"] { color: #b4bec6 !important; }
+    html[data-theme="dark"] [style*="color:#7f8c8d"], html[data-theme="dark"] [style*="color: #7f8c8d"], html[data-theme="dark"] [style*="color:#95a5a6"] { color: #a3afb7 !important; }
+    /* thin grey lines */
+    html[data-theme="dark"] [style*="border-bottom:1px solid #eee"], html[data-theme="dark"] [style*="border-top:1px solid #eee"], html[data-theme="dark"] [style*="border:1px solid #eee"],
+    html[data-theme="dark"] [style*="border:1px solid #ddd"], html[data-theme="dark"] [style*="border-bottom:1px solid #ddd"], html[data-theme="dark"] [style*="border:1px solid #ccc"] { border-color: var(--border-color, #3a4048) !important; }
+    /* tables and the guide */
+    html[data-theme="dark"] th { color: var(--dark, #ecf0f1); }
+    html[data-theme="dark"] #guide-body, html[data-theme="dark"] #guide-body * { border-color: var(--border-color, #3a4048); }
+    /* the sub-category / category windows and the update-or-new asking window: always readable */
+    html[data-theme="dark"] #hosp-simple-modal .modal-content, html[data-theme="dark"] #hosp-simple-modal .modal-content label { color: var(--dark, #ecf0f1); }
+    html[data-theme="dark"] .hsub-card { background: var(--bg-surface-alt, #262b32); border-color: var(--border-color, #3a4048); }
+    </style>
+
+    <script>
+    /* zip 247 - DARK MODE CONTRAST GUARD. Whatever the stylesheet or an inline style says, in dark mode every piece of text is checked against the colour
+       it actually sits on (the nearest solid background behind it): when the two are too close (dark text on the dark page, light text on a pale box) the text
+       colour is switched to a readable one. It only touches text that is already unreadable, runs after every screen change, and is undone completely when
+       dark mode is switched off. It never changes backgrounds, sizes, layout or any data. */
+    (function () {
+        'use strict';
+        if (window.__darkGuardInit) return; window.__darkGuardInit = true;
+        var root = document.documentElement, MARK = 'data-dkfix', LIGHT = '#ecf0f1', DARKC = '#1b2631', MIN = 3.4;
+        function isDark() { return root.getAttribute('data-theme') === 'dark'; }
+        function parse(c) { var m = /rgba?\(\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)(?:[ ,/]+([\d.]+%?))?/.exec(c || ''); if (!m) return null; var a = m[4] === undefined ? 1 : (/%$/.test(m[4]) ? parseFloat(m[4]) / 100 : parseFloat(m[4])); return [+m[1], +m[2], +m[3], a]; }
+        function lum(c) { function f(v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); } return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); }
+        function ratio(a, b) { var x = lum(a), y = lum(b); if (x < y) { var t = x; x = y; y = t; } return (x + 0.05) / (y + 0.05); }
+        function blend(top, under) { var a = top[3]; return [top[0] * a + under[0] * (1 - a), top[1] * a + under[1] * (1 - a), top[2] * a + under[2] * (1 - a), 1]; }
+        // the solid colour behind an element: walk up, mixing translucent layers; a gradient / picture means "unknown" (null) - left alone
+        var memo = new WeakMap();
+        function behind(el) {
+            if (memo.has(el)) return memo.get(el);
+            var r = behind0(el); memo.set(el, r); return r;
+        }
+        function behind0(el) {
+            var layers = [], n = el, page = parse(getComputedStyle(document.body).backgroundColor);
+            if (!page || page[3] < 1) page = [20, 23, 26, 1];
+            while (n && n.nodeType === 1) {
+                var cs = getComputedStyle(n);
+                if (cs.backgroundImage && cs.backgroundImage !== 'none') return null;
+                var bg = parse(cs.backgroundColor);
+                if (bg && bg[3] > 0) { layers.push(bg); if (bg[3] >= 1) break; }
+                n = n.parentElement;
+            }
+            var out = layers.length && layers[layers.length - 1][3] >= 1 ? layers.pop() : page;
+            while (layers.length) out = blend(layers.pop(), out);
+            return out;
+        }
+        function visible(el) { if (!document.body.offsetHeight && !document.body.getClientRects().length) return true; /* no layout engine (tests): check everything */ return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length); }
+        var SKIP = { SCRIPT: 1, STYLE: 1, SVG: 1, CANVAS: 1, IMG: 1, VIDEO: 1, NOSCRIPT: 1, OPTION: 1, PATH: 1 };
+        function check(el) {
+            if (!el || el.nodeType !== 1 || SKIP[el.tagName] || (el.closest && el.closest('svg,canvas,.no-dkfix,#receipt-modal,#aqua-pos-print-area,[id^="print"]'))) return;
+            var cs = getComputedStyle(el); if (cs.visibility === 'hidden' || cs.display === 'none') return;
+            var fg = parse(cs.color); if (!fg) return;
+            var bg = behind(el); if (!bg) return;
+            var eff = fg[3] < 1 ? blend(fg, bg) : fg;
+            if (ratio(eff, bg) >= MIN) { if (el.hasAttribute(MARK)) { /* already fine */ } return; }
+            var pick = lum(bg) < 0.4 ? LIGHT : DARKC;
+            if (!el.hasAttribute(MARK)) el.setAttribute(MARK, el.style.getPropertyValue('color') + '|' + el.style.getPropertyPriority('color'));
+            el.style.setProperty('color', pick, 'important');
+        }
+        function textParents(scope, out) {
+            var w = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, { acceptNode: function (t) { return /\S/.test(t.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT; } });
+            var n, seen = out.seen, cap = 6000;
+            while ((n = w.nextNode()) && cap-- > 0) { var p = n.parentElement; if (p && !seen.has(p)) { seen.add(p); out.list.push(p); } }
+        }
+        function sweep(scope) {
+            if (!isDark()) return;
+            try {
+                var out = { list: [], seen: new Set() };
+                if (scope.nodeType === 1) { out.seen.add(scope); out.list.push(scope); }
+                textParents(scope, out);
+                // inputs / buttons / selects carry their text in the control itself
+                if (scope.querySelectorAll) Array.prototype.forEach.call(scope.querySelectorAll('input,textarea,select,button,label'), function (e) { if (!out.seen.has(e)) { out.seen.add(e); out.list.push(e); } });
+                out.list.forEach(function (e) { if (visible(e)) check(e); });
+            } catch (e) { /* cosmetic only */ }
+        }
+        function undo() {
+            Array.prototype.forEach.call(document.querySelectorAll('[' + MARK + ']'), function (e) {
+                var v = (e.getAttribute(MARK) || '|').split('|'); if (v[0]) e.style.setProperty('color', v[0], v[1] || ''); else e.style.removeProperty('color');
+                e.removeAttribute(MARK);
+            });
+        }
+        var queue = [], timer = 0, full = false;
+        function flush() {
+            timer = 0; memo = new WeakMap();
+            if (!isDark() || (!document.body.offsetHeight && !document.body.getClientRects().length)) { queue = []; full = false; return; }   // (no screen, e.g. an automated test: nothing to fix)
+            if (full) { full = false; queue = []; sweep(document.body); return; }
+            var q = queue; queue = [];
+            var seen = new Set();
+            q.forEach(function (n) { if (n && n.isConnected && !seen.has(n)) { seen.add(n); sweep(n); } });
+        }
+        function soon(node, whole) { if (whole) full = true; else if (node) queue.push(node); if (!timer) timer = setTimeout(flush, 220); }
+        function start() {
+            if (!document.body) return;
+            new MutationObserver(function () { if (isDark()) soon(null, true); else undo(); }).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+            new MutationObserver(function (muts) {
+                if (!isDark()) return;
+                muts.forEach(function (m) {
+                    if (m.type === 'childList') m.addedNodes.forEach(function (n) { if (n.nodeType === 1) soon(n, false); });
+                    else if (m.target && m.target.nodeType === 1 && !m.target.hasAttribute(MARK)) soon(m.target, false);    // (our own colour change is not "news")
+                });
+            }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
+            window.addEventListener('load', function () { soon(null, true); });
+            soon(null, true);
+            document.addEventListener('click', function () { setTimeout(function () { soon(null, true); }, 350); }, true);
+        }
+        window.darkGuardRun = function (scope) { if (scope) { sweep(scope); return; } full = true; flush(); };
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    })();
+    </script>
+<!-- @shared-block:dark-fix:end -->
 </body></html>

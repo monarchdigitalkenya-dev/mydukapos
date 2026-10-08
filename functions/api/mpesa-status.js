@@ -22,21 +22,24 @@ import { pesapalStatus, applyPesapalStatus, indexPesapalReceipt } from './_pesap
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { staffGuard } from './_staff-auth.js';
 import { recordGatewayTxn } from './_ledger.js';
 
 const FALLBACK_QUERY_AFTER_MS = 15000; // only bother querying the gateway directly after this long
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-};
+// zip 247: no more `Access-Control-Allow-Origin: *` — only this deployment, the root domain and its subdomains (and localhost) are handed the answer
+// (the apps call this on their own origin). A shop that requires staff sessions also needs a signed-in staff member, as mpesa-verify already does.
+const CORS_OPTS = { methods: 'GET, OPTIONS', headers: 'Content-Type, X-Device-Id, X-Device-Token, X-Staff-Token' };
 
-function jsonResponse(body, status = 200) {
+function jsonResponse(body, status = 200, cors = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+    headers: { 'Content-Type': 'application/json', ...cors },
   });
+}
+
+export async function onRequestOptions(context) {
+  return new Response(null, { status: 204, headers: corsHeadersFor(context.request, context.env, CORS_OPTS) });
 }
 
 function txKey(clientId, id) {
@@ -199,33 +202,35 @@ async function refreshFromPaystack(record, reference, cfg) {
   return null;
 }
 
-export async function onRequestOptions() {
-  return new Response(null, { status: 204, headers: CORS_HEADERS });
-}
 
 export async function onRequestGet(context) {
   const { request, env } = context;
+  const cors = corsHeadersFor(request, env, CORS_OPTS);
+  const reply = (b, st = 200) => jsonResponse(b, st, cors);
   const url = new URL(request.url);
   const checkoutRequestId = url.searchParams.get('checkoutRequestId');
   if (!checkoutRequestId) {
-    return jsonResponse({ error: 'Missing checkoutRequestId' }, 400);
+    return reply({ error: 'Missing checkoutRequestId' }, 400);
   }
 
   const license = await requireValidLicense(request, env);
   if (!license.valid) {
-    return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403);
+    return reply({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
   // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
-  const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
+  const deviceDenied = await deviceGuard(request, env, clientId, cors);
   if (deviceDenied) return deviceDenied;
+
+  const sg = await staffGuard(request, env, clientId, null, cors);      // zip 247: only when the shop requires staff sessions
+  if (sg.denied) return sg.denied;
 
   const kvKey = txKey(clientId, checkoutRequestId);
   const raw = await env.mydukapos_kv.get(kvKey);
   let record = raw ? JSON.parse(raw) : null;
 
   if (!record) {
-    return jsonResponse({ status: 'unknown' });
+    return reply({ status: 'unknown' });
   }
 
   // Pesapal has no callback straight to the till, so its result is asked for at once (its IPN, when it arrives first, has already filled the record)
@@ -258,7 +263,7 @@ export async function onRequestGet(context) {
     }
   }
 
-  return jsonResponse({
+  return reply({
     status: record.status,
     receiptNumber: record.receiptNumber,
     phone: record.phone,

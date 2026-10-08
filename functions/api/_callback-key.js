@@ -14,6 +14,23 @@ import { getLicenseCached } from './_license.js';
 
 const KEY = (rail, clientId) => `callback-key:${rail}:${clientId}`;
 
+// zip 247 — THE END OF "LEGACY". A shop whose payment URLs were registered before callback keys existed has no key, and its unsigned callbacks have been
+// believed ever since (so far as a real pending prompt exists, or — for Till / KCB — as an unverified record). That grace now has an end date:
+//   * every shop is given a key for each money rail (ensureShopCallbackKeysGrace — run for all shops from the Owner Console, owner-secrets.js, and
+//     for a single shop whenever its Settings > Payment Gateway opens). A key created this way is marked `grace`: until the cutoff, an unsigned
+//     callback is STILL accepted for it (the URL registered with Safaricom / KCB / Paywave has no key yet and must keep working).
+//   * the first callback that DOES carry the key proves the provider now uses the new URL, so the grace ends for that rail on the spot.
+//   * from the cutoff, an unsigned callback is refused for every money rail, keyed or not.
+// CALLBACK_LEGACY_CUTOFF (any date string, e.g. 2026-12-01T00:00:00Z) moves the date; the default gives the shops time to register the new URLs.
+// The 'sms' rail (STOP / START replies) is exempt: its worst case is one number unsubscribed, and a shop must never lose a real STOP.
+export const DEFAULT_LEGACY_CUTOFF = '2026-12-01T00:00:00Z';
+export const MONEY_RAILS = ['stk', 'c2b', 'kcb', 'paywave', 'pesapal'];
+export function legacyCutoffMs(env) {
+  const t = Date.parse(String((env && env.CALLBACK_LEGACY_CUTOFF) || DEFAULT_LEGACY_CUTOFF));
+  return Number.isFinite(t) ? t : Date.parse(DEFAULT_LEGACY_CUTOFF);
+}
+export const legacyStillAllowed = (env, rail, now = Date.now()) => rail === 'sms' || now < legacyCutoffMs(env);
+
 function randomHex(bytes) {
   const a = new Uint8Array(bytes);
   crypto.getRandomValues(a);
@@ -37,12 +54,31 @@ export async function getCallbackKey(env, clientId, rail) {
   } catch (e) { return null; }
 }
 
-export async function ensureCallbackKey(env, clientId, rail) {
+export async function ensureCallbackKey(env, clientId, rail, { grace = false } = {}) {
   const have = await getCallbackKey(env, clientId, rail);
   if (have) return have;
-  const rec = { k: randomHex(16), createdAt: Date.now() };
+  const rec = { k: randomHex(16), createdAt: Date.now(), ...(grace ? { grace: true } : {}) };
   await env.mydukapos_kv.put(KEY(rail, clientId), JSON.stringify(rec));
   return rec;
+}
+
+// zip 247: gives a keyless shop a key on every money rail, marked `grace` (see above) so what is registered today keeps working until the cutoff.
+// -> the rails that were created now.
+export async function ensureShopCallbackKeysGrace(env, clientId) {
+  const made = [];
+  for (const rail of MONEY_RAILS) {
+    try {
+      if (await getCallbackKey(env, clientId, rail)) continue;
+      await ensureCallbackKey(env, clientId, rail, { grace: true });
+      made.push(rail);
+    } catch (e) { /* stays legacy; tried again next time */ }
+  }
+  return made;
+}
+
+// A callback arrived WITH the key: the provider is using the new URL, so the grace for that rail is over.
+async function endGrace(env, clientId, rail, rec) {
+  try { const next = { ...rec }; delete next.grace; await env.mydukapos_kv.put(KEY(rail, clientId), JSON.stringify(next)); } catch (e) { /* ends at the next one */ }
 }
 
 // zip 185: a shop created from now on starts with all four rails keyed (stk = Daraja/KCB STK result, c2b = Till confirmations, kcb = KCB IPN, paywave = Paywave Express webhook),
@@ -54,9 +90,15 @@ export async function ensureShopCallbackKeys(env, clientId) {
 // -> { ok: true, legacy: boolean } | { ok: false, keyCreatedAt }
 export async function checkCallback(env, clientId, rail, url) {
   const rec = await getCallbackKey(env, clientId, rail);
-  if (!rec) return { ok: true, legacy: true };
+  if (!rec) return legacyStillAllowed(env, rail) ? { ok: true, legacy: true } : { ok: false, keyCreatedAt: 0 };
   const k = new URL(url).searchParams.get('k') || '';
-  return safeEqual(k, rec.k) ? { ok: true, legacy: false } : { ok: false, keyCreatedAt: Number(rec.createdAt) || 0 };
+  if (safeEqual(k, rec.k)) {
+    if (rec.grace) await endGrace(env, clientId, rail, rec);
+    return { ok: true, legacy: false };
+  }
+  // a key made by ensureShopCallbackKeysGrace: the provider still has the old, unsigned URL until the cutoff
+  if (rec.grace && legacyStillAllowed(env, rail)) return { ok: true, legacy: true };
+  return { ok: false, keyCreatedAt: Number(rec.createdAt) || 0 };
 }
 
 export function withKey(url, rec) {

@@ -37168,6 +37168,8 @@ async function zReportPreflight() {
                     idx !== existingIndex && p.name.trim().toLowerCase() === name.toLowerCase()
                 );
                 if (duplicateNameIndex >= 0) {
+                    // zip 247: a dish / service that already exists is not an error either: ask - update it, or add this as a version
+                    if (typeof dupAskSingle === 'function' && dupAskSingle(inventory[duplicateNameIndex])) return;
                     showToast(`"${name}" already exists. Use a different name or edit that entry instead.`, true);
                     return;
                 }
@@ -48817,6 +48819,7 @@ function msOpenPurchasesReport(days) {
                 if (!m) { clear(); return false; }
                 if (typeof isStaffLockedToday === 'function' && isStaffLockedToday(m)) { clear(); return false; }
                 currentServer = { id: m.id, name: m.name };
+                try { if (typeof staffHomeSiteApply === 'function') staffHomeSiteApply(m); } catch (e) { /* stays */ }   // zip 248 (Aqua: back onto the person's own site)
                 try { sessionStorage.setItem('pos_current_server', JSON.stringify(currentServer)); if (s.viaLink) sessionStorage.setItem('pos_via_staff_link', '1'); } catch (e) { /* ignore */ }
                 if (typeof loggedInViaStaffLink !== 'undefined') loggedInViaStaffLink = !!s.viaLink;
             } else {
@@ -51328,6 +51331,30 @@ function msOpenPurchasesReport(days) {
             if (pending[sid]) pending[sid].busy = false;
             return false;
         }
+        // zip 247 — SILENT RENEWAL. A session that is about to run out (or ran out while the phone was offline / off, up to 3 days) is renewed by the
+        // server from the token this device already holds: no password, no PIN, nothing to type — so a shaky connection never means signing in again.
+        // The server refuses only when the password / PIN was changed, the person was removed or locked, or the last typed sign-in is over 14 days old.
+        var renewing = {};
+        async function renew(sid) {
+            var s = readJ(KEY)[sid];
+            if (!s || !s.token || renewing[sid] || !online()) return false;
+            if (s.exp - Date.now() > 4 * 3600000 || Date.now() - s.exp > 3 * 86400000) return false;      // not due yet / too old: asks once
+            if (s.noRenew && Date.now() - s.noRenew < 6 * 3600000) return false;                          // the server said no recently: do not hammer it
+            renewing[sid] = true;
+            try {
+                var res = await fetch(apiUrlOf('/api/staff-session'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Staff-Token': s.token }, body: JSON.stringify({ action: 'renew' }) });
+                var d = await res.json().catch(function () { return {}; });
+                var all = readJ(KEY);
+                if (res.ok && d.ok && d.sessionId) {
+                    all[sid] = { sessionId: d.sessionId, token: d.token, secret: d.secret, exp: d.exp, name: d.name, perms: d.perms || [], since: (s.since || Date.now()), at: Date.now() };
+                    writeJ(KEY, all); signWaiting(sid); return true;
+                }
+                if (res.status === 401 || res.status === 403) { if (all[sid]) { all[sid].noRenew = Date.now(); writeJ(KEY, all); } }   // a real "no": one sign-in is needed
+            } catch (e) { /* offline / flaky: tried again on the next tick */ }
+            finally { renewing[sid] = false; }
+            return false;
+        }
+        window.staffSessionRenew = renew;
         // Called right after a PIN (or the Admin password) was checked on this device. `proof` = SHA-256 of what was typed.
         window.staffSessionStart = function (sid, proof) {
             sid = String(sid || 'admin');
@@ -51337,19 +51364,20 @@ function msOpenPurchasesReport(days) {
             pending[sid] = { proof: proof, since: Date.now() }; savePending();
             request(sid);
         };
-        function retryAll() { Object.keys(pending).forEach(function (sid) { if (Date.now() - pending[sid].since > 16 * 3600000 || sid !== currentSid()) { delete pending[sid]; savePending(); } else request(sid); }); }
+        function retryAll() { renew(currentSid()); Object.keys(pending).forEach(function (sid) { if (Date.now() - pending[sid].since > 16 * 3600000 || sid !== currentSid()) { delete pending[sid]; savePending(); } else request(sid); }); }
         // Anything that needs the server session (payroll...) calls this instead of asking the person to sign in again: if they signed in
         // offline, the PIN proof is still held, so the session is simply requested now. Resolves true when a session is held.
         window.staffSessionEnsure = async function (sid) {
             sid = String(sid || currentSid());
-            if (sessionFor(sid)) return true;
+            if (sessionFor(sid)) { renew(sid); return true; }
+            if (await renew(sid)) return true;
             if (!pending[sid]) return false;
             for (var i = 0; i < 4 && !sessionFor(sid) && pending[sid]; i++) { await request(sid); if (!sessionFor(sid) && pending[sid]) await new Promise(function (r) { setTimeout(r, 700); }); }
             return !!sessionFor(sid);
         };
         window.staffSessionClearPending = function () { pending = {}; savePending(); };
         window.addEventListener('online', function () { setTimeout(retryAll, 1500); });
-        setInterval(retryAll, 60000);
+        setInterval(retryAll, 60000); setTimeout(retryAll, 4000);
 
         /* ---- signing sales (called by the sales journal when it sees a NEW sale made on this device) ---- */
         function signWith(s, r) {
@@ -54110,7 +54138,7 @@ function msOpenPurchasesReport(days) {
             } else if (c.action === 'ver') {
                 var nm = versionName(ex, c.vname);
                 if (findMatch(nm, '')) { failed = '“' + nm + '” already exists too. Use a different version name.'; break; }
-                var p = { type: ex.type === 'ingredient' ? 'ingredient' : 'item', code: uniq(c.code || gid()), name: nm, price: pos(c.e.price) || Number(ex.price) || 0, wholesalePrice: pos(c.e.wholesalePrice) || Number(ex.wholesalePrice) || 0, unit: c.e.unit || ex.unit || 'pcs', qty: pos(c.e.qty) || 0, vatCategory: ex.vatCategory || 'A' };
+                var p = { type: ex.type === 'ingredient' || ex.type === 'service' ? ex.type : 'item', code: uniq(c.code || gid()), name: nm, price: pos(c.e.price) || Number(ex.price) || 0, wholesalePrice: pos(c.e.wholesalePrice) || Number(ex.wholesalePrice) || 0, unit: c.e.unit || ex.unit || 'pcs', qty: pos(c.e.qty) || 0, vatCategory: ex.vatCategory || 'A' };
                 if (ex.category) p.category = ex.category; if (ex.categoryId) p.categoryId = ex.categoryId; if (ex.subCat) p.subCat = ex.subCat;
                 inventory.push(p); M.done.versions++;
             }
@@ -54284,6 +54312,350 @@ function msOpenPurchasesReport(days) {
 })();
 </script>
 <!-- @shared-block:install-link:end -->
+<!-- @shared-block:pay-confirm:begin -->
+<!-- PAY CONFIRM (zip 247) ------------------------------------------------------------------------------------------------------------
+     Changing WHERE A SHOP'S MONEY GOES (Settings > Payment Gateway keys, the SMS account) now needs a typed proof on the server, every time:
+     the Admin password or a manager's PIN. This block adds the pop-up and attaches the proof, so none of the existing Save / Reset buttons had to
+     change: any call to /api/gateway-config (save, reset, cancel) or an /api/sms-config save that carries account keys asks first, then sends the
+     proof in the X-Pay-Proof header (SHA-256 of what was typed - the password itself never leaves the device). It is asked only while online
+     (changing these settings needs the internet anyway), kept in memory for 90 seconds so one sitting of several saves asks once, never stored.
+     It also tells the person what the server did: a changed key is HELD for a while (the old one keeps working), the owner was alerted, and a
+     "waiting change" card in Settings can cancel it. Selling, signing in and everything else are untouched. -->
+<script>
+(function () {
+    'use strict';
+    if (window.__payConfirm) return; window.__payConfirm = true;
+
+    var TTL_MS = 90 * 1000;
+    var cache = null;                       // { hdr, at } - memory only
+    var asking = null;                      // the open pop-up's promise (one at a time)
+    var SMS_CRED = /^(atUsername|atApiKey|mobitech(ApiKey|SenderName)|celcom(ApiKey|PartnerId|Shortcode)|advanta(ApiKey|PartnerId|Shortcode)|talksasa(ApiKey|SenderId)|provider)$/;
+
+    function $(id) { return document.getElementById(id); }
+    function toast(text, bad) { try { if (typeof showToast === 'function') { showToast(text, !!bad); return; } } catch (e) { /* fall through */ } try { console.log(text); } catch (e2) { /* none */ } }
+    function eat(t) { var d = new Date(Number(t) + 3 * 3600000); if (isNaN(d.getTime())) return ''; var M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']; var p = function (n) { return (n < 10 ? '0' : '') + n; }; return p(d.getUTCDate()) + ' ' + M[d.getUTCMonth()] + ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()); }
+    var NAMES = { paystack: 'Paystack', daraja: 'M-Pesa Daraja', kcb: 'KCB Buni', paywave: 'Paywave', pesapal: 'Pesapal', coop: 'Co-op Bank', sms: 'SMS account' };
+    function names(list) { return (list || []).map(function (p) { return NAMES[p] || p; }).join(', '); }
+
+    function sha256Hex(text) {
+        try {
+            if (window.crypto && crypto.subtle && crypto.subtle.digest) {
+                return crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(text))).then(function (buf) {
+                    return Array.prototype.map.call(new Uint8Array(buf), function (b) { return (b < 16 ? '0' : '') + b.toString(16); }).join('');
+                });
+            }
+        } catch (e) { /* fallback below */ }
+        return Promise.resolve(typeof sha256HexFallback === 'function' ? sha256HexFallback(text) : '');
+    }
+
+    /* which calls need the proof */
+    function needsProof(url, method, init) {
+        if (navigator.onLine === false) return false;                       // offline: the call fails by itself, no point asking
+        if (/\/api\/gateway-config(\?|$)/.test(url)) return method === 'POST' || method === 'DELETE';
+        if (/\/api\/sms-config(\?|$)/.test(url) && method === 'POST') {
+            try { var b = JSON.parse(init && init.body); return !!b && Object.keys(b).some(function (k) { return SMS_CRED.test(k); }); } catch (e) { return false; }
+        }
+        return false;
+    }
+
+    /* the pop-up */
+    function managers() {
+        var out = [];
+        try { if (typeof staff !== 'undefined' && Array.isArray(staff)) staff.forEach(function (m) { if (m && m.isManager && !m.removed && m.id != null) out.push({ id: String(m.id), name: String(m.name || 'Manager') }); }); } catch (e) { /* admin only */ }
+        return out;
+    }
+    function ask(reason) {
+        if (cache && Date.now() - cache.at < TTL_MS) return Promise.resolve(cache.hdr);
+        if (asking) return asking;
+        asking = new Promise(function (resolve) {
+            var ov = document.createElement('div');
+            ov.id = 'pay-confirm-ov';
+            ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-label', 'Confirm it is you');
+            ov.style.cssText = 'position:fixed;inset:0;z-index:100001;background:rgba(15,25,35,.62);display:flex;align-items:center;justify-content:center;padding:16px;';
+            var card = document.createElement('div');
+            card.style.cssText = 'background:var(--bg-surface,#fff);color:var(--text-main,#2c3e50);width:min(420px,100%);border-radius:16px;box-shadow:0 18px 50px rgba(0,0,0,.35);padding:22px 20px;font:15px system-ui,sans-serif;border-top:5px solid #27ae60;';
+            var ms = managers();
+            var opts = '<option value="admin">Admin (shop / management password)</option>' + ms.map(function (m) { return '<option value="s:' + m.id.replace(/[&<>"']/g, '') + '">' + m.name.replace(/[&<>"']/g, '') + ' (manager PIN)</option>'; }).join('');
+            card.innerHTML = '<div style="font-size:34px;line-height:1;margin-bottom:6px;">🔐</div>'
+                + '<div style="font-size:19px;font-weight:700;margin-bottom:6px;">Confirm it is you</div>'
+                + '<div style="font-size:14px;opacity:.85;margin-bottom:12px;">' + (reason || 'Changing payment settings decides where your customers’ money goes, so it needs your password every time. This protects your money.') + '</div>'
+                + '<label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;">Who is confirming?</label>'
+                + '<select id="pay-confirm-who" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border-color,#ccd);margin-bottom:10px;font-size:15px;background:var(--bg-surface,#fff);color:inherit;">' + opts + '</select>'
+                + '<label style="display:block;font-size:13px;font-weight:600;margin-bottom:4px;" id="pay-confirm-lbl">Password</label>'
+                + '<input id="pay-confirm-pw" type="password" autocomplete="off" inputmode="text" style="width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid var(--border-color,#ccd);font-size:17px;background:var(--bg-surface,#fff);color:inherit;">'
+                + '<div id="pay-confirm-err" role="alert" style="color:#c0392b;font-size:13px;min-height:18px;margin-top:6px;"></div>'
+                + '<div style="display:flex;gap:10px;margin-top:8px;"><button type="button" id="pay-confirm-ok" style="flex:1;padding:12px;border:0;border-radius:10px;background:#27ae60;color:#fff;font-weight:700;font-size:16px;cursor:pointer;">Confirm</button>'
+                + '<button type="button" id="pay-confirm-no" style="padding:12px 16px;border:1px solid var(--border-color,#ccd);border-radius:10px;background:transparent;color:inherit;font-size:15px;cursor:pointer;">Cancel</button></div>';
+            ov.appendChild(card);
+            (document.body || document.documentElement).appendChild(ov);
+            var who = card.querySelector('#pay-confirm-who'), pw = card.querySelector('#pay-confirm-pw'), err = card.querySelector('#pay-confirm-err'), lbl = card.querySelector('#pay-confirm-lbl');
+            function finish(v) { try { document.removeEventListener('keydown', onKey, true); ov.remove(); } catch (e) { /* gone */ } asking = null; resolve(v); }
+            function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); finish(null); } else if (e.key === 'Enter' && document.activeElement === pw) { e.preventDefault(); go(); } }
+            who.addEventListener('change', function () { lbl.textContent = who.value === 'admin' ? 'Password' : 'PIN'; pw.value = ''; pw.focus(); });
+            function go() {
+                var typed = pw.value;
+                if (!typed) { err.textContent = 'Type it first.'; pw.focus(); return; }
+                sha256Hex(typed).then(function (h) {
+                    if (!h) { err.textContent = 'This device cannot check passwords. Use another device.'; return; }
+                    var o = who.value === 'admin' ? { a: true, p: h } : { s: who.value.slice(2), p: h };
+                    var hdr = btoa(JSON.stringify(o));
+                    cache = { hdr: hdr, at: Date.now() };
+                    finish(hdr);
+                });
+            }
+            card.querySelector('#pay-confirm-ok').addEventListener('click', go);
+            card.querySelector('#pay-confirm-no').addEventListener('click', function () { finish(null); });
+            ov.addEventListener('mousedown', function (e) { if (e.target === ov) finish(null); });
+            document.addEventListener('keydown', onKey, true);
+            setTimeout(function () { try { pw.focus(); } catch (e) { /* none */ } }, 50);
+        });
+        return asking;
+    }
+
+    /* a refusal the caller reads like any other failed answer (nothing was sent) */
+    function cancelled() {
+        var d = { error: 'Cancelled - nothing was changed.', code: 'pay_confirm_cancelled' };
+        if (typeof Response === 'function') return new Response(JSON.stringify(d), { status: 403, headers: { 'Content-Type': 'application/json' } });
+        return { ok: false, status: 403, json: function () { return Promise.resolve(d); }, clone: function () { return this; } };
+    }
+
+    /* the fetch wrapper */
+    var prev = window.fetch;
+    if (typeof prev === 'function' && !prev.__payConfirm) {
+        var wrapped = function (input, init) {
+            var url = '', method = 'GET';
+            try { url = typeof input === 'string' ? input : (input && input.url) || ''; method = String((init && init.method) || (typeof input !== 'string' && input && input.method) || 'GET').toUpperCase(); } catch (e) { /* GET */ }
+            var self = this;
+            if (!/\/api\/(gateway|sms)-config/.test(url)) return prev.apply(self, arguments);
+            if (needsProof(url, method, init)) {
+                return ask().then(function (hdr) {
+                    if (!hdr) return cancelled();
+                    var i2 = Object.assign({}, init || {});
+                    var h = new Headers(i2.headers || (typeof input !== 'string' && input && input.headers) || undefined);
+                    h.set('X-Pay-Proof', hdr); i2.headers = h;
+                    return prev.call(self, input, i2).then(function (res) { report(res, method); return res; });
+                });
+            }
+            return prev.apply(self, arguments).then(function (res) { if (/\/api\/gateway-config(\?|$)/.test(url) && method === 'GET') pending(res); return res; });
+        };
+        Object.keys(prev).forEach(function (k) { try { wrapped[k] = prev[k]; } catch (e) { /* none */ } });
+        wrapped.__payConfirm = true;
+        window.fetch = wrapped;
+    }
+
+    /* what the server did */
+    function report(res, method) {
+        try {
+            res.clone().json().then(function (d) {
+                if (!d) return;
+                if (res.status === 401 || res.status === 403) {
+                    if (d.code === 'pay_confirm_failed' || d.code === 'pay_confirm_required') { cache = null; toast(d.error || 'Incorrect password.', true); }
+                    return;
+                }
+                if (res.status === 429 && d.error) { toast(d.error, true); return; }
+                if (!res.ok) { if (d.error) toast(d.error, true); return; }
+                if (d.held && d.held.effectiveAt) {
+                    toast('Saved. For your safety the new ' + (names(d.held.providers) || 'payment') + ' keys start at ' + eat(d.held.effectiveAt) + ' - your current keys keep working until then.' + (d.alerted === false ? ' No alert could be sent: add the owner’s phone number.' : ' The owner has been alerted.'));
+                    try { if (typeof checkPaymentGatewayStatus === 'function') checkPaymentGatewayStatus(); } catch (e) { /* none */ }
+                } else if (d.cancelled) {
+                    toast('The waiting change was cancelled. Your current keys stay.');
+                    try { if (typeof checkPaymentGatewayStatus === 'function') checkPaymentGatewayStatus(); } catch (e) { /* none */ }
+                } else if (d.alerted === false && method !== 'GET') {
+                    toast('Saved. No alert could be sent to the owner - add the owner’s phone number in the shop’s details.');
+                }
+            }).catch(function () { /* not JSON */ });
+        } catch (e) { /* cosmetic */ }
+    }
+
+    /* the "waiting change" card in Settings > Payment Gateway */
+    function pending(res) {
+        try {
+            res.clone().json().then(function (d) {
+                var host = $('payment-gateway-status');
+                if (!host || !d) return;
+                var card = $('pay-pending-card');
+                var p = d.pendingChange, recent = Array.isArray(d.recentChanges) ? d.recentChanges.slice(0, 3) : [];
+                if (!p && !recent.length) { if (card) card.remove(); return; }
+                if (!card) {
+                    card = document.createElement('div'); card.id = 'pay-pending-card';
+                    card.style.cssText = 'margin:10px 0;padding:12px 14px;border-radius:12px;border:1px solid rgba(127,140,141,.35);background:rgba(127,140,141,.08);font-size:14px;';
+                    host.parentNode.insertBefore(card, host);
+                }
+                var html = '';
+                if (p) html += '<div style="padding:10px 12px;border-radius:10px;background:#fef5e7;border:1px solid #f5cba7;color:#7e5109;margin-bottom:8px;"><b>⏳ New keys waiting</b><br>' + names(p.providers).replace(/[&<>]/g, '') + ' keys start at <b>' + eat(p.effectiveAt) + '</b>. Until then your current keys keep working. <div style="margin-top:8px;"><button type="button" id="pay-pending-cancel" style="background:#c0392b;color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer;">Not me - cancel this change</button></div></div>';
+                if (recent.length) html += '<div style="font-size:12.5px;opacity:.85;"><b>Recent changes</b>' + recent.map(function (r) { return '<div>' + eat(r.at) + ' · ' + (r.kind === 'reset' ? 'removed ' : r.kind === 'held' ? 'new keys saved for ' : r.kind === 'cancelled' ? 'cancelled' : 'changed ') + names(r.providers).replace(/[&<>]/g, '') + (r.by ? ' · by ' + String(r.by).replace(/[&<>]/g, '') : '') + (r.alerted ? ' · owner alerted ✓' : ' · no alert sent') + '</div>'; }).join('') + '</div>';
+                card.innerHTML = html;
+                var b = $('pay-pending-cancel');
+                if (b) b.addEventListener('click', function () {
+                    fetch((typeof apiUrl === 'function' ? apiUrl('/api/gateway-config') : '/api/gateway-config'), { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cancelPending: true }) });
+                });
+            }).catch(function () { /* none */ });
+        } catch (e) { /* cosmetic */ }
+    }
+})();
+</script>
+<!-- @shared-block:pay-confirm:end -->
+<!-- @shared-block:dark-fix:begin -->
+<!-- DARK MODE FIX (zip 247) ------------------------------------------------------------------------------------------------------
+         Dark mode (Settings > theme) changes the page and the inputs, but many small notes, tips, tinted boxes and grey captions were written with
+         fixed light colours (a pale yellow / green / red / grey box with the page's now-LIGHT text on it, or dark-grey text on the dark page),
+         so parts of the screen were unreadable. This one rule set only applies in dark mode: pale boxes become dark tinted boxes, dark text
+         that sat on them becomes light, and grey captions are lifted to a readable grey. Light mode is untouched. -->
+    <style id="dark-fix-css">
+    /* pale grey / white boxes -> the dark surface */
+    html[data-theme="dark"] [style*="background:#f8f9fa"], html[data-theme="dark"] [style*="background: #f8f9fa"],
+    html[data-theme="dark"] [style*="background:#f7f9fb"], html[data-theme="dark"] [style*="background: #f7f9fb"],
+    html[data-theme="dark"] [style*="background:#f4f6f7"], html[data-theme="dark"] [style*="background: #f4f6f7"],
+    html[data-theme="dark"] [style*="background:#f5f5f5"], html[data-theme="dark"] [style*="background: #f5f5f5"],
+    html[data-theme="dark"] [style*="background:#fafafa"], html[data-theme="dark"] [style*="background: #fafafa"],
+    html[data-theme="dark"] [style*="background:#f0f0f0"], html[data-theme="dark"] [style*="background: #f0f0f0"],
+    html[data-theme="dark"] [style*="background:#eee"], html[data-theme="dark"] [style*="background: #eee"],
+    html[data-theme="dark"] [style*="background:#ecf0f1"], html[data-theme="dark"] [style*="background: #ecf0f1"],
+    html[data-theme="dark"] #guide-body details, html[data-theme="dark"] #guide-body code, html[data-theme="dark"] #guide-body .g-tip, html[data-theme="dark"] .g-tip {
+        background: var(--bg-surface-alt, #262b32) !important; color: var(--dark, #ecf0f1); }
+    /* pale green boxes */
+    html[data-theme="dark"] [style*="background:#eafaf1"], html[data-theme="dark"] [style*="background: #eafaf1"],
+    html[data-theme="dark"] [style*="background:#e8f6ef"], html[data-theme="dark"] [style*="background: #e8f6ef"],
+    html[data-theme="dark"] [style*="background:#e6f6ea"], html[data-theme="dark"] [style*="background: #e6f6ea"],
+    html[data-theme="dark"] #accounts-tab .acc-ok { background: var(--tint-success-bg, #16352a) !important; color: var(--tint-success-text, #5fd99b); }
+    /* pale yellow / orange boxes */
+    html[data-theme="dark"] [style*="background:#fff3cd"], html[data-theme="dark"] [style*="background: #fff3cd"],
+    html[data-theme="dark"] [style*="background:#fdf6e8"], html[data-theme="dark"] [style*="background: #fdf6e8"],
+    html[data-theme="dark"] [style*="background:#fff8ec"], html[data-theme="dark"] [style*="background: #fff8ec"],
+    html[data-theme="dark"] [style*="background:#fff8e1"], html[data-theme="dark"] [style*="background: #fff8e1"],
+    html[data-theme="dark"] [style*="background:#fef9e7"], html[data-theme="dark"] [style*="background: #fef9e7"],
+    html[data-theme="dark"] #accounts-tab .acc-warn { background: var(--tint-warning-bg, #3a300f) !important; color: var(--tint-warning-text, #ffcf5c); }
+    /* pale red boxes */
+    html[data-theme="dark"] [style*="background:#fdecea"], html[data-theme="dark"] [style*="background: #fdecea"],
+    html[data-theme="dark"] [style*="background:#fdedec"], html[data-theme="dark"] [style*="background: #fdedec"],
+    html[data-theme="dark"] [style*="background:#fadbd8"], html[data-theme="dark"] [style*="background: #fadbd8"] { background: var(--tint-danger-bg, #3a2222) !important; color: #ffb4ab; }
+    /* pale blue boxes */
+    html[data-theme="dark"] [style*="background:#e8f1fb"], html[data-theme="dark"] [style*="background: #e8f1fb"],
+    html[data-theme="dark"] [style*="background:#eaf2f8"], html[data-theme="dark"] [style*="background: #eaf2f8"],
+    html[data-theme="dark"] [style*="background:#ebf5fb"], html[data-theme="dark"] [style*="background: #ebf5fb"],
+    html[data-theme="dark"] #accounts-tab .acc-tip { background: var(--tint-info-bg, #16293a) !important; color: var(--dark, #ecf0f1); }
+    /* dark text that was written for a pale box */
+    html[data-theme="dark"] [style*="color:#7a5c00"], html[data-theme="dark"] [style*="color: #7a5c00"], html[data-theme="dark"] [style*="color:#7e5109"], html[data-theme="dark"] [style*="color:#5c4400"],
+    html[data-theme="dark"] [style*="color:#b9770e"], html[data-theme="dark"] [style*="color:#b8860b"] { color: #ffcf5c !important; }
+    html[data-theme="dark"] [style*="color:#922b21"], html[data-theme="dark"] [style*="color:#b3261e"], html[data-theme="dark"] [style*="color:#b00"], html[data-theme="dark"] [style*="color: #b00"] { color: #ff8a80 !important; }
+    html[data-theme="dark"] [style*="color:#1e8449"], html[data-theme="dark"] [style*="color:#1e6b3a"], html[data-theme="dark"] [style*="color:#5b6b60"] { color: #5fd99b !important; }
+    html[data-theme="dark"] [style*="color:#2874a6"] { color: #6cb4e8 !important; }
+    html[data-theme="dark"] [style*="color:#333"], html[data-theme="dark"] [style*="color: #333"], html[data-theme="dark"] [style*="color:#2c3e50"], html[data-theme="dark"] [style*="color: #2c3e50"],
+    html[data-theme="dark"] [style*="color:#34495e"], html[data-theme="dark"] [style*="color:#1d2b36"], html[data-theme="dark"] [style*="color:#222"], html[data-theme="dark"] [style*="color:#000"] { color: var(--dark, #ecf0f1) !important; }
+    /* grey captions that were too dim on the dark page */
+    html[data-theme="dark"] [style*="color:#555"], html[data-theme="dark"] [style*="color: #555"], html[data-theme="dark"] [style*="color:#666"], html[data-theme="dark"] [style*="color: #666"],
+    html[data-theme="dark"] [style*="color:#777"], html[data-theme="dark"] [style*="color:#888"], html[data-theme="dark"] [style*="color:#889"],
+    html[data-theme="dark"] [style*="color:#5f6b76"], html[data-theme="dark"] [style*="color:#566573"] { color: #b4bec6 !important; }
+    html[data-theme="dark"] [style*="color:#7f8c8d"], html[data-theme="dark"] [style*="color: #7f8c8d"], html[data-theme="dark"] [style*="color:#95a5a6"] { color: #a3afb7 !important; }
+    /* thin grey lines */
+    html[data-theme="dark"] [style*="border-bottom:1px solid #eee"], html[data-theme="dark"] [style*="border-top:1px solid #eee"], html[data-theme="dark"] [style*="border:1px solid #eee"],
+    html[data-theme="dark"] [style*="border:1px solid #ddd"], html[data-theme="dark"] [style*="border-bottom:1px solid #ddd"], html[data-theme="dark"] [style*="border:1px solid #ccc"] { border-color: var(--border-color, #3a4048) !important; }
+    /* tables and the guide */
+    html[data-theme="dark"] th { color: var(--dark, #ecf0f1); }
+    html[data-theme="dark"] #guide-body, html[data-theme="dark"] #guide-body * { border-color: var(--border-color, #3a4048); }
+    /* the sub-category / category windows and the update-or-new asking window: always readable */
+    html[data-theme="dark"] #hosp-simple-modal .modal-content, html[data-theme="dark"] #hosp-simple-modal .modal-content label { color: var(--dark, #ecf0f1); }
+    html[data-theme="dark"] .hsub-card { background: var(--bg-surface-alt, #262b32); border-color: var(--border-color, #3a4048); }
+    </style>
+
+    <script>
+    /* zip 247 - DARK MODE CONTRAST GUARD. Whatever the stylesheet or an inline style says, in dark mode every piece of text is checked against the colour
+       it actually sits on (the nearest solid background behind it): when the two are too close (dark text on the dark page, light text on a pale box) the text
+       colour is switched to a readable one. It only touches text that is already unreadable, runs after every screen change, and is undone completely when
+       dark mode is switched off. It never changes backgrounds, sizes, layout or any data. */
+    (function () {
+        'use strict';
+        if (window.__darkGuardInit) return; window.__darkGuardInit = true;
+        var root = document.documentElement, MARK = 'data-dkfix', LIGHT = '#ecf0f1', DARKC = '#1b2631', MIN = 3.4;
+        function isDark() { return root.getAttribute('data-theme') === 'dark'; }
+        function parse(c) { var m = /rgba?\(\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)(?:[ ,/]+([\d.]+%?))?/.exec(c || ''); if (!m) return null; var a = m[4] === undefined ? 1 : (/%$/.test(m[4]) ? parseFloat(m[4]) / 100 : parseFloat(m[4])); return [+m[1], +m[2], +m[3], a]; }
+        function lum(c) { function f(v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); } return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); }
+        function ratio(a, b) { var x = lum(a), y = lum(b); if (x < y) { var t = x; x = y; y = t; } return (x + 0.05) / (y + 0.05); }
+        function blend(top, under) { var a = top[3]; return [top[0] * a + under[0] * (1 - a), top[1] * a + under[1] * (1 - a), top[2] * a + under[2] * (1 - a), 1]; }
+        // the solid colour behind an element: walk up, mixing translucent layers; a gradient / picture means "unknown" (null) - left alone
+        var memo = new WeakMap();
+        function behind(el) {
+            if (memo.has(el)) return memo.get(el);
+            var r = behind0(el); memo.set(el, r); return r;
+        }
+        function behind0(el) {
+            var layers = [], n = el, page = parse(getComputedStyle(document.body).backgroundColor);
+            if (!page || page[3] < 1) page = [20, 23, 26, 1];
+            while (n && n.nodeType === 1) {
+                var cs = getComputedStyle(n);
+                if (cs.backgroundImage && cs.backgroundImage !== 'none') return null;
+                var bg = parse(cs.backgroundColor);
+                if (bg && bg[3] > 0) { layers.push(bg); if (bg[3] >= 1) break; }
+                n = n.parentElement;
+            }
+            var out = layers.length && layers[layers.length - 1][3] >= 1 ? layers.pop() : page;
+            while (layers.length) out = blend(layers.pop(), out);
+            return out;
+        }
+        function visible(el) { if (!document.body.offsetHeight && !document.body.getClientRects().length) return true; /* no layout engine (tests): check everything */ return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length); }
+        var SKIP = { SCRIPT: 1, STYLE: 1, SVG: 1, CANVAS: 1, IMG: 1, VIDEO: 1, NOSCRIPT: 1, OPTION: 1, PATH: 1 };
+        function check(el) {
+            if (!el || el.nodeType !== 1 || SKIP[el.tagName] || (el.closest && el.closest('svg,canvas,.no-dkfix,#receipt-modal,#aqua-pos-print-area,[id^="print"]'))) return;
+            var cs = getComputedStyle(el); if (cs.visibility === 'hidden' || cs.display === 'none') return;
+            var fg = parse(cs.color); if (!fg) return;
+            var bg = behind(el); if (!bg) return;
+            var eff = fg[3] < 1 ? blend(fg, bg) : fg;
+            if (ratio(eff, bg) >= MIN) { if (el.hasAttribute(MARK)) { /* already fine */ } return; }
+            var pick = lum(bg) < 0.4 ? LIGHT : DARKC;
+            if (!el.hasAttribute(MARK)) el.setAttribute(MARK, el.style.getPropertyValue('color') + '|' + el.style.getPropertyPriority('color'));
+            el.style.setProperty('color', pick, 'important');
+        }
+        function textParents(scope, out) {
+            var w = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, { acceptNode: function (t) { return /\S/.test(t.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT; } });
+            var n, seen = out.seen, cap = 6000;
+            while ((n = w.nextNode()) && cap-- > 0) { var p = n.parentElement; if (p && !seen.has(p)) { seen.add(p); out.list.push(p); } }
+        }
+        function sweep(scope) {
+            if (!isDark()) return;
+            try {
+                var out = { list: [], seen: new Set() };
+                if (scope.nodeType === 1) { out.seen.add(scope); out.list.push(scope); }
+                textParents(scope, out);
+                // inputs / buttons / selects carry their text in the control itself
+                if (scope.querySelectorAll) Array.prototype.forEach.call(scope.querySelectorAll('input,textarea,select,button,label'), function (e) { if (!out.seen.has(e)) { out.seen.add(e); out.list.push(e); } });
+                out.list.forEach(function (e) { if (visible(e)) check(e); });
+            } catch (e) { /* cosmetic only */ }
+        }
+        function undo() {
+            Array.prototype.forEach.call(document.querySelectorAll('[' + MARK + ']'), function (e) {
+                var v = (e.getAttribute(MARK) || '|').split('|'); if (v[0]) e.style.setProperty('color', v[0], v[1] || ''); else e.style.removeProperty('color');
+                e.removeAttribute(MARK);
+            });
+        }
+        var queue = [], timer = 0, full = false;
+        function flush() {
+            timer = 0; memo = new WeakMap();
+            if (!isDark() || (!document.body.offsetHeight && !document.body.getClientRects().length)) { queue = []; full = false; return; }   // (no screen, e.g. an automated test: nothing to fix)
+            if (full) { full = false; queue = []; sweep(document.body); return; }
+            var q = queue; queue = [];
+            var seen = new Set();
+            q.forEach(function (n) { if (n && n.isConnected && !seen.has(n)) { seen.add(n); sweep(n); } });
+        }
+        function soon(node, whole) { if (whole) full = true; else if (node) queue.push(node); if (!timer) timer = setTimeout(flush, 220); }
+        function start() {
+            if (!document.body) return;
+            new MutationObserver(function () { if (isDark()) soon(null, true); else undo(); }).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+            new MutationObserver(function (muts) {
+                if (!isDark()) return;
+                muts.forEach(function (m) {
+                    if (m.type === 'childList') m.addedNodes.forEach(function (n) { if (n.nodeType === 1) soon(n, false); });
+                    else if (m.target && m.target.nodeType === 1 && !m.target.hasAttribute(MARK)) soon(m.target, false);    // (our own colour change is not "news")
+                });
+            }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
+            window.addEventListener('load', function () { soon(null, true); });
+            soon(null, true);
+            document.addEventListener('click', function () { setTimeout(function () { soon(null, true); }, 350); }, true);
+        }
+        window.darkGuardRun = function (scope) { if (scope) { sweep(scope); return; } full = true; flush(); };
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
+    })();
+    </script>
+<!-- @shared-block:dark-fix:end -->
 <!-- @shared-block:accounts:begin -->
 <!-- ACCOUNTS (zip 227) ------------------------------------------------------------------------------------------------------------
          A real set of books for the shop, built from what the till already records, plus the things only the owner can add.

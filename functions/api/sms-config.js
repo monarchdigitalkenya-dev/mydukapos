@@ -24,6 +24,16 @@
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
+import { readSmsConfigFull, writeSmsConfig } from './_sms-store.js';
+import { managerGuard, secLimit, secNum } from './_sec-guard.js';
+import { requirePayProof } from './_pay-guard.js';
+import { notifyPayChange } from './_pay-alert.js';
+
+// zip 247 — CHANGING THE SMS ACCOUNT (its keys) needs the same typed Admin password / manager PIN as the payment keys (X-Pay-Proof, checked on the
+// server) and tells the owner; templates and the thank-you switch stay as free as before. A shop that requires staff sessions also needs a manager
+// session. The CORS answer is the shop's own origin only (the apps call the API on their own origin, so nothing else ever needed `*`).
+const SMS_CREDENTIAL_FIELDS = ['atUsername', 'atApiKey', 'mobitechApiKey', 'mobitechSenderName', 'celcomApiKey', 'celcomPartnerId', 'celcomShortcode', 'advantaApiKey', 'advantaPartnerId', 'advantaShortcode', 'talksasaApiKey', 'talksasaSenderId'];
+const CORS_OPTS = { methods: 'GET, POST, OPTIONS', headers: 'Content-Type, X-Device-Id, X-Device-Token, X-Staff-Token, X-Pay-Proof' };
 
 const VALID_PROVIDERS = ['africastalking', 'mobitech', 'celcom', 'advanta', 'talksasa'];
 
@@ -34,8 +44,8 @@ function jsonResponse(body, status = 200) {
   });
 }
 
-export async function onRequestOptions() {
-  return new Response(null, { status: 204 });
+export async function onRequestOptions(context) {
+  return new Response(null, { status: 204, headers: corsHeadersFor(context.request, context.env, CORS_OPTS) });
 }
 
 export async function onRequestGet(context) {
@@ -49,8 +59,9 @@ export async function onRequestGet(context) {
   const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
   if (deviceDenied) return deviceDenied;
 
-  const configRaw = await env.mydukapos_kv.get(`sms-config:${clientId}`);
-  const config = configRaw ? JSON.parse(configRaw) : {};
+  const full = await readSmsConfigFull(env, clientId);
+  if (!full.ok) return jsonResponse({ error: 'The saved SMS account cannot be read right now — contact support.', code: 'secrets_unreadable' }, 503);
+  const config = full.config;
 
   const provider = VALID_PROVIDERS.includes(config.provider) ? config.provider : 'africastalking';
 
@@ -103,8 +114,24 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'Invalid request body.' }, 400);
   }
 
-  const configRaw = await env.mydukapos_kv.get(`sms-config:${clientId}`);
-  const existing = configRaw ? JSON.parse(configRaw) : {};
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonResponse({ error: 'Invalid request body.' }, 400);
+
+  const full = await readSmsConfigFull(env, clientId);
+  if (!full.ok) return jsonResponse({ error: 'The saved SMS account cannot be opened, so nothing was changed — contact support.', code: 'secrets_unreadable' }, 503);
+  const existing = full.config;
+
+  // zip 247: does this save change the ACCOUNT (keys / sender / provider)? Only then is the typed proof needed.
+  const credChanged = SMS_CREDENTIAL_FIELDS.some((k) => k in body && String(typeof body[k] === 'string' ? body[k].trim() : '') !== String(existing[k] || ''))
+    || (VALID_PROVIDERS.includes(body.provider) && body.provider !== (existing.provider || 'africastalking'));
+  let proof = null;
+  if (credChanged) {
+    const mgrDenied = await managerGuard(request, env, clientId, {});
+    if (mgrDenied) return mgrDenied;
+    const capped = await secLimit(env, 'smscfg', clientId, secNum(env.SMS_CONFIG_HOURLY_LIMIT, 30), 3600, 'SMS account changes');
+    if (capped) return capped;
+    proof = await requirePayProof(request, env, clientId, {});
+    if (proof.denied) return proof.denied;
+  }
 
   // A blank field for the active provider clears its credentials (the
   // "reset"/"turn off" path) without needing a separate DELETE handler —
@@ -146,7 +173,13 @@ export async function onRequestPost(context) {
     thankYouTemplate: thankYouTemplate || '',
     hireConfirmationTemplate: hireConfirmationTemplate || '',
   };
-  await env.mydukapos_kv.put(`sms-config:${clientId}`, JSON.stringify(updated));
+  await writeSmsConfig(env, clientId, updated);
 
-  return jsonResponse({ success: true });
+  let alerted = null;
+  if (credChanged) {
+    const p = notifyPayChange(env, clientId, { kind: 'sms', providers: ['sms'], who: proof.who, smsConfig: existing }, request).catch(() => ({ alerted: false }));
+    try { if (context.waitUntil) context.waitUntil(p); } catch (e) { /* none */ }
+    alerted = (await Promise.race([p, new Promise((r) => setTimeout(() => r({ alerted: null }), 5000))])).alerted;
+  }
+  return jsonResponse({ success: true, alerted });
 }
