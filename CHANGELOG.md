@@ -2,6 +2,19 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 255 - Daraja: "Test Daraja connection" + callback address override
+- **New button under "Save Daraja Credentials":** checks, one by one, the saved details (and any held change), that environment / shortcode / Till fit together, the Safaricom login, the shortcode + passkey (a harmless status question about an invented prompt; no money, no prompt), the result address Safaricom is given, and recent prompts that never got a result. Each step shows Safaricom's own words and what to do. Admin / manager only; 30 tests an hour per shop. Keys are never echoed.
+- **`PAY_CALLBACK_ORIGIN`** (optional Cloudflare variable, e.g. `https://yourbusiness.co.ke`): the address Safaricom is told to send results to. Default unchanged (the host the request came in on, i.e. `mydukapos.pages.dev`).
+- Tests: `tests/zip255-daraja-check.test.mjs`; the stale Co-op address check in `zip210-gateways` now expects `pay-cb-stk`. No router change, no migration.
+
+## Zip 254 - Import a medicine list (Doses, Minimum Qty, variants, packs)
+- **Import from Excel/CSV** now reads a list shaped like `Drugs | Doses | Minimum Qty | Cost` in Hospital, Shop, Production, Services and Pharmacy. Hospital also gets the variants-from-a-list import the other four already had.
+- **Doses column:** "4 Tabs" / "9 Tabs" / "3pcs" = a box that holds that many pieces (cost = box price, cost per piece = box / pieces, also sold by the piece, piece price 0); "200mg/400mg" or "200/400mg" = one variant each; anything else (500ml, 5mg, 15g) stays one piece and is added to the name.
+- **Minimum Qty** (also Min Qty, Low Stock...) becomes the item's own low-stock level. Qty and Price stay 0 when the file says 0.
+- Also accepted as columns: Variant (a cell with "/" splits), Pieces Per Box / Pack Size, Drug / Drugs / Medicine as the name. Costs written "500 /-", "100/-" or "@150" read as numbers. Stray double spaces in names are tidied.
+- Not changed: Hotel and Aqua POS imports. Re-importing a file with Qty 0 sets those items' stock back to 0 (the old behaviour).
+- Tests: `tests/zip254-medicine-list-import.test.mjs`. Ready-made file: `ALLIVIA_HC_DRUGS_IMPORT.xlsx` (not part of the app).
+
 ## Zip 253 - Receipt Settings (barcode, VAT, inline PAID/UNPAID) + pack-price cost + compact image row
 - **Receipt Settings (all 7 receipt apps):** new card "What prints on the receipt" with Reference number (on), Barcode (**off by default**), VAT / tax (**off by default**: no VAT letters, no VAT table) and PAID / UNPAID. The same settings drive the on-screen preview, system print, USB and Bluetooth. They persist and sync to other devices. Hotel's own barcode/ref setting was folded into this shared one.
 - **PAID / UNPAID** now prints as wording on the TOTAL line ("TOTAL - PAID   KES 500.00"). The stamp picture and its reserved space are gone.

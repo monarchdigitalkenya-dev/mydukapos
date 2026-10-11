@@ -15938,6 +15938,34 @@ async function poDownloadOrder(orderId) {
             showToast(`${o.orderNo} saved to your Downloads as a PDF.`);
         }
 
+// zip 253: a Variant cell that names several strengths ("200mg/400mg", "200/400mg") means one variant each. A unit written once at the end belongs to every number.
+//@fn splitVariantNames
+function splitVariantNames(raw) {
+            const s = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+            if (!s) return [];
+            const parts = s.split('/').map((x) => x.trim()).filter(Boolean);
+            if (parts.length < 2) return [s];
+            const unit = (/^[\d.]+\s*([a-zA-Z%]+)$/.exec(parts[parts.length - 1]) || [])[1] || '';
+            return parts.map((x) => (unit && /^[\d.]+$/.test(x)) ? x + unit : x);
+        }
+
+// zip 253: reads one "Doses" cell of a medicine list. "4 Tabs" / "9 Tabs" / "3pcs" = a box that holds that many pieces; "200mg/400mg" = variants;
+// anything else (500ml, 5mg, 15g, a bare number) is simply part of the item's name - a liquid or a single tablet is one piece.
+//@fn parseDoseCell
+function parseDoseCell(raw) {
+            const s = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+            const out = { pieces: 0, variants: [], suffix: '' };
+            if (!s) return out;
+            const pack = /^(\d+)\s*(?:tabs?|tablets?|caps?|capsules?|pcs?|pieces?)(?:\s*\/\s*(?:tabs?|caps?))?$/i.exec(s);
+            if (pack) { const n = parseInt(pack[1], 10); if (n > 1) out.pieces = n; return out; }
+            if (s.indexOf('/') !== -1) {
+                const v = splitVariantNames(s);
+                if (v.length > 1) { out.variants = v; return out; }
+            }
+            out.suffix = s;
+            return out;
+        }
+
 //@fn captureVariantSum
 function captureVariantSum(it) {
             return (it.variants || []).reduce((a, v) => a + (parseFloat(v.qty) || 0), 0);
@@ -16008,6 +16036,8 @@ function commitCaptureVariantItems(list) {
                     inventory.push(product);
                     out.created++;
                 } else out.updated++;
+                // zip 253: the item's own low-stock level from the file
+                if (it.minStock !== undefined && it.minStock !== '' && isFinite(Number(it.minStock)) && Number(it.minStock) >= 0) product.minStock = Number(it.minStock);
                 vars.forEach((v) => {
                     const nm = String(v.name).trim(), q = parseFloat(v.qty) || 0, price = pos(v.retail);
                     const ex = product.variants.find((x) => String(x.name || '').trim().toLowerCase() === nm.toLowerCase());

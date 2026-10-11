@@ -12,7 +12,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { ensureCallbackKey, withKey } from './_callback-key.js';
+import { ensureCallbackKey, withKey, callbackOrigin } from './_callback-key.js';
 import { loadGatewayConfig, hasDarajaConfig } from './_gateway-config.js';
 import { requireValidLicense } from './_license.js';
 import { deviceGuard } from './_device-auth.js';
@@ -67,7 +67,7 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'Save your Daraja credentials (Option B) in Settings -> Payment Gateway first \u2014 registering till URLs needs them.' }, 400);
   }
 
-  const origin = new URL(request.url).origin;
+  const origin = callbackOrigin(request, env);
   // zip 143: registered with this shop's secret key, so a forged "payment received" can no longer be posted for the shop
   const cbKey = await ensureCallbackKey(env, clientId, 'c2b');
   // zip 250: the addresses must NOT contain "mpesa", "m-pesa" or "safaricom": Safaricom's production RegisterURL filters those out (sandbox does not).

@@ -20,6 +20,13 @@ Only the changed files are uploaded (Cloudflare compares file hashes: "61 upload
 Note: `wrangler.staging.toml` is excluded from the mirror on purpose. It holds YOUR staging KV id; copying the zip's version over it would put the placeholder back.
 If you ever lose it: `npx wrangler kv namespace list` shows your namespace ids (staging is the one titled mydukapos_kv_staging).
 
+## Zip 255 - Daraja connection test - app only
+Deploy as usual (`npm run deploy`). Optional: add `PAY_CALLBACK_ORIGIN` in Cloudflare Pages > Settings > Variables. Then Settings > Payment Gateway > Option B > "Test Daraja connection".
+
+## Zip 254 - medicine-list import - app only
+
+No router change, no database change. `npm run deploy` is enough.
+
 ## Zip 253 - receipts and pack cost - app only
 
 No router change, no database change. `npm run deploy` is enough.

@@ -101,6 +101,14 @@ export async function checkCallback(env, clientId, rail, url) {
   return { ok: false, keyCreatedAt: Number(rec.createdAt) || 0 };
 }
 
+// zip 255: the address Safaricom is told to POST results to. Normally the host the request came in on; PAY_CALLBACK_ORIGIN (e.g. https://yourbusiness.co.ke)
+// overrides it when that host is a pages.dev address or contains a word Safaricom's production system drops.
+export function callbackOrigin(request, env) {
+  const o = String((env && env.PAY_CALLBACK_ORIGIN) || '').trim().replace(/\/+$/, '');
+  if (/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(o)) return o;
+  return new URL(request.url).origin;
+}
+
 export function withKey(url, rec) {
   return rec && rec.k ? `${url}&k=${encodeURIComponent(rec.k)}` : url;
 }

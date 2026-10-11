@@ -118,7 +118,7 @@ test('Co-op Bank: token + Daraja-shaped STK to the owner-supplied addresses; res
     assert.equal(r.status, 200, JSON.stringify(d)); assert.equal(d.checkoutRequestId, 'ws_CO_1'); assert.equal(d.paymentUrl, undefined);
     const tok = calls[0]; assert.match(tok.init.headers.Authorization, /^Basic /);
     const body = JSON.parse(calls[1].init.body);
-    assert.equal(body.BusinessShortCode, '400200'); assert.equal(body.Amount, 75); assert.equal(body.PhoneNumber, '254712345678'); assert.match(body.CallBackURL, /\/api\/mpesa-callback\?c=C1&k=/);
+    assert.equal(body.BusinessShortCode, '400200'); assert.equal(body.Amount, 75); assert.equal(body.PhoneNumber, '254712345678'); assert.match(body.CallBackURL, /\/api\/pay-cb-stk\?c=C1&k=/);
     assert.equal(calls[1].init.headers.Authorization, 'Bearer CT');
     const key = new URL(body.CallBackURL).searchParams.get('k');
     await cb.onRequestPost({ request: req(`https://x/api/mpesa-callback?c=C1&k=${key}`, 'POST', { Body: { stkCallback: { CheckoutRequestID: 'ws_CO_1', ResultCode: 0, ResultDesc: 'ok', CallbackMetadata: { Item: [{ Name: 'MpesaReceiptNumber', Value: 'QCOOP00001' }, { Name: 'Amount', Value: 75 }] } } } }), env });

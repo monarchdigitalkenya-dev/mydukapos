@@ -56,7 +56,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
-import { ensureCallbackKey, withKey } from './_callback-key.js';
+import { ensureCallbackKey, withKey, callbackOrigin } from './_callback-key.js';
 import { loadGatewayConfig, resolveProvider } from './_gateway-config.js';
 import { pesapalToken, pesapalIpnId, pesapalSubmitOrder } from './_pesapal.js';
 import { requireValidLicense, resolveClientId } from './_license.js';
@@ -502,7 +502,7 @@ export async function onRequestPost(context) {
   if (!limitedPhone.ok) return rateLimitResponse('payment prompts to this phone number', limitedPhone, cors);
 
   try {
-    const origin = new URL(request.url).origin;
+    const origin = callbackOrigin(request, env);
     // The client id is embedded in the callback URL itself, so Safaricom's
     // POST to mpesa-callback.js carries it right back to us.
     // zip 143: the callback URL carries this shop's secret key, so only Safaricom/KCB (who were given it) can report a result
