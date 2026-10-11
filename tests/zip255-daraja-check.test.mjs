@@ -89,3 +89,20 @@ test('the Settings page has the button wired to the endpoint', async () => {
   const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
   assert.match(html, /daraja-check-btn/); assert.match(html, /\/api\/daraja-check/);
 });
+
+test('zip 256: failure reasons are explained, and what is sent is shown', async () => {
+  assert.match(chk.explainFailure('Failed. The Agent number and Store number entered do not match.'), /Store/);
+  assert.match(chk.explainFailure('Merchant does not exist'), /Paybill/);
+  assert.match(chk.explainFailure('Failed due to an unresolved reason type.'), /generic/i);
+  const s = await shop({ ...PROD, mpesaTransactionType: 'CustomerBuyGoodsOnline', mpesaPartyB: '5551234' });
+  const r = await run(s, async (u) => String(u).includes('/oauth/') ? J({ error: 'x' }, 400) : J({}));
+  const sent = byId(r.d, 'sent');
+  assert.match(sent.detail, /BusinessShortCode: 600111/); assert.match(sent.detail, /PartyB\): 5551234/);
+});
+
+test('zip 256: a held Till/shortcode change is named in the test', async () => {
+  const s = await shop(PROD);
+  await gwl.saveGatewayConfig(s.env, s.id, { mpesaShortcode: '6075378' }, { cooldownMs: 3600000 });
+  const r = await run(s, async (u) => String(u).includes('/oauth/') ? J({ error: 'x' }, 400) : J({}));
+  assert.equal(byId(r.d, 'held').status, 'warn'); assert.match(byId(r.d, 'held').detail, /Shortcode/);
+});

@@ -48,6 +48,18 @@ async function timedFetch(url, init, ms = 12000) {
 const clip = (s, n = 220) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, n);
 const step = (id, title, status, detail, fix) => ({ id, title, status, detail: detail || '', fix: fix || '' });
 
+/* exported for tests: Safaricom's words for a failed payment -> what it means for the settings */
+export function explainFailure(desc) {
+  const t = String(desc || '');
+  if (/agent number and store number|store number/i.test(t)) return 'The Store / Head Office number (Shortcode box) and the Till number (Till box) do not belong together. For a Till: Shortcode = the Store number, Till box = the Till under that store. If the number is a Paybill, set Type to Paybill instead.';
+  if (/merchant does not exist/i.test(t)) return 'Safaricom does not know the number it was sent as the receiver for this Type. Usual causes: Type is Paybill but the number is a Till/Store, or Type is Till and the Till box holds a number that is not a Till.';
+  if (/unresolved reason/i.test(t)) return 'Safaricom gave no reason. It is a generic refusal, often the Type / shortcode / Till combination again, or the shortcode is not yet switched on for STK push.';
+  if (/cancel|1032/i.test(t)) return 'The customer cancelled the prompt on their phone.';
+  if (/insufficient|balance|2001|wrong pin|initiator/i.test(t)) return 'A customer-side problem (balance or wrong PIN), not a setting.';
+  if (/timeout|timed out|1037/i.test(t)) return 'The customer did not respond to the prompt in time.';
+  return '';
+}
+
 /* exported for tests: what Safaricom's answer to the login means */
 export function explainToken(r, env) {
   if (!r.ok) return step('login', 'Log in to Safaricom', 'fail', `The server could not reach Safaricom: ${r.error}.`, 'Safaricom may be down for a moment — try again in a few minutes. If it keeps happening, ask Safaricom (apisupport@safaricom.co.ke) whether they block requests from Cloudflare.');
@@ -105,7 +117,11 @@ export async function onRequestPost(context) {
   const heldDaraja = pending && Array.isArray(pending.providers) && pending.providers.includes('daraja');
   if (missing.length) steps.push(step('saved', 'Saved details', 'fail', `Not saved yet: ${missing.join(', ')}.`, 'Fill all four boxes in Option B and press Save Daraja Credentials (it asks for your Admin password).'));
   else steps.push(step('saved', 'Saved details', 'ok', `Consumer Key, Secret, Shortcode ${cfg.mpesaShortcode} and Passkey are saved. Environment: ${envName.toUpperCase()}; type: ${isTill ? 'Till (Buy Goods)' : 'Paybill'}.`));
-  if (heldDaraja) steps.push(step('held', 'Keys waiting to start', 'warn', `New Daraja keys were saved but are held until ${new Date(pending.effectiveAt + 3 * 3600000).toISOString().replace('T', ' ').slice(0, 16)} (Nairobi time) — until then the OLD keys are the ones being tested and used.`, 'Wait for that time, or cancel the waiting change in Settings and save again.'));
+  const till = String(cfg.mpesaPartyB || '').trim();
+  const effParty = isTill && till ? till : sc0();
+  function sc0() { return String(cfg.mpesaShortcode || '').trim(); }
+  steps.push(step('sent', 'What is sent to Safaricom', 'info', `Type: ${isTill ? 'Till (Buy Goods)' : 'Paybill'} - BusinessShortCode: ${sc0() || '(empty)'} - receiver (PartyB): ${effParty || '(empty)'}${isTill && !till ? ' (the Till box is empty, so the Shortcode is used for both)' : ''}${!isTill && till ? ' (a Till number is saved but ignored because the Type is Paybill)' : ''}.`, isTill ? 'For a Till, Safaricom wants the Store / Head Office number as BusinessShortCode and the Till under it as the receiver. Different numbers are normal.' : ''));
+  if (heldDaraja) steps.push(step('held', 'Keys waiting to start', 'warn', `New Daraja keys were saved but are held until ${new Date(pending.effectiveAt + 3 * 3600000).toISOString().replace('T', ' ').slice(0, 16)} (Nairobi time) — until then the OLD values are the ones being tested and used${pending.fieldNames && pending.fieldNames.length ? ' (waiting: ' + pending.fieldNames.map((n) => n.replace(/^mpesa/, '')).join(', ') + ')' : ''}.`, 'Wait for that time, or cancel the waiting change in Settings and save again.'));
 
   /* 2 — do the settings agree */
   const sc = String(cfg.mpesaShortcode || '').trim();
@@ -162,11 +178,12 @@ export async function onRequestPost(context) {
     const rows = [];
     for (const k of (list.keys || []).slice(-30)) { try { const v = JSON.parse(await env.mydukapos_kv.get(k.name)); if (v && v.provider !== 'paystack') rows.push(v); } catch (e) { /* skip */ } }
     const now = Date.now();
+    const reasons = Array.from(new Set(rows.filter((x) => x.status === 'failed' && x.resultDesc).map((x) => clip(x.resultDesc, 120)))).slice(-3);
     const done = rows.filter((x) => x.status === 'success').length, failed = rows.filter((x) => x.status === 'failed').length;
     const stuck = rows.filter((x) => x.status === 'pending' && now - (x.createdAt || now) > 3 * 60 * 1000).length;
     if (!rows.length) steps.push(step('history', 'Recent prompts', 'skip', 'No prompt has been sent from this shop yet.'));
     else if (stuck && !done) steps.push(step('history', 'Recent prompts', 'fail', `${rows.length} prompt(s) sent, ${stuck} still waiting for a result after 3+ minutes, none ever succeeded.`, 'The prompt reaches Safaricom but the result does not come back: check step "Where Safaricom sends the result", and that the Daraja app\'s production callback is allowed.'));
-    else steps.push(step('history', 'Recent prompts', stuck ? 'warn' : 'ok', `${rows.length} recent prompt(s): ${done} paid, ${failed} failed or cancelled, ${stuck} waiting for a result.`));
+    else steps.push(step('history', 'Recent prompts', stuck || (failed && !done) ? 'warn' : 'ok', `${rows.length} recent prompt(s): ${done} paid, ${failed} failed or cancelled, ${stuck} waiting for a result.${reasons.length ? ' Safaricom said: ' + reasons.map((r) => '"' + r + '"').join('; ') + '.' : ''}`, reasons.map((r) => explainFailure(r)).filter(Boolean).join(' ')));
   } catch (e) { steps.push(step('history', 'Recent prompts', 'skip', 'Could not read the history.')); }
 
   const firstBad = steps.find((s) => s.status === 'fail') || steps.find((s) => s.status === 'warn');

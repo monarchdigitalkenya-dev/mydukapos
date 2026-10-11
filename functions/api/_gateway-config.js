@@ -121,7 +121,7 @@ export async function getPendingChange(env, clientId) {
   const { stored, ok } = await readStoredFull(env, clientId);
   const p = ok ? stored._pending : null;
   if (!p || !p.fields || !Object.keys(p.fields).length) return null;
-  return { effectiveAt: Number(p.effectiveAt) || 0, providers: Array.isArray(p.providers) ? p.providers : [], at: Number(p.at) || 0 };
+  return { effectiveAt: Number(p.effectiveAt) || 0, providers: Array.isArray(p.providers) ? p.providers : [], at: Number(p.at) || 0, fieldNames: Object.keys(p.fields) };
 }
 
 export async function cancelPendingChange(env, clientId) {

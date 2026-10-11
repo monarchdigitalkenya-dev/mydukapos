@@ -2,6 +2,10 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 256 - Daraja test explains Safaricom's failure reasons and shows what is sent
+- **Test Daraja connection** now also shows (a) what is sent to Safaricom: Type, BusinessShortCode and the receiver (PartyB), (b) which saved changes are still held for 60 minutes (field names only), and (c) the last Safaricom failure texts from this shop's prompts ("Merchant does not exist", "Agent number and Store number do not match", "unresolved reason type") with what each means for the settings.
+- Same button in every app that has Option B (shop, hotel, pharmacy, production, services, hospital, water). Tests added to `tests/zip255-daraja-check.test.mjs`. No router change, no migration.
+
 ## Zip 255 - Daraja: "Test Daraja connection" + callback address override
 - **New button under "Save Daraja Credentials":** checks, one by one, the saved details (and any held change), that environment / shortcode / Till fit together, the Safaricom login, the shortcode + passkey (a harmless status question about an invented prompt; no money, no prompt), the result address Safaricom is given, and recent prompts that never got a result. Each step shows Safaricom's own words and what to do. Admin / manager only; 30 tests an hour per shop. Keys are never echoed.
 - **`PAY_CALLBACK_ORIGIN`** (optional Cloudflare variable, e.g. `https://yourbusiness.co.ke`): the address Safaricom is told to send results to. Default unchanged (the host the request came in on, i.e. `mydukapos.pages.dev`).
