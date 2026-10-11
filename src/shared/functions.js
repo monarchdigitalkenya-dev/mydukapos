@@ -6078,7 +6078,7 @@ async function registerTillUrls() {
                     return;
                 }
                 msgEl.className = 'settings-msg success';
-                msgEl.textContent = '✅ Registered — payments made straight to your till will now show up below.';
+                msgEl.textContent = '✅ Registered' + (data.shortCode ? ' for ' + data.shortCode : '') + ' — payments made straight to your till will now show up below.';
             } catch (e) {
                 msgEl.className = 'settings-msg error';
                 msgEl.textContent = netErrText('Could not reach the server');
@@ -12523,8 +12523,10 @@ function buildReceiptDoc(sale, hooks) {
             const date = new Date(sale.timestamp);
             const isBill = sale.paymentMethod === 'bill' || sale.paymentMethod === 'pod' || sale.paid === false;
             const kes = (n) => 'KES ' + Number(n || 0).toFixed(2);
-            const showRef = !!sale.refNumber && (typeof receiptShowRefNumber === 'undefined' || receiptShowRefNumber);
-            const showBarcode = showRef && (typeof receiptShowBarcode === 'undefined' || receiptShowBarcode);
+            // zip 253: Receipt Settings own these three switches in every app (receipt-extras block): reference number (on), barcode (OFF by default), VAT / tax (OFF by default)
+            const showRef = !!sale.refNumber && (typeof receiptRefOn !== 'function' || receiptRefOn());
+            const showBarcode = showRef && typeof receiptBarcodeOn === 'function' && receiptBarcodeOn();
+            const showVat = typeof receiptVatOn === 'function' && receiptVatOn();
             const ctx = { isBill, total, cols, rule, labelCol, kes };
 
             // ---- header (always centred) ----
@@ -12569,7 +12571,7 @@ function buildReceiptDoc(sale, hooks) {
                 if (l.offerApplied) subs.push(`Offer: ${l.offerApplied.label} (-KES ${Number(l.offerApplied.amount).toFixed(2)})`);
                 if (Array.isArray(l.componentsUsed)) l.componentsUsed.forEach(c => subs.push(`Uses: ${hasQtyFmt ? formatQtyDisplay(c.qty, c.unit) + unitLabel(c.unit) : c.qty} ${c.name}`));
                 if (hooks.itemSubLines) (hooks.itemSubLines(l, sale) || []).forEach(s => subs.push(s));
-                return { sec: hooks.sectionOf ? (hooks.sectionOf(l, sale) || null) : null, code: l.code || '', vat: l.type === 'payment' ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
+                return { sec: hooks.sectionOf ? (hooks.sectionOf(l, sale) || null) : null, code: l.code || '', vat: l.type === 'payment' || !showVat ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
             });
 
             const lines = [];
@@ -12596,7 +12598,11 @@ function buildReceiptDoc(sale, hooks) {
             lines.push(rule);
             const totalLineIndex = lines.length;
             const totalLabel = hooks.totalLabel ? hooks.totalLabel(sale) : 'TOTAL';
-            lines.push(...receiptMoneyRow(totalLabel, kes(total), cols));
+            // zip 253: PAID / UNPAID is wording ON the total line itself (no stamp picture, no space of its own); too narrow a line -> its own short line right below
+            const paidWord = (typeof receiptPaidWording === 'function') ? receiptPaidWording(sale) : '';
+            const totalWithWord = paidWord ? totalLabel + ' - ' + paidWord : totalLabel;
+            if (paidWord && totalWithWord.length > labelCol) { lines.push(...receiptMoneyRow(totalLabel, kes(total), cols)); lines.push(paidWord); }
+            else lines.push(...receiptMoneyRow(totalWithWord, kes(total), cols));
             const cartLevelOffers = Array.isArray(sale.cartOffersApplied)
                 ? sale.cartOffersApplied.filter(o => !entries.some(it => it.offerApplied && it.offerApplied.offerName === o.offerName && it.offerApplied.amount === o.amount && it.offerApplied.label === o.label))
                 : [];
@@ -12652,7 +12658,7 @@ function buildReceiptDoc(sale, hooks) {
             if (!paymentRecord) {
                 lines.push(rule);
                 lines.push(`TOTAL ITEMS: ${entries.length}`);
-                const { groups } = computeVatBreakdown(entries);
+                const { groups } = showVat ? computeVatBreakdown(entries) : { groups: {} };      // zip 253: only when "Print VAT / tax" is on
                 const catKeys = Object.keys(groups).sort();
                 if (catKeys.length > 0) {
                     lines.push(thermalVatHeader(cols));
@@ -13010,8 +13016,8 @@ function receiptRefBarcodeBytes(footerText) {
             const last = String(footerText || '').replace(/\r/g, '').split('\n').pop().trim();
             const m = /^Ref: (\S+)$/.exec(last);
             if (!m) return null;
-            if (typeof receiptShowRefNumber !== 'undefined' && !receiptShowRefNumber) return null;
-            if (typeof receiptShowBarcode !== 'undefined' && !receiptShowBarcode) return null;
+            if (typeof receiptRefOn === 'function' && !receiptRefOn()) return null;
+            if (typeof receiptBarcodeOn !== 'function' || !receiptBarcodeOn()) return null;      // zip 253: off unless switched on in Receipt Settings
             try { return buildCode39RasterBytes(m[1], receiptPrintDots()); } catch (e) { return null; }
         }
 

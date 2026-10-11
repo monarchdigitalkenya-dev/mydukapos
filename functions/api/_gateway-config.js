@@ -50,7 +50,7 @@ async function writeStored(env, clientId, obj) {
 
 const PROVIDER_FIELDS = {
   paystack: { paystackSecretKey: 'PAYSTACK_SECRET_KEY' },
-  daraja: { mpesaConsumerKey: 'MPESA_CONSUMER_KEY', mpesaConsumerSecret: 'MPESA_CONSUMER_SECRET', mpesaShortcode: 'MPESA_SHORTCODE', mpesaPasskey: 'MPESA_PASSKEY' },
+  daraja: { mpesaConsumerKey: 'MPESA_CONSUMER_KEY', mpesaConsumerSecret: 'MPESA_CONSUMER_SECRET', mpesaShortcode: 'MPESA_SHORTCODE', mpesaPasskey: 'MPESA_PASSKEY', mpesaPartyB: 'MPESA_PARTYB' },
   kcb: { kcbConsumerKey: 'KCB_CONSUMER_KEY', kcbConsumerSecret: 'KCB_CONSUMER_SECRET', kcbOrgShortCode: 'KCB_ORG_SHORT_CODE', kcbOrgPassKey: 'KCB_ORG_PASS_KEY' },
   paywave: { paywaveApiKey: 'PAYWAVE_API_KEY', paywaveEmail: 'PAYWAVE_EMAIL' },
   pesapal: { pesapalConsumerKey: 'PESAPAL_CONSUMER_KEY', pesapalConsumerSecret: 'PESAPAL_CONSUMER_SECRET' },
@@ -141,6 +141,10 @@ export async function cancelPendingChange(env, clientId) {
 // once: it waits `opts.cooldownMs` (default in gateway-config.js: 60 minutes), during which the old keys keep working, the owner is told, and the
 // change can be cancelled. First-time setup of a provider, filling a blank field, and non-credential settings (sandbox/production, the provider
 // choice, transaction type) apply immediately.
+//
+// zip 249 — THE HOLD ONLY GUARDS KEYS THAT CAN MOVE REAL MONEY. Daraja keys saved while the environment was SANDBOX carry no money, so replacing them
+// (the normal step of pasting the production keys) applies at once. `mpesaKeysEnv` remembers which environment the saved Daraja keys were saved
+// under; once they were saved as production keys, replacing them is held exactly as before.
 // -> { immediate: [providers/settings changed now], held: { providers, effectiveAt } | null }
 export async function saveGatewayConfig(env, clientId, updates, opts = {}) {
   const full = await readStoredFull(env, clientId);
@@ -164,6 +168,7 @@ export async function saveGatewayConfig(env, clientId, updates, opts = {}) {
     'mpesaConsumerSecret',
     'mpesaShortcode',
     'mpesaPasskey',
+    'mpesaPartyB',
     'mpesaTransactionType',
     'kcbEnv',
     'kcbConsumerKey',
@@ -175,6 +180,9 @@ export async function saveGatewayConfig(env, clientId, updates, opts = {}) {
     'pesapalEnv', 'pesapalConsumerKey', 'pesapalConsumerSecret',
     'coopConsumerKey', 'coopConsumerSecret', 'coopTokenUrl', 'coopStkUrl', 'coopShortcode', 'coopPasskey', 'coopTransactionType',
   ];
+  // zip 249: were the saved Daraja keys saved as PRODUCTION keys? (older records have no mpesaKeysEnv: the saved environment says)
+  const darajaKeysLive = String(stored.mpesaKeysEnv || stored.mpesaEnv || (env && env.MPESA_ENV) || 'sandbox').toLowerCase() === 'production';
+  let darajaCoreSaved = false;                             // a key / secret / shortcode / passkey was saved now (a Till number alone does not change what the keys are)
   fields.forEach((key) => {
     const v = updates[key];
     if (v === undefined || v === '') return;
@@ -184,10 +192,12 @@ export async function saveGatewayConfig(env, clientId, updates, opts = {}) {
       return;
     }
     if (stored[key] === v) { delete held[key]; return; }    // the value that is already saved: nothing changes (and a held replacement of it is dropped)
-    const replacing = !!stored[key];                       // a value is already there -> this would move the money
+    const replacing = !!stored[key] && (prov !== 'daraja' || darajaKeysLive);   // a value is already there -> this would move the money (sandbox Daraja keys move none)
     if (replacing && cooldownMs > 0) { held[key] = v; heldProviders.add(prov); }
-    else { merged[key] = v; delete held[key]; immediate.add(prov); }
+    else { merged[key] = v; delete held[key]; immediate.add(prov); if (prov === 'daraja' && key !== 'mpesaPartyB') darajaCoreSaved = true; }
   });
+
+  if (darajaCoreSaved) merged.mpesaKeysEnv = String(merged.mpesaEnv || (env && env.MPESA_ENV) || 'sandbox').toLowerCase();
 
   if (Object.keys(held).length) {
     const providers = Array.from(new Set([...priorHeldProviders, ...heldProviders]));
@@ -213,7 +223,7 @@ export async function clearGatewayProvider(env, clientId, which) {
 
   const fieldsByProvider = {
     paystack: ['paystackSecretKey'],
-    daraja: ['mpesaConsumerKey', 'mpesaConsumerSecret', 'mpesaShortcode', 'mpesaPasskey'],
+    daraja: ['mpesaConsumerKey', 'mpesaConsumerSecret', 'mpesaShortcode', 'mpesaPasskey', 'mpesaPartyB', 'mpesaKeysEnv'],
     kcb: ['kcbConsumerKey', 'kcbConsumerSecret', 'kcbOrgShortCode', 'kcbOrgPassKey'],
     paywave: ['paywaveApiKey', 'paywaveEmail'],
     pesapal: ['pesapalConsumerKey', 'pesapalConsumerSecret'],

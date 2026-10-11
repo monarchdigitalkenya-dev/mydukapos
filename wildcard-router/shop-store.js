@@ -21,12 +21,42 @@
 
 import {
   businessSig, bookingConflict, MERGE_BY_ID_FIELDS, FINAL_TOMBSTONE_FIELDS, compareBillProgress, mergeProductRecords, NEVER_BLANK_FIELDS, isBlank, recordKey, correctClockDrift,
-  allocateTill, noteDevice, NESTED_MERGE, mergeBillRecords, mergeDebtRecords, mergeProgressRecord, PROGRESS_FIELDS, mergeLoyaltyFields, mergeInventoryRecord, SETTINGS_NEED_STAMP_FIELDS, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
+  CLOCK_DRIFT_MIN_MS, allocateTill, noteDevice, NESTED_MERGE, mergeBillRecords, mergeDebtRecords, mergeProgressRecord, PROGRESS_FIELDS, mergeLoyaltyFields, mergeInventoryRecord, SETTINGS_NEED_STAMP_FIELDS, mergeNestedRecord, LEDGER_COLLECTION, applyStockLedger, newLedgerMoves, restoreLedgerStock, stampLedgerEcho, CELL_SPECS, cellLedgerPush, applyCellLedger, newCellMoves, sameCell,
 } from '../functions/api/_merge.js';
 import { ARCHIVE_LOG_FIELDS, recordTime } from '../functions/api/_state-store.js';
 
 const LOGS = new Set(ARCHIVE_LOG_FIELDS);
 const DEFAULT_HOT_DAYS = 120;
+
+// zip 251 (COST INCIDENT: Durable Object storage writes). A till whose clock is 2+ minutes BEHIND the server has every record's `updatedAt`
+// shifted forward by the difference on every push (correctClockDrift in _merge.js). The apps send the whole of every non-log list each time and
+// take the server's copy back on the next pull, so each push produced a record that differed from the stored one ONLY in `updatedAt`, was newer, and
+// was rewritten: one SQLite UPDATE (table row + the seq index) per record per push, and the stamp walked further into the future every time
+// (measured: 381 records = 383 row changes per push, against 2 with a correct clock; tests/zip251-clock-drift-writes.test.mjs).
+// A record that differs from the stored one in nothing but its top-level `updatedAt` carries no information, so it is not written. Real edits
+// change content and are untouched. SYNC_STAMP_GUARD=0 (a variable on the router Worker) restores the old behaviour at once.
+function deepEq(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!deepEq(a[i], b[i])) return false;
+    return true;
+  }
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) if (!Object.prototype.hasOwnProperty.call(b, k) || !deepEq(a[k], b[k])) return false;
+  return true;
+}
+// true when the two stored/incoming JSON texts are the same record apart from the top-level `updatedAt`
+export function sameExceptStamp(storedText, incomingText) {
+  try {
+    const a = JSON.parse(storedText), b = JSON.parse(incomingText);
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) || Array.isArray(b)) return false;
+    delete a.updatedAt; delete b.updatedAt;
+    return deepEq(a, b);
+  } catch (e) { return false; }
+}
 
 export class ShopStore {
   constructor(state, env) {
@@ -48,7 +78,11 @@ export class ShopStore {
     const m = this.q('SELECT MAX(seq) AS s, MAX(pos) AS p FROM records')[0] || {};
     this.seq = m.s || 0;
     this.pos = m.p || 0;
+    // zip 251: since this Durable Object instance started (in memory only - nothing here is stored): pushes seen, record rows it updated, timestamp-only rewrites it skipped
+    this.guard = { pushes: 0, written: 0, skipped: 0, since: Date.now(), drift: {} };
   }
+
+  stampGuardOn() { const v = this.env && this.env.SYNC_STAMP_GUARD; return !(v === '0' || v === 0 || v === false || String(v).toLowerCase() === 'off'); }
 
   q(sql, ...binds) { return this.sql.exec(sql, ...binds).toArray(); }
   tx(fn) { return this.state.storage.transactionSync ? this.state.storage.transactionSync(fn) : fn(); }
@@ -179,6 +213,9 @@ export class ShopStore {
       }
     }
     if ((forceReplace || forceNested || upd >= (row.upd || 0)) && row.json !== json) {
+      // zip 251: same record, only the time stamp differs (a clock-shifted re-send): nothing to store. Counted so /stats and the log can show it.
+      if (this.stampGuardOn() && sameExceptStamp(row.json, json)) { this.guard.skipped++; return false; }
+      this.guard.written++;
       this.sql.exec('UPDATE records SET ts = ?, upd = ?, seq = ?, code = ?, json = ?, del = ? WHERE col = ? AND rk = ?',
         this.timeOf(col, rec), upd, ++this.seq, code, json, rec && rec._deleted === true ? 1 : 0, col, rk);
       return true;
@@ -189,7 +226,11 @@ export class ShopStore {
   /* ---------- push ---------- */
   // body: the device's payload. Returns { updatedAt }.
   push(body, serverNow = Date.now(), { preserveUpdatedAt = false, ledger = !preserveUpdatedAt } = {}) {
-    if (!preserveUpdatedAt) body = correctClockDrift(body, serverNow);
+    this.guard.pushes++;
+    if (!preserveUpdatedAt) {
+      this.noteClockDrift(body, serverNow);
+      body = correctClockDrift(body, serverNow);
+    }
     return this.tx(() => {
       // STOCK LEDGER (see applyStockLedger in _merge.js): note, BEFORE anything is written, which of this push's movements are new
       // and what the touched items look like now — an /import (moving a shop in) is taken as-is and skips this.
@@ -254,6 +295,27 @@ export class ShopStore {
       this.setCore('updatedAt', updatedAt, coreText.updatedAt);
       return { updatedAt, prev, ledger: 1, ...(tills.till ? { till: tills.till } : {}) };
     });
+  }
+
+  // zip 251: which till (if any) has a clock the server has to correct. Kept in memory (last 20 tills) and shown by /stats; one log line per till per
+  // 10 minutes ("till X is 612 s behind"), which is how to find the tablet whose clock needs setting to automatic time.
+  noteClockDrift(body, serverNow) {
+    try {
+      const claimed = Number(body && body.updatedAt);
+      if (!Number.isFinite(claimed) || claimed <= 0) return;
+      const offsetMs = Math.round(serverNow - claimed);
+      if (Math.abs(offsetMs) < CLOCK_DRIFT_MIN_MS) return;
+      const till = String((body && body._till) || 'unknown').slice(0, 40);
+      const d = this.guard.drift;
+      const prev = d[till];
+      d[till] = { offsetMs, at: serverNow, pushes: ((prev && prev.pushes) || 0) + 1, app: String((body && body._dev && body._dev.app) || '').slice(0, 20) };
+      const keys = Object.keys(d);
+      if (keys.length > 20) { keys.sort((x, y) => d[x].at - d[y].at); delete d[keys[0]]; }
+      if (!prev || serverNow - (prev.loggedAt || 0) > 600000) {
+        d[till].loggedAt = serverNow;
+        console.warn('shop-store: device clock is off by ' + Math.round(offsetMs / 1000) + ' s (' + (offsetMs > 0 ? 'behind' : 'ahead of') + ' the server) - till ' + till + ', app ' + d[till].app + '. Set the device to automatic date & time.');
+      } else d[till].loggedAt = prev.loggedAt;
+    } catch (e) { /* diagnostics only */ }
   }
 
   /* ---------- stock ledger (same rules as the KV backend: applyStockLedger) ---------- */
@@ -393,7 +455,15 @@ export class ShopStore {
     const cols = this.q('SELECT col, COUNT(*) AS n, SUM(LENGTH(json)) AS bytes, MIN(ts) AS oldest, MAX(ts) AS newest FROM records GROUP BY col');
     const core = this.q('SELECT SUM(LENGTH(v)) AS b FROM core')[0] || {};
     const total = cols.reduce((n, c) => n + (c.bytes || 0), 0) + (core.b || 0);
-    return { collections: cols, coreBytes: core.b || 0, bytes: total, seq: this.seq, updatedAt: this.updatedAt() };
+    // zip 251: records whose stored time stamp is more than a day AHEAD of now (left by the clock-drift rewrite before this fix; read-only count) and what
+    // this instance has done since it started.
+    let futureStamped = 0;
+    try { futureStamped = (this.q('SELECT COUNT(*) AS n FROM records WHERE upd > ?', Date.now() + 86400000)[0] || {}).n || 0; } catch (e) { /* diagnostics only */ }
+    const g = this.guard;
+    return {
+      collections: cols, coreBytes: core.b || 0, bytes: total, seq: this.seq, updatedAt: this.updatedAt(),
+      guard: { on: this.stampGuardOn(), pushes: g.pushes, recordRowsUpdated: g.written, timestampOnlySkipped: g.skipped, since: g.since, driftedDevices: g.drift, futureStamped },
+    };
   }
 
   /* ---------- self-test ---------- */

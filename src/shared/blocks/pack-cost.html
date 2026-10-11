@@ -1,0 +1,176 @@
+<!-- ADD ITEM: COMPACT IMAGE + PACK COST ------------------------------------------
+         zip 253. Two improvements to the Add Item form, written once here and synced into every app that has that form (Aqua POS's Add Product form gets the pack cost only: it has no picture upload).
+           1. COMPACT PICTURE: the optional "Upload image" area is now one slim row - a small preview on the left; the title, the file chooser and the
+              Remove button beside it. Same controls, same ids, same handlers (handleImageUpload, the Remove button of the image-remove block).
+           2. PACK COST: "Bought as a box or pack?" - type what was PAID for the whole box/pack and how many pieces it holds; the cost of ONE piece is
+              worked out and shown (pack price / pieces: KES 1,200 for 24 = KES 50.00) and recalculated on every keystroke.
+                 - An item sold by the piece: the Cost Price field receives the cost of one piece (so profit, stock value and every report use it as before).
+                 - "Also sold individually" ticked: the main fields describe the BOX, so the Cost Price field receives the box price, Pieces per Box receives the
+                   piece count, and the piece cost is the usual box cost / pieces (shown, and offered as the field's placeholder). Nothing about that option changes.
+                 - Leave both pack fields empty and the form works exactly as before (an item bought one at a time).
+              The pack price and piece count are also kept on the item (packPrice, packPieces). Validation: price 0 or more, pieces above 0 (a whole number
+              unless the item is also sold individually, where 50 kg of rice is fine), and both or neither.
+         Hooks (called by each app's saveInventoryItem): packCostCheck() -> false stops the save with a message; packCostFields() -> the fields to store;
+         packCostReset() -> clears the card when the form is cleared. Every entry point is wrapped: a failure here only loses the helper, never the save. -->
+<style>
+    /* 1. compact picture row */
+    #add-item-image-panel { display: grid !important; grid-template-columns: 64px minmax(0, 1fr); grid-template-areas: "pv hd" "pv fl" "pv rm"; column-gap: 12px; row-gap: 4px; align-items: center; text-align: left !important; padding: 8px 12px !important; border-width: 1px !important; border-radius: 10px !important; }
+    #add-item-image-panel > label { grid-area: hd; margin: 0 !important; font-size: 12px; }
+    #add-item-image-panel > #upload-wrapper { grid-area: fl; text-align: left; }
+    #add-item-image-panel > #upload-wrapper p { display: none; }
+    #add-item-image-panel > #upload-wrapper input[type="file"] { padding: 4px 6px; font-size: 12px; min-height: 0; margin: 0; }
+    #add-item-image-panel > .photo-preview { grid-area: pv; width: 64px; height: 64px; margin: 0; object-fit: cover; border-radius: 8px; border-width: 1px; }
+    #add-item-image-panel > #add-image-remove-btn { grid-area: rm; justify-self: start; margin: 0 !important; padding: 3px 10px; font-size: 12px; min-height: 0; }
+    #add-item-image-panel > #add-image-remove-btn:disabled { opacity: .4; cursor: default; }
+    /* 2. pack cost card */
+    #inv-pack-card { border: 1px solid var(--border, #cfd8dc); border-radius: 10px; padding: 10px 12px; background: var(--icon-muted-bg, #f6f8f9); }
+    #inv-pack-card .ipc-title { font-weight: 800; font-size: 13px; margin: 0 0 8px; display: block; }
+    #inv-pack-card .ipc-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    #inv-pack-card .ipc-row label { font-size: 12px; font-weight: 600; margin: 0 0 3px; display: block; }
+    #inv-pack-card .ipc-row input { margin: 0; }
+    #inv-pack-card .ipc-result { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 13px; font-weight: 700; background: var(--bg-surface, #fff); border: 1px dashed var(--border, #cfd8dc); }
+    #inv-pack-card .ipc-result.ok { background: #eaf7ef; color: #14532d; border: 1px solid #b7e1c6; }
+    #inv-pack-card .ipc-result.bad { background: #fdecea; color: #8a1c13; border: 1px solid #f3b8b2; }
+    #inv-pack-card .ipc-note { font-size: 12px; color: #667; margin-top: 4px; }
+    @media (max-width: 420px) { #inv-pack-card .ipc-row { grid-template-columns: 1fr; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__packCost) return; window.__packCost = true;
+    function $(id) { return document.getElementById(id); }
+    function r6(n) { return Math.round(n * 1e6) / 1e6; }
+    function kes(n) { return 'KES ' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function costEl() { return $('inv-wholesale-price') || $('product-cost-input'); }      // Add Item (every app but Aqua) / Aqua POS's Add Product
+    var internal = false;                                 // true while THIS block writes a field (its own input events must not call it back)
+    function fire(el) { internal = true; try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) { /* cosmetic */ } internal = false; }
+    var wrote = { cost: false, units: false };            // true while the field holds a value THIS block wrote (so clearing the pack clears it again, but never a value the user typed)
+
+    /* read the two pack fields -> { empty, pack, pieces, per, error, dual } (error = text; per = cost of one piece when valid) */
+    function read() {
+        var pp = $('inv-pack-price'), pc = $('inv-pack-pieces'), dualEl = $('inv-has-dual-unit');
+        var rawP = pp ? pp.value.trim() : '', rawN = pc ? pc.value.trim() : '';
+        var dual = !!(dualEl && dualEl.checked);
+        var out = { empty: rawP === '' && rawN === '', pack: NaN, pieces: NaN, per: NaN, error: '', dual: dual, partial: false };
+        if (out.empty) return out;
+        out.pack = parseFloat(rawP); out.pieces = parseFloat(rawN);
+        if (rawP !== '' && (!isFinite(out.pack) || out.pack < 0)) { out.error = 'The pack price must be a number, 0 or more.'; return out; }
+        if (rawN !== '' && (!isFinite(out.pieces) || out.pieces <= 0)) { out.error = 'The number of pieces must be more than 0.'; return out; }
+        if (rawN !== '' && !dual && Math.floor(out.pieces) !== out.pieces) { out.error = 'Pieces must be a whole number. (To sell by weight or volume, tick "Also sold individually".)'; return out; }
+        if (rawP === '' || rawN === '') { out.partial = true; out.error = 'Enter both the pack price and the number of pieces.'; return out; }
+        out.per = r6(out.pack / out.pieces);
+        return out;
+    }
+
+    function release() {                                  // the pack fields are empty / invalid: hand the fields back to the user
+        var c = costEl(), u = $('inv-units-per-box'), pw = $('inv-piece-wholesale-price');
+        if (c) { c.readOnly = false; c.title = ''; if (wrote.cost) { c.value = ''; fire(c); } }
+        if (u && wrote.units) { u.value = ''; fire(u); }
+        if (pw) pw.placeholder = '0.00';
+        wrote.cost = false; wrote.units = false;
+    }
+
+    function recalc() {
+        var res = $('inv-pack-result'), card = $('inv-pack-card');
+        if (!res || !card) return null;
+        var r = read();
+        res.className = 'ipc-result';
+        if (r.empty) { res.textContent = 'Optional. Leave empty if you buy this item one at a time.'; release(); return r; }
+        if (r.error) {
+            res.textContent = '⚠️ ' + r.error; res.className = 'ipc-result' + (r.partial ? '' : ' bad');
+            if (!r.partial) release();
+            else if (wrote.cost) release();
+            return r;
+        }
+        var c = costEl(), u = $('inv-units-per-box'), pw = $('inv-piece-wholesale-price');
+        if (r.dual) {
+            if (c) { c.value = String(r.pack); c.readOnly = true; c.title = 'Filled from the box price above'; wrote.cost = true; fire(c); }
+            if (u) { u.value = String(r.pieces); wrote.units = true; fire(u); }
+            if (pw) pw.placeholder = r.per.toFixed(2);
+            res.textContent = 'Cost per piece: ' + kes(r.per) + '  (' + kes(r.pack) + ' ÷ ' + r.pieces + ')  ·  box cost saved as ' + kes(r.pack);
+        } else {
+            if (c) { c.value = String(r.per); c.readOnly = true; c.title = 'Filled from the pack above'; wrote.cost = true; fire(c); }
+            if (u && wrote.units) { u.value = ''; wrote.units = false; fire(u); }
+            if (pw) pw.placeholder = '0.00';
+            res.textContent = 'Cost per piece: ' + kes(r.per) + '  (' + kes(r.pack) + ' ÷ ' + r.pieces + ')  ·  saved as this item\'s Cost Price';
+        }
+        res.className = 'ipc-result ok';
+        return r;
+    }
+
+    function install() {
+        var costInput = costEl();
+        if (!costInput || $('inv-pack-card')) return;
+        var group = costInput.closest ? (costInput.closest('.split-amounts-row') || costInput.closest('.form-group')) : costInput.parentNode;
+        if (!group || !group.parentNode) return;
+        var card = document.createElement('div');
+        card.className = 'form-group'; card.id = 'inv-pack-card';
+        card.innerHTML = '<span class="ipc-title">📦 Bought as a box or pack? <span style="font-weight:normal; color:#7f8c8d;">(optional — works out the cost of one piece)</span></span>'
+            + '<div class="ipc-row">'
+            + '<div><label for="inv-pack-price">Price paid for the whole box / pack (KES)</label><input type="number" id="inv-pack-price" min="0" step="0.01" inputmode="decimal" placeholder="e.g. 1200"></div>'
+            + '<div><label for="inv-pack-pieces">Pieces in the box / pack</label><input type="number" id="inv-pack-pieces" min="0" step="any" inputmode="decimal" placeholder="e.g. 24"></div>'
+            + '</div>'
+            + '<div class="ipc-result" id="inv-pack-result" aria-live="polite"></div>'
+            + '<div class="ipc-note">Cost per piece = pack price ÷ pieces. It becomes the item\'s Cost Price, so profit and stock value use it.</div>';
+        group.parentNode.insertBefore(card, group);
+        ['input', 'change'].forEach(function (ev) {
+            $('inv-pack-price').addEventListener(ev, recalc);
+            $('inv-pack-pieces').addEventListener(ev, recalc);
+        });
+        var dual = $('inv-has-dual-unit');
+        if (dual) dual.addEventListener('change', recalc);
+        // "Pieces per Box" typed in the Also-sold-individually panel stays in step with the pack's piece count
+        var u = $('inv-units-per-box');
+        if (u) u.addEventListener('input', function (e) {
+            if (internal) return;                                             // our own write above
+            var d = $('inv-has-dual-unit');
+            if (d && d.checked && ($('inv-pack-price').value.trim() !== '' || $('inv-pack-pieces').value.trim() !== '')) { $('inv-pack-pieces').value = u.value; wrote.units = false; recalc(); }
+        });
+        // a Service has no cost per piece: hide the card (and release the fields) for that type
+        var orig = window.setAddItemType;
+        if (typeof orig === 'function' && !orig.__pack) {
+            var w = function (t) { var r = orig.apply(this, arguments); try { card.style.display = t === 'service' ? 'none' : ''; if (t === 'service') { $('inv-pack-price').value = ''; $('inv-pack-pieces').value = ''; recalc(); } } catch (e) { /* cosmetic */ } return r; };
+            w.__pack = true; window.setAddItemType = w;
+        }
+        recalc();
+        // keep the compact picture's Remove button honest: greyed out while there is no picture
+        var pv = $('photo-preview-element');
+        var sync = function () { var b = $('add-image-remove-btn'); if (b && pv) b.disabled = /^data:image\/svg\+xml/.test(pv.getAttribute('src') || ''); };
+        if (pv && window.MutationObserver) { new MutationObserver(sync).observe(pv, { attributes: true, attributeFilter: ['src'] }); }
+        setTimeout(sync, 300); setTimeout(sync, 1500);
+    }
+
+    /* ---- hooks for saveInventoryItem ---- */
+    window.packCostCheck = function () {
+        try {
+            var card = $('inv-pack-card');
+            if (!card || card.style.display === 'none') return true;
+            var r = read();
+            if (r.empty) return true;
+            if (r.error) { if (typeof showToast === 'function') showToast(r.error, true); var f = $(r.partial && $('inv-pack-price').value.trim() === '' ? 'inv-pack-price' : 'inv-pack-pieces'); try { if (f) f.focus(); } catch (e) { /* cosmetic */ } return false; }
+            return true;
+        } catch (e) { return true; }
+    };
+    window.packCostFields = function () {
+        try {
+            var card = $('inv-pack-card');
+            if (!card || card.style.display === 'none') return {};
+            var r = read();
+            if (r.empty || r.error || !isFinite(r.per)) return {};
+            return { packPrice: r.pack, packPieces: r.pieces };
+        } catch (e) { return {}; }
+    };
+    window.packCostReset = function () {
+        try {
+            if ($('inv-pack-price')) $('inv-pack-price').value = '';
+            if ($('inv-pack-pieces')) $('inv-pack-pieces').value = '';
+            wrote.cost = false; wrote.units = false;                          // the form reset clears the other fields itself
+            var c = costEl(); if (c) { c.readOnly = false; c.title = ''; }
+            var pw = $('inv-piece-wholesale-price'); if (pw) pw.placeholder = '0.00';
+            recalc();
+        } catch (e) { /* cosmetic */ }
+    };
+    window.packCostRecalc = recalc;
+    if (document.readyState === 'complete') install(); else window.addEventListener('load', install);
+})();
+</script>

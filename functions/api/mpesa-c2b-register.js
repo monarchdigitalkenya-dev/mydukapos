@@ -35,10 +35,14 @@ async function darajaAccessToken(cfg) {
   const res = await fetch(`${darajaBaseUrl(cfg)}/oauth/v1/generate?grant_type=client_credentials`, {
     headers: { Authorization: `Basic ${auth}` },
   });
-  if (!res.ok) {
-    throw new Error('Could not authenticate with M-Pesa. Check the Consumer Key / Consumer Secret saved in Settings.');
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* not JSON */ }
+  if (!res.ok || !data.access_token) {
+    // zip 250: say why (wrong environment for these keys is the usual cause)
+    const envName = (cfg.mpesaEnv || 'sandbox').toLowerCase();
+    const detail = data.errorMessage || data.error_description || data.error || '';
+    throw new Error(`Could not authenticate with M-Pesa (HTTP ${res.status}${detail ? ': ' + detail : ''}). The Environment is set to ${envName.toUpperCase()}: use the Consumer Key / Secret of a ${envName} app.`);
   }
-  const data = await res.json();
   return data.access_token;
 }
 
@@ -66,8 +70,14 @@ export async function onRequestPost(context) {
   const origin = new URL(request.url).origin;
   // zip 143: registered with this shop's secret key, so a forged "payment received" can no longer be posted for the shop
   const cbKey = await ensureCallbackKey(env, clientId, 'c2b');
-  const confirmationUrl = withKey(`${origin}/api/mpesa-c2b-confirmation?c=${encodeURIComponent(clientId)}`, cbKey);
-  const validationUrl = withKey(`${origin}/api/mpesa-c2b-validation?c=${encodeURIComponent(clientId)}`, cbKey);
+  // zip 250: the addresses must NOT contain "mpesa", "m-pesa" or "safaricom": Safaricom's production RegisterURL filters those out (sandbox does not).
+  // pay-cb-till-confirm / pay-cb-till-validate are the same handlers as mpesa-c2b-confirmation / -validation under neutral names.
+  const confirmationUrl = withKey(`${origin}/api/pay-cb-till-confirm?c=${encodeURIComponent(clientId)}`, cbKey);
+  const validationUrl = withKey(`${origin}/api/pay-cb-till-validate?c=${encodeURIComponent(clientId)}`, cbKey);
+  // zip 250: the number that RECEIVES the customers' money. For a Till (Buy Goods) shop that is the Till number (the Store / Head Office number is only
+  // for the STK prompt's BusinessShortCode + password); for a Paybill it is the Paybill. Registering the Store number would listen on the wrong number.
+  const isTill = cfg.mpesaTransactionType === 'CustomerBuyGoodsOnline';
+  const shortCode = (isTill && cfg.mpesaPartyB) ? String(cfg.mpesaPartyB).trim() : String(cfg.mpesaShortcode || '').trim();
 
   try {
     const token = await darajaAccessToken(cfg);
@@ -75,19 +85,26 @@ export async function onRequestPost(context) {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        ShortCode: cfg.mpesaShortcode,
+        ShortCode: shortCode,
         ResponseType: 'Completed',
         ConfirmationURL: confirmationUrl,
         ValidationURL: validationUrl,
       }),
     });
-    const data = await res.json();
+    let data = {};
+    try { data = await res.json(); } catch (e) { /* not JSON (an HTML error page): handled below */ }
     if (!res.ok || (data.ResponseCode !== undefined && String(data.ResponseCode) !== '0')) {
-      throw new Error(data.errorMessage || data.ResponseDescription || 'Safaricom declined the URL registration request.');
+      const why = data.errorMessage || data.ResponseDescription || `Safaricom declined the URL registration (HTTP ${res.status}).`;
+      let hint = '';
+      // production lets a shortcode's URLs be registered ONCE; changing them means deleting the old ones first
+      if (/duplicate notification/i.test(why)) hint = ' These URLs are already registered for this number. If you changed the address, delete the old URLs in the Daraja portal (My Apps > your app > URL Management / Self Services), then press Register again - or email apisupport@safaricom.co.ke.';
+      else if (/invalid (short)?code|shortcode/i.test(why)) hint = ` The number sent was ${shortCode}: for a Till it must be the Till number (set in the Till number box), for a Paybill the Paybill, and the C2B API must be enabled on your live Daraja app.`;
+      else if (/url/i.test(why)) hint = ' The address must be public https and must not contain the words mpesa / safaricom.';
+      throw new Error(`${why}${data.errorCode ? ` [${data.errorCode}]` : ''}${hint}`);
     }
     // The key went to Safaricom server-to-server; the page is shown the URLs without it (zip 143).
     const shown = (u) => u.replace(/&k=[^&]*/, '&k=•••');
-    return jsonResponse({ success: true, confirmationUrl: shown(confirmationUrl), validationUrl: shown(validationUrl), message: data.ResponseDescription || 'Registered.' });
+    return jsonResponse({ success: true, shortCode, confirmationUrl: shown(confirmationUrl), validationUrl: shown(validationUrl), message: data.ResponseDescription || 'Registered.' });
   } catch (err) {
     return jsonResponse({ error: err.message || 'Unexpected error contacting Safaricom.' }, 500);
   }

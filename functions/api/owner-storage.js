@@ -97,7 +97,10 @@ export async function onRequestGet(context) {
     if (dbShop && !db) { try { dbDown = JSON.parse((await env.mydukapos_kv.get('shopdb-fail:' + id)) || 'null') || { at: Date.now(), why: 'the database did not answer' }; } catch (e) { dbDown = { at: Date.now(), why: 'the database did not answer' }; } }
     shops.push({
       mode: dbShop ? 'db' : 'kv',
-      db: db ? { bytes: db.bytes, records: (db.collections || []).reduce((n, c) => n + c.n, 0), collections: (db.collections || []).map((c) => ({ col: c.col, n: c.n })) } : null,
+      db: db ? { bytes: db.bytes, records: (db.collections || []).reduce((n, c) => n + c.n, 0), collections: (db.collections || []).map((c) => ({ col: c.col, n: c.n })),
+        // zip 251: the clock-drift write guard (see wildcard-router/shop-store.js): how many pushes this database instance has seen since it started, how many record rows
+        // it updated, how many timestamp-only rewrites it skipped, which tills have a wrong clock, and records already stamped in the future. Additive; read-only.
+        ...(db.guard ? { guard: { on: db.guard.on, pushes: db.guard.pushes, recordRowsUpdated: db.guard.recordRowsUpdated, timestampOnlySkipped: db.guard.timestampOnlySkipped, driftedDevices: db.guard.driftedDevices || {}, futureStamped: db.guard.futureStamped || 0 } } : {}) } : null,
       id,
       label: s ? (s.businessName || s.label || s.slug || id) : '(deleted link)',
       slug: s ? s.slug || null : null,

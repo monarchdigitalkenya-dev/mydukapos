@@ -23,7 +23,9 @@
 // zip 247 — CHANGING PAYMENT SETTINGS NEEDS A TYPED PROOF, EVERY TIME (POST and DELETE): the Admin / management password or a manager's PIN, sent in
 // the X-Pay-Proof header and checked on the server (_pay-guard.js) — a shop's link alone can no longer redirect its money. Replacing a key the shop
 // ALREADY has is also HELD for PAYMENT_CHANGE_COOLDOWN_MIN minutes (default 60; the old keys keep working meanwhile): the owner is told by SMS /
-// WhatsApp / email (_pay-alert.js) and the change can be cancelled (DELETE { cancelPending: true }). First-time setup applies at once. Saved keys are
+// WhatsApp / email (_pay-alert.js) and the change can be cancelled (DELETE { cancelPending: true }). First-time setup applies at once. zip 249: so does
+// replacing Daraja keys that were saved under SANDBOX (no money moves through them) — pasting the production keys is never held; only replacing
+// keys that were already saved as production keys is. Saved keys are
 // kept encrypted (_secret-box.js) when the PAYMENT_SECRETS_KEY secret is set.
 //
 // Blocked with 403 if this link's license isn't currently valid.
@@ -104,12 +106,14 @@ export async function onRequestGet(context) {
     coopTransactionType: cfg.coopTransactionType,
     pesapalIpnUrl: shown(withKey(`${origin}/api/pesapal-ipn?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'pesapal'))),
     mpesaEnv: cfg.mpesaEnv,
+    mpesaTransactionType: cfg.mpesaTransactionType,         // zip 249: pre-fills the Paybill / Till choice
+    mpesaPartyB: cfg.mpesaPartyB || '',                      // zip 249: the Till number (public, printed on receipts) — never a secret
     kcbEnv: cfg.kcbEnv,
     kcbSharedShortCode: cfg.kcbSharedShortCode,
     paywaveEmail: cfg.paywaveEmail,
     forcedProvider: cfg.forcedProvider || '',
     paystackWebhookUrl: `${origin}/api/paystack-webhook?c=${encodeURIComponent(clientId)}`,
-    mpesaCallbackUrl: `${origin}/api/mpesa-callback?c=${encodeURIComponent(clientId)}`,
+    mpesaCallbackUrl: `${origin}/api/pay-cb-stk?c=${encodeURIComponent(clientId)}`,   // zip 250: no "mpesa" in the address (Safaricom production drops those)
     paywaveWebhookUrl: shown(withKey(`${origin}/api/paywave-webhook?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'paywave'))),   // zip 185: keyed for shops created from now on
     kcbIpnUrl: shown(withKey(`${origin}/api/kcb-ipn?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'kcb'))),
   });
@@ -141,6 +145,9 @@ export async function onRequestPost(context) {
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonResponse({ error: 'Invalid JSON body' }, 400);
 
+  // zip 249: a Till number is digits only
+  if (body && body.mpesaPartyB !== undefined && body.mpesaPartyB !== '' && !/^\d{4,10}$/.test(String(body.mpesaPartyB).trim())) return jsonResponse({ error: 'The Till number must be digits only (4 to 10 digits).' }, 400);
+  if (body && typeof body.mpesaPartyB === 'string') body.mpesaPartyB = body.mpesaPartyB.trim();
   // zip 210: Co-op's token / STK addresses come from the owner, so they must be plain public https addresses (never a local / private one)
   for (const k of ['coopTokenUrl', 'coopStkUrl']) {
     if (body && body[k]) {

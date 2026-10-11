@@ -34,7 +34,7 @@ const SALE = { id: 'g1', timestamp: new Date('2026-09-26T17:39:36+03:00').getTim
     { code: '00420', name: 'Nails 3" (1kg)', qty: 1, price: 183.5, unit: 'pcs', vatCategory: 'A' },
     { code: '00777', name: 'Cement 50kg – Bamburi', qty: 3, price: 780, unit: 'pcs', vatCategory: 'B' } ] };
 const hash = (x) => crypto.createHash('sha256').update(x).digest('hex').slice(0, 16);
-const STORE = { pos_biz_name: 'GOLDEN SHOP', aqua_biz_name: 'GOLDEN SHOP' };
+const STORE = { pos_biz_name: 'GOLDEN SHOP', aqua_biz_name: 'GOLDEN SHOP', pos_receipt_show_barcode: 'true', pos_receipt_print_vat: 'true' };   // zip 253: barcode and VAT are opt-in Receipt Settings; these tests check the layout with both on
 const gridText = (d) => [...d.querySelectorAll('#receipt-body .receipt-grid .rg-l')].map((e) => e.textContent).join('\n');
 const $ = (d, id) => d.getElementById(id);
 

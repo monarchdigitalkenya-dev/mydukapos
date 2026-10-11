@@ -114,11 +114,21 @@ function idOf(r) { return r && (r.id != null ? String(r.id) : null); }
 //  * the test compares against the STORED data minus the same fields (so a row stored BEFORE this fix, which still carries `tries`, is not "changed" by a
 //    resend either): a resend whose only difference is a retry counter is a pure no-op: no UPDATE, no audit row.
 // (json_valid guard: a stored value that is not JSON compares as-is instead of failing the whole batch.)
-const UPSERT_RECORD = `INSERT INTO ledger_records (client_id, kind, rec_id, version, ts, business_date, amount, status, actor, source, data, created_at, updated_at)
+// zip 251 (COST INCIDENT: D1 writes). The same kind of churn, one level up: a till whose clock is 2+ minutes behind has every record's `updatedAt` shifted
+// by correctClockDrift before it gets here, and the apps re-send whole lists (bills, debts, tabs, cash shifts ...) on every push. The shifted `updatedAt` is
+// INSIDE `data`, so every re-send "differed", UPDATEd the row and (in the same transaction) wrote an audit row - measured: 70 records = 140 D1 row changes per
+// push, against 0 with a correct clock (tests/zip251-clock-drift-writes.test.mjs). The test now ignores `updatedAt` on both sides; the `version` column still
+// carries it, a real edit still changes `data` (or status / amount) and is still written, and what is stored is unchanged. LEDGER_STAMP_GUARD=0 (a variable
+// on the Pages project) restores the old comparison.
+const UPSERT_RECORD_BASE = (cmp) => `INSERT INTO ledger_records (client_id, kind, rec_id, version, ts, business_date, amount, status, actor, source, data, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (client_id, kind, rec_id) DO UPDATE SET version = excluded.version, ts = excluded.ts, business_date = excluded.business_date, amount = excluded.amount,
   status = excluded.status, actor = excluded.actor, source = excluded.source, data = excluded.data, updated_at = excluded.updated_at
-WHERE excluded.version >= ledger_records.version AND excluded.data <> (CASE WHEN json_valid(ledger_records.data) THEN ${sqlStripVolatile('ledger_records.data')} ELSE ledger_records.data END)`;
+WHERE excluded.version >= ledger_records.version AND ${cmp}`;
+const UPSERT_RECORD_LEGACY = UPSERT_RECORD_BASE(`excluded.data <> (CASE WHEN json_valid(ledger_records.data) THEN ${sqlStripVolatile('ledger_records.data')} ELSE ledger_records.data END)`);
+const UPSERT_RECORD_GUARDED = UPSERT_RECORD_BASE(`(CASE WHEN json_valid(excluded.data) AND json_valid(ledger_records.data) THEN json_remove(excluded.data, '$.updatedAt') <> json_remove(${sqlStripVolatile('ledger_records.data')}, '$.updatedAt') ELSE excluded.data <> ledger_records.data END)`);
+// read per request from the env (free); anything but 0 / off / false keeps the guard on
+const stampGuardOn = (env) => { const v = env && env.LEDGER_STAMP_GUARD; return !(v === '0' || v === 0 || v === false || String(v).toLowerCase() === 'off'); };
 const VOLATILE = new Set(VOLATILE_FIELDS);
 // A shallow copy without the client-only retry / telemetry fields (top level only: that is where the apps stamp them). Returns the same object when there is nothing to strip.
 export function stripVolatile(r) {
@@ -163,7 +173,10 @@ export function buildGroups(db, clientId, body, opt = {}) {
   const groups = [];
   let lastCanon = '';                                                   // the canonical text of the record last passed to rec(): its fingerprint says whether a group changed
   let lastAudit = null;                                                 // zip 187: what the audit database logs if this record really changed
-  const rec = (kind, id, version, ts, amount, status, actor, data) => { lastCanon = canon(stripVolatile(data)); lastAudit = { kind, recId: id, version, amount: round2(amount), status: str(status, 30), actor: str(actor, 60), source, at: now, data: lastCanon }; return db.prepare(UPSERT_RECORD).bind(clientId, kind, id, version, ts, bizDate(ts, off), round2(amount), str(status, 30), str(actor, 60), source, lastCanon, now, now); };
+  // NOTE (zip 252): the repeat-send fingerprint (g.sig) deliberately KEEPS updatedAt: the memory records what was last SENT, not what is stored, so a stamp-blind
+  // fingerprint would swallow 'edit back to the original' after a stale copy (tests/zip185-syncsrv-mpesa-ledger.test.mjs). The SQL guards below carry the saving.
+  const guardOn = opt.stampGuard !== false;                            // zip 252: a time stamp alone is not a change (LEDGER_STAMP_GUARD=0 restores the old behaviour)
+  const rec = (kind, id, version, ts, amount, status, actor, data) => { lastCanon = canon(stripVolatile(data)); lastAudit = { kind, recId: id, version, amount: round2(amount), status: str(status, 30), actor: str(actor, 60), source, at: now, data: lastCanon }; return db.prepare(opt.stampGuard === false ? UPSERT_RECORD_LEGACY : UPSERT_RECORD_GUARDED).bind(clientId, kind, id, version, ts, bizDate(ts, off), round2(amount), str(status, 30), str(actor, 60), source, lastCanon, now, now); };
   const tag = (g, kind, id) => { g.audit = lastAudit; g.key = clientId + '|' + kind + '|' + id; g.kind = kind; g.rid = id; g.len = lastCanon.length; g.sig = fingerprint(lastCanon + '|' + off + '|' + app + '|' + source); return g; };
 
   // --- sales (+ lines + payments) ---
@@ -191,7 +204,8 @@ export function buildGroups(db, clientId, body, opt = {}) {
     const items = Array.isArray(s.items) ? s.items : [];
     items.forEach((it, i) => st.push(db.prepare(`INSERT INTO ledger_sale_items (client_id, sale_id, line_no, code, name, qty, price, cost, station)
       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM ledger_sales WHERE client_id = ? AND sale_id = ? AND version = ?)
-      ON CONFLICT (client_id, sale_id, line_no) DO UPDATE SET code = excluded.code, name = excluded.name, qty = excluded.qty, price = excluded.price, cost = excluded.cost, station = excluded.station`)
+      ON CONFLICT (client_id, sale_id, line_no) DO UPDATE SET code = excluded.code, name = excluded.name, qty = excluded.qty, price = excluded.price, cost = excluded.cost, station = excluded.station${guardOn ? `
+        WHERE ledger_sale_items.code IS NOT excluded.code OR ledger_sale_items.name IS NOT excluded.name OR ledger_sale_items.qty IS NOT excluded.qty OR ledger_sale_items.price IS NOT excluded.price OR ledger_sale_items.cost IS NOT excluded.cost OR ledger_sale_items.station IS NOT excluded.station` : ''}`)
       .bind(clientId, id, i, str(it.code, 60), str(it.name, 120), num(it.qty), num(it.price), num(it.wholesalePrice) * 1, str(it.station, 20), clientId, id, version)));
     st.push(db.prepare(`DELETE FROM ledger_sale_items WHERE client_id = ? AND sale_id = ? AND line_no >= ? AND EXISTS (SELECT 1 FROM ledger_sales WHERE client_id = ? AND sale_id = ? AND version = ?)`).bind(clientId, id, items.length, clientId, id, version));
     if (items.some((it) => it && it.lpg)) lpgSaleStatements(db, clientId, id, items, { ts, date: bizDate(ts, off), app, version }).forEach((x) => st.push(x));       // zip 216: gas lines
@@ -246,7 +260,8 @@ export function buildGroups(db, clientId, body, opt = {}) {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (client_id, bill_id) DO UPDATE SET location = excluded.location, location_id = COALESCE(excluded.location_id, ledger_bills.location_id), owner = COALESCE(excluded.owner, ledger_bills.owner),
           total = excluded.total, status = excluded.status, closed_at = excluded.closed_at, version = excluded.version, updated_at = excluded.updated_at
-        WHERE excluded.version >= ledger_bills.version`)
+        WHERE excluded.version >= ledger_bills.version${guardOn ? ` AND (ledger_bills.location IS NOT excluded.location OR ledger_bills.location_id IS NOT COALESCE(excluded.location_id, ledger_bills.location_id) OR ledger_bills.owner IS NOT COALESCE(excluded.owner, ledger_bills.owner)
+          OR ledger_bills.total IS NOT excluded.total OR ledger_bills.status IS NOT excluded.status OR ledger_bills.closed_at IS NOT excluded.closed_at)` : ''}`)
         .bind(clientId, billId, id, str(t.locId, 60), str(t.label, 80), str(t.owner || t.waiter, 60), due, status, ts, t.closedAt ? tsOf(t.closedAt, now) : null, version, now),
     ], 'tab', id));
   }
@@ -397,7 +412,7 @@ export async function recordPush(env, clientId, body, opt = {}) {
     if (adb) await detachMainAuditTriggers(db);
     await drainOutboxThrottled(env, clientId, db).catch(() => {});
     const split = splitBad(body);
-    const groups = buildGroups(db, clientId, split.body, opt);
+    const groups = buildGroups(db, clientId, split.body, { ...opt, stampGuard: stampGuardOn(env) });      // zip 251: see UPSERT_RECORD_GUARDED
     let rejected = split.rejected;
     for (let i = groups.length - 1; i >= 0; i--) {
       if (groups[i].len > MAX_REC_BYTES) { rejected = rejected.concat({ field: groups[i].kind, id: String(groups[i].rid).slice(0, 40), reason: 'too_large' }); groups.splice(i, 1); }

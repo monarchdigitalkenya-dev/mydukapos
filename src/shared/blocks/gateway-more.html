@@ -5,7 +5,9 @@
      OPTION F  Co-operative Bank: Consumer Key + Secret + the token address, STK address and shortcode from the shop's own Co-op API portal
                (Co-op only publishes them behind its login, so they are never guessed). M-Pesa phone prompt; result returns like Daraja's.
      Added by this block alone (the existing panels are untouched): it builds its own panels, adds the two choices to "Force a specific provider",
-     and, when the STK request answers with a paymentUrl, shows the link under the status line. -->
+     and, when the STK request answers with a paymentUrl, shows the link under the status line.
+     zip 249: it also adds the TILL NUMBER box to the Daraja panel. A Till (Buy Goods) shop has two numbers: the Store / Head Office number (the
+     existing Shortcode box; goes into the password) and the Till number that receives the money (this box). Shown only when the type is Till. -->
 <script>
 (function () {
     'use strict';
@@ -38,6 +40,7 @@
     }
 
     function mount() {
+        mountTill();
         var forced = $('gateway-forced-provider-input');
         if (!forced || $('gw-more')) return;
         var row = forced.closest('.settings-row') || forced.parentNode;
@@ -75,10 +78,33 @@
             if (!cfg.hasCoopConfig) { $('coop-token-url').value = cfg.coopTokenUrl || ''; $('coop-stk-url').value = cfg.coopStkUrl || ''; $('coop-shortcode').value = cfg.coopShortcode || ''; }
             $('coop-type').value = cfg.coopTransactionType || 'CustomerPayBillOnline';
             if ($('gateway-forced-provider-input')) $('gateway-forced-provider-input').value = cfg.forcedProvider || '';
+            mountTill();
+            if ($('gateway-mpesa-txn-type-input') && cfg.mpesaTransactionType) $('gateway-mpesa-txn-type-input').value = cfg.mpesaTransactionType;
+            if ($('gateway-mpesa-partyb-input')) $('gateway-mpesa-partyb-input').value = cfg.mpesaPartyB || '';
+            syncTill();
             var st = $('payment-gateway-status'), stk = await (await api('/api/mpesa-stkpush')).json();
             if (st && stk.provider === 'pesapal') st.innerHTML = '<p class="settings-msg success">✅ Using Pesapal (payment link) for card / mobile-money payments.</p>';
             if (st && stk.provider === 'coop') st.innerHTML = '<p class="settings-msg success">✅ Using Co-operative Bank for the M-Pesa STK prompt.</p>';
         } catch (e) { /* the panels stay as they are */ }
+    }
+    // zip 249: DARAJA TILL NUMBER (PartyB). Shown only when the transaction type is Till; sent with the Daraja save by the fetch hook below.
+    function syncTill() {
+        var sel = $('gateway-mpesa-txn-type-input'), w = $('gateway-mpesa-partyb-wrap'), sc = $('gateway-mpesa-shortcode-input');
+        if (!sel || !w) return;
+        var till = sel.value === 'CustomerBuyGoodsOnline';
+        w.style.display = till ? 'block' : 'none';
+        if (sc) sc.placeholder = till ? 'Store / Head Office number (for a Till)' : 'Shortcode (Paybill or Till Number)';
+    }
+    function mountTill() {
+        var sel = $('gateway-mpesa-txn-type-input');
+        if (!sel || $('gateway-mpesa-partyb-input')) return;
+        var row = sel.closest('.vat-inline-row') || sel.parentNode;
+        var wrap = document.createElement('div'); wrap.id = 'gateway-mpesa-partyb-wrap'; wrap.style.display = 'none';
+        wrap.innerHTML = '<input type="text" id="gateway-mpesa-partyb-input" inputmode="numeric" placeholder="Till number (the number customers pay to)" autocomplete="off">'
+            + '<p class="settings-hint" style="margin:4px 0 8px;">For a Till, the Shortcode box above must hold the <b>Store / Head Office number</b> from your Safaricom go-live email, and this box your <b>Till number</b>. If both are the same number, leave this one empty.</p>';
+        row.parentNode.insertBefore(wrap, row.nextSibling);
+        sel.addEventListener('change', syncTill);
+        syncTill();
     }
     // keep the new panels in step whenever the app re-checks the gateway
     var orig = window.checkPaymentGatewayStatus;
@@ -105,7 +131,15 @@
     var f0 = window.fetch;
     if (typeof f0 === 'function' && !f0.__gwMore) {
         window.fetch = function (input, init) {
-            var p = f0.apply(this, arguments), u = typeof input === 'string' ? input : (input && input.url) || '';
+            var u = typeof input === 'string' ? input : (input && input.url) || '';
+            // zip 249: the Daraja save carries the Till number too (only when the type is Till and a number was typed)
+            if (/\/api\/gateway-config(\?|$)/.test(u) && init && /POST/i.test(init.method || '') && typeof init.body === 'string') {
+                try {
+                    var b = JSON.parse(init.body), pb = $('gateway-mpesa-partyb-input');
+                    if (b && b.mpesaTransactionType === 'CustomerBuyGoodsOnline' && pb && pb.value.trim()) { b.mpesaPartyB = pb.value.trim(); init = Object.assign({}, init, { body: JSON.stringify(b) }); }
+                } catch (e) { /* send it as it was */ }
+            }
+            var p = f0.call(this, input, init);
             if (/\/api\/mpesa-stkpush(\?|$)/.test(u) && init && /POST/i.test(init.method || '')) {
                 var phone = ''; try { phone = JSON.parse(init.body).phone || ''; } catch (e) { /* none */ }
                 clearCard();

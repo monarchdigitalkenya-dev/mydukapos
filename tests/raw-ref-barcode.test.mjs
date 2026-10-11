@@ -10,7 +10,7 @@ const text = (bytes) => Buffer.from(bytes).toString('latin1');
 for (const app of APPS) {
   for (const [width, bytesPerRow] of [['58', 48], ['80', 72]]) {
     test(`${app} @${width}mm: USB/Bluetooth receipt prints the Ref number and its barcode, then feeds to the cutter`, async () => {
-      const { w, errors, close } = await boot(app);
+      const { w, errors, close } = await boot(app, { storage: { pos_receipt_show_barcode: 'true' } });   // zip 253: the barcode is an opt-in Receipt Setting
       w.eval(`receiptWidth = '${width}'; renderReceipt(${JSON.stringify({ ...SAMPLE_SALE, refNumber: REF })});`);
       const b = rawBytes(w);
       const refAt = indexOf(b, Array.from(Buffer.from(`Ref: ${REF}`)));
@@ -38,11 +38,11 @@ for (const app of APPS) {
   }
 }
 
-test('no reference number => no barcode; turning the barcode off (Hotel setting) removes it but keeps the number', async () => {
-  const { w, close } = await boot('hotel/index.html');
+test('no reference number => no barcode; the barcode off (the default, and the Receipt Setting) removes it but keeps the number', async () => {
+  const { w, close } = await boot('hotel/index.html', { storage: { pos_receipt_show_barcode: 'true' } });
   w.eval(`renderReceipt(${JSON.stringify({ ...SAMPLE_SALE, refNumber: undefined })});`);
   assert.equal(indexOf(rawBytes(w), [0x1D, 0x76, 0x30, 0x00]), -1, 'nothing to encode');
-  w.eval(`receiptShowBarcode = false; renderReceipt(${JSON.stringify({ ...SAMPLE_SALE, refNumber: REF })});`);
+  w.eval(`rxSettings.showBarcode = false; renderReceipt(${JSON.stringify({ ...SAMPLE_SALE, refNumber: REF })});`);
   const b = rawBytes(w);
   assert.ok(indexOf(b, Array.from(Buffer.from(`Ref: ${REF}`))) > 0, 'number still printed');
   assert.equal(indexOf(b, [0x1D, 0x76, 0x30, 0x00]), -1, 'barcode switched off');

@@ -100,6 +100,7 @@ export const SHARED_BLOCKS = {
   'guide-data': { startMarker: '<!-- GUIDE DATA', owner: true, perModule: true },      // the per-module user guide text (src/shared/blocks/guide-data/<module>.html, built by tools/build-guides.mjs)
   'storage-and-photos': { startMarker: '<!-- STORAGE & PHOTOS' },
   'device-security': { startMarker: '<!-- DEVICE SECURITY' },          // device pairing + the shop's device list (zip 120)
+  'pack-cost': { startMarker: '<!-- ADD ITEM: COMPACT IMAGE + PACK COST' },   // zip 253: slim picture row + box/pack price -> cost per piece on Add Item
   'image-remove': { startMarker: '<!-- ITEM IMAGE: REMOVE', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html'] },   // Remove an item's picture (zip 209)
   'measure-by-price': { startMarker: '<!-- MEASURE BY PRICE', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html'] },   // cart: measure by price for kg / litre items (zip 209)
   'balance-sheet': { startMarker: '<!-- BALANCE SHEET', only: ['index.html', 'hotel/index.html', 'pharmacy/index.html', 'production/index.html', 'services/index.html', 'hospital/index.html'] },   // Reports: Balance Sheet (zip 209)

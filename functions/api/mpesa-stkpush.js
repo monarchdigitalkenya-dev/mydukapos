@@ -95,10 +95,12 @@ function darajaBaseUrl(cfg) {
   return envName === 'production' ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke';
 }
 
-function darajaTimestamp() {
-  const d = new Date();
+// zip 249: Safaricom's clock is Nairobi time (UTC+3). The Cloudflare Worker's own clock is UTC, so the timestamp is built from UTC + 3 hours rather than
+// from the server's local time (the Password is made from the same value, so the two always agree).
+function darajaTimestamp(now = Date.now()) {
+  const d = new Date(now + 3 * 3600 * 1000);
   const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
 }
 
 async function darajaAccessToken(cfg) {
@@ -107,10 +109,14 @@ async function darajaAccessToken(cfg) {
   const res = await fetch(`${darajaBaseUrl(cfg)}/oauth/v1/generate?grant_type=client_credentials`, {
     headers: { Authorization: `Basic ${auth}` },
   });
-  if (!res.ok) {
-    throw new Error('Could not authenticate with M-Pesa. Check the Consumer Key / Consumer Secret saved in Settings.');
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* not JSON */ }
+  if (!res.ok || !data.access_token) {
+    // zip 250: say WHY (a production Consumer Key used against sandbox, or the other way round, is the usual cause) instead of one fixed sentence
+    const env = (cfg.mpesaEnv || 'sandbox').toLowerCase();
+    const detail = data.errorMessage || data.error_description || data.error || '';
+    throw new Error(`Could not authenticate with M-Pesa (HTTP ${res.status}${detail ? ': ' + detail : ''}). The Environment is set to ${env.toUpperCase()}: use the Consumer Key / Secret of a ${env} app, and check them in Settings.`);
   }
-  const data = await res.json();
   return data.access_token;
 }
 
@@ -120,6 +126,10 @@ async function sendViaDaraja({ phone, amount, accountRef, description }, cfg, ca
   const passkey = cfg.mpesaPasskey;
   const timestamp = darajaTimestamp();
   const password = btoa(`${shortcode}${passkey}${timestamp}`);
+  // zip 249: a TILL (Buy Goods) has two numbers. BusinessShortCode is the Head Office / Store number (it also goes into the Password); PartyB is the
+  // TILL number that receives the money. For a Paybill both are the same number, so PartyB is only used when the type is Till AND a Till number is saved
+  // (a shop whose Store number and Till number are the same simply leaves it blank, exactly as before).
+  const partyB = (cfg.mpesaTransactionType === 'CustomerBuyGoodsOnline' && cfg.mpesaPartyB) ? String(cfg.mpesaPartyB).trim() : shortcode;
 
   const stkRes = await fetch(`${darajaBaseUrl(cfg)}/mpesa/stkpush/v1/processrequest`, {
     method: 'POST',
@@ -131,7 +141,7 @@ async function sendViaDaraja({ phone, amount, accountRef, description }, cfg, ca
       TransactionType: cfg.mpesaTransactionType || 'CustomerPayBillOnline',
       Amount: amount,
       PartyA: phone,
-      PartyB: shortcode,
+      PartyB: partyB,
       PhoneNumber: phone,
       CallBackURL: callbackUrl,
       AccountReference: accountRef,
@@ -139,9 +149,12 @@ async function sendViaDaraja({ phone, amount, accountRef, description }, cfg, ca
     }),
   });
 
-  const stkData = await stkRes.json();
+  let stkData = {};
+  try { stkData = await stkRes.json(); } catch (e) { /* not JSON (e.g. an HTML error page): handled below */ }
   if (!stkRes.ok || stkData.ResponseCode !== '0') {
-    throw new Error(stkData.errorMessage || stkData.ResponseDescription || 'M-Pesa declined the STK Push request.');
+    // zip 249: Safaricom's own words, with its error code, so the cause (wrong shortcode / passkey / Till, app not live yet) is readable on the till
+    const why = stkData.errorMessage || stkData.ResponseDescription || `M-Pesa declined the STK Push request (HTTP ${stkRes.status}).`;
+    throw new Error(stkData.errorCode ? `${why} [${stkData.errorCode}]` : why);
   }
 
   return {
@@ -493,7 +506,8 @@ export async function onRequestPost(context) {
     // The client id is embedded in the callback URL itself, so Safaricom's
     // POST to mpesa-callback.js carries it right back to us.
     // zip 143: the callback URL carries this shop's secret key, so only Safaricom/KCB (who were given it) can report a result
-    const callbackUrl = withKey(`${origin}/api/mpesa-callback?c=${encodeURIComponent(clientId)}`, await ensureCallbackKey(env, clientId, 'stk'));
+    // zip 250: the route is called pay-cb-stk, NOT mpesa-callback: Safaricom's production system silently drops any callback URL that contains "mpesa" / "safaricom"
+    const callbackUrl = withKey(`${origin}/api/pay-cb-stk?c=${encodeURIComponent(clientId)}`, await ensureCallbackKey(env, clientId, 'stk'));
 
     const result = provider === 'paystack'
       ? await sendViaPaystack({ phone, amount, accountRef, description }, cfg)

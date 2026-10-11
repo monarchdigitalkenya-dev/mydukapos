@@ -9543,8 +9543,10 @@ function bizTzOffsetMin() {
             const date = new Date(sale.timestamp);
             const isBill = sale.paymentMethod === 'bill' || sale.paymentMethod === 'pod' || sale.paid === false;
             const kes = (n) => 'KES ' + Number(n || 0).toFixed(2);
-            const showRef = !!sale.refNumber && (typeof receiptShowRefNumber === 'undefined' || receiptShowRefNumber);
-            const showBarcode = showRef && (typeof receiptShowBarcode === 'undefined' || receiptShowBarcode);
+            // zip 253: Receipt Settings own these three switches in every app (receipt-extras block): reference number (on), barcode (OFF by default), VAT / tax (OFF by default)
+            const showRef = !!sale.refNumber && (typeof receiptRefOn !== 'function' || receiptRefOn());
+            const showBarcode = showRef && typeof receiptBarcodeOn === 'function' && receiptBarcodeOn();
+            const showVat = typeof receiptVatOn === 'function' && receiptVatOn();
             const ctx = { isBill, total, cols, rule, labelCol, kes };
 
             // ---- header (always centred) ----
@@ -9589,7 +9591,7 @@ function bizTzOffsetMin() {
                 if (l.offerApplied) subs.push(`Offer: ${l.offerApplied.label} (-KES ${Number(l.offerApplied.amount).toFixed(2)})`);
                 if (Array.isArray(l.componentsUsed)) l.componentsUsed.forEach(c => subs.push(`Uses: ${hasQtyFmt ? formatQtyDisplay(c.qty, c.unit) + unitLabel(c.unit) : c.qty} ${c.name}`));
                 if (hooks.itemSubLines) (hooks.itemSubLines(l, sale) || []).forEach(s => subs.push(s));
-                return { sec: hooks.sectionOf ? (hooks.sectionOf(l, sale) || null) : null, code: l.code || '', vat: l.type === 'payment' ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
+                return { sec: hooks.sectionOf ? (hooks.sectionOf(l, sale) || null) : null, code: l.code || '', vat: l.type === 'payment' || !showVat ? '' : (l.vatCategory || 'A'), text: Object.assign({}, base.text, o.text), html: Object.assign({}, base.html, o.html), subs };
             });
 
             const lines = [];
@@ -9616,7 +9618,11 @@ function bizTzOffsetMin() {
             lines.push(rule);
             const totalLineIndex = lines.length;
             const totalLabel = hooks.totalLabel ? hooks.totalLabel(sale) : 'TOTAL';
-            lines.push(...receiptMoneyRow(totalLabel, kes(total), cols));
+            // zip 253: PAID / UNPAID is wording ON the total line itself (no stamp picture, no space of its own); too narrow a line -> its own short line right below
+            const paidWord = (typeof receiptPaidWording === 'function') ? receiptPaidWording(sale) : '';
+            const totalWithWord = paidWord ? totalLabel + ' - ' + paidWord : totalLabel;
+            if (paidWord && totalWithWord.length > labelCol) { lines.push(...receiptMoneyRow(totalLabel, kes(total), cols)); lines.push(paidWord); }
+            else lines.push(...receiptMoneyRow(totalWithWord, kes(total), cols));
             const cartLevelOffers = Array.isArray(sale.cartOffersApplied)
                 ? sale.cartOffersApplied.filter(o => !entries.some(it => it.offerApplied && it.offerApplied.offerName === o.offerName && it.offerApplied.amount === o.amount && it.offerApplied.label === o.label))
                 : [];
@@ -9672,7 +9678,7 @@ function bizTzOffsetMin() {
             if (!paymentRecord) {
                 lines.push(rule);
                 lines.push(`TOTAL ITEMS: ${entries.length}`);
-                const { groups } = computeVatBreakdown(entries);
+                const { groups } = showVat ? computeVatBreakdown(entries) : { groups: {} };      // zip 253: only when "Print VAT / tax" is on
                 const catKeys = Object.keys(groups).sort();
                 if (catKeys.length > 0) {
                     lines.push(thermalVatHeader(cols));
@@ -18273,8 +18279,8 @@ function qtyRoundShown(n) {
             const last = String(footerText || '').replace(/\r/g, '').split('\n').pop().trim();
             const m = /^Ref: (\S+)$/.exec(last);
             if (!m) return null;
-            if (typeof receiptShowRefNumber !== 'undefined' && !receiptShowRefNumber) return null;
-            if (typeof receiptShowBarcode !== 'undefined' && !receiptShowBarcode) return null;
+            if (typeof receiptRefOn === 'function' && !receiptRefOn()) return null;
+            if (typeof receiptBarcodeOn !== 'function' || !receiptBarcodeOn()) return null;      // zip 253: off unless switched on in Receipt Settings
             try { return buildCode39RasterBytes(m[1], receiptPrintDots()); } catch (e) { return null; }
         }
 
@@ -18746,7 +18752,7 @@ function refillEntryId(e) {
                     return;
                 }
                 msgEl.className = 'settings-msg success';
-                msgEl.textContent = '✅ Registered — payments made straight to your till will now show up below.';
+                msgEl.textContent = '✅ Registered' + (data.shortCode ? ' for ' + data.shortCode : '') + ' — payments made straight to your till will now show up below.';
             } catch (e) {
                 msgEl.className = 'settings-msg error';
                 msgEl.textContent = netErrText('Could not reach the server');
@@ -33679,6 +33685,7 @@ async function zReportPreflight() {
                 showToast(isService ? 'Service name is required.' : addItemType === 'ingredient' ? 'Ingredient name is required.' : 'Item code and name are required.', true);
                 return;
             }
+            if (typeof packCostCheck === 'function' && !packCostCheck()) return;       // zip 253: pack price / pieces must be valid, both or neither
             // Demo accounts are capped at 10 inventory entries total (items,
             // services, and ingredients all share the one inventory array).
             // Only blocks genuinely NEW entries — editing an existing one
@@ -33935,6 +33942,7 @@ async function zReportPreflight() {
             }
             item.kra = readKraClassificationFromForm(item, existingIndex >= 0 ? inventory[existingIndex].kra : null);
 
+            if (typeof packCostFields === 'function') Object.assign(item, packCostFields());     // zip 253: what was paid for the pack and how many pieces it held
             // Box/piece dual-unit fields — `price`/`qty`/`code` above describe the box;
             // these describe the individually-sold piece.
             if (document.getElementById('inv-has-dual-unit').checked) {
@@ -34096,6 +34104,7 @@ async function zReportPreflight() {
             document.getElementById('inv-piece-qty').value = '';
             document.getElementById('inv-loose-unit').value = 'pcs';
             document.getElementById('inv-has-variants').checked = false;
+            if (typeof packCostReset === 'function') packCostReset();                     // zip 253
             document.getElementById('variants-builder').style.display = 'none';
             variantsDraft = [];
             updateAddItemUnitHints();
@@ -45398,7 +45407,10 @@ function msOpenPurchasesReport(days) {
         stampAngle: (function () { var n = parseFloat(rxGet('pos_receipt_stamp_angle')); return isFinite(n) ? n : -8; })(),
         stampSize: (function () { var n = parseFloat(rxGet('pos_receipt_stamp_size')); return isFinite(n) ? n : 70; })(),
         showStamp: rxGet('pos_receipt_show_stamp') === 'true',
-        paidMark: rxGet('pos_receipt_stamp_paid') === 'true',                // zip 215: print a PAID / UNPAID mark under the stamp
+        paidMark: rxGet('pos_receipt_stamp_paid') === 'true',                // zip 215/253: print PAID / UNPAID as wording on the TOTAL line (off by default)
+        showRef: rxGet('pos_receipt_show_ref') !== 'false',                   // zip 253 (was Hotel-only): the "Ref: ..." line. On unless switched off
+        showBarcode: rxGet('pos_receipt_show_barcode') === 'true',            // zip 253: the scannable barcode under the reference. OFF by default
+        printVat: rxGet('pos_receipt_print_vat') === 'true',                  // zip 253: VAT class letters + the VAT table. OFF by default
         billsLocked: rxGet('pos_bills_locked') === 'true',
         fontPt: (function () { var n = parseFloat(rxGet('pos_receipt_font_pt')); return isFinite(n) && n >= 5 && n <= 20 ? Math.round(n * 2) / 2 : 7; })(),   // zip 158: the receipt letter size, in points (7 = standard)
     };
@@ -45413,7 +45425,7 @@ function msOpenPurchasesReport(days) {
         return n;
     }
     function extraSettingsCollect() {
-        var o = { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, receiptStampPaid: rxSettings.paidMark, billsLocked: rxSettings.billsLocked };
+        var o = { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, receiptStampPaid: rxSettings.paidMark, receiptShowRefNumber: rxSettings.showRef, receiptShowBarcode: rxSettings.showBarcode, receiptPrintVat: rxSettings.printVat, billsLocked: rxSettings.billsLocked };
         // the letter size travels only once THIS device has one of its own (chosen here or received): a fresh device's default 7 must never replace the shop's real size
         if (rxGet('pos_receipt_font_pt') !== null) o.receiptFontPt = rxSettings.fontPt;
         o.payMethods = posPayAccepted();                      // zip 163: which payment methods this shop accepts (every till shows only those)
@@ -45443,13 +45455,17 @@ function msOpenPurchasesReport(days) {
         if (typeof data.receiptStampSize === 'number' && isFinite(data.receiptStampSize) && data.receiptStampSize !== rxSettings.stampSize) { rxSettings.stampSize = data.receiptStampSize; rxSet('pos_receipt_stamp_size', String(data.receiptStampSize)); changed = true; }
         if (typeof data.receiptShowStamp === 'boolean' && data.receiptShowStamp !== rxSettings.showStamp) { rxSettings.showStamp = data.receiptShowStamp; rxSet('pos_receipt_show_stamp', String(data.receiptShowStamp)); changed = true; }
         if (typeof data.receiptStampPaid === 'boolean' && data.receiptStampPaid !== rxSettings.paidMark) { rxSettings.paidMark = data.receiptStampPaid; rxSet('pos_receipt_stamp_paid', String(data.receiptStampPaid)); changed = true; }
+        /* zip 253: the three receipt switches. Same payload names Hotel always used for the first two, so older saved settings still arrive. */
+        [['receiptShowRefNumber', 'showRef', 'pos_receipt_show_ref'], ['receiptShowBarcode', 'showBarcode', 'pos_receipt_show_barcode'], ['receiptPrintVat', 'printVat', 'pos_receipt_print_vat']].forEach(function (t) {
+            if (typeof data[t[0]] === 'boolean' && data[t[0]] !== rxSettings[t[1]]) { rxSettings[t[1]] = data[t[0]]; rxSet(t[2], String(data[t[0]])); changed = true; }
+        });
         var lockChanged = false;
         if (typeof data.billsLocked === 'boolean' && data.billsLocked !== rxSettings.billsLocked) { rxSettings.billsLocked = data.billsLocked; rxSet('pos_bills_locked', String(data.billsLocked)); lockChanged = true; }
         var fontChanged = false;
         if (typeof data.receiptFontPt === 'number' && isFinite(data.receiptFontPt) && data.receiptFontPt >= 5 && data.receiptFontPt <= 20 && Math.round(data.receiptFontPt * 2) / 2 !== rxSettings.fontPt) { receiptFontPtStore(data.receiptFontPt); fontChanged = true; }
         else if (typeof data.receiptFontPt === 'number' && isFinite(data.receiptFontPt) && data.receiptFontPt >= 5 && data.receiptFontPt <= 20 && rxGet('pos_receipt_font_pt') === null) receiptFontPtStore(data.receiptFontPt);
         if (fontChanged) { try { receiptApplyPaperVars(); syncDevicePaperWidthUI(); receiptRelayoutOpen(); } catch (e) { /* the settings page / a receipt may not be open */ } }
-        if (changed) { window.__stampRaster = null; try { rxStampRefreshUI(); } catch (e) { /* the settings page may not be open */ } }
+        if (changed) { window.__stampRaster = null; try { rxStampRefreshUI(); } catch (e) { /* the settings page may not be open */ } try { rxPrintOptionsApplied(); } catch (e) { /* nothing open */ } }
         if (lockChanged) { try { billsLockDecorate(); } catch (e) { /* the Bills tab may not be open */ } }
     }
 
@@ -45562,26 +45578,23 @@ function msOpenPurchasesReport(days) {
         if (credit && sale.paid !== true) return 'unpaid';
         return 'paid';
     }
-    var rxPaidImgCache = {};
-    function rxPaidStampSrc(state) {
-        if (!rxPaidImgCache[state]) rxPaidImgCache[state] = rxStampFromText([state === 'paid' ? 'PAID' : 'UNPAID'], state === 'paid' ? 'green' : 'red', 'rect');
-        return rxPaidImgCache[state];
-    }
+    /* zip 253: the wording itself. The receipt builder puts it ON the total line ("TOTAL - PAID   KES 500.00"): no picture, no space of its own. '' = switched off. */
+    function receiptPaidWording(sale) { var st = rxPaidStateOf(sale); return st === 'paid' ? 'PAID' : st === 'unpaid' ? 'UNPAID' : ''; }
+    function receiptRefOn() { return !!rxSettings.showRef; }
+    function receiptBarcodeOn() { return !!rxSettings.showBarcode && !!rxSettings.showRef; }      // no reference = nothing to encode
+    function receiptVatOn() { return !!rxSettings.printVat; }
     function rxCurrentSale() { try { return typeof currentReceiptSale !== 'undefined' ? currentReceiptSale : null; } catch (e) { return null; } }
 
     /* what the receipt (screen, browser print, PDF-less) shows: the stamp between the header and the item lines, tilted by the chosen angle */
     function receiptStampBlockHtml(sale) {
         var shop = !!(rxSettings.showStamp && rxSettings.stampSrc);
-        var state = rxPaidStateOf(sale || rxCurrentSale());
-        var paidSrc = state ? rxPaidStampSrc(state) : '';
-        if (!shop && !paidSrc) return '';
+        if (!shop) return '';
         var size = Math.max(30, Math.min(100, rxSettings.stampSize || 70));
         var ang = Math.max(-45, Math.min(45, rxSettings.stampAngle || 0));
         var pad = Math.round(6 + Math.abs(Math.sin(ang * Math.PI / 180)) * 26);
         var img = function (src, w, a) { return '<img alt="" src="' + rxEsc(src) + '" style="width:' + w + '%; max-width:100%; height:auto; transform:rotate(' + a + 'deg); mix-blend-mode:multiply; opacity:.93; -webkit-print-color-adjust:exact; print-color-adjust:exact;">'; };
         return '<div class="rg-stamp" style="text-align:center; padding:' + pad + 'px 0; line-height:0;">'
             + (shop ? img(rxSettings.stampSrc, size, ang) : '')
-            + (paidSrc ? '<div style="padding-top:' + (shop ? 6 : 0) + 'px;">' + img(paidSrc, Math.round(size * 0.55), ang) + '</div>' : '')
             + '</div>';
     }
 
@@ -45590,13 +45603,12 @@ function msOpenPurchasesReport(days) {
         var d = String(rxSettings.stampSrc || '');
         var dots = 384; try { dots = receiptLogoDots(); } catch (e) { /* default */ }
         var shop = rxSettings.showStamp && rxSettings.stampSrc ? 1 : 0;
-        return 'v2:' + dots + ':' + rxSettings.stampAngle + ':' + rxSettings.stampSize + ':' + shop + ':' + d.length + ':' + d.slice(-40) + ':' + (rxPaidStateOf(rxCurrentSale()) || '-');
+        return 'v2:' + dots + ':' + rxSettings.stampAngle + ':' + rxSettings.stampSize + ':' + shop + ':' + d.length + ':' + d.slice(-40);
     }
     async function prepareReceiptStampRaster() {
         try {
             var shop = !!(rxSettings.showStamp && rxSettings.stampSrc);
-            var state = rxPaidStateOf(rxCurrentSale());
-            if (!shop && !state) { window.__stampRaster = null; return null; }
+            if (!shop) { window.__stampRaster = null; return null; }
             var key = receiptStampRasterKey();
             if (window.__stampRaster && window.__stampRaster.key === key) return window.__stampRaster.bytes;
             var dots = receiptLogoDots();
@@ -45613,7 +45625,6 @@ function msOpenPurchasesReport(days) {
             };
             var pct = Math.max(30, Math.min(100, rxSettings.stampSize || 70));
             if (shop) await addPiece(rxSettings.stampSrc, pct, 220);
-            if (state) await addPiece(rxPaidStampSrc(state), Math.round(pct * 0.55), 110);
             var W = Math.max.apply(null, pieces.map(function (p) { return p.bw; })), H = pieces.reduce(function (t, p) { return t + p.bh; }, 0);
             var cv = rxCanvas(W, H);
             if (!cv) { window.__stampRaster = null; return null; }
@@ -45634,7 +45645,7 @@ function msOpenPurchasesReport(days) {
     }
     function receiptStampRasterBytes() {
         try {
-            if (!((rxSettings.showStamp && rxSettings.stampSrc) || rxPaidStateOf(rxCurrentSale()))) return null;
+            if (!(rxSettings.showStamp && rxSettings.stampSrc)) return null;
             var r = window.__stampRaster;
             return r && r.bytes && r.key === receiptStampRasterKey() ? r.bytes : null;
         } catch (e) { return null; }
@@ -45645,6 +45656,19 @@ function msOpenPurchasesReport(days) {
         var section = document.getElementById('settings-section-receipts');
         if (!section || document.getElementById('receipt-stamp-card')) return;
         var card = document.createElement('div');
+        var what = document.createElement('div');
+        what.id = 'receipt-print-options-card';
+        var sw = function (id, title, hint) { return '<label style="display:flex; align-items:flex-start; gap:10px; font-size:13px; font-weight:normal; padding:8px 10px; border:1px solid #e3e8ee; border-radius:8px; background:#fafbfc;"><input type="checkbox" id="' + id + '" style="width:auto; margin-top:2px;"><span><b>' + title + '</b><br><span style="color:#667;">' + hint + '</span></span></label>'; };
+        what.innerHTML =
+            '<hr class="settings-divider">'
+            + '<h4>🧾 What prints on the receipt</h4>'
+            + '<p style="font-size:13px; color:#555; margin:0 0 8px;">These switches apply to every receipt, bill and invoice this shop prints (on screen, system print, USB and Bluetooth), and to every till and branch that shares these settings.</p>'
+            + '<div class="settings-row" style="flex-direction:column; align-items:stretch; gap:8px;">'
+            + sw('rx-print-ref', 'Reference number', 'The "Ref: ..." line at the bottom, used to look a sale up again.')
+            + sw('rx-print-barcode', 'Barcode', 'A scannable barcode of the reference number under it. Off by default.')
+            + sw('rx-print-vat', 'VAT / tax', 'The tax class letter after each amount and the VAT summary table. Off by default.')
+            + sw('rx-stamp-paid', 'PAID / UNPAID wording', 'Written on the TOTAL line itself (UNPAID for Pay Later, Pay on Delivery and bills still owing). Off by default.')
+            + '</div>';
         card.id = 'receipt-stamp-card';
         card.innerHTML =
             '<hr class="settings-divider">'
@@ -45652,7 +45676,6 @@ function msOpenPurchasesReport(days) {
             + '<p style="font-size:13px; color:#555; margin:0 0 8px;">Prints a stamp just above the item list, slightly tilted like one pressed by hand. Make one from your shop details below, or upload a picture of your own stamp (press it on plain white paper and take a photo or scan). Thermal printers print it in black and white.</p>'
             + '<div class="settings-row" style="flex-direction:column; align-items:stretch; gap:8px;">'
             + '<label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:normal;"><input type="checkbox" id="rx-stamp-show" style="width:auto;"> Print the stamp on receipts and bills</label>'
-            + '<label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:normal;"><input type="checkbox" id="rx-stamp-paid" style="width:auto;"> Also print <b style="color:#1e6b3a;">PAID</b> or <b style="color:#b3261e;">UNPAID</b> under the stamp (UNPAID for Pay Later / Pay on Delivery / bills still owing) — works even without a shop stamp</label>'
             + '<div id="rx-stamp-preview-wrap" style="display:none; text-align:center; padding:18px 0; background:#fff; border:1px dashed #cfd6dd; border-radius:8px;"><img id="rx-stamp-preview" alt="Stamp preview" style="max-width:70%; max-height:140px;"></div>'
             + '<p id="rx-stamp-status" class="settings-msg">No stamp yet.</p>'
             + '<div style="border:1px solid #e3e8ee; border-radius:8px; padding:10px; background:#fafbfc;">'
@@ -45681,18 +45704,25 @@ function msOpenPurchasesReport(days) {
         if (anchor) {
             var before = anchor.previousElementSibling;                   // the divider above that heading
             var ref = before && before.tagName === 'HR' ? before : anchor;
-            ref.parentNode.insertBefore(card, ref);
+            ref.parentNode.insertBefore(what, ref); ref.parentNode.insertBefore(card, ref);
         } else {
-            (document.getElementById('receipt-settings-editable-area') || section).appendChild(card);
+            var host = document.getElementById('receipt-settings-editable-area') || section;
+            host.appendChild(what); host.appendChild(card);
         }
         var $ = function (id) { return document.getElementById(id); };
         $('rx-stamp-show').addEventListener('change', function () {
             rxSettings.showStamp = this.checked; rxSet('pos_receipt_show_stamp', String(this.checked)); window.__stampRaster = null; rxStampRefreshUI(); rxPush();
         });
-        $('rx-stamp-paid').addEventListener('change', function () {
-            rxSettings.paidMark = this.checked; rxSet('pos_receipt_stamp_paid', String(this.checked)); window.__stampRaster = null; rxPush();
-            rxToast(this.checked ? '🔏 Receipts will say PAID or UNPAID.' : 'PAID / UNPAID mark turned off.');
-        });
+        var flip = function (id, key, store, onMsg, offMsg) {
+            $(id).addEventListener('change', function () {
+                rxSettings[key] = this.checked; rxSet(store, String(this.checked)); window.__stampRaster = null; rxPrintOptionsApplied(); rxPush();
+                rxToast(this.checked ? onMsg : offMsg);
+            });
+        };
+        flip('rx-print-ref', 'showRef', 'pos_receipt_show_ref', 'Receipts print the reference number.', 'Reference number (and barcode) turned off.');
+        flip('rx-print-barcode', 'showBarcode', 'pos_receipt_show_barcode', 'Receipts print a barcode under the reference.', 'Barcode turned off.');
+        flip('rx-print-vat', 'printVat', 'pos_receipt_print_vat', 'Receipts print VAT / tax.', 'VAT / tax turned off on receipts.');
+        flip('rx-stamp-paid', 'paidMark', 'pos_receipt_stamp_paid', 'Receipts say PAID or UNPAID on the total line.', 'PAID / UNPAID wording turned off.');
         $('rx-stamp-angle').addEventListener('input', function () {
             rxSettings.stampAngle = parseFloat(this.value) || 0; rxSet('pos_receipt_stamp_angle', String(rxSettings.stampAngle)); window.__stampRaster = null; rxStampRefreshUI(true); rxPush();
         });
@@ -45721,13 +45751,25 @@ function msOpenPurchasesReport(days) {
         $('rx-stamp-remove').addEventListener('click', function () { rxStampSave(''); rxToast('Stamp removed.'); });
         rxStampRefreshUI();
     }
+    function rxPrintOptionsFill() {
+        var $ = function (id) { return document.getElementById(id); };
+        if ($('rx-print-ref')) $('rx-print-ref').checked = !!rxSettings.showRef;
+        if ($('rx-print-barcode')) { $('rx-print-barcode').checked = !!rxSettings.showBarcode; $('rx-print-barcode').disabled = !rxSettings.showRef; }
+        if ($('rx-print-vat')) $('rx-print-vat').checked = !!rxSettings.printVat;
+        if ($('rx-stamp-paid')) $('rx-stamp-paid').checked = !!rxSettings.paidMark;
+    }
+    /* a switch changed (here, or arrived from another till): refresh the boxes and redraw a receipt that is open on screen so the preview matches the print */
+    function rxPrintOptionsApplied() {
+        rxPrintOptionsFill();
+        try { if (typeof receiptRelayoutOpen === 'function') receiptRelayoutOpen(); } catch (e) { /* no receipt open */ }
+    }
     function rxStampRefreshUI(sliderOnly) {
         var $ = function (id) { return document.getElementById(id); };
         if (!$('receipt-stamp-card')) return;
         var has = !!rxSettings.stampSrc;
         if (!sliderOnly) {
             $('rx-stamp-show').checked = !!rxSettings.showStamp;
-            $('rx-stamp-paid').checked = !!rxSettings.paidMark;
+            rxPrintOptionsFill();
             $('rx-stamp-angle').value = String(rxSettings.stampAngle); $('rx-stamp-size').value = String(rxSettings.stampSize);
         }
         $('rx-stamp-angle-val').textContent = String(rxSettings.stampAngle); $('rx-stamp-size-val').textContent = String(rxSettings.stampSize);
@@ -52122,6 +52164,184 @@ function msOpenPurchasesReport(days) {
 })();
 </script>
 <!-- @shared-block:image-remove:end -->
+<!-- @shared-block:pack-cost:begin -->
+<!-- ADD ITEM: COMPACT IMAGE + PACK COST ------------------------------------------
+         zip 253. Two improvements to the Add Item form, written once here and synced into every app that has that form (Aqua POS's Add Product form gets the pack cost only: it has no picture upload).
+           1. COMPACT PICTURE: the optional "Upload image" area is now one slim row - a small preview on the left; the title, the file chooser and the
+              Remove button beside it. Same controls, same ids, same handlers (handleImageUpload, the Remove button of the image-remove block).
+           2. PACK COST: "Bought as a box or pack?" - type what was PAID for the whole box/pack and how many pieces it holds; the cost of ONE piece is
+              worked out and shown (pack price / pieces: KES 1,200 for 24 = KES 50.00) and recalculated on every keystroke.
+                 - An item sold by the piece: the Cost Price field receives the cost of one piece (so profit, stock value and every report use it as before).
+                 - "Also sold individually" ticked: the main fields describe the BOX, so the Cost Price field receives the box price, Pieces per Box receives the
+                   piece count, and the piece cost is the usual box cost / pieces (shown, and offered as the field's placeholder). Nothing about that option changes.
+                 - Leave both pack fields empty and the form works exactly as before (an item bought one at a time).
+              The pack price and piece count are also kept on the item (packPrice, packPieces). Validation: price 0 or more, pieces above 0 (a whole number
+              unless the item is also sold individually, where 50 kg of rice is fine), and both or neither.
+         Hooks (called by each app's saveInventoryItem): packCostCheck() -> false stops the save with a message; packCostFields() -> the fields to store;
+         packCostReset() -> clears the card when the form is cleared. Every entry point is wrapped: a failure here only loses the helper, never the save. -->
+<style>
+    /* 1. compact picture row */
+    #add-item-image-panel { display: grid !important; grid-template-columns: 64px minmax(0, 1fr); grid-template-areas: "pv hd" "pv fl" "pv rm"; column-gap: 12px; row-gap: 4px; align-items: center; text-align: left !important; padding: 8px 12px !important; border-width: 1px !important; border-radius: 10px !important; }
+    #add-item-image-panel > label { grid-area: hd; margin: 0 !important; font-size: 12px; }
+    #add-item-image-panel > #upload-wrapper { grid-area: fl; text-align: left; }
+    #add-item-image-panel > #upload-wrapper p { display: none; }
+    #add-item-image-panel > #upload-wrapper input[type="file"] { padding: 4px 6px; font-size: 12px; min-height: 0; margin: 0; }
+    #add-item-image-panel > .photo-preview { grid-area: pv; width: 64px; height: 64px; margin: 0; object-fit: cover; border-radius: 8px; border-width: 1px; }
+    #add-item-image-panel > #add-image-remove-btn { grid-area: rm; justify-self: start; margin: 0 !important; padding: 3px 10px; font-size: 12px; min-height: 0; }
+    #add-item-image-panel > #add-image-remove-btn:disabled { opacity: .4; cursor: default; }
+    /* 2. pack cost card */
+    #inv-pack-card { border: 1px solid var(--border, #cfd8dc); border-radius: 10px; padding: 10px 12px; background: var(--icon-muted-bg, #f6f8f9); }
+    #inv-pack-card .ipc-title { font-weight: 800; font-size: 13px; margin: 0 0 8px; display: block; }
+    #inv-pack-card .ipc-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    #inv-pack-card .ipc-row label { font-size: 12px; font-weight: 600; margin: 0 0 3px; display: block; }
+    #inv-pack-card .ipc-row input { margin: 0; }
+    #inv-pack-card .ipc-result { margin-top: 8px; padding: 8px 10px; border-radius: 8px; font-size: 13px; font-weight: 700; background: var(--bg-surface, #fff); border: 1px dashed var(--border, #cfd8dc); }
+    #inv-pack-card .ipc-result.ok { background: #eaf7ef; color: #14532d; border: 1px solid #b7e1c6; }
+    #inv-pack-card .ipc-result.bad { background: #fdecea; color: #8a1c13; border: 1px solid #f3b8b2; }
+    #inv-pack-card .ipc-note { font-size: 12px; color: #667; margin-top: 4px; }
+    @media (max-width: 420px) { #inv-pack-card .ipc-row { grid-template-columns: 1fr; } }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__packCost) return; window.__packCost = true;
+    function $(id) { return document.getElementById(id); }
+    function r6(n) { return Math.round(n * 1e6) / 1e6; }
+    function kes(n) { return 'KES ' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function costEl() { return $('inv-wholesale-price') || $('product-cost-input'); }      // Add Item (every app but Aqua) / Aqua POS's Add Product
+    var internal = false;                                 // true while THIS block writes a field (its own input events must not call it back)
+    function fire(el) { internal = true; try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) { /* cosmetic */ } internal = false; }
+    var wrote = { cost: false, units: false };            // true while the field holds a value THIS block wrote (so clearing the pack clears it again, but never a value the user typed)
+
+    /* read the two pack fields -> { empty, pack, pieces, per, error, dual } (error = text; per = cost of one piece when valid) */
+    function read() {
+        var pp = $('inv-pack-price'), pc = $('inv-pack-pieces'), dualEl = $('inv-has-dual-unit');
+        var rawP = pp ? pp.value.trim() : '', rawN = pc ? pc.value.trim() : '';
+        var dual = !!(dualEl && dualEl.checked);
+        var out = { empty: rawP === '' && rawN === '', pack: NaN, pieces: NaN, per: NaN, error: '', dual: dual, partial: false };
+        if (out.empty) return out;
+        out.pack = parseFloat(rawP); out.pieces = parseFloat(rawN);
+        if (rawP !== '' && (!isFinite(out.pack) || out.pack < 0)) { out.error = 'The pack price must be a number, 0 or more.'; return out; }
+        if (rawN !== '' && (!isFinite(out.pieces) || out.pieces <= 0)) { out.error = 'The number of pieces must be more than 0.'; return out; }
+        if (rawN !== '' && !dual && Math.floor(out.pieces) !== out.pieces) { out.error = 'Pieces must be a whole number. (To sell by weight or volume, tick "Also sold individually".)'; return out; }
+        if (rawP === '' || rawN === '') { out.partial = true; out.error = 'Enter both the pack price and the number of pieces.'; return out; }
+        out.per = r6(out.pack / out.pieces);
+        return out;
+    }
+
+    function release() {                                  // the pack fields are empty / invalid: hand the fields back to the user
+        var c = costEl(), u = $('inv-units-per-box'), pw = $('inv-piece-wholesale-price');
+        if (c) { c.readOnly = false; c.title = ''; if (wrote.cost) { c.value = ''; fire(c); } }
+        if (u && wrote.units) { u.value = ''; fire(u); }
+        if (pw) pw.placeholder = '0.00';
+        wrote.cost = false; wrote.units = false;
+    }
+
+    function recalc() {
+        var res = $('inv-pack-result'), card = $('inv-pack-card');
+        if (!res || !card) return null;
+        var r = read();
+        res.className = 'ipc-result';
+        if (r.empty) { res.textContent = 'Optional. Leave empty if you buy this item one at a time.'; release(); return r; }
+        if (r.error) {
+            res.textContent = '⚠️ ' + r.error; res.className = 'ipc-result' + (r.partial ? '' : ' bad');
+            if (!r.partial) release();
+            else if (wrote.cost) release();
+            return r;
+        }
+        var c = costEl(), u = $('inv-units-per-box'), pw = $('inv-piece-wholesale-price');
+        if (r.dual) {
+            if (c) { c.value = String(r.pack); c.readOnly = true; c.title = 'Filled from the box price above'; wrote.cost = true; fire(c); }
+            if (u) { u.value = String(r.pieces); wrote.units = true; fire(u); }
+            if (pw) pw.placeholder = r.per.toFixed(2);
+            res.textContent = 'Cost per piece: ' + kes(r.per) + '  (' + kes(r.pack) + ' ÷ ' + r.pieces + ')  ·  box cost saved as ' + kes(r.pack);
+        } else {
+            if (c) { c.value = String(r.per); c.readOnly = true; c.title = 'Filled from the pack above'; wrote.cost = true; fire(c); }
+            if (u && wrote.units) { u.value = ''; wrote.units = false; fire(u); }
+            if (pw) pw.placeholder = '0.00';
+            res.textContent = 'Cost per piece: ' + kes(r.per) + '  (' + kes(r.pack) + ' ÷ ' + r.pieces + ')  ·  saved as this item\'s Cost Price';
+        }
+        res.className = 'ipc-result ok';
+        return r;
+    }
+
+    function install() {
+        var costInput = costEl();
+        if (!costInput || $('inv-pack-card')) return;
+        var group = costInput.closest ? (costInput.closest('.split-amounts-row') || costInput.closest('.form-group')) : costInput.parentNode;
+        if (!group || !group.parentNode) return;
+        var card = document.createElement('div');
+        card.className = 'form-group'; card.id = 'inv-pack-card';
+        card.innerHTML = '<span class="ipc-title">📦 Bought as a box or pack? <span style="font-weight:normal; color:#7f8c8d;">(optional — works out the cost of one piece)</span></span>'
+            + '<div class="ipc-row">'
+            + '<div><label for="inv-pack-price">Price paid for the whole box / pack (KES)</label><input type="number" id="inv-pack-price" min="0" step="0.01" inputmode="decimal" placeholder="e.g. 1200"></div>'
+            + '<div><label for="inv-pack-pieces">Pieces in the box / pack</label><input type="number" id="inv-pack-pieces" min="0" step="any" inputmode="decimal" placeholder="e.g. 24"></div>'
+            + '</div>'
+            + '<div class="ipc-result" id="inv-pack-result" aria-live="polite"></div>'
+            + '<div class="ipc-note">Cost per piece = pack price ÷ pieces. It becomes the item\'s Cost Price, so profit and stock value use it.</div>';
+        group.parentNode.insertBefore(card, group);
+        ['input', 'change'].forEach(function (ev) {
+            $('inv-pack-price').addEventListener(ev, recalc);
+            $('inv-pack-pieces').addEventListener(ev, recalc);
+        });
+        var dual = $('inv-has-dual-unit');
+        if (dual) dual.addEventListener('change', recalc);
+        // "Pieces per Box" typed in the Also-sold-individually panel stays in step with the pack's piece count
+        var u = $('inv-units-per-box');
+        if (u) u.addEventListener('input', function (e) {
+            if (internal) return;                                             // our own write above
+            var d = $('inv-has-dual-unit');
+            if (d && d.checked && ($('inv-pack-price').value.trim() !== '' || $('inv-pack-pieces').value.trim() !== '')) { $('inv-pack-pieces').value = u.value; wrote.units = false; recalc(); }
+        });
+        // a Service has no cost per piece: hide the card (and release the fields) for that type
+        var orig = window.setAddItemType;
+        if (typeof orig === 'function' && !orig.__pack) {
+            var w = function (t) { var r = orig.apply(this, arguments); try { card.style.display = t === 'service' ? 'none' : ''; if (t === 'service') { $('inv-pack-price').value = ''; $('inv-pack-pieces').value = ''; recalc(); } } catch (e) { /* cosmetic */ } return r; };
+            w.__pack = true; window.setAddItemType = w;
+        }
+        recalc();
+        // keep the compact picture's Remove button honest: greyed out while there is no picture
+        var pv = $('photo-preview-element');
+        var sync = function () { var b = $('add-image-remove-btn'); if (b && pv) b.disabled = /^data:image\/svg\+xml/.test(pv.getAttribute('src') || ''); };
+        if (pv && window.MutationObserver) { new MutationObserver(sync).observe(pv, { attributes: true, attributeFilter: ['src'] }); }
+        setTimeout(sync, 300); setTimeout(sync, 1500);
+    }
+
+    /* ---- hooks for saveInventoryItem ---- */
+    window.packCostCheck = function () {
+        try {
+            var card = $('inv-pack-card');
+            if (!card || card.style.display === 'none') return true;
+            var r = read();
+            if (r.empty) return true;
+            if (r.error) { if (typeof showToast === 'function') showToast(r.error, true); var f = $(r.partial && $('inv-pack-price').value.trim() === '' ? 'inv-pack-price' : 'inv-pack-pieces'); try { if (f) f.focus(); } catch (e) { /* cosmetic */ } return false; }
+            return true;
+        } catch (e) { return true; }
+    };
+    window.packCostFields = function () {
+        try {
+            var card = $('inv-pack-card');
+            if (!card || card.style.display === 'none') return {};
+            var r = read();
+            if (r.empty || r.error || !isFinite(r.per)) return {};
+            return { packPrice: r.pack, packPieces: r.pieces };
+        } catch (e) { return {}; }
+    };
+    window.packCostReset = function () {
+        try {
+            if ($('inv-pack-price')) $('inv-pack-price').value = '';
+            if ($('inv-pack-pieces')) $('inv-pack-pieces').value = '';
+            wrote.cost = false; wrote.units = false;                          // the form reset clears the other fields itself
+            var c = costEl(); if (c) { c.readOnly = false; c.title = ''; }
+            var pw = $('inv-piece-wholesale-price'); if (pw) pw.placeholder = '0.00';
+            recalc();
+        } catch (e) { /* cosmetic */ }
+    };
+    window.packCostRecalc = recalc;
+    if (document.readyState === 'complete') install(); else window.addEventListener('load', install);
+})();
+</script>
+<!-- @shared-block:pack-cost:end -->
 <!-- @shared-block:measure-by-price:begin -->
 <!-- MEASURE BY PRICE (zip 209) ---------------------------------------------------
          For items sold by a measured unit (kg, g, litres, ml, metres ...): the cart line's price menu (Retail / Wholesale / Custom) gets a fourth choice,
@@ -52321,7 +52541,9 @@ function msOpenPurchasesReport(days) {
      OPTION F  Co-operative Bank: Consumer Key + Secret + the token address, STK address and shortcode from the shop's own Co-op API portal
                (Co-op only publishes them behind its login, so they are never guessed). M-Pesa phone prompt; result returns like Daraja's.
      Added by this block alone (the existing panels are untouched): it builds its own panels, adds the two choices to "Force a specific provider",
-     and, when the STK request answers with a paymentUrl, shows the link under the status line. -->
+     and, when the STK request answers with a paymentUrl, shows the link under the status line.
+     zip 249: it also adds the TILL NUMBER box to the Daraja panel. A Till (Buy Goods) shop has two numbers: the Store / Head Office number (the
+     existing Shortcode box; goes into the password) and the Till number that receives the money (this box). Shown only when the type is Till. -->
 <script>
 (function () {
     'use strict';
@@ -52354,6 +52576,7 @@ function msOpenPurchasesReport(days) {
     }
 
     function mount() {
+        mountTill();
         var forced = $('gateway-forced-provider-input');
         if (!forced || $('gw-more')) return;
         var row = forced.closest('.settings-row') || forced.parentNode;
@@ -52391,10 +52614,33 @@ function msOpenPurchasesReport(days) {
             if (!cfg.hasCoopConfig) { $('coop-token-url').value = cfg.coopTokenUrl || ''; $('coop-stk-url').value = cfg.coopStkUrl || ''; $('coop-shortcode').value = cfg.coopShortcode || ''; }
             $('coop-type').value = cfg.coopTransactionType || 'CustomerPayBillOnline';
             if ($('gateway-forced-provider-input')) $('gateway-forced-provider-input').value = cfg.forcedProvider || '';
+            mountTill();
+            if ($('gateway-mpesa-txn-type-input') && cfg.mpesaTransactionType) $('gateway-mpesa-txn-type-input').value = cfg.mpesaTransactionType;
+            if ($('gateway-mpesa-partyb-input')) $('gateway-mpesa-partyb-input').value = cfg.mpesaPartyB || '';
+            syncTill();
             var st = $('payment-gateway-status'), stk = await (await api('/api/mpesa-stkpush')).json();
             if (st && stk.provider === 'pesapal') st.innerHTML = '<p class="settings-msg success">✅ Using Pesapal (payment link) for card / mobile-money payments.</p>';
             if (st && stk.provider === 'coop') st.innerHTML = '<p class="settings-msg success">✅ Using Co-operative Bank for the M-Pesa STK prompt.</p>';
         } catch (e) { /* the panels stay as they are */ }
+    }
+    // zip 249: DARAJA TILL NUMBER (PartyB). Shown only when the transaction type is Till; sent with the Daraja save by the fetch hook below.
+    function syncTill() {
+        var sel = $('gateway-mpesa-txn-type-input'), w = $('gateway-mpesa-partyb-wrap'), sc = $('gateway-mpesa-shortcode-input');
+        if (!sel || !w) return;
+        var till = sel.value === 'CustomerBuyGoodsOnline';
+        w.style.display = till ? 'block' : 'none';
+        if (sc) sc.placeholder = till ? 'Store / Head Office number (for a Till)' : 'Shortcode (Paybill or Till Number)';
+    }
+    function mountTill() {
+        var sel = $('gateway-mpesa-txn-type-input');
+        if (!sel || $('gateway-mpesa-partyb-input')) return;
+        var row = sel.closest('.vat-inline-row') || sel.parentNode;
+        var wrap = document.createElement('div'); wrap.id = 'gateway-mpesa-partyb-wrap'; wrap.style.display = 'none';
+        wrap.innerHTML = '<input type="text" id="gateway-mpesa-partyb-input" inputmode="numeric" placeholder="Till number (the number customers pay to)" autocomplete="off">'
+            + '<p class="settings-hint" style="margin:4px 0 8px;">For a Till, the Shortcode box above must hold the <b>Store / Head Office number</b> from your Safaricom go-live email, and this box your <b>Till number</b>. If both are the same number, leave this one empty.</p>';
+        row.parentNode.insertBefore(wrap, row.nextSibling);
+        sel.addEventListener('change', syncTill);
+        syncTill();
     }
     // keep the new panels in step whenever the app re-checks the gateway
     var orig = window.checkPaymentGatewayStatus;
@@ -52421,7 +52667,15 @@ function msOpenPurchasesReport(days) {
     var f0 = window.fetch;
     if (typeof f0 === 'function' && !f0.__gwMore) {
         window.fetch = function (input, init) {
-            var p = f0.apply(this, arguments), u = typeof input === 'string' ? input : (input && input.url) || '';
+            var u = typeof input === 'string' ? input : (input && input.url) || '';
+            // zip 249: the Daraja save carries the Till number too (only when the type is Till and a number was typed)
+            if (/\/api\/gateway-config(\?|$)/.test(u) && init && /POST/i.test(init.method || '') && typeof init.body === 'string') {
+                try {
+                    var b = JSON.parse(init.body), pb = $('gateway-mpesa-partyb-input');
+                    if (b && b.mpesaTransactionType === 'CustomerBuyGoodsOnline' && pb && pb.value.trim()) { b.mpesaPartyB = pb.value.trim(); init = Object.assign({}, init, { body: JSON.stringify(b) }); }
+                } catch (e) { /* send it as it was */ }
+            }
+            var p = f0.call(this, input, init);
             if (/\/api\/mpesa-stkpush(\?|$)/.test(u) && init && /POST/i.test(init.method || '')) {
                 var phone = ''; try { phone = JSON.parse(init.body).phone || ''; } catch (e) { /* none */ }
                 clearCard();

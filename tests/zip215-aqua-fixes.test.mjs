@@ -63,9 +63,9 @@ test('3. PAID / UNPAID stamp mark: setting syncs, credit sales are UNPAID, every
   assert.equal(w.eval("rxPaidStateOf({ paymentMethod: 'bill', paid: false })"), 'unpaid');
   assert.equal(w.eval("rxPaidStateOf({ paymentMethod: 'pod', paid: false })"), 'unpaid');
   assert.equal(w.eval("rxPaidStateOf({ paymentMethod: 'bill', paid: true })"), 'paid', 'a bill that has been settled');
-  const k1 = w.eval("(function(){ currentReceiptSale = { paymentMethod: 'cash' }; return receiptStampRasterKey(); })()");
-  const k2 = w.eval("(function(){ currentReceiptSale = { paymentMethod: 'bill', paid: false }; return receiptStampRasterKey(); })()");
-  assert.notEqual(k1, k2, 'the printed picture is re-made when the state changes');
+  // zip 253: the state is printed as wording on the TOTAL line (no separate picture), so the wording is what must change with it
+  assert.equal(w.eval("receiptPaidWording({ paymentMethod: 'cash' })"), 'PAID');
+  assert.equal(w.eval("receiptPaidWording({ paymentMethod: 'bill', paid: false })"), 'UNPAID');
   b.close();
 });
 

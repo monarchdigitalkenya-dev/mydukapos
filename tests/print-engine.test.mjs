@@ -70,7 +70,7 @@ for (const app of APPS) {
 }
 
 test('the reference receipt (attached photo) on 58 mm: every field on its own line, columns in line, VAT preserved', async () => {
-  const { w, d, close } = await boot('index.html', { storage: { pos_biz_name: 'NILE SPORTS WEAR', pos_receipt_contact: '0704472629, 0725533442', pos_receipt_extra_info: 'NORWICH UNION\nMAMA NGINA STREET' }, wait: 900 });
+  const { w, d, close } = await boot('index.html', { storage: { pos_receipt_print_vat: 'true', pos_biz_name: 'NILE SPORTS WEAR', pos_receipt_contact: '0704472629, 0725533442', pos_receipt_extra_info: 'NORWICH UNION\nMAMA NGINA STREET' }, wait: 900 });
   w.eval("receiptWidth='58'; renderReceipt(" + JSON.stringify(REF_SALE) + ')');
   const g = gridLines(d).map((l) => l.replace(/\s+$/, ''));
   assert.ok(g.includes('Predator Shin-Guards (Black)'), 'the name on a line of its own');
@@ -102,7 +102,7 @@ test("THIS device's printer width overrides the shop setting (the 58 mm printer 
 });
 
 test('a receipt laid out on an 80 mm till and printed by a 58 mm printer (print relay) is squeezed, never broken mid-number', async () => {
-  const { w, close } = await boot('index.html', { wait: 900 });
+  const { w, close } = await boot('index.html', { storage: { pos_receipt_print_vat: 'true' }, wait: 900 });
   w.eval("receiptWidth='80'; renderReceipt(" + JSON.stringify(REF_SALE) + ')');
   const text80 = w.eval('lastReceiptText');
   w.eval("receiptWidth='58'");

@@ -52,7 +52,10 @@
         stampAngle: (function () { var n = parseFloat(rxGet('pos_receipt_stamp_angle')); return isFinite(n) ? n : -8; })(),
         stampSize: (function () { var n = parseFloat(rxGet('pos_receipt_stamp_size')); return isFinite(n) ? n : 70; })(),
         showStamp: rxGet('pos_receipt_show_stamp') === 'true',
-        paidMark: rxGet('pos_receipt_stamp_paid') === 'true',                // zip 215: print a PAID / UNPAID mark under the stamp
+        paidMark: rxGet('pos_receipt_stamp_paid') === 'true',                // zip 215/253: print PAID / UNPAID as wording on the TOTAL line (off by default)
+        showRef: rxGet('pos_receipt_show_ref') !== 'false',                   // zip 253 (was Hotel-only): the "Ref: ..." line. On unless switched off
+        showBarcode: rxGet('pos_receipt_show_barcode') === 'true',            // zip 253: the scannable barcode under the reference. OFF by default
+        printVat: rxGet('pos_receipt_print_vat') === 'true',                  // zip 253: VAT class letters + the VAT table. OFF by default
         billsLocked: rxGet('pos_bills_locked') === 'true',
         fontPt: (function () { var n = parseFloat(rxGet('pos_receipt_font_pt')); return isFinite(n) && n >= 5 && n <= 20 ? Math.round(n * 2) / 2 : 7; })(),   // zip 158: the receipt letter size, in points (7 = standard)
     };
@@ -67,7 +70,7 @@
         return n;
     }
     function extraSettingsCollect() {
-        var o = { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, receiptStampPaid: rxSettings.paidMark, billsLocked: rxSettings.billsLocked };
+        var o = { receiptStampSrc: rxSettings.stampSrc, receiptStampAngle: rxSettings.stampAngle, receiptStampSize: rxSettings.stampSize, receiptShowStamp: rxSettings.showStamp, receiptStampPaid: rxSettings.paidMark, receiptShowRefNumber: rxSettings.showRef, receiptShowBarcode: rxSettings.showBarcode, receiptPrintVat: rxSettings.printVat, billsLocked: rxSettings.billsLocked };
         // the letter size travels only once THIS device has one of its own (chosen here or received): a fresh device's default 7 must never replace the shop's real size
         if (rxGet('pos_receipt_font_pt') !== null) o.receiptFontPt = rxSettings.fontPt;
         o.payMethods = posPayAccepted();                      // zip 163: which payment methods this shop accepts (every till shows only those)
@@ -97,13 +100,17 @@
         if (typeof data.receiptStampSize === 'number' && isFinite(data.receiptStampSize) && data.receiptStampSize !== rxSettings.stampSize) { rxSettings.stampSize = data.receiptStampSize; rxSet('pos_receipt_stamp_size', String(data.receiptStampSize)); changed = true; }
         if (typeof data.receiptShowStamp === 'boolean' && data.receiptShowStamp !== rxSettings.showStamp) { rxSettings.showStamp = data.receiptShowStamp; rxSet('pos_receipt_show_stamp', String(data.receiptShowStamp)); changed = true; }
         if (typeof data.receiptStampPaid === 'boolean' && data.receiptStampPaid !== rxSettings.paidMark) { rxSettings.paidMark = data.receiptStampPaid; rxSet('pos_receipt_stamp_paid', String(data.receiptStampPaid)); changed = true; }
+        /* zip 253: the three receipt switches. Same payload names Hotel always used for the first two, so older saved settings still arrive. */
+        [['receiptShowRefNumber', 'showRef', 'pos_receipt_show_ref'], ['receiptShowBarcode', 'showBarcode', 'pos_receipt_show_barcode'], ['receiptPrintVat', 'printVat', 'pos_receipt_print_vat']].forEach(function (t) {
+            if (typeof data[t[0]] === 'boolean' && data[t[0]] !== rxSettings[t[1]]) { rxSettings[t[1]] = data[t[0]]; rxSet(t[2], String(data[t[0]])); changed = true; }
+        });
         var lockChanged = false;
         if (typeof data.billsLocked === 'boolean' && data.billsLocked !== rxSettings.billsLocked) { rxSettings.billsLocked = data.billsLocked; rxSet('pos_bills_locked', String(data.billsLocked)); lockChanged = true; }
         var fontChanged = false;
         if (typeof data.receiptFontPt === 'number' && isFinite(data.receiptFontPt) && data.receiptFontPt >= 5 && data.receiptFontPt <= 20 && Math.round(data.receiptFontPt * 2) / 2 !== rxSettings.fontPt) { receiptFontPtStore(data.receiptFontPt); fontChanged = true; }
         else if (typeof data.receiptFontPt === 'number' && isFinite(data.receiptFontPt) && data.receiptFontPt >= 5 && data.receiptFontPt <= 20 && rxGet('pos_receipt_font_pt') === null) receiptFontPtStore(data.receiptFontPt);
         if (fontChanged) { try { receiptApplyPaperVars(); syncDevicePaperWidthUI(); receiptRelayoutOpen(); } catch (e) { /* the settings page / a receipt may not be open */ } }
-        if (changed) { window.__stampRaster = null; try { rxStampRefreshUI(); } catch (e) { /* the settings page may not be open */ } }
+        if (changed) { window.__stampRaster = null; try { rxStampRefreshUI(); } catch (e) { /* the settings page may not be open */ } try { rxPrintOptionsApplied(); } catch (e) { /* nothing open */ } }
         if (lockChanged) { try { billsLockDecorate(); } catch (e) { /* the Bills tab may not be open */ } }
     }
 
@@ -216,26 +223,23 @@
         if (credit && sale.paid !== true) return 'unpaid';
         return 'paid';
     }
-    var rxPaidImgCache = {};
-    function rxPaidStampSrc(state) {
-        if (!rxPaidImgCache[state]) rxPaidImgCache[state] = rxStampFromText([state === 'paid' ? 'PAID' : 'UNPAID'], state === 'paid' ? 'green' : 'red', 'rect');
-        return rxPaidImgCache[state];
-    }
+    /* zip 253: the wording itself. The receipt builder puts it ON the total line ("TOTAL - PAID   KES 500.00"): no picture, no space of its own. '' = switched off. */
+    function receiptPaidWording(sale) { var st = rxPaidStateOf(sale); return st === 'paid' ? 'PAID' : st === 'unpaid' ? 'UNPAID' : ''; }
+    function receiptRefOn() { return !!rxSettings.showRef; }
+    function receiptBarcodeOn() { return !!rxSettings.showBarcode && !!rxSettings.showRef; }      // no reference = nothing to encode
+    function receiptVatOn() { return !!rxSettings.printVat; }
     function rxCurrentSale() { try { return typeof currentReceiptSale !== 'undefined' ? currentReceiptSale : null; } catch (e) { return null; } }
 
     /* what the receipt (screen, browser print, PDF-less) shows: the stamp between the header and the item lines, tilted by the chosen angle */
     function receiptStampBlockHtml(sale) {
         var shop = !!(rxSettings.showStamp && rxSettings.stampSrc);
-        var state = rxPaidStateOf(sale || rxCurrentSale());
-        var paidSrc = state ? rxPaidStampSrc(state) : '';
-        if (!shop && !paidSrc) return '';
+        if (!shop) return '';
         var size = Math.max(30, Math.min(100, rxSettings.stampSize || 70));
         var ang = Math.max(-45, Math.min(45, rxSettings.stampAngle || 0));
         var pad = Math.round(6 + Math.abs(Math.sin(ang * Math.PI / 180)) * 26);
         var img = function (src, w, a) { return '<img alt="" src="' + rxEsc(src) + '" style="width:' + w + '%; max-width:100%; height:auto; transform:rotate(' + a + 'deg); mix-blend-mode:multiply; opacity:.93; -webkit-print-color-adjust:exact; print-color-adjust:exact;">'; };
         return '<div class="rg-stamp" style="text-align:center; padding:' + pad + 'px 0; line-height:0;">'
             + (shop ? img(rxSettings.stampSrc, size, ang) : '')
-            + (paidSrc ? '<div style="padding-top:' + (shop ? 6 : 0) + 'px;">' + img(paidSrc, Math.round(size * 0.55), ang) + '</div>' : '')
             + '</div>';
     }
 
@@ -244,13 +248,12 @@
         var d = String(rxSettings.stampSrc || '');
         var dots = 384; try { dots = receiptLogoDots(); } catch (e) { /* default */ }
         var shop = rxSettings.showStamp && rxSettings.stampSrc ? 1 : 0;
-        return 'v2:' + dots + ':' + rxSettings.stampAngle + ':' + rxSettings.stampSize + ':' + shop + ':' + d.length + ':' + d.slice(-40) + ':' + (rxPaidStateOf(rxCurrentSale()) || '-');
+        return 'v2:' + dots + ':' + rxSettings.stampAngle + ':' + rxSettings.stampSize + ':' + shop + ':' + d.length + ':' + d.slice(-40);
     }
     async function prepareReceiptStampRaster() {
         try {
             var shop = !!(rxSettings.showStamp && rxSettings.stampSrc);
-            var state = rxPaidStateOf(rxCurrentSale());
-            if (!shop && !state) { window.__stampRaster = null; return null; }
+            if (!shop) { window.__stampRaster = null; return null; }
             var key = receiptStampRasterKey();
             if (window.__stampRaster && window.__stampRaster.key === key) return window.__stampRaster.bytes;
             var dots = receiptLogoDots();
@@ -267,7 +270,6 @@
             };
             var pct = Math.max(30, Math.min(100, rxSettings.stampSize || 70));
             if (shop) await addPiece(rxSettings.stampSrc, pct, 220);
-            if (state) await addPiece(rxPaidStampSrc(state), Math.round(pct * 0.55), 110);
             var W = Math.max.apply(null, pieces.map(function (p) { return p.bw; })), H = pieces.reduce(function (t, p) { return t + p.bh; }, 0);
             var cv = rxCanvas(W, H);
             if (!cv) { window.__stampRaster = null; return null; }
@@ -288,7 +290,7 @@
     }
     function receiptStampRasterBytes() {
         try {
-            if (!((rxSettings.showStamp && rxSettings.stampSrc) || rxPaidStateOf(rxCurrentSale()))) return null;
+            if (!(rxSettings.showStamp && rxSettings.stampSrc)) return null;
             var r = window.__stampRaster;
             return r && r.bytes && r.key === receiptStampRasterKey() ? r.bytes : null;
         } catch (e) { return null; }
@@ -299,6 +301,19 @@
         var section = document.getElementById('settings-section-receipts');
         if (!section || document.getElementById('receipt-stamp-card')) return;
         var card = document.createElement('div');
+        var what = document.createElement('div');
+        what.id = 'receipt-print-options-card';
+        var sw = function (id, title, hint) { return '<label style="display:flex; align-items:flex-start; gap:10px; font-size:13px; font-weight:normal; padding:8px 10px; border:1px solid #e3e8ee; border-radius:8px; background:#fafbfc;"><input type="checkbox" id="' + id + '" style="width:auto; margin-top:2px;"><span><b>' + title + '</b><br><span style="color:#667;">' + hint + '</span></span></label>'; };
+        what.innerHTML =
+            '<hr class="settings-divider">'
+            + '<h4>🧾 What prints on the receipt</h4>'
+            + '<p style="font-size:13px; color:#555; margin:0 0 8px;">These switches apply to every receipt, bill and invoice this shop prints (on screen, system print, USB and Bluetooth), and to every till and branch that shares these settings.</p>'
+            + '<div class="settings-row" style="flex-direction:column; align-items:stretch; gap:8px;">'
+            + sw('rx-print-ref', 'Reference number', 'The "Ref: ..." line at the bottom, used to look a sale up again.')
+            + sw('rx-print-barcode', 'Barcode', 'A scannable barcode of the reference number under it. Off by default.')
+            + sw('rx-print-vat', 'VAT / tax', 'The tax class letter after each amount and the VAT summary table. Off by default.')
+            + sw('rx-stamp-paid', 'PAID / UNPAID wording', 'Written on the TOTAL line itself (UNPAID for Pay Later, Pay on Delivery and bills still owing). Off by default.')
+            + '</div>';
         card.id = 'receipt-stamp-card';
         card.innerHTML =
             '<hr class="settings-divider">'
@@ -306,7 +321,6 @@
             + '<p style="font-size:13px; color:#555; margin:0 0 8px;">Prints a stamp just above the item list, slightly tilted like one pressed by hand. Make one from your shop details below, or upload a picture of your own stamp (press it on plain white paper and take a photo or scan). Thermal printers print it in black and white.</p>'
             + '<div class="settings-row" style="flex-direction:column; align-items:stretch; gap:8px;">'
             + '<label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:normal;"><input type="checkbox" id="rx-stamp-show" style="width:auto;"> Print the stamp on receipts and bills</label>'
-            + '<label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:normal;"><input type="checkbox" id="rx-stamp-paid" style="width:auto;"> Also print <b style="color:#1e6b3a;">PAID</b> or <b style="color:#b3261e;">UNPAID</b> under the stamp (UNPAID for Pay Later / Pay on Delivery / bills still owing) — works even without a shop stamp</label>'
             + '<div id="rx-stamp-preview-wrap" style="display:none; text-align:center; padding:18px 0; background:#fff; border:1px dashed #cfd6dd; border-radius:8px;"><img id="rx-stamp-preview" alt="Stamp preview" style="max-width:70%; max-height:140px;"></div>'
             + '<p id="rx-stamp-status" class="settings-msg">No stamp yet.</p>'
             + '<div style="border:1px solid #e3e8ee; border-radius:8px; padding:10px; background:#fafbfc;">'
@@ -335,18 +349,25 @@
         if (anchor) {
             var before = anchor.previousElementSibling;                   // the divider above that heading
             var ref = before && before.tagName === 'HR' ? before : anchor;
-            ref.parentNode.insertBefore(card, ref);
+            ref.parentNode.insertBefore(what, ref); ref.parentNode.insertBefore(card, ref);
         } else {
-            (document.getElementById('receipt-settings-editable-area') || section).appendChild(card);
+            var host = document.getElementById('receipt-settings-editable-area') || section;
+            host.appendChild(what); host.appendChild(card);
         }
         var $ = function (id) { return document.getElementById(id); };
         $('rx-stamp-show').addEventListener('change', function () {
             rxSettings.showStamp = this.checked; rxSet('pos_receipt_show_stamp', String(this.checked)); window.__stampRaster = null; rxStampRefreshUI(); rxPush();
         });
-        $('rx-stamp-paid').addEventListener('change', function () {
-            rxSettings.paidMark = this.checked; rxSet('pos_receipt_stamp_paid', String(this.checked)); window.__stampRaster = null; rxPush();
-            rxToast(this.checked ? '🔏 Receipts will say PAID or UNPAID.' : 'PAID / UNPAID mark turned off.');
-        });
+        var flip = function (id, key, store, onMsg, offMsg) {
+            $(id).addEventListener('change', function () {
+                rxSettings[key] = this.checked; rxSet(store, String(this.checked)); window.__stampRaster = null; rxPrintOptionsApplied(); rxPush();
+                rxToast(this.checked ? onMsg : offMsg);
+            });
+        };
+        flip('rx-print-ref', 'showRef', 'pos_receipt_show_ref', 'Receipts print the reference number.', 'Reference number (and barcode) turned off.');
+        flip('rx-print-barcode', 'showBarcode', 'pos_receipt_show_barcode', 'Receipts print a barcode under the reference.', 'Barcode turned off.');
+        flip('rx-print-vat', 'printVat', 'pos_receipt_print_vat', 'Receipts print VAT / tax.', 'VAT / tax turned off on receipts.');
+        flip('rx-stamp-paid', 'paidMark', 'pos_receipt_stamp_paid', 'Receipts say PAID or UNPAID on the total line.', 'PAID / UNPAID wording turned off.');
         $('rx-stamp-angle').addEventListener('input', function () {
             rxSettings.stampAngle = parseFloat(this.value) || 0; rxSet('pos_receipt_stamp_angle', String(rxSettings.stampAngle)); window.__stampRaster = null; rxStampRefreshUI(true); rxPush();
         });
@@ -375,13 +396,25 @@
         $('rx-stamp-remove').addEventListener('click', function () { rxStampSave(''); rxToast('Stamp removed.'); });
         rxStampRefreshUI();
     }
+    function rxPrintOptionsFill() {
+        var $ = function (id) { return document.getElementById(id); };
+        if ($('rx-print-ref')) $('rx-print-ref').checked = !!rxSettings.showRef;
+        if ($('rx-print-barcode')) { $('rx-print-barcode').checked = !!rxSettings.showBarcode; $('rx-print-barcode').disabled = !rxSettings.showRef; }
+        if ($('rx-print-vat')) $('rx-print-vat').checked = !!rxSettings.printVat;
+        if ($('rx-stamp-paid')) $('rx-stamp-paid').checked = !!rxSettings.paidMark;
+    }
+    /* a switch changed (here, or arrived from another till): refresh the boxes and redraw a receipt that is open on screen so the preview matches the print */
+    function rxPrintOptionsApplied() {
+        rxPrintOptionsFill();
+        try { if (typeof receiptRelayoutOpen === 'function') receiptRelayoutOpen(); } catch (e) { /* no receipt open */ }
+    }
     function rxStampRefreshUI(sliderOnly) {
         var $ = function (id) { return document.getElementById(id); };
         if (!$('receipt-stamp-card')) return;
         var has = !!rxSettings.stampSrc;
         if (!sliderOnly) {
             $('rx-stamp-show').checked = !!rxSettings.showStamp;
-            $('rx-stamp-paid').checked = !!rxSettings.paidMark;
+            rxPrintOptionsFill();
             $('rx-stamp-angle').value = String(rxSettings.stampAngle); $('rx-stamp-size').value = String(rxSettings.stampSize);
         }
         $('rx-stamp-angle-val').textContent = String(rxSettings.stampAngle); $('rx-stamp-size-val').textContent = String(rxSettings.stampSize);

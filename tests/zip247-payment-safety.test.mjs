@@ -51,6 +51,8 @@ const call = async (mod, method, ctx, { body, proof, extra = {}, query = '' } = 
   return { status: res.status, d, res };
 };
 const DARAJA = (n = '1') => ({ mpesaConsumerKey: 'ck' + n, mpesaConsumerSecret: 'SECRETVALUE' + n, mpesaShortcode: '174379', mpesaPasskey: 'pk' + n });
+// zip 249: keys saved while the environment is PRODUCTION (real money) — replacing THESE is what the hold guards; sandbox keys are replaced at once (see zip249 test)
+const LIVE = (n = '1') => ({ ...DARAJA(n), mpesaEnv: 'production' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------------------------------------------------------- 1. the encryption box
@@ -118,7 +120,7 @@ test('a shop with NO password has nothing to prove with: it passes (and is still
 test('replacing a key the shop already has is HELD: the old key keeps working, GET shows the waiting change, it takes effect after the hold; first-time setup, env mode and the provider choice are immediate; a hold can be cancelled', async () => {
   const s = await shop({ env: { PAYMENT_CHANGE_COOLDOWN_MIN: '0.002' } });      // 0.002 min = 120 ms
   const P = adminProof('shoppass');
-  assert.equal((await call(gw, 'POST', s, { body: DARAJA('1'), proof: P })).d.held, null, 'first-time setup: immediate');
+  assert.equal((await call(gw, 'POST', s, { body: LIVE('1'), proof: P })).d.held, null, 'first-time setup: immediate');
   const r = await call(gw, 'POST', s, { body: { mpesaConsumerKey: 'NEWKEY', mpesaShortcode: '999999' }, proof: P });
   assert.equal(r.status, 200); assert.deepEqual(r.d.held.providers, ['daraja']); assert.ok(r.d.held.effectiveAt > Date.now() - 50);
   let cfg = await gwl.loadGatewayConfig(s.env, s.id);
@@ -137,7 +139,7 @@ test('replacing a key the shop already has is HELD: the old key keeps working, G
 
   // cancel
   const s2 = await shop({ env: { PAYMENT_CHANGE_COOLDOWN_MIN: '60' } });
-  await call(gw, 'POST', s2, { body: DARAJA('1'), proof: P });
+  await call(gw, 'POST', s2, { body: LIVE('1'), proof: P });
   await call(gw, 'POST', s2, { body: { mpesaShortcode: '555555' }, proof: P });
   assert.equal((await call(gw, 'DELETE', s2, { body: { cancelPending: true } })).status, 401, 'cancelling needs the proof too');
   const c = await call(gw, 'DELETE', s2, { body: { cancelPending: true }, proof: P });
@@ -147,7 +149,7 @@ test('replacing a key the shop already has is HELD: the old key keeps working, G
   // the same value saved again is no change at all; hold 0 disables the hold
   assert.equal((await call(gw, 'POST', s2, { body: { mpesaShortcode: '174379' }, proof: P })).d.held, null);
   const s3 = await shop({ env: { PAYMENT_CHANGE_COOLDOWN_MIN: '0' } });
-  await call(gw, 'POST', s3, { body: DARAJA('1'), proof: P });
+  await call(gw, 'POST', s3, { body: LIVE('1'), proof: P });
   assert.equal((await call(gw, 'POST', s3, { body: { mpesaShortcode: '1' }, proof: P })).d.held, null);
   assert.equal((await gwl.loadGatewayConfig(s3.env, s3.id)).mpesaShortcode, '1');
   // resetting a provider drops its held change with it
@@ -200,7 +202,7 @@ test('every change alerts the owner by SMS (the shop\'s own account) - what chan
   globalThis.fetch = async (url, init) => { sent.push({ url: String(url), body: String(init && init.body) }); return new Response(JSON.stringify({ SMSMessageData: { Recipients: [{ status: 'Success', number: '+254712345678' }] } }), { status: 201, headers: { 'Content-Type': 'application/json' } }); };
   try {
     const P = adminProof('shoppass');
-    const first = await call(gw, 'POST', s, { body: DARAJA('1'), proof: P });
+    const first = await call(gw, 'POST', s, { body: LIVE('1'), proof: P });
     assert.equal(first.d.alerted, true, 'first-time setup is alerted too: ' + JSON.stringify(first.d));
     const held = await call(gw, 'POST', s, { body: { mpesaShortcode: '424242' }, proof: P });
     assert.equal(held.d.alerted, true);

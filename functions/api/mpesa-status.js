@@ -53,10 +53,12 @@ function darajaBaseUrl(cfg) {
   return envName === 'production' ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke';
 }
 
-function darajaTimestamp() {
-  const d = new Date();
+// zip 249 (same as mpesa-stkpush.js): Safaricom's clock is Nairobi time (UTC+3). The Cloudflare Worker's own clock is UTC, so the timestamp is built from UTC + 3 hours rather than
+// from the server's local time (the Password is made from the same value, so the two always agree).
+function darajaTimestamp(now = Date.now()) {
+  const d = new Date(now + 3 * 3600 * 1000);
   const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
 }
 
 async function darajaAccessToken(cfg) {
@@ -99,7 +101,9 @@ async function queryDarajaStatus(checkoutRequestId, cfg) {
 
 async function refreshFromDaraja(record, checkoutRequestId, cfg) {
   const queryResult = await queryDarajaStatus(checkoutRequestId, cfg);
-  if (queryResult && String(queryResult.ResultCode) !== '0') {
+  // zip 250: only a real answer counts. A reply that is an error object ("being processed", throttled, no ResultCode at all) used to read as
+  // String(undefined) !== '0' and mark a prompt the customer was still typing the PIN for as FAILED.
+  if (queryResult && queryResult.ResultCode !== undefined && queryResult.ResultCode !== null && queryResult.ResultCode !== '' && String(queryResult.ResultCode) !== '0') {
     return {
       ...record,
       status: 'failed',
