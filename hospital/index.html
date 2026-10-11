@@ -52830,14 +52830,17 @@ function msOpenPurchasesReport(days) {
     var STEP_ICON = { ok: '✅', fail: '❌', warn: '⚠️', skip: '⏭️', info: 'ℹ️' }, STEP_BG = { ok: '#eafaf1', fail: '#fdecea', warn: '#fff6e0', info: '#eaf2fb', skip: 'rgba(127,140,141,.12)' };
     function mountCheck() {
         if ($('daraja-check-btn')) return;
-        var save = document.querySelector('button[onclick^="saveGatewayDarajaConfig"]');
-        if (!save) return;
-        var wrap = document.createElement('div'); wrap.id = 'daraja-check-wrap';
-        wrap.innerHTML = '<button type="button" class="settings-small-btn" id="daraja-check-btn" style="margin-top:8px;">🔎 Test Daraja connection</button>'
-            + '<p class="settings-hint" style="margin:4px 0 0;">Checks each step with Safaricom and shows where it stops. Sends no money and no prompt.</p>'
-            + '<div id="daraja-check-out" style="margin-top:8px;"></div>';
-        save.parentNode.insertBefore(wrap, save.nextSibling);
-        $('daraja-check-btn').addEventListener('click', runDarajaCheck);
+        var fields = $('daraja-config-fields'), panel = $('daraja-configured-panel'), save = document.querySelector('button[onclick^="saveGatewayDarajaConfig"]');
+        if (!fields || !panel || !save) return;
+        // zip 257: TEST BEFORE SAVE. The button beside Save tests what is typed in the boxes (nothing is saved); the one in the "configured" panel tests what is saved.
+        var t = document.createElement('button'); t.type = 'button'; t.id = 'daraja-check-btn'; t.className = 'settings-small-btn'; t.style.marginRight = '8px'; t.textContent = '🔎 Test these details (before saving)';
+        save.parentNode.insertBefore(t, save);
+        var t2 = document.createElement('button'); t2.type = 'button'; t2.id = 'daraja-check-saved-btn'; t2.className = 'settings-small-btn'; t2.style.margin = '0 8px 6px 0'; t2.textContent = '🔎 Test the saved connection';
+        panel.insertBefore(t2, panel.firstChild.nextSibling);
+        var out = document.createElement('div'); out.id = 'daraja-check-wrap';
+        out.innerHTML = '<p class="settings-hint" style="margin:4px 0 0;">Checks each step with Safaricom and shows where it stops. Sends no money and no prompt, and saves nothing.</p><div id="daraja-check-out" style="margin-top:8px;"></div>';
+        panel.parentNode.insertBefore(out, panel.nextSibling);
+        t.addEventListener('click', function () { runDarajaCheck(true); }); t2.addEventListener('click', function () { runDarajaCheck(false); });
     }
     function renderCheck(d) {
         var out = $('daraja-check-out'); if (!out) return;
@@ -52848,15 +52851,20 @@ function msOpenPurchasesReport(days) {
         });
         out.innerHTML = h + '</div>';
     }
-    async function runDarajaCheck() {
-        var b = $('daraja-check-btn'), out = $('daraja-check-out');
-        b.disabled = true; out.innerHTML = '<p class="settings-hint">Checking with Safaricom… (up to 30 seconds)</p>';
+    async function runDarajaCheck(typed) {
+        var btns = [$('daraja-check-btn'), $('daraja-check-saved-btn')], out = $('daraja-check-out'), body = {};
+        if (typed) {
+            [['mpesaEnv', 'gateway-mpesa-env-input'], ['mpesaConsumerKey', 'gateway-mpesa-consumer-key-input'], ['mpesaConsumerSecret', 'gateway-mpesa-consumer-secret-input'], ['mpesaShortcode', 'gateway-mpesa-shortcode-input'], ['mpesaPasskey', 'gateway-mpesa-passkey-input'], ['mpesaTransactionType', 'gateway-mpesa-txn-type-input'], ['mpesaPartyB', 'gateway-mpesa-partyb-input']].forEach(function (p) { var el = $(p[1]); if (el && String(el.value).trim()) body[p[0]] = String(el.value).trim(); });
+            if (body.mpesaTransactionType !== 'CustomerBuyGoodsOnline') delete body.mpesaPartyB;
+        }
+        btns.forEach(function (b) { if (b) b.disabled = true; });
+        out.innerHTML = '<p class="settings-hint">Checking with Safaricom… (up to 30 seconds)</p>';
         try {
-            var r = await api('/api/daraja-check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }), d = {};
+            var r = await api('/api/daraja-check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), d = {};
             try { d = await r.json(); } catch (e) { /* none */ }
             if (!r.ok || !d.steps) out.innerHTML = '<p class="settings-msg error">' + esc(d.error || ('The test could not run (HTTP ' + r.status + ').')) + '</p>'; else renderCheck(d);
         } catch (e) { out.innerHTML = '<p class="settings-msg error">Could not reach the server — check your internet and try again.</p>'; }
-        b.disabled = false;
+        btns.forEach(function (b) { if (b) b.disabled = false; });
     }
     // keep the new panels in step whenever the app re-checks the gateway
     var orig = window.checkPaymentGatewayStatus;

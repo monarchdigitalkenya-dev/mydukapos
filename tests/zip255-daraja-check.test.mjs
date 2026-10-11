@@ -106,3 +106,30 @@ test('zip 256: a held Till/shortcode change is named in the test', async () => {
   const r = await run(s, async (u) => String(u).includes('/oauth/') ? J({ error: 'x' }, 400) : J({}));
   assert.equal(byId(r.d, 'held').status, 'warn'); assert.match(byId(r.d, 'held').detail, /Shortcode/);
 });
+
+test('zip 257: typed details are tested WITHOUT being saved; bad input is refused', async () => {
+  const s = await shop();
+  const seen = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = async (u, init) => { seen.push({ u: String(u), auth: init && init.headers && init.headers.Authorization }); return String(u).includes('/oauth/') ? J({ access_token: 't' }) : J({ errorMessage: 'The transaction is being processed' }, 500); };
+  let res;
+  try {
+    res = await chk.onRequestPost({ request: new Request(`https://x.pages.dev/api/daraja-check?c=${s.id}`, { method: 'POST', body: JSON.stringify({ mpesaEnv: 'production', mpesaConsumerKey: 'KK', mpesaConsumerSecret: 'SS', mpesaShortcode: '6075378', mpesaPasskey: 'PP', mpesaTransactionType: 'CustomerBuyGoodsOnline', mpesaPartyB: '4111260' }) }), env: s.env, waitUntil() {} });
+  } finally { globalThis.fetch = real; }
+  const d = await res.json();
+  assert.equal(d.tested, 'typed'); assert.match(byId(d, 'sent').detail, /6075378.*4111260/);
+  assert.ok(seen[0].u.startsWith('https://api.safaricom.co.ke/'));
+  const saved = await gwl.loadGatewayConfig(s.env, s.id);
+  assert.ok(!saved.mpesaConsumerKey, 'nothing was saved');
+  const bad = chk.typedOverlay({ mpesaConsumerKey: 'a b', mpesaShortcode: '12ab' }, {});
+  assert.ok(bad.error);
+  assert.deepEqual(chk.typedOverlay({ mpesaConsumerKey: '  ' }, {}).used, []);
+});
+
+test('zip 257: both test buttons are wired in the pages', async () => {
+  const fs = await import('node:fs');
+  for (const f of ['index.html', 'hotel/index.html']) {
+    const html = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    assert.match(html, /Test these details \(before saving\)/, f); assert.match(html, /daraja-check-saved-btn/, f);
+  }
+});

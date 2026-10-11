@@ -2,6 +2,10 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 257 - Test BEFORE saving Daraja details
+- **"🔎 Test these details (before saving)"** now sits beside Save Daraja Credentials and tests exactly what is typed in the boxes (Environment, keys, Shortcode, Passkey, Type, Till number) without saving anything; an empty box falls back to what is saved. After saving, "🔎 Test the saved connection" is shown in the configured panel (the old button vanished once the keys were saved).
+- Typed values are checked (digits only for numbers, no spaces in keys) and never echoed back. Same guards as saving: licence, device, Admin/manager, hourly limit.
+
 ## Zip 256 - Daraja test explains Safaricom's failure reasons and shows what is sent
 - **Test Daraja connection** now also shows (a) what is sent to Safaricom: Type, BusinessShortCode and the receiver (PartyB), (b) which saved changes are still held for 60 minutes (field names only), and (c) the last Safaricom failure texts from this shop's prompts ("Merchant does not exist", "Agent number and Store number do not match", "unresolved reason type") with what each means for the settings.
 - Same button in every app that has Option B (shop, hotel, pharmacy, production, services, hospital, water). Tests added to `tests/zip255-daraja-check.test.mjs`. No router change, no migration.

@@ -89,6 +89,28 @@ export function explainShortcode(r, cfg) {
   return step('shortcode', title, 'warn', `Safaricom's answer was not one this check knows (HTTP ${r.status}): ${clip(txt, 200)}`, 'If STK prompts also fail, send this line to Safaricom API support.');
 }
 
+/* exported for tests: the typed boxes -> values used for this test only. Empty = not typed. */
+export function typedOverlay(body, cfg) {
+  const b = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  const values = {}, used = [];
+  const take = (k, ok, bad) => {
+    const raw = b[k]; if (raw === undefined || raw === null) return null;
+    const v = String(raw).trim(); if (!v) return null;
+    if (v.length > 300 || !ok(v)) return bad;
+    values[k] = v; used.push(k); return null;
+  };
+  const errs = [
+    take('mpesaEnv', (v) => v === 'sandbox' || v === 'production', 'Environment must be Sandbox or Production.'),
+    take('mpesaTransactionType', (v) => v === 'CustomerPayBillOnline' || v === 'CustomerBuyGoodsOnline', 'Unknown transaction type.'),
+    take('mpesaConsumerKey', (v) => /^[\x21-\x7e]+$/.test(v), 'The Consumer Key has a space or odd character in it.'),
+    take('mpesaConsumerSecret', (v) => /^[\x21-\x7e]+$/.test(v), 'The Consumer Secret has a space or odd character in it.'),
+    take('mpesaPasskey', (v) => /^[\x21-\x7e]+$/.test(v), 'The Passkey has a space or odd character in it.'),
+    take('mpesaShortcode', (v) => /^\d{4,10}$/.test(v), 'The Shortcode must be digits only (4 to 10 digits).'),
+    take('mpesaPartyB', (v) => /^\d{4,10}$/.test(v), 'The Till number must be digits only (4 to 10 digits).'),
+  ].filter(Boolean);
+  return { values, used, error: errs[0] || '' };
+}
+
 export async function onRequestOptions(context) { return new Response(null, { status: 204, headers: corsHeadersFor(context.request, context.env, { methods: 'POST, OPTIONS' }) }); }
 
 export async function onRequestPost(context) {
@@ -105,6 +127,12 @@ export async function onRequestPost(context) {
   if (capped) return capped;
 
   const cfg = await loadGatewayConfig(env, clientId);
+  // zip 257: TEST BEFORE SAVE. Whatever the person typed in the boxes is used for this test only (nothing is saved); an empty box falls back to what is saved.
+  let body = {}; try { body = await request.json(); } catch (e) { /* no body = test what is saved */ }
+  const typed = typedOverlay(body, cfg);
+  if (typed.error) return json({ error: typed.error }, 400, cors);
+  const usingTyped = typed.used.length > 0;
+  Object.assign(cfg, typed.values);
   if (cfg.secretsUnreadable) return json({ error: 'The saved payment keys cannot be read right now — contact support.', code: 'secrets_unreadable' }, 503, cors);
 
   const steps = [];
@@ -115,13 +143,13 @@ export async function onRequestPost(context) {
   const missing = [['Consumer Key', cfg.mpesaConsumerKey], ['Consumer Secret', cfg.mpesaConsumerSecret], ['Shortcode', cfg.mpesaShortcode], ['Passkey', cfg.mpesaPasskey]].filter((x) => !x[1]).map((x) => x[0]);
   let pending = null; try { pending = await getPendingChange(env, clientId); } catch (e) { /* none */ }
   const heldDaraja = pending && Array.isArray(pending.providers) && pending.providers.includes('daraja');
-  if (missing.length) steps.push(step('saved', 'Saved details', 'fail', `Not saved yet: ${missing.join(', ')}.`, 'Fill all four boxes in Option B and press Save Daraja Credentials (it asks for your Admin password).'));
-  else steps.push(step('saved', 'Saved details', 'ok', `Consumer Key, Secret, Shortcode ${cfg.mpesaShortcode} and Passkey are saved. Environment: ${envName.toUpperCase()}; type: ${isTill ? 'Till (Buy Goods)' : 'Paybill'}.`));
+  if (missing.length) steps.push(step('saved', 'Saved details', 'fail', `Not ${usingTyped ? 'filled in' : 'saved'} yet: ${missing.join(', ')}.`, 'Fill all four boxes in Option B, press Test, and when it passes press Save Daraja Credentials (it asks for your Admin password).'));
+  else steps.push(step('saved', usingTyped ? 'Details tested' : 'Saved details', 'ok', `Consumer Key, Secret, Shortcode ${cfg.mpesaShortcode} and Passkey ${usingTyped ? 'are filled in (tested as typed, NOT saved yet)' : 'are saved'}. Environment: ${envName.toUpperCase()}; type: ${isTill ? 'Till (Buy Goods)' : 'Paybill'}.`));
   const till = String(cfg.mpesaPartyB || '').trim();
   const effParty = isTill && till ? till : sc0();
   function sc0() { return String(cfg.mpesaShortcode || '').trim(); }
   steps.push(step('sent', 'What is sent to Safaricom', 'info', `Type: ${isTill ? 'Till (Buy Goods)' : 'Paybill'} - BusinessShortCode: ${sc0() || '(empty)'} - receiver (PartyB): ${effParty || '(empty)'}${isTill && !till ? ' (the Till box is empty, so the Shortcode is used for both)' : ''}${!isTill && till ? ' (a Till number is saved but ignored because the Type is Paybill)' : ''}.`, isTill ? 'For a Till, Safaricom wants the Store / Head Office number as BusinessShortCode and the Till under it as the receiver. Different numbers are normal.' : ''));
-  if (heldDaraja) steps.push(step('held', 'Keys waiting to start', 'warn', `New Daraja keys were saved but are held until ${new Date(pending.effectiveAt + 3 * 3600000).toISOString().replace('T', ' ').slice(0, 16)} (Nairobi time) — until then the OLD values are the ones being tested and used${pending.fieldNames && pending.fieldNames.length ? ' (waiting: ' + pending.fieldNames.map((n) => n.replace(/^mpesa/, '')).join(', ') + ')' : ''}.`, 'Wait for that time, or cancel the waiting change in Settings and save again.'));
+  if (heldDaraja && !usingTyped) steps.push(step('held', 'Keys waiting to start', 'warn', `New Daraja keys were saved but are held until ${new Date(pending.effectiveAt + 3 * 3600000).toISOString().replace('T', ' ').slice(0, 16)} (Nairobi time) — until then the OLD values are the ones being tested and used${pending.fieldNames && pending.fieldNames.length ? ' (waiting: ' + pending.fieldNames.map((n) => n.replace(/^mpesa/, '')).join(', ') + ')' : ''}.`, 'Wait for that time, or cancel the waiting change in Settings and save again.'));
 
   /* 2 — do the settings agree */
   const sc = String(cfg.mpesaShortcode || '').trim();
@@ -188,7 +216,7 @@ export async function onRequestPost(context) {
 
   const firstBad = steps.find((s) => s.status === 'fail') || steps.find((s) => s.status === 'warn');
   return json({
-    ok: true, env: envName, at: Date.now(),
+    ok: true, env: envName, at: Date.now(), tested: usingTyped ? 'typed' : 'saved',
     summary: firstBad ? (firstBad.status === 'fail' ? `Stopped at: ${firstBad.title}` : `Works, but check: ${firstBad.title}`) : 'Every step passed',
     steps,
   }, 200, cors);
