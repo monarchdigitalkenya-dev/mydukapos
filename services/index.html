@@ -65401,7 +65401,7 @@ function msOpenPurchasesReport(days) {
 .tp-meta{font-size:12.5px;color:#6b7a86;margin-top:2px;word-break:break-word}
 .tp-code{font-family:ui-monospace,Consolas,monospace;font-weight:700;color:#34495e}
 .tp-st{display:inline-block;padding:2px 9px;border-radius:10px;font-size:11.5px;font-weight:800;letter-spacing:.3px}
-.tp-st.u{background:#fdebd0;color:#b9770e}.tp-st.a{background:#d5f5e3;color:#1e8449}
+.tp-st.u{background:#fdebd0;color:#b9770e}.tp-st.a{background:#d5f5e3;color:#1e8449}.tp-st.s{background:#d6eaf8;color:#1b4f72}
 .tp-btn{border:0;border-radius:8px;padding:9px 14px;font-weight:700;font-size:13px;cursor:pointer;min-height:40px;background:#27ae60;color:#fff}
 .tp-btn.sec{background:#ecf0f1;color:#2c3e50}.tp-btn[disabled]{opacity:.5;cursor:not-allowed}
 .tp-empty{text-align:center;padding:26px 12px;color:#7f8c8d}
@@ -65491,13 +65491,22 @@ function msOpenPurchasesReport(days) {
   function open() { shell().classList.add('open'); TP.sel = null; TP.pick = null; load(false); setTimeout(function () { var c = document.getElementById('tp-close'); if (c) c.focus(); }, 0); }
   function close() { var o = document.getElementById('tp-overlay'); if (o) o.classList.remove('open'); TP.sel = null; var b = document.getElementById('tp-open-btn'); if (b) b.focus(); }
 
+  // zip 264: Safaricom sends no name for an STK push, only the phone; when that phone is one of THIS shop's saved customers their name is shown (never guessed)
+  function nameByPhone(ph) {
+    try {
+      if (!ph || typeof customers === 'undefined' || !Array.isArray(customers) || typeof normalizeKenyanPhone !== 'function') return '';
+      var n = normalizeKenyanPhone(ph); if (!n) return '';
+      var c = customers.find(function (x) { return x && x.phone && normalizeKenyanPhone(x.phone) === n; });
+      return c && c.name ? String(c.name) : '';
+    } catch (e) { return ''; }
+  }
   function card(p) {
-    var applied = p.status === 'APPLIED';
+    var applied = p.status === 'APPLIED', stk = p.status === 'STK';   // zip 264: STK push payments are listed here too (a record; nothing to match)
     var trace = applied ? '<div class="tp-meta">' + traceText(p) + '</div>' : '';
-    var act = applied ? (p.targetType === 'bill' || p.targetType === 'sale' ? '<button type="button" class="tp-btn sec" data-view="' + esc(p.code) + '">View ' + esc(p.targetType) + '</button>' : '')
+    var act = stk ? '' : applied ? (p.targetType === 'bill' || p.targetType === 'sale' ? '<button type="button" class="tp-btn sec" data-view="' + esc(p.code) + '">View ' + esc(p.targetType) + '</button>' : '')
       : '<button type="button" class="tp-btn" data-match="' + esc(p.code) + '">Match…</button>';
-    return '<div class="tp-card' + (applied ? ' applied' : '') + '"><div class="tp-main"><div class="tp-name">' + esc(p.name || 'Name not supplied') + ' <span class="tp-st ' + (applied ? 'a' : 'u') + '">' + (applied ? 'APPLIED' : 'UNLINKED') + '</span></div>' +
-      '<div class="tp-meta"><span class="tp-code">' + esc(p.code) + '</span> · ' + esc(when(p.paidAt)) + (p.ref ? ' · Ref: ' + esc(p.ref) : '') + (p.phoneHint ? ' · ' + esc(p.phoneHint) : '') + '</div>' + trace + '</div>' +
+    return '<div class="tp-card' + (applied ? ' applied' : '') + '"><div class="tp-main"><div class="tp-name">' + esc(p.name || (stk ? (nameByPhone(p.phoneHint) || p.phoneHint || 'STK push payment') : 'Name not supplied')) + ' <span class="tp-st ' + (stk ? 's' : applied ? 'a' : 'u') + '">' + (stk ? 'STK PUSH' : applied ? 'APPLIED' : 'UNLINKED') + '</span></div>' +
+      '<div class="tp-meta"><span class="tp-code">' + esc(stk && /^W/.test(p.code) && p.targetId ? 'Receipt pending' : p.code) + '</span> · ' + esc(when(p.paidAt)) + (p.ref ? ' · Ref: ' + esc(p.ref) : '') + (p.phoneHint ? ' · Phone: ' + esc(p.phoneHint) : '') + (stk ? (p.targetLabel ? ' · via ' + esc(p.targetLabel) : '') : ' · Paid to Till') + '</div>' + trace + '</div>' +
       '<div class="tp-amt">' + money(p.amount) + '</div>' + act + '</div>';
   }
   function traceText(p) {
@@ -65508,12 +65517,12 @@ function msOpenPurchasesReport(days) {
   function render() {
     var body = document.getElementById('tp-body'); if (!body) return;
     if (TP.sel) { renderMatch(body); return; }
-    var chips = ['UNLINKED', 'APPLIED', 'ALL'].map(function (s) { return '<button type="button" class="tp-chip' + (TP.status === s ? ' on' : '') + '" data-st="' + s + '" aria-pressed="' + (TP.status === s) + '">' + ({ UNLINKED: 'Unlinked', APPLIED: 'Applied', ALL: 'All' })[s] + '</button>'; }).join('');
-    var h = '<p class="tp-hint">Payments customers made directly to your Till, newest first. Link each one to the bill or sale it paid for; a payment can be linked only once.</p><div class="tp-tools">' + chips + '<button type="button" class="tp-chip" id="tp-refresh">↻ Refresh</button></div>';
+    var chips = ['UNLINKED', 'STK', 'APPLIED', 'ALL'].map(function (s) { return '<button type="button" class="tp-chip' + (TP.status === s ? ' on' : '') + '" data-st="' + s + '" aria-pressed="' + (TP.status === s) + '">' + ({ UNLINKED: 'Unlinked', STK: 'STK push', APPLIED: 'Applied', ALL: 'All' })[s] + '</button>'; }).join('');
+    var h = '<p class="tp-hint">Every payment, newest first: money customers paid directly to your Till (link each to the bill or sale it paid for, once only) and payments confirmed through an STK push (shown as a record, with the payer phone number). Safaricom sends no name for an STK push.</p><div class="tp-tools">' + chips + '<button type="button" class="tp-chip" id="tp-refresh">↻ Refresh</button></div>';
     if (TP.notice) h += '<div class="tp-err" role="alert">' + esc(TP.notice) + ' Nothing was changed on this till.</div>';
     if (TP.error) h += '<div class="tp-err" role="alert">' + esc(TP.error) + '</div>';
     if (TP.loading && !TP.rows.length) h += '<p class="tp-empty">Loading…</p>';
-    else if (!TP.rows.length && !TP.error) h += '<div class="tp-empty"><strong>' + (TP.status === 'APPLIED' ? 'No linked payments yet' : 'No Till payments waiting') + '</strong>Payments appear here as soon as a customer pays your Till. If you expect some, check Settings → Payment Gateway → <em>Register Till URLs</em>.</div>';
+    else if (!TP.rows.length && !TP.error) h += '<div class="tp-empty"><strong>' + (TP.status === 'APPLIED' ? 'No linked payments yet' : TP.status === 'STK' ? 'No STK push payments yet' : 'No Till payments waiting') + '</strong>Payments appear here as soon as a customer pays your Till. If you expect some, check Settings → Payment Gateway → <em>Register Till URLs</em>.</div>';
     else h += TP.rows.map(card).join('');
     if (TP.more) h += '<div style="text-align:center;margin-top:8px"><button type="button" class="tp-btn sec" id="tp-more"' + (TP.loading ? ' disabled' : '') + '>Load more</button></div>';
     body.innerHTML = h;

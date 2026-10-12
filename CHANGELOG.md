@@ -2,6 +2,9 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
+## Zip 265 - Till shows STK push payments (includes everything from zip 264)
+- **Till shows STK push payments too.** Sales Counter -> Till now lists payments confirmed through an STK push (Daraja, Paywave and the others) beside direct Till payments: tagged STK PUSH, with the payer's phone, receipt (or "Receipt pending" until the callback adds it), amount and time, and the customer's name when that phone is one of the shop's saved customers (Safaricom sends no name for an STK push). A new STK push chip filters them; they are records only, never counted as waiting and never matchable.
+
 ## Zip 264 - Payment and sample fixes (includes everything from zip 263)
 - **STK "still processing" after a paid prompt.** Safaricom's status query answering ResultCode 0 now marks the payment paid (receipt added when the callback arrives) instead of waiting for a callback that may never come; a failed late callback can no longer undo it. `get-my-link` accepts the same answer for Daraja (Paywave still needs a receipt).
 - **Aqua sample shows stock.** The Aqua sample seed now keeps stock per site (`stock: {site-shop-1: qty}`, the app's own default shop id), so tiles no longer all read "Out of stock" (`SEED_VERSION` 4 re-seeds the samples).

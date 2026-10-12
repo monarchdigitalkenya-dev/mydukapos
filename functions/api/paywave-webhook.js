@@ -1,4 +1,5 @@
 import { recordGatewayTxn } from './_ledger.js';
+import { noteStkPayment } from './_till-store.js';
 import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 // functions/api/paywave-webhook.js — Cloudflare Pages Function
 //
@@ -84,6 +85,7 @@ export async function onRequestPost(context) {
   }));
   await recordGatewayTxn(env, clientId, { provider: 'paywave', txnId: checkoutId, code: succeeded ? (data.TransactionReceipt || data.TransactionID) : null,
     amount: typeof data.TransactionAmount === 'number' ? data.TransactionAmount : existing.amount, phone: data.Msisdn || existing.phone, status: succeeded ? 'RECEIVED' : 'FAILED' });
+  if (succeeded) await noteStkPayment(env, clientId, { checkoutId, receipt: data.TransactionReceipt || data.TransactionID, amount: typeof data.TransactionAmount === 'number' ? data.TransactionAmount : existing.amount, phone: data.Msisdn || existing.phone, transactionDate: data.TransactionDate, provider: 'paywave' });   // zip 264
 
   return ack();
 }

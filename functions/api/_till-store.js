@@ -115,7 +115,7 @@ export async function releaseTill(db, clientId, code, t) {
 
 export async function listTill(db, clientId, { status = '', before = 0, limit = 50 } = {}) {
   const lim = Math.min(100, Math.max(1, Number(limit) || 50));
-  const st = status === 'UNLINKED' || status === 'APPLIED' ? status : '';
+  const st = status === 'UNLINKED' || status === 'APPLIED' || status === 'STK' ? status : '';
   const sql = `SELECT * FROM till_payments WHERE client_id = ?${st ? ' AND status = ?' : ''}${before ? ' AND paid_at < ?' : ''} ORDER BY paid_at DESC, code DESC LIMIT ?`;
   const args = [clientId]; if (st) args.push(st); if (before) args.push(Number(before)); args.push(lim + 1);
   const { results } = await db.prepare(sql).bind(...args).all();
@@ -127,5 +127,27 @@ export async function listTill(db, clientId, { status = '', before = 0, limit = 
 export async function purgeOldApplied(db, clientId, now = Date.now(), days = APPLIED_KEEP_DAYS) {
   const cut = now - days * 86400000;
   const r = await db.prepare(`DELETE FROM till_payments WHERE client_id = ? AND status = 'APPLIED' AND code IN (SELECT code FROM till_payments WHERE client_id = ? AND status = 'APPLIED' AND applied_at < ? LIMIT 500)`).bind(clientId, clientId, cut).run();
-  return (r.meta && r.meta.changes) || 0;
+  // zip 264: the informational STK rows age out the same way (they are a view of money the sale already carries)
+  const r2 = await db.prepare(`DELETE FROM till_payments WHERE client_id = ? AND status = 'STK' AND code IN (SELECT code FROM till_payments WHERE client_id = ? AND status = 'STK' AND received_at < ? LIMIT 500)`).bind(clientId, clientId, cut).run();
+  return ((r.meta && r.meta.changes) || 0) + ((r2.meta && r2.meta.changes) || 0);
+}
+
+// zip 264: a payment confirmed through an STK push is listed beside the direct Till payments, so the owner sees every payment in one place. It is a
+// record only: status 'STK' (never UNLINKED, so it is not counted as waiting and cannot be matched or applied - the sale that triggered the prompt already
+// carries it). The payer's phone is kept in full (staff-only screen; the STK result itself carries it; Safaricom sends no name for a prompt).
+// IDEMPOTENT: keyed on the M-PESA receipt; while the receipt is not known yet (the status query confirmed it before the callback) the row is keyed on the
+// checkout id, and the real receipt replaces that row when it arrives. Best effort: it never fails the payment it describes.
+export async function noteStkPayment(env, clientId, p) {
+  const db = tillDb(env);
+  if (!db || !clientId || !p || !p.checkoutId) return;
+  try {
+    await ensureTillSchema(db);
+    const cid = cleanCode(p.checkoutId);
+    const real = cleanCode(p.receipt);
+    const code = real || ('W' + cid.slice(-20));
+    const now = Date.now();
+    await db.prepare(`INSERT OR IGNORE INTO till_payments (client_id, code, amount, paid_at, name, ref, phone_hint, received_at, status, target_type, target_id, target_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STK', 'stk', ?, ?)`)
+      .bind(clientId, code, Number(p.amount) || 0, parseTransTime(p.transactionDate, now), null, null, String(p.phone || '').replace(/[^\d*+]/g, '').slice(0, 20) || null, now, String(p.checkoutId).slice(0, 100), String(p.provider || 'stk').slice(0, 20)).run();
+    if (real) await db.prepare(`DELETE FROM till_payments WHERE client_id = ? AND status = 'STK' AND target_id = ? AND code <> ?`).bind(clientId, String(p.checkoutId).slice(0, 100), code).run();
+  } catch (e) { /* a listing row must never break a payment */ }
 }

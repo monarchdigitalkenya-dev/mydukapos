@@ -19,6 +19,7 @@
 
 import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 import { recordGatewayTxn } from './_ledger.js';
+import { noteStkPayment } from './_till-store.js';
 
 function txKey(clientId, id) {
   return `mpesa-tx:${clientId}:${id}`;
@@ -86,6 +87,8 @@ export async function onRequestPost(context) {
     // zip 153: the same fact goes to the D1 ledger (idempotent on the CheckoutRequestID; a repeat changes nothing)
     await recordGatewayTxn(env, clientId, { provider: 'stk', txnId: callback.CheckoutRequestID, code: receipt, amount: Number(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0,
       phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone, status: 'RECEIVED' });
+    // zip 264: also listed under Sales Counter -> Till (see _till-store.js noteStkPayment)
+    await noteStkPayment(env, clientId, { checkoutId: callback.CheckoutRequestID, receipt, amount: Number(extractMetadataValue(items, 'Amount')) || Number(existing.amount) || 0, phone: extractMetadataValue(items, 'PhoneNumber') || existing.phone, transactionDate: extractMetadataValue(items, 'TransactionDate'), provider: existing.provider || 'daraja' });
   } else {
     // Common causes: customer entered wrong PIN too many times, cancelled the
     // prompt, or it timed out on their phone (ResultCode 1032 = cancelled by user).

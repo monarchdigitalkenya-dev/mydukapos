@@ -24,6 +24,7 @@ import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
 import { staffGuard } from './_staff-auth.js';
 import { recordGatewayTxn } from './_ledger.js';
+import { noteStkPayment } from './_till-store.js';
 
 const FALLBACK_QUERY_AFTER_MS = 15000; // only bother querying the gateway directly after this long
 
@@ -267,6 +268,7 @@ export async function onRequestGet(context) {
       if (updated) {
         record = updated;
         await env.mydukapos_kv.put(kvKey, JSON.stringify(record));
+        if (record.status === 'success') await noteStkPayment(env, clientId, { checkoutId: checkoutRequestId, receipt: record.receiptNumber, amount: record.amount, phone: record.phone, transactionDate: record.transactionDate, provider: record.provider || 'daraja' });   // zip 264
         if (record.status === 'success' && record.provider === 'pesapal') await indexPesapalReceipt(env, clientId, record, checkoutRequestId);
         if (record.status === 'success') await recordGatewayTxn(env, clientId, { provider: record.provider || 'daraja', txnId: checkoutRequestId, code: record.receiptNumber, amount: record.amount, phone: record.phone, status: 'RECEIVED' });
       }
