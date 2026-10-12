@@ -148,6 +148,74 @@ export async function noteStkPayment(env, clientId, p) {
     const now = Date.now();
     await db.prepare(`INSERT OR IGNORE INTO till_payments (client_id, code, amount, paid_at, name, ref, phone_hint, received_at, status, target_type, target_id, target_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'STK', 'stk', ?, ?)`)
       .bind(clientId, code, Number(p.amount) || 0, parseTransTime(p.transactionDate, now), null, null, String(p.phone || '').replace(/[^\d*+]/g, '').slice(0, 20) || null, now, String(p.checkoutId).slice(0, 100), String(p.provider || 'stk').slice(0, 20)).run();
-    if (real) await db.prepare(`DELETE FROM till_payments WHERE client_id = ? AND status = 'STK' AND target_id = ? AND code <> ?`).bind(clientId, String(p.checkoutId).slice(0, 100), code).run();
+    if (real) {
+      await db.prepare(`DELETE FROM till_payments WHERE client_id = ? AND status = 'STK' AND target_id = ? AND code <> ?`).bind(clientId, String(p.checkoutId).slice(0, 100), code).run();
+      // the same payment may already be listed from Safaricom's Till confirmation (it also fires for an STK push, and carries the payer's NAME): it is an STK
+      // payment - the sale that sent the prompt carries it - so it leaves the "waiting" list, keeping the name, and gains the full phone
+      await db.prepare(`UPDATE till_payments SET status = 'STK', target_type = 'stk', target_id = ?, target_label = ?, phone_hint = COALESCE(?, phone_hint) WHERE client_id = ? AND code = ? AND status = 'UNLINKED'`)
+        .bind(String(p.checkoutId).slice(0, 100), String(p.provider || 'stk').slice(0, 20), String(p.phone || '').replace(/[^\d*+]/g, '').slice(0, 20) || null, clientId, code).run();
+    }
   } catch (e) { /* a listing row must never break a payment */ }
+}
+
+// zip 265: Safaricom's Till (C2B) confirmation is also sent for a payment made through an STK push, and it is the only message that carries the payer's NAME
+// (the STK result itself has only the phone). This joins the two, best effort:
+//  1. the same M-PESA code is already listed as an STK row -> it gains the name;
+//  2. the STK result never arrived (the row is still waiting for its receipt): the one pending STK prompt with the SAME amount and the SAME payer phone
+//     (a plain number, or Safaricom's SHA-256 of it in C2B v2) is given this code and name, and the till's pending record gets the receipt too.
+//     Two candidates, or no phone proof -> nothing is guessed.
+const digitsOf = (v) => String(v == null ? '' : v).replace(/\D/g, '');
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+export async function samePayer(stkPhone, msisdn) {
+  const p = digitsOf(stkPhone), m = String(msisdn == null ? '' : msisdn).trim();
+  if (p.length < 9 || !m) return false;
+  if (/^[a-f0-9]{64}$/i.test(m)) return (await sha256Hex(p)).toLowerCase() === m.toLowerCase();
+  const d = digitsOf(m);
+  return !m.includes('*') && d.length >= 9 && d.slice(-9) === p.slice(-9);
+}
+export const PENDING_STK_WINDOW_MS = 20 * 60 * 1000;
+export async function reconcileC2bWithStk(env, clientId, p) {
+  const db = tillDb(env);
+  if (!db || !clientId || !p || !p.code) return null;
+  try {
+    await ensureTillSchema(db);
+    const name = p.name ? String(p.name).slice(0, 80) : '';
+    const same = await db.prepare(`SELECT code FROM till_payments WHERE client_id = ? AND code = ? AND status = 'STK'`).bind(clientId, p.code).first();
+    if (same) {
+      if (name) await db.prepare(`UPDATE till_payments SET name = ? WHERE client_id = ? AND code = ? AND status = 'STK' AND (name IS NULL OR name = '')`).bind(name, clientId, p.code).run();
+      return { joined: 'receipt' };
+    }
+    const now = Date.now();
+    const { results } = await db.prepare(`SELECT code, target_id, phone_hint FROM till_payments WHERE client_id = ? AND status = 'STK' AND code LIKE 'W%' AND amount = ? AND received_at > ?`).bind(clientId, Number(p.amount) || 0, now - PENDING_STK_WINDOW_MS).all();
+    const hits = [];
+    for (const r of results || []) if (await samePayer(r.phone_hint, p.msisdn)) hits.push(r);
+    if (hits.length !== 1) return null;
+    const row = hits[0];
+    await db.batch([
+      db.prepare(`DELETE FROM till_payments WHERE client_id = ? AND code = ? AND status = 'UNLINKED'`).bind(clientId, p.code),
+      db.prepare(`UPDATE till_payments SET code = ?, name = ?, paid_at = ? WHERE client_id = ? AND code = ? AND status = 'STK'`).bind(p.code, name || null, Number(p.paidAt) || now, clientId, row.code),
+    ]);
+    // the till is polling the pending record: give it the receipt and the name
+    try {
+      const k = `mpesa-tx:${clientId}:${row.target_id}`;
+      const raw = await env.mydukapos_kv.get(k);
+      if (raw) { const rec = JSON.parse(raw); await env.mydukapos_kv.put(k, JSON.stringify({ ...rec, receiptNumber: rec.receiptNumber || p.code, receiptPending: false, payerName: rec.payerName || name || undefined })); }
+    } catch (e) { /* the list row above is already right */ }
+    return { joined: 'pending' };
+  } catch (e) { return null; }
+}
+
+// the payer name Safaricom's Till confirmation supplied for an STK push (by M-PESA code, or by the prompt's checkout id) - '' when not known (yet)
+export async function stkPayerName(env, clientId, { code, checkoutId }) {
+  const db = tillDb(env);
+  if (!db || !clientId) return { name: '', code: '' };
+  try {
+    await ensureTillSchema(db);
+    const c = cleanCode(code), id = String(checkoutId || '').slice(0, 100);
+    const r = await db.prepare(`SELECT code, name FROM till_payments WHERE client_id = ? AND ((? <> '' AND code = ?) OR (? <> '' AND target_id = ?)) ORDER BY (name IS NOT NULL AND name <> '') DESC LIMIT 1`).bind(clientId, c, c, id, id).first();
+    return r ? { name: r.name || '', code: /^W/.test(r.code) && !c ? '' : r.code } : { name: '', code: '' };
+  } catch (e) { return { name: '', code: '' }; }
 }

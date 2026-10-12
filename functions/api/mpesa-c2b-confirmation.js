@@ -21,7 +21,7 @@
 
 import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 import { recordGatewayTxn } from './_ledger.js';
-import { tillDb, ensureTillSchema, insertTill, cleanCode, parseTransTime, phoneHint } from './_till-store.js';
+import { tillDb, ensureTillSchema, insertTill, cleanCode, parseTransTime, phoneHint, reconcileC2bWithStk } from './_till-store.js';
 
 function tillPaymentKey(clientId, transId) {
   return `till-payment:${clientId}:${transId}`;
@@ -89,6 +89,8 @@ export async function onRequestPost(context) {
       inD1 = true; isRepeat = !r.inserted;
     } catch (e) { inD1 = false; }
   }
+  // zip 265: a payment that was an STK push gets the payer's name from this message (and, if the STK result never came, its receipt)
+  if (inD1 && signed.ok) await reconcileC2bWithStk(env, clientId, { code: cleanCode(transId), amount, name: fullName, msisdn: data.MSISDN, paidAt: parseTransTime(data.TransTime, receivedAt) });
   // KV copy: still what mpesa-verify reads for a typed code - now with a 45-day expiry so it cannot grow forever.
   const kvKey = tillPaymentKey(clientId, transId);
   if (!inD1) isRepeat = !!(await env.mydukapos_kv.get(kvKey));

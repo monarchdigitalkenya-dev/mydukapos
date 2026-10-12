@@ -24,7 +24,7 @@ import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
 import { staffGuard } from './_staff-auth.js';
 import { recordGatewayTxn } from './_ledger.js';
-import { noteStkPayment } from './_till-store.js';
+import { noteStkPayment, stkPayerName } from './_till-store.js';
 
 const FALLBACK_QUERY_AFTER_MS = 15000; // only bother querying the gateway directly after this long
 
@@ -277,9 +277,16 @@ export async function onRequestGet(context) {
     }
   }
 
+  // zip 265: the payer's NAME (and, when the STK result never arrived, the receipt) come from Safaricom's Till confirmation for the same payment
+  let payerName = record.payerName || '', receiptNumber = record.receiptNumber;
+  if (record.status === 'success' && (!payerName || !receiptNumber)) {
+    const f = await stkPayerName(env, clientId, { code: receiptNumber, checkoutId: checkoutRequestId });
+    payerName = payerName || f.name; receiptNumber = receiptNumber || f.code;
+  }
   return reply({
     status: record.status,
-    receiptNumber: record.receiptNumber,
+    receiptNumber,
+    payerName,
     phone: record.phone,
     amount: record.amount,
     resultDesc: record.resultDesc,

@@ -68,6 +68,8 @@ for (const app of APPS) {
     assert.match(String(w.eval("bills.find(b => b.id === 'B1').status")), /partial/i);
     assert.equal(w.eval("salesLog.filter(s => s.tillCode === 'QAB9000002').length"), 1, 'an installment record carries the code');
     assert.equal(w.eval("salesLog.find(s => s.tillCode === 'QAB9000002').mpesaReceiptNumber"), 'QAB9000002');
+    assert.deepEqual(names(), ['QAB9000003', 'QAB9000002', 'QAB9000001'], 'zip 266: the Till opens on All, so the applied payment is still listed');
+    d.querySelector('[data-st="UNLINKED"]').click(); await until(() => names().length === 2);
     assert.deepEqual(names(), ['QAB9000003', 'QAB9000001'], 'it leaves the Unlinked list');
 
     // the same payment cannot be applied again (another till): the server refuses and nothing local changes

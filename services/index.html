@@ -27309,6 +27309,7 @@ async function zReportPreflight() {
         let mpesaPollTimer = null;
         let mpesaTimeoutTimer = null;
         let mpesaConfirmedReceipt = null; // { receiptNumber, phone, amount } once payment is confirmed
+        let mpesaDetailFor = null, mpesaDetailTries = 0; // zip 265: how many checks waited for the payer name / code of this prompt
 
         function setMpesaStatus(text, cssClass) {
             const el = document.getElementById('mpesa-status-line');
@@ -27411,6 +27412,10 @@ async function zReportPreflight() {
                 const data = await res.json();
 
                 if (data.status === 'success') {
+                    // zip 265: the payer's name and the M-PESA code can arrive a moment after the payment itself (Safaricom's Till confirmation carries the name);
+                    // wait a few checks for them before asking the cashier to type them. After that the sale carries on exactly as before.
+                    if (mpesaDetailFor !== mpesaCheckoutRequestId) { mpesaDetailFor = mpesaCheckoutRequestId; mpesaDetailTries = 0; }
+                    if ((!data.receiptNumber || !data.payerName) && ++mpesaDetailTries < 3) { setMpesaStatus('✅ Payment received — fetching the payer details…', 'mpesa-status-success'); return; }
                     if (mpesaPollTimer) clearInterval(mpesaPollTimer);
                     if (mpesaTimeoutTimer) clearTimeout(mpesaTimeoutTimer);
                     mpesaPollTimer = null;
@@ -27423,6 +27428,8 @@ async function zReportPreflight() {
                     try { if (window.mpesaNoteConfirmed) window.mpesaNoteConfirmed(mpesaConfirmedReceipt.receiptNumber, mpesaConfirmedReceipt.amount); } catch (e) { /* the background check still runs */ }
                     const codeInput = document.getElementById('mpesa-code-input');
                     if (codeInput) codeInput.value = mpesaConfirmedReceipt.receiptNumber;
+                    const nameInput = document.getElementById('mpesa-payer-name-input');
+                    if (nameInput && data.payerName && !(nameInput.value || '').trim()) nameInput.value = data.payerName;
                     const payerName = (document.getElementById('mpesa-payer-name-input').value || '').trim();
                     const btn = document.getElementById('mpesa-send-btn');
                     if (!payerName) {
@@ -65401,7 +65408,7 @@ function msOpenPurchasesReport(days) {
 .tp-meta{font-size:12.5px;color:#6b7a86;margin-top:2px;word-break:break-word}
 .tp-code{font-family:ui-monospace,Consolas,monospace;font-weight:700;color:#34495e}
 .tp-st{display:inline-block;padding:2px 9px;border-radius:10px;font-size:11.5px;font-weight:800;letter-spacing:.3px}
-.tp-st.u{background:#fdebd0;color:#b9770e}.tp-st.a{background:#d5f5e3;color:#1e8449}.tp-st.s{background:#d6eaf8;color:#1b4f72}
+.tp-st.u{background:#fdebd0;color:#b9770e}.tp-st.a{background:#d5f5e3;color:#1e8449}.tp-st.s{background:#d6eaf8;color:#1b4f72}.tp-src{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:800;letter-spacing:.3px;margin-left:4px}.tp-src.k{background:#d6eaf8;color:#1b4f72}.tp-src.t{background:#e8daef;color:#5b2c6f}
 .tp-btn{border:0;border-radius:8px;padding:9px 14px;font-weight:700;font-size:13px;cursor:pointer;min-height:40px;background:#27ae60;color:#fff}
 .tp-btn.sec{background:#ecf0f1;color:#2c3e50}.tp-btn[disabled]{opacity:.5;cursor:not-allowed}
 .tp-empty{text-align:center;padding:26px 12px;color:#7f8c8d}
@@ -65418,7 +65425,7 @@ function msOpenPurchasesReport(days) {
 (function () {
   'use strict';
   if (window.__tillPay) return;
-  var TP = window.__tillPay = { rows: [], status: 'UNLINKED', more: false, next: 0, loading: false, error: '', sel: null, kind: 'bill', pick: null, busy: false, unlinked: 0 };
+  var TP = window.__tillPay = { rows: [], status: 'ALL', more: false, next: 0, loading: false, error: '', sel: null, kind: 'bill', pick: null, busy: false, unlinked: 0 };
 
   function esc(s) { try { if (typeof escapeHtml === 'function') return escapeHtml(s); } catch (e) { /* below */ } return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
@@ -65441,7 +65448,7 @@ function msOpenPurchasesReport(days) {
     return call('GET', q).then(function (d) {
       if (d.__status >= 400 || !Array.isArray(d.payments)) throw new Error(d.error || 'Could not load');
       TP.rows = more ? TP.rows.concat(d.payments) : d.payments; TP.more = !!d.more; TP.next = d.next || 0;
-      if (TP.status === 'UNLINKED' && !more) { TP.unlinked = TP.rows.length; badge(); }
+      if ((TP.status === 'UNLINKED' || TP.status === 'ALL') && !more) { TP.unlinked = TP.rows.filter(function (r) { return r.status === 'UNLINKED'; }).length; badge(); }
     }).catch(function (e) { TP.error = (typeof netErrText === 'function' ? netErrText('Could not load Till Payments') : 'Could not load Till Payments. Check your connection and try again.'); })
       .then(function () { TP.loading = false; render(); });
   }
@@ -65505,8 +65512,8 @@ function msOpenPurchasesReport(days) {
     var trace = applied ? '<div class="tp-meta">' + traceText(p) + '</div>' : '';
     var act = stk ? '' : applied ? (p.targetType === 'bill' || p.targetType === 'sale' ? '<button type="button" class="tp-btn sec" data-view="' + esc(p.code) + '">View ' + esc(p.targetType) + '</button>' : '')
       : '<button type="button" class="tp-btn" data-match="' + esc(p.code) + '">Match…</button>';
-    return '<div class="tp-card' + (applied ? ' applied' : '') + '"><div class="tp-main"><div class="tp-name">' + esc(p.name || (stk ? (nameByPhone(p.phoneHint) || p.phoneHint || 'STK push payment') : 'Name not supplied')) + ' <span class="tp-st ' + (stk ? 's' : applied ? 'a' : 'u') + '">' + (stk ? 'STK PUSH' : applied ? 'APPLIED' : 'UNLINKED') + '</span></div>' +
-      '<div class="tp-meta"><span class="tp-code">' + esc(stk && /^W/.test(p.code) && p.targetId ? 'Receipt pending' : p.code) + '</span> · ' + esc(when(p.paidAt)) + (p.ref ? ' · Ref: ' + esc(p.ref) : '') + (p.phoneHint ? ' · Phone: ' + esc(p.phoneHint) : '') + (stk ? (p.targetLabel ? ' · via ' + esc(p.targetLabel) : '') : ' · Paid to Till') + '</div>' + trace + '</div>' +
+    return '<div class="tp-card' + (applied ? ' applied' : '') + '"><div class="tp-main"><div class="tp-name">' + esc(p.name || (stk ? (nameByPhone(p.phoneHint) || p.phoneHint || 'STK push payment') : 'Name not supplied')) + ' <span class="tp-src ' + (stk ? 'k' : 't') + '">' + (stk ? 'STK PUSH' : 'DIRECT TO TILL') + '</span>' + (stk ? '' : ' <span class="tp-st ' + (applied ? 'a' : 'u') + '">' + (applied ? 'APPLIED' : 'UNLINKED') + '</span>') + '</div>' +
+      '<div class="tp-meta"><span class="tp-code">' + esc(stk && /^W/.test(p.code) && p.targetId ? 'Receipt pending' : p.code) + '</span> · ' + esc(when(p.paidAt)) + (p.ref ? ' · Ref: ' + esc(p.ref) : '') + (p.phoneHint ? ' · Phone: ' + esc(p.phoneHint) : '') + (stk && p.targetLabel ? ' · via ' + esc(p.targetLabel) : '') + '</div>' + trace + '</div>' +
       '<div class="tp-amt">' + money(p.amount) + '</div>' + act + '</div>';
   }
   function traceText(p) {
@@ -65517,7 +65524,7 @@ function msOpenPurchasesReport(days) {
   function render() {
     var body = document.getElementById('tp-body'); if (!body) return;
     if (TP.sel) { renderMatch(body); return; }
-    var chips = ['UNLINKED', 'STK', 'APPLIED', 'ALL'].map(function (s) { return '<button type="button" class="tp-chip' + (TP.status === s ? ' on' : '') + '" data-st="' + s + '" aria-pressed="' + (TP.status === s) + '">' + ({ UNLINKED: 'Unlinked', STK: 'STK push', APPLIED: 'Applied', ALL: 'All' })[s] + '</button>'; }).join('');
+    var chips = ['ALL', 'UNLINKED', 'STK', 'APPLIED'].map(function (s) { return '<button type="button" class="tp-chip' + (TP.status === s ? ' on' : '') + '" data-st="' + s + '" aria-pressed="' + (TP.status === s) + '">' + ({ UNLINKED: 'Unlinked', STK: 'STK push', APPLIED: 'Applied', ALL: 'All' })[s] + '</button>'; }).join('');
     var h = '<p class="tp-hint">Every payment, newest first: money customers paid directly to your Till (link each to the bill or sale it paid for, once only) and payments confirmed through an STK push (shown as a record, with the payer phone number). Safaricom sends no name for an STK push.</p><div class="tp-tools">' + chips + '<button type="button" class="tp-chip" id="tp-refresh">↻ Refresh</button></div>';
     if (TP.notice) h += '<div class="tp-err" role="alert">' + esc(TP.notice) + ' Nothing was changed on this till.</div>';
     if (TP.error) h += '<div class="tp-err" role="alert">' + esc(TP.error) + '</div>';
@@ -65636,7 +65643,7 @@ function msOpenPurchasesReport(days) {
       if (err) {
         return call('POST', '/api/till-payments', { action: 'release', code: p.code, targetType: c.type, targetId: String(c.id) }).then(function () { fail(err + ' The payment is still unlinked.'); }, function () { fail(err); });
       }
-      TP.busy = false; TP.sel = null; TP.pick = null; TP.status = 'UNLINKED';
+      TP.busy = false; TP.sel = null; TP.pick = null; TP.status = 'ALL';
       toast('Payment ' + p.code + ' applied to ' + (c.type === 'bill' ? 'the bill' : 'the sale') + '.');
       return load(false);
     }).catch(function () { fail('Could not reach the server - nothing was changed. Connect and try again.'); });
