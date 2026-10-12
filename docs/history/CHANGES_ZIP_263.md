@@ -19,8 +19,3 @@ Not changed: `owner/`, `public-site/`, `order/`, `src/shared` blocks (the sideba
 
 Known gaps: emoji icons are not `aria-hidden` (they live in shared-block strings); the phone header still wraps to three rows (it has the existing Hide button); Aqua (`water/`) rendered a blank content area in the headless check with or without this block, so it was not verified visually; the other apps were checked on the Sales Counter only.
 
-## Later fixes in this zip
-
-- **Aqua sample shows stock.** The Aqua sample seed keeps stock per site (`stock: {site-shop-1: qty}`, the app's default shop id), so tiles no longer all read "Out of stock" (`SEED_VERSION` 4 re-seeds the samples).
-- **Production Sales Counter.** An empty `#sales-cart-slot` took a grid column and pushed the cart below the fold; it is hidden until the cart moves in (rule in the shared override block of every app).
-- **Typed address when buying a link.** The buyer types an address, availability is checked live, and a taken one gets `-1`, `-2`... (`chooseSlug`). The link is created only after payment is confirmed; Paywave status is asked directly and counts only with a receipt number.

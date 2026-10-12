@@ -72,10 +72,8 @@ async function darajaAccessToken(cfg) {
 }
 
 // Directly asks Safaricom for the outcome — used only as a fallback when our
-// own callback hasn't arrived yet. Note: this endpoint confirms success/failure
-// but does NOT return the M-Pesa receipt number, so we still rely on the
-// callback for that. We only use this fallback to unblock a definite FAILURE
-// (e.g. customer cancelled) rather than leaving the cashier waiting needlessly.
+// own callback hasn't arrived yet. This endpoint confirms success/failure but does NOT return the
+// M-Pesa receipt number; the callback supplies that when it arrives (zip 263: success no longer waits for it).
 async function queryDarajaStatus(checkoutRequestId, cfg) {
   const shortcode = cfg.mpesaShortcode;
   const passkey = cfg.mpesaPasskey;
@@ -110,8 +108,12 @@ export async function refreshFromDaraja(record, checkoutRequestId, cfg) {      /
       resultDesc: queryResult.ResultDesc || 'Payment was not completed.',
     };
   }
-  // If ResultCode is "0" (success) we deliberately do NOT mark it success here —
-  // we wait for the real callback so we have the M-Pesa receipt number too.
+  // zip 263: ResultCode 0 from Safaricom's own query IS a completed payment. It used to wait for the callback (for the receipt number), so a callback that
+  // never arrived left the till on "still processing" for ever after the customer had paid. It is now marked paid without a receipt; the callback, when it
+  // does arrive, fills the receipt in (mpesa-callback.js). A sale does not need the code to complete.
+  if (queryResult && queryResult.ResultCode !== undefined && String(queryResult.ResultCode) === '0') {
+    return { ...record, status: 'success', resultDesc: queryResult.ResultDesc || 'Payment received.', receiptNumber: record.receiptNumber || '', receiptPending: !record.receiptNumber, completedAt: Date.now() };
+  }
   return null;
 }
 

@@ -56,7 +56,8 @@ export async function onRequestPost(context) {
   const existingRaw = await env.mydukapos_kv.get(kvKey);
   const existing = existingRaw ? JSON.parse(existingRaw) : {};
   // A completed payment is final: a repeated or late callback for the same CheckoutRequestID never turns it back into "failed".
-  if (existing.status === 'success') return ack();
+  // (zip 263: a success the status query already confirmed has no receipt yet; the real callback may still add it, and only it)
+  if (existing.status === 'success' && (existing.receiptNumber || callback.ResultCode !== 0)) return ack();
   // zip 143: only a callback carrying this shop's key is believed (see _callback-key.js). A prompt sent before the key existed (the
   // moment of an update) is still accepted for that prompt.
   const signed = await checkCallback(env, clientId, 'stk', request.url);

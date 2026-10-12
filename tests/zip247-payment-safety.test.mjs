@@ -494,7 +494,7 @@ for (const file of SW_FILES) {
     assert.equal(await (await (await caches.open(`${id}-shell-abc`)).match('./index.html')).text(), 'THE APP v2');
     await (await nav(h, `https://x.test${root}?c=1`, kept)).text(); await Promise.all(kept.splice(0));
     assert.equal(told.length, 1, 'the same release again: silent');
-    assert.match(fs.readFileSync(path.join(ROOT, file), 'utf8'), /SW_VERSION = 'zip-263'/);
+    assert.match(fs.readFileSync(path.join(ROOT, file), 'utf8'), /SW_VERSION = 'zip-264'/);
   });
 }
 

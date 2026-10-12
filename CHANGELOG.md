@@ -2,10 +2,13 @@
 
 Per-zip detail lives in `docs/history/CHANGES_ZIP_*.md`.
 
-## Zip 263 - Visual refresh of the POS apps (includes everything from zip 262)
+## Zip 264 - Payment and sample fixes (includes everything from zip 263)
+- **STK "still processing" after a paid prompt.** Safaricom's status query answering ResultCode 0 now marks the payment paid (receipt added when the callback arrives) instead of waiting for a callback that may never come; a failed late callback can no longer undo it. `get-my-link` accepts the same answer for Daraja (Paywave still needs a receipt).
 - **Aqua sample shows stock.** The Aqua sample seed now keeps stock per site (`stock: {site-shop-1: qty}`, the app's own default shop id), so tiles no longer all read "Out of stock" (`SEED_VERSION` 4 re-seeds the samples).
 - **Production Sales Counter.** An empty cart slot took a grid column and pushed the cart below the fold; it is hidden until the cart moves in (`#sales-cart-slot:empty`, in the shared override block of every app).
 - **Typed address when buying a link.** The buyer types their address, availability is checked live, and a taken one gets `-1`, `-2`... (`chooseSlug`). The link is created only after payment is confirmed; Paywave status is asked directly and counts only with a receipt number.
+
+## Zip 263 - Visual refresh of the POS apps (includes everything from zip 262)
 - **Look and feel only**: one `<style id="mdp-ui-2">` block at the end of the page in Shop, Aqua (water), Hotel, Hospital, Pharmacy, Production and Services, plus a few attributes (`aria-label`, `aria-live`, skip link, `name` on sign-in fields). `manifest.webmanifest` theme colour. No logic, data, route, permission, pricing, backend or shared-block change. Owner Console, public site and the QR order page are not changed.
 - New palette (deep teal header with an amber rule, green-teal accent, warm paper background), refined dark theme, one focus ring (`:focus-visible`), 4.5:1 muted text (incl. inline greys on light surfaces), tabular numbers for money, toast with `aria-live` that clears the mobile cart bar, nicer login / registration / PIN screens, popups, tables, badges and sidebar.
 - Respects `prefers-reduced-motion`; wrapped in `@media screen` so printing (receipts, reports, tickets) is unchanged.

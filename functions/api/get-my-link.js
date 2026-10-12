@@ -198,7 +198,7 @@ export async function onRequestPost(context) {
         try {
           const asked = gw.provider === 'paywave' ? await refreshFromPaywaveExpress(tx, rec.checkoutId, gw.cfg) : await refreshFromDaraja(tx, rec.checkoutId, gw.cfg);
           // a link is made only for MONEY RECEIVED: an answer to our own question counts as paid only when it carries the M-Pesa receipt (a gateway can say "request accepted" while the customer has not paid)
-          const up = asked && asked.status === 'success' && !asked.receiptNumber ? null : asked;
+          const up = gw.provider === 'paywave' && asked && asked.status === 'success' && !asked.receiptNumber ? null : asked;
           tx = up || { ...tx, checkedAt: Date.now() };
           await env.mydukapos_kv.put(txk, JSON.stringify(tx));
         } catch (e) { /* asked again on the next check */ }
