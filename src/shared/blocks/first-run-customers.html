@@ -1,0 +1,782 @@
+<!-- FIRST RUN & CUSTOMERS (zip 258) -------------------------------------------------------------------------------------------
+     1. Empty states: an empty Inventory and an empty Sales Counter explain that products come first and offer "Add your first item" and
+        (where the app supports it) the Excel/CSV import. After the first item is saved a short "what next" card appears on Add New Items.
+     2. Checkout customer: ONE field that finds an existing customer by name or phone, or adds a new one without leaving the sale. The old
+        phone box stays in the page (hidden) as the single source of truth the checkout already reads, so nothing about how a sale is saved
+        changes. A new customer is only saved by the existing registerOrUpdateCustomer() AFTER the sale succeeded (the name rides along).
+     3. My Customers: searchable, sortable, paged list; a tabbed profile (Overview / Transactions / Bills & balances / Loyalty) built only from
+        records already saved (salesLog, bills, returns, customers). Nothing here invents history.
+     4. Loyalty: tokens are matched by normalised phone (0712.. and +254712.. are one customer, like registerOrUpdateCustomer already treats them) and
+        each award is stamped on the sale that earned it (tokensEarned) so the profile can show a dated ledger. Older balances show as one
+        "before itemised history" line. Tokens are not redeemed anywhere in this POS and no reversal rule exists, so none is invented.
+     Same block in Shop, Hotel, Pharmacy, Production, Services and Hospital. Every function is guarded: if a page lacks something it does nothing. -->
+<style id="fr-css">
+    .fr-empty { border: 2px dashed var(--border-color, #d5dbe0); border-radius: 14px; background: var(--bg-surface-alt, #f4f6f7); padding: 28px 20px; text-align: center; margin: 8px 0 14px; color: var(--dark, #2C3E50); }
+    .fr-empty .fr-ico { width: 56px; height: 56px; border-radius: 50%; margin: 0 auto 12px; display: flex; align-items: center; justify-content: center; background: var(--tint-info-bg, #EAF4FB); color: var(--accent, #3498DB); }
+    .fr-empty .fr-ico svg { width: 28px; height: 28px; }
+    .fr-empty h4 { margin: 0 0 6px; font-size: 18px; color: var(--dark, #2C3E50); }
+    .fr-empty p { margin: 0 auto 14px; max-width: 520px; font-size: 14px; line-height: 1.5; color: var(--dark, #2C3E50); opacity: .8; }
+    .fr-empty .fr-hint { font-size: 12.5px; margin: 12px auto 0; opacity: .65; }
+    .fr-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+    .fr-btn { appearance: none; border: 1.5px solid var(--border-color, #cfd6dc); background: var(--bg-surface, #fff); color: var(--dark, #2C3E50); font: inherit; font-weight: 600; font-size: 14px; min-height: 44px; padding: 0 18px; border-radius: 10px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: auto; margin: 0; }
+    .fr-btn:hover { border-color: var(--accent, #3498DB); }
+    .fr-btn svg { width: 18px; height: 18px; flex: none; }
+    .fr-btn.fr-primary { background: var(--accent, #3498DB); border-color: var(--accent, #3498DB); color: #fff; }
+    .fr-btn.fr-primary:hover { filter: brightness(.94); }
+    .fr-btn:disabled { opacity: .55; cursor: not-allowed; }
+    .fr-btn:focus-visible, .fr-tab:focus-visible, .fr-opt:focus-visible, .fr-cust-box input:focus-visible, .fr-x:focus-visible { outline: 3px solid #1b6fb5; outline-offset: 2px; }
+    td.fr-cell { padding: 6px !important; }
+    /* next steps after the first item */
+    #fr-next { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; border-radius: 14px; padding: 16px 18px; margin: 0 0 14px; background: var(--tint-success-bg, #eafaf1); color: var(--tint-success-text, #1e8449); border: 1px solid rgba(46,204,113,.45); }
+    #fr-next h4 { margin: 0 0 4px; font-size: 16px; color: inherit; }
+    #fr-next p { margin: 0 0 10px; font-size: 13.5px; color: inherit; }
+    #fr-next .fr-grow { flex: 1; min-width: 220px; }
+    #fr-next .fr-x { margin-left: auto; }
+    .fr-x { appearance: none; border: 0; background: transparent; color: inherit; font-size: 22px; line-height: 1; cursor: pointer; width: 36px; height: 36px; border-radius: 8px; padding: 0; margin: 0; }
+    .fr-x:hover { background: rgba(127,140,141,.18); }
+    /* checkout customer field */
+    .fr-cust { position: relative; width: 100%; }
+    .fr-cust-box { display: flex; align-items: center; gap: 8px; border: 1.5px solid var(--border-color, #cfd6dc); border-radius: 10px; background: var(--bg-surface, #fff); padding: 0 8px 0 12px; }
+    .fr-cust-box svg { width: 18px; height: 18px; flex: none; opacity: .55; color: var(--dark, #2C3E50); }
+    .fr-cust-box input { border: 0 !important; box-shadow: none !important; background: transparent !important; flex: 1; min-width: 0; margin: 0 !important; padding-left: 0 !important; }
+    .fr-cust-box:focus-within { border-color: var(--accent, #3498DB); }
+        .fr-cust-list { list-style: none; margin: 0; padding: 4px; position: fixed; z-index: 10001; box-sizing: border-box; background: var(--bg-surface, #fff); border: 1px solid var(--border-color, #cfd6dc); border-radius: 12px; box-shadow: 0 10px 28px rgba(0,0,0,.18); max-height: 300px; overflow-y: auto; }
+    .fr-cust-list[hidden] { display: none; }
+    .fr-opt { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 8px; cursor: pointer; font-size: 14px; color: var(--dark, #2C3E50); min-height: 44px; justify-content: center; }
+    .fr-opt small { font-size: 12px; opacity: .7; }
+    .fr-opt[aria-selected="true"], .fr-opt:hover { background: var(--tint-info-bg, #EAF4FB); }
+    .fr-opt.fr-add { flex-direction: row; align-items: center; justify-content: flex-start; color: var(--accent, #1b6fb5); font-weight: 600; border-top: 1px solid var(--border-color, #e1e6ea); border-radius: 0 0 8px 8px; }
+    .fr-status[hidden] { display: none; }
+    .fr-status { margin-top: 8px; font-size: 13px; padding: 8px 12px; border-radius: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: var(--bg-surface-alt, #f4f6f7); color: var(--dark, #2C3E50); }
+    .fr-status.fr-on { background: var(--tint-success-bg, #eafaf1); color: var(--tint-success-text, #1e8449); }
+    .fr-status.fr-new { background: var(--tint-info-bg, #EAF4FB); }
+    .fr-status.fr-warn { background: var(--tint-warning-bg, #fff3cd); color: var(--tint-warning-text, #7a5b00); }
+    .fr-status .fr-link { appearance: none; background: none; border: 0; padding: 4px 6px; margin: 0; font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; color: inherit; min-height: 32px; width: auto; }
+    .fr-newbox { margin-top: 8px; padding: 12px; border-radius: 12px; border: 1px solid var(--border-color, #cfd6dc); background: var(--bg-surface-alt, #f4f6f7); }
+    .fr-newbox[hidden] { display: none; }
+    .fr-newbox label { display: block; font-size: 12.5px; font-weight: 700; margin: 0 0 4px; }
+    .fr-newbox .fr-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .fr-newbox .fr-row > div { flex: 1; min-width: 160px; }
+    .fr-err { color: var(--danger, #E74C3C); font-size: 12.5px; min-height: 18px; margin: 4px 0 0; }
+    /* customers list */
+    .fr-ctools { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; align-items: center; }
+    .fr-ctools select { width: auto; min-width: 150px; margin: 0; }
+    .fr-ccount { font-size: 12.5px; opacity: .7; margin: 0 0 8px; }
+    .fr-crow { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 12px 14px; margin: 0 0 8px; border: 1px solid var(--border-color, #e1e6ea); border-radius: 12px; background: var(--bg-surface, #fff); color: var(--dark, #2C3E50); cursor: pointer; font: inherit; min-height: 56px; }
+    .fr-crow:hover { border-color: var(--accent, #3498DB); }
+    .fr-crow:focus-visible { outline: 3px solid #1b6fb5; outline-offset: 2px; }
+    .fr-av { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; font-weight: 800; background: var(--tint-info-bg, #EAF4FB); color: var(--accent, #1b6fb5); }
+    .fr-cmain { flex: 1; min-width: 0; }
+    .fr-cmain strong { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .fr-cmain small { display: block; opacity: .7; font-size: 12.5px; }
+    .fr-pill { display: inline-block; font-size: 11.5px; font-weight: 700; padding: 2px 9px; border-radius: 99px; background: var(--icon-muted-bg, #eef1f4); color: var(--dark, #2C3E50); white-space: nowrap; }
+    .fr-pill.fr-warn { background: var(--tint-warning-bg, #fff3cd); color: var(--tint-warning-text, #7a5b00); }
+    .fr-pill.fr-bad { background: var(--tint-danger-bg, #fdecea); color: var(--danger, #c0392b); }
+    .fr-pill.fr-good { background: var(--tint-success-bg, #eafaf1); color: var(--tint-success-text, #1e8449); }
+    /* profile */
+    #fr-profile { position: fixed; inset: 0; z-index: 10000; background: var(--overlay-bg, rgba(44,62,80,.92)); display: none; align-items: center; justify-content: center; padding: 12px; }
+    #fr-profile.fr-open { display: flex; }
+    #fr-profile .fr-sheet { background: var(--bg-surface, #fff); color: var(--dark, #2C3E50); width: 100%; max-width: 720px; max-height: 94vh; border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
+    #fr-profile .fr-head { display: flex; gap: 14px; align-items: center; padding: 18px 20px 12px; border-bottom: 1px solid var(--border-color, #e1e6ea); }
+    #fr-profile .fr-head h2 { margin: 0; font-size: 20px; padding: 0; }
+    #fr-profile .fr-head small { opacity: .7; font-size: 13px; }
+    #fr-profile .fr-hact { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 20px 0; }
+    .fr-tabs { display: flex; gap: 4px; padding: 12px 20px 0; border-bottom: 1px solid var(--border-color, #e1e6ea); overflow-x: auto; }
+    .fr-tab { appearance: none; background: none; border: 0; border-bottom: 3px solid transparent; padding: 10px 14px; margin: 0; font: inherit; font-weight: 700; font-size: 14px; color: var(--dark, #2C3E50); opacity: .7; cursor: pointer; white-space: nowrap; min-height: 44px; width: auto; border-radius: 6px 6px 0 0; }
+    .fr-tab[aria-selected="true"] { opacity: 1; border-bottom-color: var(--accent, #3498DB); }
+    #fr-profile .fr-body { padding: 16px 20px 22px; overflow-y: auto; flex: 1; }
+    .fr-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0 0 16px; }
+    .fr-tile { border: 1px solid var(--border-color, #e1e6ea); border-radius: 12px; padding: 12px 14px; background: var(--bg-surface-alt, #f4f6f7); }
+    .fr-tile b { display: block; font-size: 20px; }
+    .fr-tile span { font-size: 12.5px; opacity: .7; }
+    .fr-h5 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; opacity: .65; margin: 16px 0 8px; font-weight: 800; }
+    .fr-card { border: 1px solid var(--border-color, #e1e6ea); border-radius: 12px; padding: 12px 14px; margin: 0 0 10px; background: var(--bg-surface, #fff); }
+    .fr-card .fr-top { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+    .fr-card .fr-sub { font-size: 12.5px; opacity: .7; margin-top: 2px; }
+    .fr-card details { margin-top: 8px; }
+    .fr-card summary { cursor: pointer; font-size: 13px; font-weight: 700; color: var(--accent, #1b6fb5); min-height: 32px; display: flex; align-items: center; }
+    .fr-lines { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+    .fr-lines td, .fr-lines th { padding: 5px 4px; border-bottom: 1px solid var(--border-color, #e1e6ea); text-align: left; }
+    .fr-lines td:last-child, .fr-lines th:last-child { text-align: right; }
+    .fr-note { font-size: 12.5px; opacity: .75; line-height: 1.5; padding: 10px 12px; border-radius: 10px; background: var(--bg-surface-alt, #f4f6f7); margin: 8px 0; }
+    .fr-more { display: block; margin: 8px auto 0; }
+    @media (max-width: 600px) {
+        #fr-profile { padding: 0; align-items: flex-end; }
+        #fr-profile .fr-sheet { max-height: 96vh; border-radius: 16px 16px 0 0; }
+        #fr-profile .fr-body { padding: 14px 14px 20px; }
+        .fr-tabs, #fr-profile .fr-head, #fr-profile .fr-hact { padding-left: 14px; padding-right: 14px; }
+        .fr-tab { padding: 10px 9px; font-size: 13px; }
+    }
+</style>
+<script>
+(function () {
+    'use strict';
+    if (window.__frCustomers) return;
+    window.__frCustomers = true;
+
+    /* ---------------- small helpers (all guarded: a page that lacks something just skips that piece) ---------------- */
+    function $(id) { return document.getElementById(id); }
+    function esc(s) {
+        s = String(s == null ? '' : s);
+        try { if (typeof escapeHtml === 'function') return escapeHtml(s); } catch (e) { /* fall through */ }
+        return s.replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+    }
+    function np(p) {
+        try { if (typeof normalizeKenyanPhone === 'function') return normalizeKenyanPhone(String(p || '')); } catch (e) { /* digits only */ }
+        return String(p || '').replace(/\D/g, '');
+    }
+    /* direct reads of the page's own lists (they are top-level `let`s of the app script); a page that lacks one just gets an empty list */
+    var GET = {
+        customers: function () { return customers; }, inventory: function () { return inventory; }, salesLog: function () { return salesLog; },
+        bills: function () { return bills; }, returns: function () { return returns; }, debts: function () { return debts; }
+    };
+    function arr(name) { try { var v = GET[name](); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+    function custs() { return arr('customers'); }
+    function money(n) { return 'KES ' + (Number(n) || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function dateOf(ts) { var d = new Date(ts); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); }
+    function dateTimeOf(ts) { var d = new Date(ts); return isNaN(d) ? '' : dateOf(ts) + ', ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); }
+    function toast(msg, bad) { try { if (typeof showToast === 'function') showToast(msg, !!bad); } catch (e) { /* cosmetic */ } }
+    function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+    var IC = {
+        box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8l9 5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>',
+        users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20"/><circle cx="10" cy="8" r="3.5"/><path d="M20 20v-1.5a3.5 3.5 0 0 0-2.5-3.35"/><path d="M15.5 4.65a3.5 3.5 0 0 1 0 6.7"/></svg>',
+        plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+        up: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 20h16"/></svg>',
+        cart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M3 4h2.5l2.2 11h10.6L20 7H6.4"/></svg>',
+        search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>'
+    };
+
+    /* Which phone is this sale/return/bill linked to? (a bill payment carries its bill's phone) */
+    var billIdx = { n: -1, map: null };
+    function billMap() {
+        var bs = arr('bills');
+        if (billIdx.map && billIdx.n === bs.length) return billIdx.map;
+        var m = {}; bs.forEach(function (b) { if (b && b.id != null) m[b.id] = b; });
+        billIdx = { n: bs.length, map: m }; return m;
+    }
+    function salePhone(s) {
+        if (!s) return '';
+        var p = s.customerPhone || s.mpesaPhone;
+        if (p) return np(p);
+        if (s.billId != null) { var b = billMap()[s.billId]; if (b) return np(b.customerPhone || b.mpesaPhone); }
+        return '';
+    }
+    function findCust(phone) {
+        var n = np(phone); if (!n) return null;
+        var list = custs();
+        for (var i = 0; i < list.length; i++) { if (list[i] && list[i].phone && np(list[i].phone) === n) return list[i]; }
+        return null;
+    }
+    function salesOf(c) {
+        var n = np(c.phone); if (!n) return [];
+        return arr('salesLog').filter(function (s) { return s && salePhone(s) === n; });
+    }
+    function saleTotal(s) { return (Number(s.cashAmount) || 0) + (Number(s.mpesaAmount) || 0) + (Number(s.cardAmount) || 0); }
+    function billsOf(c) {
+        var n = np(c.phone); if (!n) return [];
+        return arr('bills').filter(function (b) { return b && np(b.customerPhone || b.mpesaPhone) === n; });
+    }
+    function returnsOf(c) {
+        var n = np(c.phone); if (!n) return [];
+        return arr('returns').filter(function (r) { return r && r.customerPhone && np(r.customerPhone) === n; });
+    }
+    function billTotal(b) { try { if (typeof billTotalOf === 'function') return Number(billTotalOf(b)) || 0; } catch (e) { /* below */ } return Number(b.total) || 0; }
+
+    /* One pass over the sales log: normalised phone -> { count, spend, last } (the list needs this for every customer, so it must not filter per row) */
+    var statCache = { key: '', map: null, at: 0 };
+    function statMap() {
+        var log = arr('salesLog');
+        var key = log.length + ':' + (log.length ? (log[log.length - 1] && log[log.length - 1].id) : '') + ':' + arr('bills').length;
+        if (statCache.map && statCache.key === key && Date.now() - statCache.at < 3000) return statCache.map;   /* the short time limit also picks up a void, which changes neither length nor last id */
+        var m = {};
+        log.forEach(function (s) {
+            if (!s || s.voided) return;
+            var p = salePhone(s); if (!p) return;
+            var e = m[p] || (m[p] = { count: 0, spend: 0, last: 0 });
+            e.count++; e.spend += saleTotal(s);
+            var t = Date.parse(s.timestamp) || 0; if (t > e.last) e.last = t;
+        });
+        statCache = { key: key, map: m, at: Date.now() }; return m;
+    }
+    function owedMap() {
+        var m = {};
+        arr('bills').forEach(function (b) {
+            if (!b || b.voided || b.closed) return;
+            var p = np(b.customerPhone || b.mpesaPhone); if (!p) return;
+            var out = billTotal(b) - (Number(b.amountPaid) || 0);
+            if (out > 0.004) m[p] = (m[p] || 0) + out;
+        });
+        arr('debts').forEach(function (d) {   /* zip 262: recorded debts are money owed too - same rule as the customer ledger */
+            if (!d) return; var p = np(d.phone); if (!p) return;
+            var out = (Number(d.amount) || 0) - (Array.isArray(d.payments) ? d.payments : []).reduce(function (t, x) { return t + (Number(x && x.amount) || 0); }, 0);
+            if (out > 0.004) m[p] = (m[p] || 0) + out;
+        });
+        return m;
+    }
+
+    /* the old per-app helper compared phones with === ; this one treats 0712.. and +254712.. as the same person, like registration does */
+    window.customerPurchaseCount = function (phone) { var e = statMap()[np(phone)]; return e ? e.count : 0; };
+
+    /* ---------------- navigation ---------------- */
+    function tabButton(id) { return document.querySelector('.tab-link[data-tab="' + id + '"]'); }
+    function tabAllowed(id) { var b = tabButton(id); return !!(b && b.style.display !== 'none' && !b.hidden && !b.disabled); }
+    function goTab(id) {
+        var b = tabButton(id);
+        if (!b) return false;
+        try { b.click(); return true; } catch (e) { return false; }
+    }
+
+    /* ======================================================================================================================
+       1. EMPTY STATES
+       ====================================================================================================================== */
+    function invCount() { return arr('inventory').length; }
+    function sellableCount() {
+        var inv = arr('inventory');
+        try { if (typeof isSellableProduct === 'function') return inv.filter(function (p) { return isSellableProduct(p) && (p.type || 'item') !== 'ingredient'; }).length; } catch (e) { /* plain count */ }
+        return inv.length;
+    }
+    function canImport() { return !!$('inventory-import-file-input') && typeof importInventoryCsv === 'function'; }
+
+    function emptyCardHtml(kind) {
+        var addOk = tabAllowed('add-item-tab');
+        var title = kind === 'sales' ? 'Nothing to sell yet' : 'Your inventory is empty';
+        var body = kind === 'sales'
+            ? 'Add the products you sell, then search or tap them here to build a sale. You can still use <b>Sell Unlisted Item</b> for a one-off sale.'
+            : 'Products need to be in your inventory before you can record a sale. Add them one at a time, or import a list you already keep.';
+        var acts = '';
+        if (addOk) acts += '<button type="button" class="fr-btn fr-primary" data-fr="add">' + IC.plus + 'Add your first item</button>';
+        if (addOk && canImport()) acts += '<button type="button" class="fr-btn" data-fr="import">' + IC.up + 'Import from Excel / CSV</button>';
+        var hint = addOk
+            ? '<p class="fr-hint">Item name and selling price are enough to start. Cost, stock quantity, code and category can be added now or later.</p>'
+            : '<p class="fr-hint">Your login cannot add products. Ask the shop owner or an admin to add them.</p>';
+        return '<div class="fr-empty" role="region" aria-label="' + title + '"><div class="fr-ico">' + IC.box + '</div><h4>' + title + '</h4><p>' + body + '</p><div class="fr-actions">' + acts + '</div>' + hint + '</div>';
+    }
+    function wireEmpty(root) {
+        root.querySelectorAll('[data-fr="add"]').forEach(function (b) { b.onclick = function () { if (!goTab('add-item-tab')) toast('Your login cannot add products.', true); else setTimeout(focusFirstField, 250); }; });
+        root.querySelectorAll('[data-fr="import"]').forEach(function (b) { b.onclick = function () { var f = $('inventory-import-file-input'); if (f) f.click(); }; });
+    }
+    function focusFirstField() {
+        try { var t = $('add-item-tab'); var i = t && t.querySelector('input:not([type=hidden]):not([type=file]):not([type=checkbox]), select'); if (i && i.offsetParent !== null) i.focus({ preventScroll: false }); } catch (e) { /* cosmetic */ }
+    }
+
+    function updateInventoryEmpty() {
+        var tb = document.querySelector('#inventory-table tbody'); if (!tb) return;
+        var has = tb.querySelector('.fr-empty');
+        if (invCount() !== 0) { if (has) { var r = has.closest('tr'); if (r) r.remove(); } return; }
+        if (has) return;
+        var onlyMsg = tb.children.length === 1 && !!tb.querySelector('td.empty-state');
+        if (!onlyMsg) return;                     /* only ever replace the app's own "no items" message row, never a real item row (e.g. another branch's list) */
+        invObs && invObs.disconnect();
+        var cols = (tb.closest('table') && tb.closest('table').querySelectorAll('thead th').length) || 7;
+        tb.innerHTML = '<tr><td colspan="' + cols + '" class="fr-cell">' + emptyCardHtml('inventory') + '</td></tr>';
+        wireEmpty(tb);
+        watchInv();
+    }
+    var invObs = null;
+    function watchInv() {
+        var tb = document.querySelector('#inventory-table tbody'); if (!tb || !window.MutationObserver) return;
+        if (!invObs) invObs = new MutationObserver(function () { try { updateInventoryEmpty(); } catch (e) { /* next tick */ } });
+        invObs.observe(tb, { childList: true });
+    }
+
+    function updateSalesEmpty() {
+        var grid = $('item-image-grid'); if (!grid || !grid.parentNode) return;
+        var card = $('fr-sales-empty');
+        var q = $('sales-search'); var searching = !!(q && q.value && q.value.trim());
+        var show = sellableCount() === 0 && !searching;
+        if (!show) { if (card) card.remove(); return; }
+        if (card) return;
+        card = document.createElement('div'); card.id = 'fr-sales-empty'; card.innerHTML = emptyCardHtml('sales');
+        grid.parentNode.insertBefore(card, grid);
+        wireEmpty(card);
+    }
+
+    /* after the very first item is saved on this device: a short "what next" card on Add New Items */
+    var lastInv = null;
+    function updateNextSteps() {
+        var n = invCount();
+        var tab = $('add-item-tab');
+        if (lastInv === 0 && n === 1 && tab && tab.classList.contains('active') && !$('fr-next')) {
+            var d = document.createElement('div'); d.id = 'fr-next'; d.setAttribute('role', 'status');
+            var imp = canImport() ? '<button type="button" class="fr-btn" data-fr="import">' + IC.up + 'Import the rest</button>' : '';
+            d.innerHTML = '<div class="fr-grow"><h4>First item saved</h4><p>It is now in your inventory and can be sold. What would you like to do next?</p><div class="fr-actions" style="justify-content:flex-start"><button type="button" class="fr-btn" data-fr="another">' + IC.plus + 'Add another item</button>' + imp + '<button type="button" class="fr-btn fr-primary" data-fr="sell">' + IC.cart + 'Make your first sale</button></div></div><button type="button" class="fr-x" data-fr="close" aria-label="Dismiss">&times;</button>';
+            tab.insertBefore(d, tab.firstChild);
+            d.querySelector('[data-fr="another"]').onclick = function () { d.remove(); focusFirstField(); try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) { /* cosmetic */ } };
+            d.querySelector('[data-fr="sell"]').onclick = function () { d.remove(); goTab('sales-tab'); };
+            d.querySelector('[data-fr="close"]').onclick = function () { d.remove(); };
+            var imb = d.querySelector('[data-fr="import"]'); if (imb) imb.onclick = function () { var f = $('inventory-import-file-input'); if (f) f.click(); };
+        }
+        lastInv = n;
+    }
+
+    /* ======================================================================================================================
+       2. CHECKOUT CUSTOMER FIELD
+       ====================================================================================================================== */
+    var S = { cust: null, newName: '', newPhone: '', mode: 'none' };      /* mode: none | existing | new */
+    var els = {};
+    var activeIdx = -1, shown = [];
+
+    function origInput() { return $('sms-checkout-phone-input'); }
+    function setOrig(v) {
+        var o = origInput(); if (!o) return;
+        if (o.value === v) return;
+        o.value = v;
+        try { o.dispatchEvent(new Event('input', { bubbles: true })); o.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) { /* the value is what the checkout reads */ }
+    }
+    function phoneLike(v) { return /^\+?[\d\s\-()]{3,}$/.test(v) && /\d{3}/.test(v); }
+    function validPhone(v) {
+        var d = String(v || '').replace(/\D/g, ''); var n = np(v);
+        if (/^254[17]\d{8}$/.test(n)) return true;
+        return /^\s*\+/.test(String(v || '')) && d.length >= 9 && d.length <= 15;
+    }
+
+    function buildField() {
+        var o = origInput(); if (!o || $('fr-cust')) return;
+        var grp = o.closest('.form-group') || o.parentNode;
+        var label = grp.querySelector('label');
+        if (label) label.innerHTML = 'Customer <span style="font-weight:normal; opacity:.7;">(optional)</span>';
+        o.style.display = 'none'; o.setAttribute('aria-hidden', 'true'); o.tabIndex = -1;
+        var w = document.createElement('div'); w.className = 'fr-cust'; w.id = 'fr-cust';
+        w.innerHTML =
+            '<div class="fr-cust-box">' + IC.search + '<input type="text" id="fr-cust-q" role="combobox" aria-label="Customer name or phone number" aria-expanded="false" aria-controls="fr-cust-list" aria-autocomplete="list" autocomplete="off" placeholder="Search name or phone">' +
+            '<button type="button" class="fr-x" id="fr-cust-clear" aria-label="Remove customer from this sale" hidden>&times;</button></div>' +
+            '<ul class="fr-cust-list" id="fr-cust-list" role="listbox" aria-label="Matching customers" hidden></ul>' +
+            '<div class="fr-newbox" id="fr-newbox" hidden><div class="fr-row"><div><label for="fr-new-name">Customer name <span style="font-weight:normal;opacity:.7">(optional)</span></label><input type="text" id="fr-new-name" autocomplete="off" placeholder="e.g. Jane Wanjiru"></div>' +
+            '<div><label for="fr-new-phone">Phone number <span style="color:var(--danger,#E74C3C)">*</span></label><input type="tel" id="fr-new-phone" inputmode="tel" autocomplete="off" placeholder="e.g. 0712345678" aria-describedby="fr-new-err"></div></div>' +
+            '<p class="fr-err" id="fr-new-err" role="alert"></p><div class="fr-actions" style="justify-content:flex-start"><button type="button" class="fr-btn fr-primary" id="fr-new-ok">Attach to this sale</button><button type="button" class="fr-btn" id="fr-new-cancel">Cancel</button></div>' +
+            '<p class="fr-hint" style="font-size:12px;opacity:.7;margin:8px 0 0">The customer is only saved once the sale goes through.</p></div>' +
+            '<div class="fr-status" id="fr-status" role="status" aria-live="polite"></div>';
+        grp.appendChild(w);
+        els = { q: $('fr-cust-q'), list: $('fr-cust-list'), clear: $('fr-cust-clear'), status: $('fr-status'), box: $('fr-newbox'), nn: $('fr-new-name'), np: $('fr-new-phone'), err: $('fr-new-err') };
+        els.q.addEventListener('input', onType);
+        els.q.addEventListener('keydown', onKey);
+        els.q.addEventListener('focus', function () { if (els.q.value.trim()) onType(); });
+        els.clear.addEventListener('click', function () { resetField(true); els.q.focus(); });
+        $('fr-new-ok').addEventListener('click', confirmNew);
+        $('fr-new-cancel').addEventListener('click', function () { els.box.hidden = true; });
+        els.np.addEventListener('input', function () { els.err.textContent = ''; });
+        document.addEventListener('click', function (e) { if (!els.list.hidden && !e.target.closest('#fr-cust')) closeList(); });
+        renderStatus();
+    }
+
+    function matches(v) {
+        var q = v.trim().toLowerCase(); var d = q.replace(/\D/g, ''); var byPhone = phoneLike(q);   /* digits inside a name (\"Room 12\") must not match phone numbers */
+        var st = statMap(); var out = [];
+        custs().forEach(function (c) {
+            if (!c) return;
+            var nm = String(c.name || '').toLowerCase(); var ph = String(c.phone || ''); var pn = np(ph);
+            var hit = (nm && nm.indexOf(q) !== -1) || (byPhone && ((d.length >= 2 && (pn.indexOf(d) !== -1 || ph.replace(/\D/g, '').indexOf(d) !== -1)) || ph.toLowerCase().indexOf(q) !== -1));
+            if (!hit) return;
+            var rank = (pn === np(q) && d.length >= 7) ? 0 : (nm.indexOf(q) === 0 ? 1 : 2);
+            out.push({ c: c, rank: rank, count: (st[pn] || {}).count || 0 });
+        });
+        out.sort(function (a, b) { return a.rank - b.rank || b.count - a.count || String(a.c.name || '').localeCompare(String(b.c.name || '')); });
+        return out.slice(0, 8);
+    }
+    function onType() {
+        var v = els.q.value;
+        if (S.mode === 'dup') S = { cust: null, newName: '', newPhone: '', mode: 'none' };
+        else if (S.mode === 'existing' || S.mode === 'new') {
+            var label = S.mode === 'existing' ? (S.cust.name || S.cust.phone) : (S.newName || S.newPhone);
+            if (v !== label) detach();                  /* the cashier is changing the customer: drop the old attachment */
+        }
+        var t = v.trim();
+        if (!t) { closeList(); renderStatus(); return; }
+        shown = matches(t);
+        var exact = shown.some(function (m) { return m.rank === 0; });
+        var html = shown.map(function (m, i) {
+            var c = m.c; var tok = (Number(c.tokens) || 0);
+            return '<li role="option" class="fr-opt" id="fr-opt-' + i + '" data-i="' + i + '" aria-selected="false"><span><b>' + esc(c.name || 'Unnamed customer') + '</b> &middot; ' + esc(c.phone) + '</span><small>' + plural(m.count, 'purchase') + (tok ? ' &middot; ' + tok + ' tokens' : '') + '</small></li>';
+        }).join('');
+        if (!exact) {
+            var label = phoneLike(t) ? 'Add new customer with number ' + esc(t) : 'Add &ldquo;' + esc(t) + '&rdquo; as a new customer';
+            html += '<li role="option" class="fr-opt fr-add" id="fr-opt-add" data-add="1" aria-selected="false">' + IC.plus.replace('<svg', '<svg style="width:16px;height:16px;vertical-align:-3px;margin-right:6px"') + label + '</li>';
+        }
+        els.list.innerHTML = html; els.list.hidden = false; els.q.setAttribute('aria-expanded', 'true'); activeIdx = -1; positionList();
+        els.list.querySelectorAll('.fr-opt').forEach(function (li) {
+            li.addEventListener('mousedown', function (e) { e.preventDefault(); });                     /* keep focus in the input so blur does not close it first */
+            li.addEventListener('click', function () { pick(li); });
+        });
+        if (!html) closeList();
+    }
+    /* the list is position:fixed (the payment area around the field scrolls and would clip it); it opens below the field, or above when there is no room below */
+    function positionList() {
+        if (!els.list || els.list.hidden) return;
+        var box = els.q.closest('.fr-cust-box') || els.q; var r = box.getBoundingClientRect();
+        var vh = window.innerHeight || document.documentElement.clientHeight;
+        els.list.style.left = Math.max(4, r.left) + 'px'; els.list.style.width = Math.min(r.width, (window.innerWidth || 9999) - 8) + 'px';
+        els.list.style.maxHeight = '300px';
+        var h = Math.min(els.list.scrollHeight + 8, 300); var below = vh - r.bottom - 8, above = r.top - 8;
+        if (below >= h || below >= above) { els.list.style.top = (r.bottom + 4) + 'px'; els.list.style.bottom = 'auto'; els.list.style.maxHeight = Math.max(120, Math.min(300, below)) + 'px'; }
+        else { els.list.style.bottom = (vh - r.top + 4) + 'px'; els.list.style.top = 'auto'; els.list.style.maxHeight = Math.max(120, Math.min(300, above)) + 'px'; }
+    }
+    window.addEventListener('resize', positionList);
+    window.addEventListener('scroll', positionList, true);
+    function closeList() { if (!els.list) return; els.list.hidden = true; els.q.setAttribute('aria-expanded', 'false'); els.q.removeAttribute('aria-activedescendant'); activeIdx = -1; }
+    function onKey(e) {
+        var opts = els.list.hidden ? [] : [].slice.call(els.list.querySelectorAll('.fr-opt'));
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            if (!opts.length) return; e.preventDefault();
+            activeIdx = (activeIdx + (e.key === 'ArrowDown' ? 1 : -1) + opts.length) % opts.length;
+            opts.forEach(function (o, i) { o.setAttribute('aria-selected', i === activeIdx ? 'true' : 'false'); });
+            els.q.setAttribute('aria-activedescendant', opts[activeIdx].id); opts[activeIdx].scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'Enter') {
+            if (opts.length && activeIdx >= 0) { e.preventDefault(); pick(opts[activeIdx]); }
+            else if (opts.length === 1 && !opts[0].dataset.add) { e.preventDefault(); pick(opts[0]); }
+            else if (els.q.value.trim()) e.preventDefault();         /* never submit the sale from the search box */
+        } else if (e.key === 'Escape') { if (!els.list.hidden) { e.preventDefault(); closeList(); } }
+    }
+    function pick(li) {
+        if (li.dataset.add) { openNew(); return; }
+        var m = shown[Number(li.dataset.i)]; if (m) attach(m.c);
+    }
+    function attach(c) {
+        S = { cust: c, newName: '', newPhone: '', mode: 'existing' };
+        setOrig(c.phone);
+        els.q.value = c.name || c.phone; closeList(); els.box.hidden = true; renderStatus();
+    }
+    function detach() { S = { cust: null, newName: '', newPhone: '', mode: 'none' }; setOrig(''); els.box.hidden = true; renderStatus(); }
+    function resetField(clearText) { S = { cust: null, newName: '', newPhone: '', mode: 'none' }; if (clearText && els.q) els.q.value = ''; setOrig(''); if (els.box) els.box.hidden = true; if (els.list) closeList(); renderStatus(); }
+
+    function openNew() {
+        var t = els.q.value.trim(); closeList();
+        els.nn.value = phoneLike(t) ? '' : t; els.np.value = phoneLike(t) ? t : ''; els.err.textContent = '';
+        els.box.hidden = false; (phoneLike(t) ? els.nn : els.np).focus();
+    }
+    function confirmNew() {
+        var phone = els.np.value.trim(), name = els.nn.value.trim();
+        if (!validPhone(phone)) { els.err.textContent = 'Enter a valid phone number, for example 0712345678. A phone number is needed to save a customer.'; els.np.focus(); return; }
+        var dup = findCust(phone);
+        if (dup) { els.box.hidden = true; S = { cust: null, newName: '', newPhone: '', mode: 'dup', dup: dup }; renderStatus(); return; }
+        S = { cust: null, newName: name, newPhone: phone, mode: 'new' };
+        setOrig(phone); els.q.value = name || phone; els.box.hidden = true; renderStatus();
+    }
+
+    function renderStatus() {
+        if (!els.status) return;
+        var s = els.status, h = '', cls = 'fr-status';
+        if (S.mode === 'existing' && S.cust) {
+            var c = S.cust, tok = Number(c.tokens) || 0; var owed = owedMap()[np(c.phone)] || 0;
+            cls += ' fr-on';
+            h = '<span>Attached: <b>' + esc(c.name || 'Unnamed customer') + '</b> &middot; ' + esc(c.phone) + (tok ? ' &middot; ' + tok + ' tokens' : '') + (owed > 0 ? ' &middot; owes ' + money(owed) : '') + '</span>';
+            els.clear.hidden = false;
+        } else if (S.mode === 'new') {
+            cls += ' fr-new';
+            h = '<span>New customer: <b>' + esc(S.newName || 'no name') + '</b> &middot; ' + esc(S.newPhone) + '. Saved once, when this sale completes.</span>';
+            els.clear.hidden = false;
+        } else if (S.mode === 'dup' && S.dup) {
+            cls += ' fr-warn';
+            h = '<span>This number already belongs to <b>' + esc(S.dup.name || 'an unnamed customer') + '</b> (' + esc(S.dup.phone) + ').</span><button type="button" class="fr-link" id="fr-use-dup">Use this customer</button><button type="button" class="fr-link" id="fr-dup-no">Cancel</button>';
+            els.clear.hidden = true;
+        } else {
+            h = '';
+            els.clear.hidden = true;
+        }
+        s.className = cls; s.innerHTML = h; s.hidden = !h;
+        var u = $('fr-use-dup'); if (u) u.onclick = function () { attach(S.dup); };
+        var n = $('fr-dup-no'); if (n) n.onclick = function () { resetField(true); };
+    }
+
+    /* the checkout clears the old phone box itself after a successful sale (or another block sets it): follow it */
+    function syncFromOrig() {
+        var o = origInput(); if (!o || !els.q) return;
+        var v = (o.value || '').trim();
+        var mine = S.mode === 'existing' ? S.cust.phone : (S.mode === 'new' ? S.newPhone : '');
+        if (S.mode === 'dup') return;
+        if (v === (mine || '')) return;
+        if (!v) { resetField(true); return; }                 /* sale finished (or someone cleared it) */
+        var c = findCust(v);
+        if (c) attach(c);
+        else { S = { cust: null, newName: S.newName || '', newPhone: v, mode: 'new' }; els.q.value = v; renderStatus(); }
+    }
+
+    /* A new customer's name rides along on the existing registration call. It only runs after the sale succeeded. */
+    function wrapRegister() {
+        var f = window.registerOrUpdateCustomer;
+        if (typeof f !== 'function' || f.__fr) return;
+        var w = function (phone, name) {
+            var nm = name;
+            try { if (!nm && S.mode === 'new' && S.newName && np(phone) === np(S.newPhone)) nm = S.newName; } catch (e) { /* plain call */ }
+            return f.call(this, phone, nm);
+        };
+        w.__fr = true; window.registerOrUpdateCustomer = w;
+    }
+    /* Tokens: find the customer by normalised phone (the original compared with ===, so a sale typed +254712.. for a customer saved as 0712.. earned nothing),
+       then stamp what was earned on the sale that earned it so the profile can show a dated ledger. */
+    function wrapAward() {
+        var f = window.awardTokensForSale;
+        if (typeof f !== 'function' || f.__fr) return;
+        var w = function (phone, total) {
+            var c = findCust(phone); var before = c ? (Number(c.tokens) || 0) : 0;
+            var r = f.call(this, c ? c.phone : phone, total);
+            try { if (c) { var gained = (Number(c.tokens) || 0) - before; if (gained > 0) stamp(c, gained); } } catch (e) { /* the balance itself is already right */ }
+            return r;
+        };
+        w.__fr = true; window.awardTokensForSale = w;
+    }
+    var saveT = null;
+    function stamp(c, gained) {
+        var log = arr('salesLog'); var last = log[log.length - 1];
+        if (!last || last.tokensEarned || last.voided) return;
+        var age = Date.now() - (Date.parse(last.timestamp) || 0);
+        if (age > 60000 || salePhone(last) !== np(c.phone)) return;
+        last.tokensEarned = gained;
+        clearTimeout(saveT);
+        saveT = setTimeout(function () { try { if (typeof safeSetItem === 'function') safeSetItem('pos_sales_log', JSON.stringify(arr('salesLog'))); } catch (e) { /* saved with the next sale */ } }, 1500);
+    }
+
+    /* ======================================================================================================================
+       3. MY CUSTOMERS LIST
+       ====================================================================================================================== */
+    var listLimit = 30, listKey = '';
+    function ensureListTools() {
+        var s = $('customers-search-input'); if (!s || $('fr-cust-sort')) return;
+        s.setAttribute('aria-label', 'Search customers by name or phone');
+        var sel = document.createElement('select'); sel.id = 'fr-cust-sort'; sel.setAttribute('aria-label', 'Sort customers');
+        sel.innerHTML = '<option value="new">Newest first</option><option value="name">Name A&ndash;Z</option><option value="buys">Most purchases</option><option value="spend">Highest spend</option><option value="owed">Owes most</option>';
+        sel.onchange = function () { window.renderCustomersList(); };
+        s.parentNode.insertBefore(sel, s.nextSibling);
+        var cnt = document.createElement('div'); cnt.id = 'fr-ccount'; cnt.className = 'fr-ccount'; cnt.setAttribute('aria-live', 'polite');
+        var host = $('customers-list'); if (host) host.parentNode.insertBefore(cnt, host);
+    }
+    window.renderCustomersList = function () {
+        var el = $('customers-list'); if (!el) return;
+        ensureListTools();
+        var qEl = $('customers-search-input'); var q = ((qEl && qEl.value) || '').trim().toLowerCase(); var qd = q.replace(/\D/g, '');
+        var sort = ($('fr-cust-sort') && $('fr-cust-sort').value) || 'new';
+        var all = custs(); var st = statMap(); var ow = owedMap();
+        var cnt = $('fr-ccount');
+        if (all.length === 0) {
+            if (cnt) cnt.textContent = '';
+            var imp = ('contacts' in navigator && typeof importCustomersFromPhonebook === 'function') ? '<button type="button" class="fr-btn" data-fr="phonebook">' + IC.up + 'Import from phonebook</button>' : '';
+            el.innerHTML = '<div class="fr-empty" role="region" aria-label="No customers yet"><div class="fr-ico">' + IC.users + '</div><h4>No customers yet</h4><p>Customers you add here, and every customer whose phone number you enter on a sale, are kept in this list with their purchases, balances and loyalty tokens.</p><div class="fr-actions"><button type="button" class="fr-btn fr-primary" data-fr="addc">' + IC.plus + 'Add a customer</button>' + imp + '</div><p class="fr-hint">Tip: type a name or number in the Customer box on the Sales Counter to add someone during a sale.</p></div>';
+            var a = el.querySelector('[data-fr="addc"]'); if (a) a.onclick = function () { if (typeof openAddCustomerModal === 'function') openAddCustomerModal(); };
+            var p = el.querySelector('[data-fr="phonebook"]'); if (p) p.onclick = function () { importCustomersFromPhonebook(); };
+            return;
+        }
+        var rows = all.filter(function (c) {
+            if (!c) return false; if (!q) return true;
+            return String(c.name || '').toLowerCase().indexOf(q) !== -1 || String(c.phone || '').toLowerCase().indexOf(q) !== -1 || (qd.length >= 2 && np(c.phone).indexOf(qd) !== -1);
+        }).map(function (c) { var n = np(c.phone); var s = st[n] || { count: 0, spend: 0, last: 0 }; return { c: c, count: s.count, spend: s.spend, last: s.last, owed: ow[n] || 0 }; });
+        rows.sort(function (a, b) {
+            if (sort === 'name') return String(a.c.name || '\uffff').localeCompare(String(b.c.name || '\uffff'));
+            if (sort === 'buys') return b.count - a.count;
+            if (sort === 'spend') return b.spend - a.spend;
+            if (sort === 'owed') return b.owed - a.owed;
+            return (b.c.createdAt || 0) - (a.c.createdAt || 0);
+        });
+        var key = q + '|' + sort; if (key !== listKey) { listKey = key; listLimit = 30; }
+        if (cnt) cnt.textContent = rows.length === all.length ? plural(all.length, 'customer') : 'Showing ' + rows.length + ' of ' + all.length + ' customers';
+        if (!rows.length) { el.innerHTML = '<div class="fr-empty"><h4>No matches</h4><p>No customer matches &ldquo;' + esc(qEl.value.trim()) + '&rdquo;. Check the spelling or try part of the phone number.</p></div>'; return; }
+        var page = rows.slice(0, listLimit);
+        el.innerHTML = page.map(function (r) {
+            var c = r.c; var nm = c.name || 'Unnamed customer'; var tok = Number(c.tokens) || 0;
+            var pills = (r.owed > 0 ? '<span class="fr-pill fr-warn">Owes ' + esc(money(r.owed)) + '</span> ' : '') + (tok ? '<span class="fr-pill fr-good">' + tok + ' tokens</span>' : '');
+            return '<button type="button" class="fr-crow" data-id="' + esc(c.id) + '" aria-label="Open ' + esc(nm) + '"><span class="fr-av" aria-hidden="true">' + esc((nm.trim()[0] || '?').toUpperCase()) + '</span><span class="fr-cmain"><strong>' + esc(nm) + '</strong><small>' + esc(c.phone) + ' &middot; ' + plural(r.count, 'purchase') + (r.last ? ' &middot; last ' + esc(dateOf(r.last)) : '') + '</small></span><span>' + pills + '</span></button>';
+        }).join('') + (rows.length > page.length ? '<button type="button" class="fr-btn fr-more" data-fr="more">Show ' + Math.min(30, rows.length - page.length) + ' more</button>' : '');
+        el.querySelectorAll('.fr-crow').forEach(function (b) { b.onclick = function () { window.openCustomerProfileModal(b.dataset.id); }; });
+        var m = el.querySelector('[data-fr="more"]'); if (m) m.onclick = function () { listLimit += 30; window.renderCustomersList(); };
+    };
+
+    /* ======================================================================================================================
+       4. CUSTOMER PROFILE
+       ====================================================================================================================== */
+    var origOpen = typeof window.openCustomerProfileModal === 'function' ? window.openCustomerProfileModal : null;
+    var P = { id: null, tab: 'overview', txLimit: 15, opener: null };
+    var TABS_ALL = [['overview', 'Overview'], ['tx', 'Transactions'], ['bills', 'Bills & balances'], ['acct', 'Statement'], ['loyalty', 'Loyalty']];
+    var TABS = TABS_ALL;
+    /* Production has no loyalty feature at all (no tiers, no award on a sale): its profile has no Loyalty tab rather than a tab pointing at settings that do not exist */
+    function loyaltySupported() { try { return typeof computeTokensEarned === 'function' && typeof awardTokensForSale === 'function'; } catch (e) { return false; } }
+
+    function ensureProfile() {
+        if ($('fr-profile')) return;
+        var d = document.createElement('div'); d.id = 'fr-profile'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true'); d.setAttribute('aria-labelledby', 'fr-p-name');
+        d.innerHTML = '<div class="fr-sheet"><div class="fr-head"><span class="fr-av" id="fr-p-av" aria-hidden="true"></span><div style="flex:1;min-width:0"><h2 id="fr-p-name"></h2><small id="fr-p-meta"></small></div><button type="button" class="fr-x" id="fr-p-close" aria-label="Close customer profile">&times;</button></div>' +
+            '<div class="fr-hact"><button type="button" class="fr-btn fr-primary" id="fr-p-sale">' + IC.cart + 'Start a sale</button><button type="button" class="fr-btn" id="fr-p-stmt">Statement</button><button type="button" class="fr-btn" id="fr-p-inv" title="Itemised invoice for everything this customer still owes">Generate invoice</button></div>' +
+            '<div class="fr-tabs" role="tablist" aria-label="Customer sections" id="fr-p-tabs"></div><div class="fr-body" id="fr-p-body" role="tabpanel" tabindex="0"></div></div>';
+        document.body.appendChild(d);
+        $('fr-p-close').onclick = closeProfile;
+        d.addEventListener('mousedown', function (e) { if (e.target === d) closeProfile(); });
+        $('fr-p-sale').onclick = function () { var c = custById(P.id); closeProfile(); if (c) { goTab('sales-tab'); setTimeout(function () { if (els.q) attach(c); }, 120); } };
+        $('fr-p-stmt').onclick = function () { if (typeof customerLedgerBuild === 'function') { P.tab = 'acct'; renderProfile(); $('fr-tab-acct').focus(); } else { var id = P.id; closeProfile(); if (origOpen) origOpen(id); } };
+        $('fr-p-inv').onclick = function () { acctAct('invoice'); };
+        d.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') { e.preventDefault(); closeProfile(); return; }
+            if (e.key === 'Tab') {
+                var f = [].slice.call(d.querySelectorAll('button:not([disabled]), summary, [tabindex="0"], a[href]')).filter(function (x) { return x.offsetParent !== null; });
+                if (!f.length) return; var a = f[0], z = f[f.length - 1];
+                if (e.shiftKey && document.activeElement === a) { e.preventDefault(); z.focus(); } else if (!e.shiftKey && document.activeElement === z) { e.preventDefault(); a.focus(); }
+            }
+        });
+    }
+    function custById(id) { var l = custs(); for (var i = 0; i < l.length; i++) if (l[i] && String(l[i].id) === String(id)) return l[i]; return null; }
+    function closeProfile() { var d = $('fr-profile'); if (d) d.classList.remove('fr-open'); P.id = null; try { if (P.opener && document.body.contains(P.opener)) P.opener.focus(); } catch (e) { /* cosmetic */ } }
+    window.openCustomerProfileModal = function (id) {
+        var c = custById(id); if (!c) return;
+        TABS = (loyaltySupported() ? TABS_ALL : TABS_ALL.slice(0, 4)).filter(function (x) { return x[0] !== 'acct' || typeof window.customerLedgerBuild === 'function'; });   /* Services keeps its own statement */
+        ensureProfile(); $('fr-p-inv').hidden = typeof window.printCustomerInvoice !== 'function'; P.id = id; P.tab = 'overview'; P.per = 'full'; P.txLimit = 15; P.opener = document.activeElement;
+        $('fr-p-name').textContent = c.name || 'Unnamed customer';
+        $('fr-p-av').textContent = ((c.name || '?').trim()[0] || '?').toUpperCase();
+        $('fr-p-meta').textContent = c.phone + (c.createdAt > 946684800000 ? ' · customer since ' + dateOf(c.createdAt) : '');
+        $('fr-profile').classList.add('fr-open');
+        renderProfile(); $('fr-p-close').focus();
+    };
+    function renderTabs() {
+        var t = $('fr-p-tabs');
+        t.innerHTML = TABS.map(function (x) { return '<button type="button" role="tab" class="fr-tab" id="fr-tab-' + x[0] + '" data-t="' + x[0] + '" aria-selected="' + (P.tab === x[0]) + '" aria-controls="fr-p-body" tabindex="' + (P.tab === x[0] ? 0 : -1) + '">' + esc(x[1]) + '</button>'; }).join('');
+        t.querySelectorAll('.fr-tab').forEach(function (b) {
+            b.onclick = function () { P.tab = b.dataset.t; P.txLimit = 15; renderProfile(); $('fr-tab-' + P.tab).focus(); };
+            b.onkeydown = function (e) {
+                var i = TABS.findIndex(function (x) { return x[0] === P.tab; });
+                if (e.key === 'ArrowRight') i = (i + 1) % TABS.length; else if (e.key === 'ArrowLeft') i = (i + TABS.length - 1) % TABS.length; else return;
+                e.preventDefault(); P.tab = TABS[i][0]; renderProfile(); $('fr-tab-' + P.tab).focus();
+            };
+        });
+        $('fr-p-body').setAttribute('aria-labelledby', 'fr-tab-' + P.tab);
+    }
+    function renderProfile() {
+        var c = custById(P.id); if (!c) { closeProfile(); return; }
+        renderTabs();
+        var body = $('fr-p-body');
+        body.innerHTML = P.tab === 'tx' ? txHtml(c) : P.tab === 'bills' ? billsHtml(c) : P.tab === 'acct' ? acctHtml(c) : P.tab === 'loyalty' ? loyaltyHtml(c) : overviewHtml(c);
+        wireBody(body, c);
+    }
+    function saleStatus(s) {
+        if (s.voided) return '<span class="fr-pill fr-bad">Voided</span>';
+        if (s.billId != null || s.installment) return '<span class="fr-pill">Bill payment</span>';
+        if (s.paid === false) return '<span class="fr-pill fr-warn">Unpaid</span>';
+        return '<span class="fr-pill fr-good">Paid</span>';
+    }
+    function payParts(s) {
+        var p = [];
+        if (Number(s.cashAmount) > 0) p.push('Cash ' + money(s.cashAmount));
+        if (Number(s.mpesaAmount) > 0) p.push('M-Pesa ' + money(s.mpesaAmount));
+        if (Number(s.cardAmount) > 0) p.push('Card/bank ' + money(s.cardAmount));
+        return p.join(' · ');
+    }
+    function saleCard(s) {
+        var items = Array.isArray(s.items) ? s.items : [];
+        var lines = items.map(function (i) {
+            var q = Number(i.qty) || 0, pr = Number(i.price) || 0;
+            return '<tr><td>' + esc(i.name || i.code || 'Item') + '</td><td>' + esc(q) + (i.unit && i.unit !== 'pcs' ? ' ' + esc(i.unit) : '') + '</td><td>' + esc(money(q * pr)) + '</td></tr>';
+        }).join('');
+        var summary = items.slice(0, 3).map(function (i) { return esc((Number(i.qty) || 1) + ' × ' + (i.name || i.code || 'Item')); }).join(', ') + (items.length > 3 ? ' +' + (items.length - 3) + ' more' : '');
+        var disc = Number(s.totalDiscount) > 0 ? '<div class="fr-sub">Discount: ' + esc(money(s.totalDiscount)) + '</div>' : '';
+        var tok = Number(s.tokensEarned) > 0 ? '<div class="fr-sub">Tokens earned: +' + esc(s.tokensEarned) + '</div>' : '';
+        return '<div class="fr-card"><div class="fr-top"><b>' + esc(money(saleTotal(s))) + '</b><span>' + saleStatus(s) + '</span></div>' +
+            '<div class="fr-sub">' + esc(dateTimeOf(s.timestamp)) + (s.refNumber ? ' · Receipt ' + esc(s.refNumber) : '') + (s.servedBy ? ' · Served by ' + esc(s.servedBy) : '') + '</div>' +
+            '<div class="fr-sub">' + (summary || 'No item lines') + '</div>' + (payParts(s) ? '<div class="fr-sub">' + esc(payParts(s)) + '</div>' : '') + disc + tok +
+            '<details><summary>Items and receipt</summary>' + (lines ? '<table class="fr-lines"><thead><tr><th>Item</th><th>Qty</th><th>Amount</th></tr></thead><tbody>' + lines + '</tbody></table>' : '<p class="fr-sub">No item lines were saved for this record.</p>') +
+            '<button type="button" class="fr-btn" style="margin-top:8px" data-receipt="' + esc(s.id) + '">View receipt</button></details></div>';
+    }
+    function sortedSales(c) { return salesOf(c).sort(function (a, b) { return (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0); }); }
+
+    function overviewHtml(c) {
+        var sales = sortedSales(c); var live = sales.filter(function (s) { return !s.voided; });
+        var spend = live.reduce(function (t, s) { return t + saleTotal(s); }, 0);
+        var owed = owedMap()[np(c.phone)] || 0; var tok = Number(c.tokens) || 0; var credit = Number(c.storeCredit) || 0;
+        var tiles = '<div class="fr-tiles"><div class="fr-tile"><b>' + esc(money(spend)) + '</b><span>Total spent</span></div><div class="fr-tile"><b>' + live.length + '</b><span>Purchases</span></div><div class="fr-tile"><b>' + (live.length ? esc(dateOf(live[0].timestamp)) : '&mdash;') + '</b><span>Last purchase</span></div><div class="fr-tile"><b>' + esc(money(owed)) + '</b><span>Balance owed (bills &amp; debts)</span></div>' +
+            (credit > 0 ? '<div class="fr-tile"><b>' + esc(money(credit)) + '</b><span>Store credit</span></div>' : '') + (loyaltySupported() && (tok > 0 || loyaltyOn()) ? '<div class="fr-tile"><b>' + tok + '</b><span>Loyalty tokens</span></div>' : '') + '</div>';
+        if (!sales.length && !billsOf(c).length) return tiles + '<div class="fr-empty"><div class="fr-ico">' + IC.cart + '</div><h4>No purchases yet</h4><p>Sales made for this customer will appear here with their receipts, payments and tokens. Start a sale and attach this customer to begin.</p></div>';
+        return tiles + '<div class="fr-h5">Latest activity</div>' + sales.slice(0, 3).map(saleCard).join('') + (sales.length > 3 ? '<button type="button" class="fr-btn fr-more" data-goto="tx">See all ' + sales.length + ' transactions</button>' : '');
+    }
+    function txHtml(c) {
+        var sales = sortedSales(c); var rets = returnsOf(c).sort(function (a, b) { return (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0); });
+        var h = '';
+        if (!sales.length) h += '<div class="fr-empty"><div class="fr-ico">' + IC.cart + '</div><h4>No transactions yet</h4><p>Completed sales for this customer will be listed here, newest first.</p></div>';
+        else { h += sales.slice(0, P.txLimit).map(saleCard).join(''); if (sales.length > P.txLimit) h += '<button type="button" class="fr-btn fr-more" data-more="1">Show ' + Math.min(15, sales.length - P.txLimit) + ' more</button>'; }
+        h += '<div class="fr-h5">Returns, exchanges and refunds</div>';
+        h += rets.length ? rets.map(function (r) {
+            var orig = r.linkedSaleId || '';
+            return '<div class="fr-card"><div class="fr-top"><b>' + esc(r.type === 'exchange' ? 'Exchange' : 'Return') + ': ' + esc(r.itemName || 'item') + (r.qty ? ' × ' + esc(r.qty) : '') + '</b><span class="fr-pill">' + esc(dateOf(r.timestamp)) + '</span></div><div class="fr-sub">' +
+                (r.refNumber ? 'Original receipt ' + esc(r.refNumber) + ' · ' : '') + (r.reason ? 'Reason: ' + esc(r.reason) + ' · ' : '') + (Number(r.returnCreditValue) > 0 ? 'Credit ' + esc(money(r.returnCreditValue)) + ' · ' : '') + (Number(r.storeCreditIssued) > 0 ? 'Store credit issued ' + esc(money(r.storeCreditIssued)) + ' · ' : '') + (r.servedBy ? 'By ' + esc(r.servedBy) : '') + '</div>' +
+                (orig && arr('salesLog').some(function (s) { return s.id === orig; }) ? '<button type="button" class="fr-btn" style="margin-top:8px" data-receipt="' + esc(orig) + '">View linked receipt</button>' : '') + '</div>';
+        }).join('') : '<p class="fr-note">No returns or exchanges are recorded for this customer. Returns made with this customer’s phone number appear here.</p>';
+        return h;
+    }
+    function billsHtml(c) {
+        var bs = billsOf(c).sort(function (a, b) { return (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0); });
+        var dl = arr('debts').filter(function (d) { return d && np(d.phone) === np(c.phone); });
+        if (!bs.length && !dl.length) return '<div class="fr-empty"><div class="fr-ico">' + IC.users + '</div><h4>No bills or credit</h4><p>Pay Later bills for this customer, with every part-payment and the balance still owed, will be listed here separately from completed sales.</p></div>';
+        var nd = new Date(), today = nd.getFullYear() + '-' + ('0' + (nd.getMonth() + 1)).slice(-2) + '-' + ('0' + nd.getDate()).slice(-2);   /* the shop's own calendar day, not UTC */
+        return bs.map(function (b) {
+            var total = billTotal(b), paid = Number(b.amountPaid) || 0, out = Math.max(0, total - paid);
+            var st = b.voided ? '<span class="fr-pill fr-bad">Voided</span>' : out <= 0.004 ? '<span class="fr-pill fr-good">Paid</span>' : paid > 0 ? '<span class="fr-pill fr-warn">Part-paid</span>' : '<span class="fr-pill fr-warn">Unpaid</span>';
+            var overdue = !b.voided && out > 0.004 && b.dueDate && String(b.dueDate) < today ? ' <span class="fr-pill fr-bad">Overdue</span>' : '';
+            var hist = (Array.isArray(b.paymentHistory) ? b.paymentHistory : []).map(function (p) { return '<tr><td>' + esc(dateOf(p.timestamp)) + '</td><td>' + esc(p.method || '') + '</td><td>' + esc(money(p.amount)) + '</td></tr>'; }).join('');
+            return '<div class="fr-card"><div class="fr-top"><b>' + esc(money(total)) + ' bill</b><span>' + st + overdue + '</span></div><div class="fr-sub">' + esc(dateOf(b.timestamp)) + (b.refNumber ? ' · ' + esc(b.refNumber) : '') + (b.dueDate ? ' · Due ' + esc(b.dueDate) : ' · No due date') + '</div>' +
+                '<div class="fr-sub">Paid ' + esc(money(paid)) + ' · <b>Balance ' + esc(money(out)) + '</b></div>' +
+                '<details><summary>Payments (' + (Array.isArray(b.paymentHistory) ? b.paymentHistory.length : 0) + ')</summary>' + (hist ? '<table class="fr-lines"><thead><tr><th>Date</th><th>Method</th><th>Amount</th></tr></thead><tbody>' + hist + '</tbody></table>' : '<p class="fr-sub">No payments recorded yet.</p>') + '</details></div>';
+        }).join('') + dl.map(function (d) {
+            var paid = (Array.isArray(d.payments) ? d.payments : []).reduce(function (t, x) { return t + (Number(x && x.amount) || 0); }, 0), out = Math.max(0, (Number(d.amount) || 0) - paid);
+            return '<div class="fr-card"><div class="fr-top"><b>' + esc(money(d.amount)) + ' debt</b><span>' + (out <= 0.004 ? '<span class="fr-pill fr-good">Paid</span>' : '<span class="fr-pill fr-warn">' + (paid > 0 ? 'Part-paid' : 'Unpaid') + '</span>') + '</span></div><div class="fr-sub">' + esc(dateOf(d.createdAt)) + (d.notes ? ' · ' + esc(d.notes) : '') + '</div><div class="fr-sub">Paid ' + esc(money(paid)) + ' · <b>Balance ' + esc(money(out)) + '</b></div></div>';
+        }).join('') + '<button type="button" class="fr-btn fr-primary fr-more" data-act="invoice">Generate invoice for what is owed</button><button type="button" class="fr-btn fr-more" data-goto-tab="bills-tab">Open the Bills tab to take a payment</button>';
+    }
+    /* zip 262: the full account statement. The ledger itself lives in shared code (customerLedgerBuild); this tab only presents it. */
+    function acctHtml(c) {
+        if (typeof customerLedgerBuild !== 'function') return '<div class="fr-empty"><h4>Statement unavailable</h4></div>';
+        var per = P.per || 'full', L = customerLedgerBuild(c, per);
+        var pb = [['full', 'All activity'], ['month1', 'Last month'], ['month6', 'Last 6 months']].map(function (x) { return '<button type="button" class="fr-btn' + (per === x[0] ? ' fr-primary' : '') + '" data-per="' + x[0] + '">' + x[1] + '</button>'; }).join('');
+        var out = L.outstandingTotal > 0.004 ? '<div class="fr-note"><b>Outstanding now: ' + esc(money(L.outstandingTotal)) + '</b> across ' + plural(L.open.length, 'unpaid item') + '. <span class="fr-sub">Generate invoice lists only these; the statement below also shows settled items.</span></div>' : '';
+        return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">' + pb + '</div>' + out +
+            '<div style="overflow-x:auto">' + window.customerLedgerTableHtml(L, true) + '</div><div style="margin-top:12px">' + window.customerLedgerTotalsHtml(L) + '</div>' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px"><button type="button" class="fr-btn" data-act="print">Print statement</button><button type="button" class="fr-btn fr-primary" data-act="invoice">Generate invoice</button><button type="button" class="fr-btn" data-act="pdf">Download</button><button type="button" class="fr-btn" data-act="share">Share</button></div>';
+    }
+    function acctAct(a) {
+        var c = custById(P.id); if (!c) return;
+        try {
+            currentCustomerProfileId = c.id; currentCustomerStatementPeriod = P.per || 'full';   /* the shared print/download/share helpers read these */
+            if (a === 'invoice') { closeProfile(); if (typeof printCustomerInvoice === 'function') printCustomerInvoice(); }
+            else if (a === 'print') { closeProfile(); printCustomerStatement(); }
+            else if (a === 'pdf') downloadCustomerStatement();
+            else if (a === 'share') shareCustomerStatementNative();
+        } catch (e) { toast('Could not open the statement.', true); }
+    }
+    function loyaltyOn() { try { return typeof loyaltyEnabled !== 'undefined' && !!loyaltyEnabled; } catch (e) { return false; } }
+    function loyaltyHtml(c) {
+        var tok = Number(c.tokens) || 0; var tv = 1; try { tv = Number(tokenValueKES) || 1; } catch (e) { /* default */ }
+        var tiers = []; try { tiers = Array.isArray(loyaltyTiers) ? loyaltyTiers : []; } catch (e) { /* none */ }
+        var rules = !loyaltyOn() ? '<p class="fr-note">Loyalty tokens are switched off for this shop. Turn them on in Settings to start awarding tokens on payment.</p>' :
+            (tiers.length ? '<div class="fr-note"><b>How tokens are earned:</b> ' + tiers.map(function (t) { return 'spend ' + esc(money(t.minSpend)) + (t.maxSpend == null ? ' or more' : ' to ' + esc(money(t.maxSpend))) + ' = ' + esc(t.tokens) + ' token' + (Number(t.tokens) === 1 ? '' : 's'); }).join('; ') + '. Tokens are added once a payment is made (for a bill, on each payment). One token is shown as ' + esc(money(tv)) + '.</div>' : '<p class="fr-note">Loyalty is on, but no earning tiers are set yet. Add them in Settings.</p>');
+        var rows = salesOf(c).filter(function (s) { return Number(s.tokensEarned) > 0; }).sort(function (a, b) { return (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0); });
+        var sum = rows.reduce(function (t, s) { return t + Number(s.tokensEarned); }, 0); var carried = tok - sum;
+        var led = rows.map(function (s) {
+            return '<tr><td>' + esc(dateOf(s.timestamp)) + '</td><td>' + esc(s.billId != null || s.installment ? 'Bill payment' : 'Sale') + (s.refNumber ? ' ' + esc(s.refNumber) : '') + (s.voided ? ' <span class="fr-pill fr-bad">voided, tokens not reversed</span>' : '') + '</td><td>+' + esc(s.tokensEarned) + '</td></tr>';
+        }).join('');
+        if (Math.abs(carried) > 0.0001) led += '<tr><td>&mdash;</td><td>Balance from before itemised history (and any other adjustments)</td><td>' + (carried > 0 ? '+' : '') + esc(Math.round(carried * 100) / 100) + '</td></tr>';
+        return '<div class="fr-tiles"><div class="fr-tile"><b>' + tok + '</b><span>Token balance</span></div><div class="fr-tile"><b>' + esc(money(tok * tv)) + '</b><span>Display value</span></div></div>' + rules +
+            '<div class="fr-h5">Token history</div>' + (led ? '<table class="fr-lines"><thead><tr><th>Date</th><th>Source</th><th>Tokens</th></tr></thead><tbody>' + led + '</tbody></table>' : '<div class="fr-empty"><h4>No token activity</h4><p>' + (loyaltyOn() ? 'Tokens appear here after this customer makes a payment that falls in an earning tier.' : 'Switch loyalty on in Settings to start earning tokens.') + '</p></div>') +
+            '<p class="fr-note">Entries are read from the saved sales that earned them. Tokens are not redeemed at checkout in this POS, and voiding a sale does not take its tokens back.</p>';
+    }
+    function wireBody(body, c) {
+        body.querySelectorAll('[data-receipt]').forEach(function (b) {
+            b.onclick = function () {
+                var id = b.dataset.receipt;
+                try { closeProfile(); if (typeof reprintSale === 'function') reprintSale(id); else { var s = arr('salesLog').find(function (x) { return x.id === id; }); if (s && typeof renderReceipt === 'function') renderReceipt(s); } } catch (e) { toast('Could not open that receipt.', true); }
+            };
+        });
+        body.querySelectorAll('[data-per]').forEach(function (b) { b.onclick = function () { P.per = b.dataset.per; var y = body.scrollTop; renderProfile(); body.scrollTop = y; }; });
+        body.querySelectorAll('[data-act]').forEach(function (b) { b.onclick = function () { acctAct(b.dataset.act); }; });
+        body.querySelectorAll('[data-goto]').forEach(function (b) { b.onclick = function () { P.tab = b.dataset.goto; renderProfile(); body.scrollTop = 0; }; });
+        body.querySelectorAll('[data-goto-tab]').forEach(function (b) { b.onclick = function () { closeProfile(); goTab(b.dataset.gotoTab); }; });
+        var more = body.querySelector('[data-more]'); if (more) more.onclick = function () { P.txLimit += 15; var y = body.scrollTop; renderProfile(); body.scrollTop = y; };
+    }
+
+    /* ---------------- start ---------------- */
+    var ticks = 0;
+    function tick() {
+        try { updateInventoryEmpty(); } catch (e) { /* next tick */ }
+        try { updateSalesEmpty(); } catch (e) { /* next tick */ }
+        try { updateNextSteps(); } catch (e) { /* next tick */ }
+        try { if (!els.q) buildField(); syncFromOrig(); } catch (e) { /* next tick */ }
+        try { wrapRegister(); wrapAward(); } catch (e) { /* next tick */ }
+        try { var ct = $('customers-tab'); if (ct && ct.classList.contains('active') && !ct.__fr) { ct.__fr = true; window.renderCustomersList(); } else if (ct && !ct.classList.contains('active')) ct.__fr = false; } catch (e) { /* next tick */ }
+        ticks++;
+    }
+    function go() {
+        try { watchInv(); } catch (e) { /* the tick covers it */ }
+        tick(); setTimeout(tick, 400); setInterval(tick, 900);
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
+})();
+</script>

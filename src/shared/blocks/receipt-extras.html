@@ -795,7 +795,7 @@
                 var tab = document.getElementById('sales-tab'), grid = tab && tab.querySelector('.pos-grid');
                 /* zip 214: every override this function makes is cleared first, so each fit starts from the plain layout */
                 var cartEl = p.querySelector('.pos-cart-scroll');
-                p.style.height = ''; p.style.overflow = ''; p.style.position = ''; if (cartEl) cartEl.style.minHeight = '';
+                p.style.height = ''; p.style.overflow = ''; p.style.overflowY = ''; p.style.position = ''; if (cartEl) cartEl.style.minHeight = '';
                 if (window.innerWidth <= 900 || !tab || !grid || !tab.classList.contains('active')) { p.style.maxHeight = ''; if (tab) tab.style.removeProperty('--pos-h'); return; }
                 /* zip 176: on a desktop the product card and the checkout card are the SAME height — exactly what is left of the screen below the
                    header — so the product grid and the cart list use all the room (no big blank area under them) and scroll inside their cards */
@@ -803,29 +803,17 @@
                 var maxH = Math.max(Math.round(innerHeight - gtop - 14), 500);
                 tab.style.setProperty('--pos-h', maxH + 'px');
                 p.style.maxHeight = maxH + 'px';
-                /* the payment details take what is left after the header, a minimum cart list and the total / methods / Confirm; they scroll inside */
-                var wrap = p.querySelector('#cart-sticky-bar > .pos-pay-details'), cart = p.querySelector('.pos-cart-scroll'), bar = document.getElementById('cart-sticky-bar');
-                if (wrap && cart && bar) {
-                    wrap.style.maxHeight = '';
-                    var topH = cart.getBoundingClientRect().top - p.getBoundingClientRect().top;
-                    var barOther = bar.offsetHeight - wrap.offsetHeight + 28;   /* + the card's bottom padding */
-                    var avail = maxH - topH - (innerHeight < 860 ? 150 : innerHeight < 1000 ? 215 : 280) - barOther;   /* room kept for the cart list */
-                    wrap.style.maxHeight = Math.max(avail, 90) + 'px';
-                }
+                /* zip 262: the payment details size to their content (no scroll box of their own); the cart list takes whatever height is left */
+                var wrap = p.querySelector('#cart-sticky-bar > .pos-pay-details');
                 /* zip 214 - THE CONFIRM BUTTON MUST ALWAYS BE REACHABLE. On a short screen (a laptop under Chrome's toolbars, browser zoom 110-125 %,
                    a small window) the card is never shorter than 500 px, and the card clips what does not fit: the payment methods and the Confirm
                    button fell below its edge and neither the page nor the card could scroll to them. Now, if anything is clipped: first the cart
                    list gives up its minimum height, then the payment details shrink (they scroll), and if it still does not fit the card stops being
                    a fixed-height box and simply grows - the page scrolls and Confirm is at the bottom. */
                 var clippedNow = function () { return p.scrollHeight > p.clientHeight + 2; };
-                if (clippedNow() && cartEl) cartEl.style.minHeight = '90px';
-                if (clippedNow() && wrap) wrap.style.maxHeight = '80px';
-                if (clippedNow()) {
-                    if (wrap) wrap.style.maxHeight = '';
-                    if (cartEl) cartEl.style.minHeight = '';
-                    p.style.maxHeight = 'none'; p.style.height = 'auto'; p.style.overflow = 'visible'; p.style.position = 'static';
-                    tab.style.removeProperty('--pos-h');
-                }
+                if (clippedNow() && cartEl) cartEl.style.minHeight = '64px';
+                /* zip 262: still too short (tiny window / high zoom): the checkout card becomes the ONE scroll area, the product card is unaffected */
+                if (clippedNow()) { p.style.overflowY = 'auto'; p.style.overscrollBehavior = 'contain'; }
             } catch (e) { /* cosmetic */ }
         });
     }
@@ -1052,14 +1040,13 @@
     </script>
     <style>
         #cart-sticky-bar { position: sticky; bottom: 0; z-index: 60; flex-direction: column; align-items: stretch !important; gap: 8px; margin: 16px -6px 0; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bg-surface, #fff); border-top: 1px solid var(--border-color, #dfe6e9); border-radius: 14px 14px 0 0; box-shadow: 0 -8px 20px rgba(0,0,0,.14); }
-        #cart-sticky-bar .pos-pay-details { margin: 0; max-height: calc(46vh / var(--pos-z,1)); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding-right: 2px; }
-        @media (max-height: 700px) { #cart-sticky-bar .pos-pay-details { max-height: calc(36vh / var(--pos-z,1)); } }
-        @media (max-width: 900px) { #cart-sticky-bar .pos-pay-details { max-height: calc(27vh / var(--pos-z,1)); } #cart-sticky-bar .pos-pay-details .settings-hint { display: none; } }
+        #cart-sticky-bar .pos-pay-details { margin: 0; overflow: visible; }
+        @media (max-width: 900px) { #cart-sticky-bar .pos-pay-details .settings-hint { display: none; } }
         /* zip 168: one checkout card (desktop) */
         @media (min-width: 901px) {
             .pos-checkout { position: sticky; top: 8px; align-self: start; display: flex; flex-direction: column; overflow: hidden; height: var(--pos-h, auto); }
             .pos-checkout > * { flex: 0 0 auto; }
-            .pos-checkout > .pos-cart-scroll { flex: 1 1 auto; min-height: 230px; overflow-y: auto; border: 1px solid var(--border-color, #e5e9ec); border-radius: 10px; }
+            .pos-checkout > .pos-cart-scroll { flex: 1 1 auto; min-height: 110px; overflow-y: auto; border: 1px solid var(--border-color, #e5e9ec); border-radius: 10px; }
             .pos-checkout > .pos-cart-scroll thead th { position: sticky; top: 0; z-index: 2; background: var(--bg-surface-alt, #f4f6f7); }
             .pos-checkout #cart-sticky-bar { display: flex !important; flex-direction: column !important; flex-wrap: nowrap !important; position: relative; flex: 0 0 auto; margin: 10px -6px 0; }
             .pos-checkout #cart-sticky-bar .pos-pay-details { flex: 0 0 auto; }

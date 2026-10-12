@@ -1,0 +1,245 @@
+<!-- SHARED DEMO MODE (zip 262) ---------------------------------------------------------------------------------------------------
+     The public demos are ONE fixed, pre-loaded shop per product (see functions/api/_shared-demos.js). Nobody gets a shop of their own:
+     the server refuses to store anything for a shared demo, so this device keeps the visitor's edits locally and the next visitor on
+     another device never sees them. This block only runs on a demo web address (demo-xxx.<domain>, or ?c=demo_xxx) AND after the
+     server confirms "sharedDemo" - every normal shop is untouched and pays nothing for it (no request is made).
+       * after the first pull of the sample data, saving to / reading from the server is switched off (no push, no poll, no socket)
+       * a SAMPLE banner (light or dark like the app) explains it, shows the login password, has "Reset sample data" (clears THIS device's copy and reloads the fresh sample) and "Get my own link" (zip 263: name / phone / email, pay, and only then the visitor's own link is created: see functions/api/get-my-link.js)
+       * nothing here can reach a real shop: the server enforces the rest (read-only license, simulated M-Pesa, no messaging). -->
+<style>
+#sd-bar{position:fixed;left:0;right:0;bottom:0;z-index:2147483000;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;justify-content:center;padding:8px 14px calc(8px + env(safe-area-inset-bottom,0px));background:var(--bg-surface,#fff);color:var(--dark,#15282b);border-top:1px solid var(--border-color,#e2ded1);box-shadow:0 -6px 18px rgba(16,39,42,.14);font:500 13px/1.35 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+#sd-bar b{background:#E8A33D;color:#1B2E28;border-radius:999px;padding:2px 10px;font-weight:800;letter-spacing:.04em}
+#sd-bar code{background:var(--bg-surface-alt,#f1ede2);border-radius:6px;padding:2px 8px;font:700 14px ui-monospace,Menlo,Consolas,monospace;letter-spacing:.14em}
+#sd-bar button{border:1px solid var(--border-color,#cfc9b8);border-radius:10px;padding:0 12px;min-height:36px;font:700 12.5px system-ui,sans-serif;cursor:pointer;background:transparent;color:inherit}
+#sd-bar button:hover{background:var(--bg-surface-alt,#f1ede2)}
+#sd-bar button.sd-cta,#sd-buy button.sd-go{background:var(--accent,#0b7a5f);border-color:transparent;color:#fff}
+#sd-bar button.sd-cta:hover,#sd-buy button.sd-go:hover{background:var(--accent-strong,#096650)}
+#sd-bar button.sd-x{border-color:transparent;font-size:18px;padding:0 8px}
+:is(#sd-bar,#sd-buy) :is(button,input,a):focus-visible{outline:3px solid var(--focus,#0b7a5f);outline-offset:2px}
+body.sd-on{padding-bottom:60px}
+@media (max-width:600px){#sd-bar .sd-t{display:none}body.sd-on{padding-bottom:56px}}
+#sd-buy{position:fixed;inset:0;z-index:2147483100;display:none;align-items:center;justify-content:center;padding:14px;background:rgba(8,24,26,.68);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+#sd-buy.on{display:flex}
+#sd-buy .sd-box{position:relative;width:100%;max-width:440px;max-height:92vh;overflow:auto;overscroll-behavior:contain;background:var(--bg-surface,#fff);color:var(--dark,#15282b);border-radius:20px;padding:26px 24px;box-shadow:0 18px 50px rgba(8,24,26,.4)}
+#sd-buy h2{margin:0 28px 6px 0;font-size:21px;letter-spacing:-.01em}
+#sd-buy p{margin:0 0 12px;color:var(--muted,#5b6d70)}
+#sd-buy label{display:block;margin:12px 0 4px;font-size:13px;font-weight:700}
+#sd-buy input{width:100%;box-sizing:border-box;min-height:46px;padding:0 12px;border:1.5px solid var(--border-color,#e2ded1);border-radius:12px;background:var(--bg-surface-alt,#f7f5ef);color:inherit;font:inherit;font-size:16px}
+#sd-buy input:focus{border-color:var(--accent,#0b7a5f);outline:none;box-shadow:0 0 0 3px rgba(11,122,95,.2)}
+#sd-buy .sd-row{display:flex;gap:8px;margin-top:16px}
+#sd-buy button{flex:1;min-height:48px;border:1.5px solid var(--border-color,#e2ded1);border-radius:12px;background:transparent;color:inherit;font:700 15px system-ui,sans-serif;cursor:pointer}
+#sd-buy button:disabled{opacity:.55;cursor:not-allowed}
+#sd-buy .sd-close{position:absolute;top:10px;right:10px;flex:none;width:40px;min-height:40px;border:0;font-size:20px;border-radius:50%}
+#sd-buy .sd-hint{margin:6px 0 0;font-size:13px;min-height:19px;font-weight:600;color:var(--muted,#5b6d70)}
+#sd-buy .sd-hint.ok{color:var(--tint-success-text,#1e8449)}
+#sd-buy .sd-hint.no{color:#c93a3a}
+#sd-buy .sd-addr{display:flex;align-items:center;gap:6px}
+#sd-buy .sd-addr input{flex:1;min-width:0}
+#sd-buy .sd-addr span{font-size:13px;color:var(--muted,#5b6d70);white-space:nowrap}
+#sd-buy .sd-err{color:#c93a3a;min-height:20px;margin:10px 0 0;font-weight:600}
+#sd-buy .sd-ok{background:var(--tint-success-bg,#eafaf1);color:var(--tint-success-text,#1e8449);border-radius:12px;padding:12px 14px;font-weight:600}
+#sd-buy .sd-spin{display:inline-block;width:16px;height:16px;border:3px solid var(--border-color,#ccc);border-top-color:var(--accent,#0b7a5f);border-radius:50%;vertical-align:-3px;margin-right:8px;animation:sdspin .8s linear infinite}
+@keyframes sdspin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){#sd-buy .sd-spin{animation:none}}
+@media print{#sd-bar,#sd-buy{display:none}}
+</style>
+<script>
+(function () {
+    'use strict';
+    var host = String(location.hostname || '').toLowerCase();
+    var cid = ''; try { cid = new URLSearchParams(location.search).get('c') || ''; } catch (e) { /* none */ }
+    if (!(host.split('.')[0].indexOf('demo-') === 0 || cid.indexOf('demo_') === 0)) return;           // a normal shop: do nothing, ask nothing
+    var DEMO = { on: false };
+    window.SharedDemo = DEMO;
+
+    // zip 263: three photos per row on a phone unless the visitor picked otherwise (the shop's own setting is Settings > Phone till)
+    try { if (localStorage.getItem('pos_ptl_cols') === null) localStorage.setItem('pos_ptl_cols', '3'); } catch (e) { /* two per row */ }
+    // zip 263: light AND dark. A visitor who never chose a theme gets the one their device uses; the Light / Dark switch (header and banner) still decides after that.
+    try { if (localStorage.getItem('mdp-theme') === null && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme', 'dark'); } catch (e) { /* light */ }
+
+    function wrap(name, fn) { try { if (typeof window[name] === 'function') { var orig = window[name]; window[name] = function () { return DEMO.on && DEMO.pulled ? fn.apply(this, arguments) : orig.apply(this, arguments); }; } } catch (e) { /* not in this app */ } }
+    function noop() { return Promise.resolve(true); }
+    function api(path) { return typeof apiUrl === 'function' ? apiUrl(path) : path + (cid ? '?c=' + encodeURIComponent(cid) : ''); }
+    function esc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+    function engage() {
+        DEMO.on = true; window.__sharedDemo = true;
+        document.documentElement.setAttribute('data-shared-demo', '1');
+        // once the sample has been pulled, this device is on its own: no server traffic for state at all
+        ['pullState', 'pullFromServer', 'pushNow', 'pushNowOrWarn', 'flushPendingPush'].forEach(function (n) { wrap(n, noop); });
+        ['syncPollTick', 'startPolling', 'connectSyncSocket'].forEach(function (n) { wrap(n, function () { return undefined; }); });
+        wrap('hasUnsyncedWork', function () { return false; });
+        var t0 = Date.now();
+        (function watch() {
+            if (window.__pullOkOnce || window.__pulledOnce || (localStorage.getItem('pos_last_synced_at') || '') !== '' || Date.now() - t0 > 60000) { DEMO.pulled = true; return; }
+            setTimeout(watch, 400);
+        })();
+        bar();
+    }
+
+    function resetDemo() {
+        if (!confirm('Reset the sample shop? Everything you changed on THIS device is cleared and the original sample data comes back.')) return;
+        var theme = null, ref = null; try { theme = localStorage.getItem('mdp-theme'); ref = localStorage.getItem('sd_buy_ref'); } catch (e) { /* none */ }
+        try { localStorage.clear(); } catch (e) { /* ignore */ }
+        try { if (theme) localStorage.setItem('mdp-theme', theme); if (ref) localStorage.setItem('sd_buy_ref', ref); } catch (e) { /* the choice is simply asked again */ }
+        try { sessionStorage.clear(); } catch (e) { /* ignore */ }
+        var done = function () { var u = location.pathname + (cid ? '?c=' + encodeURIComponent(cid) : ''); location.replace(u); };
+        try {
+            var jobs = [];
+            if (window.indexedDB && indexedDB.databases) jobs.push(indexedDB.databases().then(function (l) { (l || []).forEach(function (d) { try { indexedDB.deleteDatabase(d.name); } catch (e) { /* ignore */ } }); }));
+            Promise.all(jobs).then(done, done);
+        } catch (e) { done(); }
+    }
+    DEMO.reset = resetDemo;
+
+    function bar() {
+        if (document.getElementById('sd-bar')) return;
+        var el = document.createElement('div'); el.id = 'sd-bar'; el.setAttribute('role', 'region'); el.setAttribute('aria-label', 'Sample shop');
+        el.innerHTML = '<b>SAMPLE</b><span class="sd-t">Sample data. Nothing is saved online and payments are simulated.</span><span>Password <code>0000</code></span>' +
+            '<button type="button" class="sd-cta" id="sd-buy-open">Get my own link</button>' +
+            '<button type="button" id="sd-theme" aria-label="Switch between light and dark" title="Light / Dark">\uD83C\uDF13</button>' +
+            '<button type="button" id="sd-reset" title="Reset sample data">Reset</button><button type="button" class="sd-x" id="sd-hide" aria-label="Hide banner">&times;</button>';
+        (document.body || document.documentElement).appendChild(el);
+        document.body && document.body.classList.add('sd-on');
+        document.getElementById('sd-reset').onclick = resetDemo;
+        document.getElementById('sd-theme').onclick = function () { if (typeof toggleAppTheme === 'function') toggleAppTheme(); };
+        document.getElementById('sd-buy-open').onclick = openBuy;
+        document.getElementById('sd-hide').onclick = function () { el.style.display = 'none'; if (document.body) document.body.classList.remove('sd-on'); };
+    }
+
+    /* ---------- Get my own link ---------- */
+    var B = { terms: null, ref: null, timer: 0, box: null };
+    function post(body) { return fetch(api('/api/get-my-link'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function (r) { return r.json().then(function (j) { j.__ok = r.ok; return j; }); }); }
+    function refGet() { try { return JSON.parse(localStorage.getItem('sd_buy_ref') || 'null'); } catch (e) { return null; } }
+    function refSet(r) { try { if (r) localStorage.setItem('sd_buy_ref', JSON.stringify(r)); else localStorage.removeItem('sd_buy_ref'); } catch (e) { /* kept in memory only */ } }
+    function close() { clearTimeout(B.timer); if (B.box) B.box.classList.remove('on'); var o = document.getElementById('sd-buy-open'); if (o) o.focus(); }
+    function shell() {
+        if (B.box) return B.box;
+        var d = document.createElement('div'); d.id = 'sd-buy'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true'); d.setAttribute('aria-labelledby', 'sd-buy-h');
+        d.innerHTML = '<div class="sd-box"><button type="button" class="sd-close" aria-label="Close">&times;</button><div id="sd-buy-body"></div></div>';
+        document.body.appendChild(d); B.box = d;
+        d.querySelector('.sd-close').onclick = close;
+        d.addEventListener('mousedown', function (e) { if (e.target === d) close(); });
+        d.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+        return d;
+    }
+    function body(html) { var b = document.getElementById('sd-buy-body'); b.innerHTML = html; return b; }
+    function money(n) { return 'KES ' + Number(n || 0).toLocaleString('en-KE'); }
+    function openBuy() {
+        shell().classList.add('on');
+        B.ref = refGet();
+        if (B.ref && B.ref.paid && B.ref.link) { ready(B.ref); return; }
+        if (B.ref && B.ref.id) { waiting(B.ref.method === 'claim' && !B.ref.claimed ? 'pay' : 'wait'); return; }
+        body('<p><span class="sd-spin"></span>One moment&hellip;</p>');
+        post({ action: 'options' }).then(function (t) { if (!t.__ok) throw new Error(t.error || 'Not available right now.'); B.terms = t; form(); })
+            .catch(function (e) { body('<h2 id="sd-buy-h">Get my own link</h2><p class="sd-err" role="alert">' + esc(e.message || 'Could not load. Please try again.') + '</p>'); });
+    }
+    function form() {
+        var t = B.terms;
+        body('<h2 id="sd-buy-h">Get your own link</h2><p>Your own shop on your own web address, with your own data. One payment of <b>' + money(t.amount) + '</b>. Your link is created as soon as the payment is confirmed.</p>' +
+            '<label for="sd-n">Your name</label><input id="sd-n" autocomplete="name" maxlength="80">' +
+            '<label for="sd-p">Phone number</label><input id="sd-p" type="tel" inputmode="tel" autocomplete="tel" placeholder="0712 345 678" maxlength="20">' +
+            '<label for="sd-e">Email <span style="font-weight:500;color:var(--muted,#5b6d70)">(optional)</span></label><input id="sd-e" type="email" autocomplete="email" maxlength="120" placeholder="you@example.com">' +
+            '<label for="sd-s">Your web address <span style="font-weight:500;color:var(--muted,#5b6d70)">(optional)</span></label><div class="sd-addr"><input id="sd-s" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="40" placeholder="your-shop"><span>.' + esc(t.root || 'mydukapos.store') + '</span></div>' +
+            '<p class="sd-hint" id="sd-sm" role="status" aria-live="polite">Leave it empty and we use your name.</p>' +
+            '<p class="sd-err" id="sd-err" role="alert"></p>' +
+            '<div class="sd-row"><button type="button" class="sd-go" id="sd-go">' + (t.stk ? 'Pay ' + money(t.amount) + ' with M-Pesa' : 'Continue') + '</button></div>');
+        if (B.form) { document.getElementById('sd-n').value = B.form.name || ''; document.getElementById('sd-p').value = B.form.phone || ''; document.getElementById('sd-e').value = B.form.email || ''; document.getElementById('sd-s').value = B.form.slug || ''; }
+        document.getElementById('sd-n').focus();
+        document.getElementById('sd-go').onclick = function () { submit(''); };
+        var st = 0, box = document.getElementById('sd-s'), sm = document.getElementById('sd-sm');
+        box.oninput = function () {
+            clearTimeout(st); var v = box.value.trim();
+            if (!v) { sm.className = 'sd-hint'; sm.textContent = 'Leave it empty and we use your name.'; return; }
+            sm.className = 'sd-hint'; sm.textContent = 'Checking\u2026';
+            st = setTimeout(function () {
+                post({ action: 'slug', slug: v }).then(function (r) {
+                    if (box.value.trim() !== v) return;                      // typed on since
+                    if (!r.__ok || r.ok === false) { sm.className = 'sd-hint no'; sm.textContent = r.error || 'That address cannot be used.'; return; }
+                    var root = (B.terms && B.terms.root) || 'mydukapos.store';
+                    if (r.taken) { sm.className = 'sd-hint no'; sm.textContent = 'That address is taken, so you will get ' + r.slug + '.' + root; }
+                    else { sm.className = 'sd-hint ok'; sm.textContent = '\u2713 ' + r.slug + '.' + root + ' is available'; }
+                }).catch(function () { sm.textContent = ''; });
+            }, 400);
+        };
+    }
+    function submit(choice) {
+        var g = document.getElementById('sd-go'), err = document.getElementById('sd-err');
+        if (typeof choice !== 'string') choice = '';
+        var v = B.form = B.form || {};
+        if (document.getElementById('sd-n')) { v.name = document.getElementById('sd-n').value; v.phone = document.getElementById('sd-p').value; v.email = document.getElementById('sd-e').value; v.slug = document.getElementById('sd-s').value; }
+        if (err) err.textContent = ''; if (g) { g.disabled = true; g.textContent = 'Please wait\u2026'; }
+        post({ action: 'start', name: v.name, phone: v.phone, email: v.email, slug: v.slug, choice: choice }).then(function (r) {
+            if (r.needChoice) { return choose(r); }
+            if (!r.__ok) { form(); var e2 = document.getElementById('sd-err'); if (e2) e2.textContent = r.error || 'Something went wrong. Please try again.'; return; }
+            B.ref = { id: r.id, token: r.token, method: r.method, amount: r.amount, kind: r.kind, paymentUrl: r.paymentUrl || '', claimed: false }; refSet(B.ref);
+            waiting(r.method === 'claim' ? 'pay' : 'wait');
+        }).catch(function () { form(); var e3 = document.getElementById('sd-err'); if (e3) e3.textContent = 'No connection. Please check your internet and try again.'; });
+    }
+    // the phone number or email already has a shop of this kind: never a refusal, a question
+    function choose(r) {
+        body('<h2 id="sd-buy-h">You already have a shop with us</h2><p>We found a MyDukaPOS shop with this phone number or email. <b>Optional:</b> add this new link as a <b>branch</b> of that shop, so you can see both together. Or keep it as a separate link.</p>' +
+            '<div class="sd-row" style="flex-direction:column"><button type="button" class="sd-go" id="sd-br">Add it as a branch &middot; ' + money(r.branchAmount) + '</button>' +
+            '<button type="button" id="sd-sep">Keep it separate &middot; ' + money(r.amount) + '</button></div>');
+        document.getElementById('sd-br').onclick = function () { submit('branch'); };
+        document.getElementById('sd-sep').onclick = function () { submit('separate'); };
+    }
+    function waiting(mode) {
+        var r = B.ref, phone = (B.terms && B.terms.paymentPhone) || '';
+        if (mode === 'pay') {
+            body('<h2 id="sd-buy-h">Pay ' + money(r.amount) + '</h2><p>Send <b>' + money(r.amount) + '</b> by M-Pesa' + (phone ? ' to <b>' + esc(phone) + '</b>' : '') + ', then tap the button below. We confirm the payment and your link appears here.</p>' +
+                '<p class="sd-err" id="sd-err" role="alert"></p><div class="sd-row"><button type="button" class="sd-go" id="sd-claim">I’ve made this payment</button></div>');
+            document.getElementById('sd-claim').onclick = function () {
+                var b = this; b.disabled = true;
+                post({ action: 'claim', id: r.id, token: r.token }).then(function (j) { if (!j.__ok) { document.getElementById('sd-err').textContent = j.error || 'Please try again.'; b.disabled = false; return; } r.claimed = true; refSet(r); waiting('wait'); });
+            };
+            return;
+        }
+        body('<h2 id="sd-buy-h">' + (r.method === 'stk' ? 'Check your phone' : 'Waiting for confirmation') + '</h2>' +
+            '<p id="sd-msg" role="status" aria-live="polite"><span class="sd-spin"></span>' + (r.method === 'stk' ? 'Enter your M-Pesa PIN on the prompt. This page updates by itself.' : 'We are confirming your payment. This page updates by itself, so you can keep it open.') + '</p>' +
+            (r.paymentUrl ? '<div class="sd-row"><a class="sd-go" href="' + esc(r.paymentUrl) + '" target="_blank" rel="noopener" style="flex:1;display:flex;align-items:center;justify-content:center;border-radius:12px;min-height:48px;color:#fff;background:var(--accent,#0b7a5f);text-decoration:none;font-weight:700">Open the payment page</a></div>' : '') +
+            '<div class="sd-row"><button type="button" id="sd-new">Start again</button></div>');
+        document.getElementById('sd-new').onclick = function () { refSet(null); B.ref = null; clearTimeout(B.timer); openBuy(); };
+        poll(0);
+    }
+    // paid: the link and the licence (PDF). The reference stays on this device, so the licence can be downloaded again later.
+    function ready(ref) {
+        body('<h2 id="sd-buy-h">Your link is ready</h2><p class="sd-ok" role="status">Payment confirmed. Keep this link safe: it is your shop\u2019s address.</p>' +
+            '<label for="sd-link">Your link</label><input id="sd-link" readonly value="' + esc(ref.link) + '">' +
+            '<div class="sd-row"><button type="button" id="sd-lic">Download your licence (PDF)</button></div><p class="sd-err" id="sd-err" role="alert"></p>' +
+            '<div class="sd-row" style="margin-top:0"><button type="button" id="sd-copy">Copy</button><a class="sd-go" href="' + esc(ref.link) + '" style="flex:1;display:flex;align-items:center;justify-content:center;border-radius:12px;min-height:48px;color:#fff;background:var(--accent,#0b7a5f);text-decoration:none;font-weight:700">Open my shop</a></div>' +
+            '<div class="sd-row"><button type="button" id="sd-more" style="font-weight:600">Get another link</button></div>');
+        document.getElementById('sd-lic').onclick = function () { licence(ref); };
+        document.getElementById('sd-copy').onclick = function () { var i = document.getElementById('sd-link'); i.select(); try { navigator.clipboard.writeText(ref.link); } catch (e) { try { document.execCommand('copy'); } catch (x) { /* selected for a manual copy */ } } this.textContent = 'Copied'; };
+        document.getElementById('sd-more').onclick = function () { refSet(null); B.ref = null; B.form = null; openBuy(); };
+    }
+    function licence(ref) {
+        var e = document.getElementById('sd-err'), b = document.getElementById('sd-lic'); if (e) e.textContent = ''; b.disabled = true;
+        fetch(api('/api/get-my-link'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'licence', id: ref.id, token: ref.token }) })
+            .then(function (r) { if (!r.ok) throw new Error('x'); return r.blob(); })
+            .then(function (blob) { var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'MyDukaPOS-licence.pdf'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500); b.disabled = false; })
+            .catch(function () { if (e) e.textContent = 'The licence could not be downloaded just now. Please try again.'; b.disabled = false; });
+    }
+    function poll(n) {
+        clearTimeout(B.timer);
+        if (!B.ref || !B.box || !B.box.classList.contains('on')) return;
+        post({ action: 'status', id: B.ref.id, token: B.ref.token }).then(function (j) {
+            var m = document.getElementById('sd-msg'); if (!m) return;
+            if (j.status === 'paid' && j.link) { B.ref.paid = true; B.ref.link = j.link; refSet(B.ref); ready(B.ref); return; }
+            if (j.status === 'failed' || j.status === 'rejected') {
+                refSet(null);
+                body('<h2 id="sd-buy-h">' + (j.status === 'failed' ? 'The payment did not go through' : 'We could not confirm the payment') + '</h2><p>' + esc(j.message || 'Nothing was charged for a link. You can try again.') + '</p><div class="sd-row"><button type="button" class="sd-go" id="sd-again">Try again</button></div>');
+                document.getElementById('sd-again').onclick = function () { B.ref = null; openBuy(); };
+                return;
+            }
+            B.timer = setTimeout(function () { poll(n + 1); }, n < 40 ? 3000 : 8000);
+        }).catch(function () { B.timer = setTimeout(function () { poll(n + 1); }, 6000); });
+    }
+
+    var url = (typeof apiUrl === 'function' ? apiUrl('/api/license-status') : '/api/license-status' + (cid ? '?c=' + encodeURIComponent(cid) : ''));
+    function ask() {
+        fetch(url, { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) { if (d && d.sharedDemo) engage(); }).catch(function () { /* offline: behave as a normal app */ });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ask); else ask();
+})();
+</script>

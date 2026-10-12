@@ -116,6 +116,90 @@ function computeBranchStats(state) {
   };
 }
 
+// zip 263: the creation of a branch, shared by the "Add Branch" button (below) and by "Get my own link" (get-my-link.js, when a buyer who already has a shop
+// buys another one). `record` is a permanent client already in (or about to found) a branch group; `contact` = { phone, email } of the person the branch is for.
+export async function createBranchFor(env, record, branchName, contact) {
+  if (!record.branchGroupId) {
+    record.branchGroupId = randomToken(12);
+    record.isMainBranch = true;
+    await saveLicense(env, record);
+    await addToBranchGroup(env, record.branchGroupId, record.id);
+  }
+  const mainRecordForLimit = await getGroupMainRecord(env, record);
+  // Numbering is always based on the group's actual main branch's slug
+  // (mainslug1, mainslug2...), not necessarily the caller's own — any
+  // branch can click "Add Branch," but the numbering stays anchored to
+  // whichever member currently holds isMainBranch, so it reads sensibly
+  // regardless of who added it or whether the main branch was reassigned
+  // since.
+  const mainSlug = mainRecordForLimit.slug || record.slug;
+
+  const nextSlug = await pickNextBranchSlug(env, mainSlug);
+
+  // Branch naming (spec: let the caller name the branch at creation time
+  // instead of waiting for whoever opens it to type a business name).
+  // branchName is optional free text from the creation form; when blank
+  // we fall back to the old behaviour of just using the raw slug, so
+  // nothing breaks for a caller that doesn't send it.
+  const branchLabel = branchName || nextSlug;
+
+  // The branch's own synced state (businessName, ownerName, password
+  // hashes, staff) needs seeding BEFORE anyone opens its link, so that
+  // link can skip Sign Up entirely and drop straight into "who's
+  // logging in?" with just the admin — see seedInitialState below. Pull
+  // it from the CALLER's own synced state, since the caller (whoever
+  // clicked "Generate Branch Link") is the admin the new branch should
+  // open as.
+  const callerState = await getSyncedState(env, record.id);
+  // "Admin" in the new branch's login picker shows this name — just the
+  // first word of the caller's own registered owner name, so a branch
+  // opened by "Samuel Mugwe" shows "Samuel (Admin)", not the whole
+  // business's owner name in full every time.
+  const callerOwnerName = String((callerState && callerState.ownerName) || '').trim();
+  const adminFirstName = callerOwnerName ? callerOwnerName.split(/\s+/)[0] : '';
+
+  const branch = await createClient(env, 'permanent', branchLabel, record.product, {
+    ...(contact || {}),
+    branchGroupId: record.branchGroupId,
+    isMainBranch: false,
+    // Inherits the calling shop's own clientName (the owner's private
+    // record of who this actually is — see createClient() above) so a
+    // new branch groups together with its siblings in the owner's
+    // Permanent Clients list automatically, exactly like they already do
+    // if the owner sets it manually afterward. Previously this was left
+    // blank, so every new branch stood alone until the owner noticed and
+    // renamed it to match — an easy thing to forget, and the reason two
+    // branches of the same real person could show as two separate
+    // entries. A caller with no clientName of their own (never set)
+    // leaves the new branch exactly as before — nothing to inherit.
+    clientName: record.clientName || '',
+  });
+  await addToBranchGroup(env, record.branchGroupId, branch.id);
+  await ensureShopCallbackKeys(env, branch.id);          // zip 185: the new branch starts with signed payment-callback URLs
+
+  // Seed the branch's own pos-sync record so its link opens straight to
+  // the login picker (never Sign Up) with the admin as the ONLY option —
+  // staff is deliberately seeded empty; staff never carry over to a new
+  // branch automatically (see the 'migrateStaff' action below for the
+  // deliberate, one-at-a-time way to move someone across branches).
+  await seedInitialState(env, branch.id, {
+    businessName: branchName || branch.label || nextSlug,
+    ownerName: adminFirstName,
+    pwHash: (callerState && callerState.pwHash) || '',
+    adminPwHash: (callerState && callerState.adminPwHash) || '',
+    staff: [],
+  });
+
+  // If the caller has email recovery linked, the new branch shares that
+  // same email+password immediately — same unified-password model as
+  // any other branch link (see account-recovery.js's multi-branch
+  // note). A no-op if the caller never linked an email.
+  await linkNewClientToSameAccount(env, record.id, branch.id);
+
+
+  return { branch, branchLabel };
+}
+
 export async function onRequestPost(context) {
   const { request, env } = context;
 
@@ -178,77 +262,8 @@ export async function onRequestPost(context) {
     // (base tier included 1 branch, KES 1,500 per additional one) that
     // returned a 402 'branch_limit' error once the group's member count
     // reached the main record's branchAllowance; that cap no longer applies.
-    const mainRecordForLimit = await getGroupMainRecord(env, record);
-
-    // Numbering is always based on the group's actual main branch's slug
-    // (mainslug1, mainslug2...), not necessarily the caller's own — any
-    // branch can click "Add Branch," but the numbering stays anchored to
-    // whichever member currently holds isMainBranch, so it reads sensibly
-    // regardless of who added it or whether the main branch was reassigned
-    // since.
-    const mainSlug = mainRecordForLimit.slug || record.slug;
-
-    const nextSlug = await pickNextBranchSlug(env, mainSlug);
-
-    // Branch naming (spec: let the caller name the branch at creation time
-    // instead of waiting for whoever opens it to type a business name).
-    // branchName is optional free text from the creation form; when blank
-    // we fall back to the old behaviour of just using the raw slug, so
-    // nothing breaks for a caller that doesn't send it.
-    const branchName = String(body.branchName || '').trim().slice(0, 80);
-    const branchLabel = branchName || nextSlug;
-
-    // The branch's own synced state (businessName, ownerName, password
-    // hashes, staff) needs seeding BEFORE anyone opens its link, so that
-    // link can skip Sign Up entirely and drop straight into "who's
-    // logging in?" with just the admin — see seedInitialState below. Pull
-    // it from the CALLER's own synced state, since the caller (whoever
-    // clicked "Generate Branch Link") is the admin the new branch should
-    // open as.
-    const callerState = await getSyncedState(env, clientId);
-    // "Admin" in the new branch's login picker shows this name — just the
-    // first word of the caller's own registered owner name, so a branch
-    // opened by "Samuel Mugwe" shows "Samuel (Admin)", not the whole
-    // business's owner name in full every time.
-    const callerOwnerName = String((callerState && callerState.ownerName) || '').trim();
-    const adminFirstName = callerOwnerName ? callerOwnerName.split(/\s+/)[0] : '';
-
-    const branch = await createClient(env, 'permanent', branchLabel, record.product, {
-      branchGroupId: record.branchGroupId,
-      isMainBranch: false,
-      // Inherits the calling shop's own clientName (the owner's private
-      // record of who this actually is — see createClient() above) so a
-      // new branch groups together with its siblings in the owner's
-      // Permanent Clients list automatically, exactly like they already do
-      // if the owner sets it manually afterward. Previously this was left
-      // blank, so every new branch stood alone until the owner noticed and
-      // renamed it to match — an easy thing to forget, and the reason two
-      // branches of the same real person could show as two separate
-      // entries. A caller with no clientName of their own (never set)
-      // leaves the new branch exactly as before — nothing to inherit.
-      clientName: record.clientName || '',
-    });
-    await addToBranchGroup(env, record.branchGroupId, branch.id);
-    await ensureShopCallbackKeys(env, branch.id);          // zip 185: the new branch starts with signed payment-callback URLs
-
-    // Seed the branch's own pos-sync record so its link opens straight to
-    // the login picker (never Sign Up) with the admin as the ONLY option —
-    // staff is deliberately seeded empty; staff never carry over to a new
-    // branch automatically (see the 'migrateStaff' action below for the
-    // deliberate, one-at-a-time way to move someone across branches).
-    await seedInitialState(env, branch.id, {
-      businessName: branchName || branch.label || nextSlug,
-      ownerName: adminFirstName,
-      pwHash: (callerState && callerState.pwHash) || '',
-      adminPwHash: (callerState && callerState.adminPwHash) || '',
-      staff: [],
-    });
-
-    // If the caller has email recovery linked, the new branch shares that
-    // same email+password immediately — same unified-password model as
-    // any other branch link (see account-recovery.js's multi-branch
-    // note). A no-op if the caller never linked an email.
-    await linkNewClientToSameAccount(env, clientId, branch.id);
+    const made = await createBranchFor(env, record, String(body.branchName || '').trim().slice(0, 80));
+    const branch = made.branch, branchLabel = made.branchLabel;
 
     return jsonResponse({ branch, branchName: branchLabel });
   }

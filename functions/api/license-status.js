@@ -71,7 +71,8 @@ export async function onRequestGet(context) {
     diag,
     clientId: record ? record.id : '',
     slug: record ? record.slug || '' : '',
-    type: record ? record.type : null,
+    type: record ? (record.sharedDemo ? 'permanent' : record.type) : null,   // zip 262: a shared demo has no trial clock, caps or upgrade nudges - the app shows its own Demo banner from `sharedDemo`
+    sharedDemo: !!(record && record.sharedDemo),
     expiresAt: record ? record.expiresAt : null,
     remainingMs: result.remainingMs !== undefined ? result.remainingMs : null,
     paymentClaimed: record ? !!record.paymentClaimed : false,

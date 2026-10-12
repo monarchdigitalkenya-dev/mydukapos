@@ -20,6 +20,15 @@ Only the changed files are uploaded (Cloudflare compares file hashes: "61 upload
 Note: `wrangler.staging.toml` is excluded from the mirror on purpose. It holds YOUR staging KV id; copying the zip's version over it would put the placeholder back.
 If you ever lose it: `npx wrangler kv namespace list` shows your namespace ids (staging is the one titled mydukapos_kv_staging).
 
+## Zip 259 - HMIS, Till Payments, Permanent Shops Backup - read the sections below
+Order (Windows cmd, `C:\dev\mydukapos`): `npm run db:backup` first (hospital data is additive, but back up anyway), `npm run check`, optional `npx wrangler d1 migrations apply mydukapos-ledger --remote` (0013 till table, created lazily too), `npm run deploy`. HMIS (`docs/HMIS_ZIP_259.md`) needs no migration (new synced collection `hmisConfig` starts empty); rollback = redeploy zip 257/258. Backup/restore: `docs/SHOP_BACKUP_RESTORE.md`. Till payments: `docs/TILL_PAYMENTS.md`.
+
+## Zip 259 - Till Payments (new D1 table `till_payments`, optional migration 0013; server + app)
+Deploy as usual. Optional: `npx wrangler d1 migrations apply mydukapos-ledger --remote` (the table is also created on first use). Then follow `docs/TILL_PAYMENTS.md` for the Safaricom / Cloudflare settings. Includes the zip 258 changes.
+
+## Zip 258 - First-run empty states, customer field, customer profile - app + public pages only
+No migration and no router change. Deploy as usual (`npm run deploy`); `npm run db:backup` first is optional (nothing is dropped or rewritten).
+
 ## Zip 257 - Test before saving Daraja details - app only
 Deploy as usual (`npm run deploy`).
 

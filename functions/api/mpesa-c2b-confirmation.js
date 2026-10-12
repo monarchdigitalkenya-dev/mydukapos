@@ -21,6 +21,7 @@
 
 import { checkCallback, shopKnown, readCallbackJson } from './_callback-key.js';
 import { recordGatewayTxn } from './_ledger.js';
+import { tillDb, ensureTillSchema, insertTill, cleanCode, parseTransTime, phoneHint } from './_till-store.js';
 
 function tillPaymentKey(clientId, transId) {
   return `till-payment:${clientId}:${transId}`;
@@ -63,50 +64,45 @@ export async function onRequestPost(context) {
     .join(' ');
 
   const signed = await checkCallback(env, clientId, 'c2b', request.url);
+  const receivedAt = Date.now();
+  const amount = parseFloat(data.TransAmount) || 0;
+  // zip 259: only what reconciliation needs. The full callback body (shortcode, org balance, full MSISDN ...) is NOT kept. With Daraja C2B v2 the
+  // MSISDN arrives hashed anyway; a plain number (v1) is reduced to a masked hint.
   const record = {
-    transId,
-    transTime: data.TransTime || '',
-    amount: parseFloat(data.TransAmount) || 0,
-    phone: data.MSISDN || '',
-    customerName: fullName,
-    accountRef: data.BillRefNumber || '',
-    businessShortCode: data.BusinessShortCode || '',
-    orgBalance: data.OrgAccountBalance || '',
-    matched: false, // set true once a cashier attaches this to a bill/sale
-    receivedAt: Date.now(),
-    // zip 143: false when the URL did not carry this shop's key (see _callback-key.js) — kept for the record, never proof of payment
-    trusted: signed.ok,
-    // zip 185: true when accepted only because this shop has no callback key yet (URLs registered before zip 143). Owner fix: Register Till URLs again.
-    ...(signed.legacy ? { legacy: true } : {}),
+    transId, transTime: data.TransTime || '', amount, customerName: fullName, accountRef: String(data.BillRefNumber || '').slice(0, 40),
+    receivedAt, trusted: signed.ok,
+    ...(signed.legacy ? { legacy: true } : {}),   // zip 185: accepted only because this shop has no callback key yet - Owner fix: Register Till URLs again
   };
 
-  // IDEMPOTENT: providers re-send the same notification (a timeout on their side, a retry). The first copy is the payment; a
-  // repeat must not overwrite it — that reset `matched` to false, so a payment already attached to a sale showed as unused again
-  // and could be attached to a second sale — and must not add the id to the index twice.
-  const already = await env.mydukapos_kv.get(tillPaymentKey(clientId, transId));
-  const isRepeat = !!already;
   // An unsigned post for a shop that has a key is not stored where the till looks for payments: it cannot pre-empt the real one.
   if (!signed.ok) {
-    await env.mydukapos_kv.put(`till-payment-rejected:${clientId}:${transId}`, JSON.stringify(record), { expirationTtl: 30 * 24 * 3600 });
+    await env.mydukapos_kv.put(`till-payment-rejected:${clientId}:${transId}`, JSON.stringify({ transId, amount, receivedAt }), { expirationTtl: 30 * 24 * 3600 });
     return ack();
   }
-  if (!isRepeat) await env.mydukapos_kv.put(tillPaymentKey(clientId, transId), JSON.stringify(record));
-  // zip 153: recorded in the D1 ledger too (idempotent on the transaction id) — money received, awaiting a sale to be attached to
-  await recordGatewayTxn(env, clientId, { provider: 'till', txnId: transId, code: transId, amount: record.amount, phone: record.phone, status: 'RECEIVED', trusted: true });
+  // IDEMPOTENT on the M-PESA code: Safaricom re-sends the same notification; the first copy is the payment, a repeat changes nothing.
+  const db = tillDb(env);
+  let inD1 = false, isRepeat = false;
+  if (db) {
+    try {
+      await ensureTillSchema(db);
+      const r = await insertTill(db, clientId, { code: cleanCode(transId), amount, paidAt: parseTransTime(data.TransTime, receivedAt), name: fullName, ref: record.accountRef, phoneHint: phoneHint(data.MSISDN), receivedAt });
+      inD1 = true; isRepeat = !r.inserted;
+    } catch (e) { inD1 = false; }
+  }
+  // KV copy: still what mpesa-verify reads for a typed code - now with a 45-day expiry so it cannot grow forever.
+  const kvKey = tillPaymentKey(clientId, transId);
+  if (!inD1) isRepeat = !!(await env.mydukapos_kv.get(kvKey));
+  if (!isRepeat || inD1) { try { if (!(await env.mydukapos_kv.get(kvKey))) await env.mydukapos_kv.put(kvKey, JSON.stringify(record), { expirationTtl: 45 * 24 * 3600 }); } catch (e) { /* the D1 row is the record */ } }
+  // zip 153: recorded in the D1 ledger too (idempotent on the transaction id) - money received, awaiting a sale to be attached to
+  await recordGatewayTxn(env, clientId, { provider: 'till', txnId: transId, code: transId, amount, phone: phoneHint(data.MSISDN), status: 'RECEIVED', trusted: true });
 
-  // Maintain a small index of recent till-payment ids so the Settings panel
-  // can list them without needing a KV list-by-prefix scan on every load —
-  // capped at the most recent 100, oldest dropped first.
-  try {
-    const idxRaw = await env.mydukapos_kv.get(tillPaymentIndexKey(clientId));
-    const idx = idxRaw ? JSON.parse(idxRaw) : [];
-    if (!isRepeat && !idx.includes(transId)) {
-      idx.unshift(transId);
-      await env.mydukapos_kv.put(tillPaymentIndexKey(clientId), JSON.stringify(idx.slice(0, 100)));
-    }
-  } catch (e) {
-    // Index update failing shouldn't fail the confirmation itself — the
-    // payment record above is already safely saved either way.
+  // No D1 (older deployments): keep the small KV index so the panel can still list recent payments.
+  if (!inD1) {
+    try {
+      const idxRaw = await env.mydukapos_kv.get(tillPaymentIndexKey(clientId));
+      const idx = idxRaw ? JSON.parse(idxRaw) : [];
+      if (!isRepeat && !idx.includes(transId)) { idx.unshift(transId); await env.mydukapos_kv.put(tillPaymentIndexKey(clientId), JSON.stringify(idx.slice(0, 100))); }
+    } catch (e) { /* the payment record above is already saved */ }
   }
 
   return ack();

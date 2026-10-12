@@ -27,7 +27,7 @@ function shell({ file, title, description, body, extraHead = '', script = '' }) 
 <title>${esc(title)} — mydukapos</title>
 <meta name="description" content="${esc(description)}">
 <link rel="canonical" href="${canon}" data-canonical>
-<meta property="og:type" content="website"><meta property="og:site_name" content="mydukapos"><meta property="og:title" content="${esc(title)} — mydukapos"><meta property="og:description" content="${esc(description)}"><meta name="twitter:card" content="summary">
+<meta property="og:type" content="website"><meta property="og:site_name" content="mydukapos"><meta property="og:title" content="${esc(title)} — mydukapos"><meta property="og:description" content="${esc(description)}"><meta property="og:image" content="/img/og-default.png" data-abs><meta property="og:url" content="${canon}" data-abs><meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#1B2E28">
 <link rel="icon" href="/icons/icon-192.png" type="image/png"><link rel="apple-touch-icon" href="/icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -45,7 +45,7 @@ ${body}
 <div><h4>Legal</h4>${foot}</div>
 <div><h4>Help</h4><a href="/faq">FAQ</a><br><a href="/contact">Contact</a><br><a href="/shop">Hardware</a><br><a href="/offers">Offers</a></div>
 </div><p class="small">© <span id="yr">2026</span> mydukapos. All rights reserved.</p></div></footer>
-<script>document.getElementById('yr').textContent=new Date().getFullYear();try{if(navigator.doNotTrack!=='1'&&navigator.sendBeacon)navigator.sendBeacon('/api/hit',new Blob([JSON.stringify({path:location.pathname})],{type:'application/json'}))}catch(e){}(function(){var c=document.querySelector('link[data-canonical]');if(c)c.href=location.origin+c.getAttribute('href')})();</script>
+<script>document.getElementById('yr').textContent=new Date().getFullYear();try{if(navigator.doNotTrack!=='1'&&navigator.sendBeacon)navigator.sendBeacon('/api/hit',new Blob([JSON.stringify({path:location.pathname})],{type:'application/json'}))}catch(e){}(function(){var c=document.querySelector('link[data-canonical]');if(c)c.href=location.origin+c.getAttribute('href');document.querySelectorAll('[data-abs]').forEach(function(m){m.content=location.origin+m.getAttribute('content')})})();</script>
 ${script}</body>
 </html>
 `;
@@ -95,6 +95,11 @@ const FAQ = [
   ['Which devices can I use?', 'Any modern browser, a Windows app and an Android app.'],
   ['How do I sign in?', 'Use the <a href="/dashboard.html">dashboard</a> with your email and password. The same password signs in your till. If you forget it, use "Forgot password" on the dashboard.'],
   ['Is my data safe?', 'Passwords are stored as salted hashes, traffic is encrypted, and logins are rate-limited. See the <a href="/privacy">Privacy Policy</a>. You should still keep your own exports of important records.'],
+  ['I have just signed up and have no products yet. Where do I start?', 'Open Inventory or the Sales Counter: both show an <b>Add your first item</b> button. An item name and selling price are enough to start; cost, stock quantity, code and category can be added later. If you already keep a list, use the Excel/CSV import on the Inventory tab. Once an item is saved it can be sold straight away.'],
+  ['Can I keep customer records and loyalty tokens?', 'Yes. Type a name or phone number in the Customer box when you make a sale to find an existing customer or add a new one. The customer is saved when the sale goes through. My Customers lists each customer\u2019s purchases, bills still owed, returns and loyalty tokens. Tokens are earned on payment according to the tiers you set in Settings.'],
+  ['Can I receive payments made straight to my M-PESA Till?', 'Yes. Once your till is registered with Safaricom, payments customers make to it appear in Sales Counter, Till Payments, newest first, with the name Safaricom supplied, the amount, the M-PESA code and the time. A cashier links each one to the right sale or bill in one tap; the balance updates and the same payment can never be applied twice. Nothing is applied until you confirm.'],
+  ['What can the Hospital app do?', 'Patient records and history, consultations and billing in one flow, a prescription that lists every medicine on one page and marks anything you cannot supply as NA, a ready-made and editable laboratory test list with structured result forms such as urinalysis, and inpatient care: beds and transfers, meals, medication charts, and one admission account that combines bed, lab, pharmacy and meals before discharge.'],
+  ['Can I change the lab tests, prices and meals in the Hospital app?', 'Yes. The starter laboratory list can be switched on or off and edited (name, specimen, result fields, units, reference ranges, price). Meal menus, charge types and bed rates are set by you too. Patient results are never pre-filled.'],
   ['How do I get help?', `Use the <a href="/contact">contact form</a> or <a href="${WA}" rel="noopener">WhatsApp</a>.`],
 ];
 const faqJson = JSON.stringify({ '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: FAQ.map(([q, a]) => ({ '@type': 'Question', name: q, acceptedAnswer: { '@type': 'Answer', text: a.replace(/<[^>]+>/g, '') } })) });
@@ -127,13 +132,13 @@ function load(){fetch('/api/offers').then(function(r){return r.json()}).then(fun
 load();setInterval(tick,1000)})();</script>`;
 
 const PAGES = [
-  { file: 'terms', title: 'Terms of Service', description: 'The terms for using mydukapos point-of-sale accounts.', body: terms },
-  { file: 'privacy', title: 'Privacy Policy', description: 'What mydukapos collects, why, and your choices.', body: privacy },
-  { file: 'cookies', title: 'Cookies', description: 'Cookies and local storage used by mydukapos.', body: cookies },
-  { file: 'acceptable-use', title: 'Acceptable Use', description: 'The rules for using mydukapos.', body: aup },
-  { file: 'faq', title: 'FAQ', description: 'Answers about mydukapos: offline use, devices, sign-in and data.', body: faq, extraHead: `<script type="application/ld+json">${faqJson}</script>\n` },
-  { file: 'contact', title: 'Contact', description: 'Contact the mydukapos team.', body: contact, script: contactScript },
-  { file: 'offers', title: 'Offers', description: 'Current mydukapos offers with a live countdown.', body: offers, script: offersScript },
+  { file: 'terms', title: 'Terms of Service', description: 'The terms for using a mydukapos point-of-sale account: what you can expect from us, what we ask of you, payments, data and ending your account.', body: terms },
+  { file: 'privacy', title: 'Privacy Policy', description: 'What personal data mydukapos collects when you sign up and use the point of sale, why we collect it, how long we keep it and the choices you have.', body: privacy },
+  { file: 'cookies', title: 'Cookies and Local Storage', description: 'The cookies and browser storage mydukapos uses to keep you signed in, keep your till working offline and remember your settings.', body: cookies },
+  { file: 'acceptable-use', title: 'Acceptable Use Policy', description: 'The rules for using mydukapos: what is not allowed on the platform, and what happens if an account is used to break them.', body: aup },
+  { file: 'faq', title: 'Frequently Asked Questions', description: 'Answers about mydukapos point of sale: working offline, supported businesses and devices, getting started with no stock, customers and loyalty, sign-in and data safety.', body: faq, extraHead: `<script type="application/ld+json">${faqJson}</script>\n` },
+  { file: 'contact', title: 'Contact Us', description: 'Send the mydukapos team a message or WhatsApp us. We reply by email or WhatsApp about demos, pricing, setup and support for your shop, hotel or clinic.', body: contact, script: contactScript },
+  { file: 'offers', title: 'Current Offers', description: 'See the current mydukapos point-of-sale offers and how long each one runs, with a live countdown to the end date.', body: offers, script: offersScript },
 ];
 
 export function buildAll() { const out = {}; for (const p of PAGES) out[`public-site/${p.file}.html`] = shell(p); return out; }

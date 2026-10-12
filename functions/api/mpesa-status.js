@@ -99,7 +99,7 @@ async function queryDarajaStatus(checkoutRequestId, cfg) {
   return res.json();
 }
 
-async function refreshFromDaraja(record, checkoutRequestId, cfg) {
+export async function refreshFromDaraja(record, checkoutRequestId, cfg) {      // exported (zip 263): get-my-link.js uses the same safety-net check
   const queryResult = await queryDarajaStatus(checkoutRequestId, cfg);
   // zip 250: only a real answer counts. A reply that is an error object ("being processed", throttled, no ResultCode at all) used to read as
   // String(undefined) !== '0' and mark a prompt the customer was still typing the PIN for as FAILED.
@@ -119,7 +119,7 @@ async function refreshFromDaraja(record, checkoutRequestId, cfg) {
 // Their /v1/tstatus endpoint returns everything needed (status, receipt,
 // amount) in one call — used the same safety-net way as the Daraja/Paystack
 // fallbacks above, in case their webhook is ever lost or delayed.
-async function refreshFromPaywaveExpress(record, checkoutRequestId, cfg) {
+export async function refreshFromPaywaveExpress(record, checkoutRequestId, cfg) {
   if (!cfg.paywaveApiKey || !cfg.paywaveEmail) return null;
   // Sends whichever identifier is actually available — the initial push's
   // response may or may not have included transaction_request_id under
@@ -222,6 +222,12 @@ export async function onRequestGet(context) {
     return reply({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  // zip 262: simulated demo payment (see mpesa-stkpush.js): pending for 4 seconds, then a clearly fake receipt. Nothing is read or written.
+  if (license.record && license.record.sharedDemo && /^DEMO-\d+-\d+$/.test(checkoutRequestId)) {
+    const [, ts, amt] = checkoutRequestId.split('-');
+    const done = Date.now() - Number(ts) > 4000;
+    return reply(done ? { status: 'success', receiptNumber: 'DEMO' + Number(ts).toString(36).toUpperCase().slice(-6), phone: '2547XXXXXXXX', amount: Number(amt), resultDesc: 'Simulated payment (demo - no money moved)' } : { status: 'pending', amount: Number(amt) });
+  }
   // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
   const deviceDenied = await deviceGuard(request, env, clientId, cors);
   if (deviceDenied) return deviceDenied;

@@ -66,11 +66,11 @@
 </head>
 <body>
 <div class="wrap">
-    <a class="wordmark" href="index.html">mydukapos<span class="dot">.</span></a>
+    <a class="wordmark" href="/">mydukapos<span class="dot">.</span></a>
 
     <div id="login-view">
         <h1>Sign in</h1>
-        <p class="hint">Manage your free demo account.</p>
+        <p class="hint">Manage your account.</p>
         <div class="card">
             <label for="login-email">WhatsApp number or email</label>
             <input type="text" id="login-email" placeholder="07XX XXX XXX or you@example.com" autocomplete="username" inputmode="email">
@@ -80,7 +80,7 @@
             <button class="btn" id="login-btn" onclick="doLogin()">Sign in</button>
         </div>
         <p class="switch"><a href="javascript:void(0)" onclick="showForgotView()">Forgot your password?</a></p>
-        <p class="switch">No account yet? <a href="index.html#apps">Choose a product to get started →</a></p>
+        <p class="switch">No account yet? <a href="/#apps">Choose a product to get started →</a></p>
     </div>
 
     <div id="forgot-view" class="hidden">
@@ -129,17 +129,8 @@
                 <button class="btn danger" onclick="doDeleteDemo()">Delete this demo</button>
             </div>
 
-            <div id="generate-block" class="hidden">
-                <label for="gen-product">Choose a product</label>
-                <select id="gen-product"></select>
-                <label for="gen-business">Business name</label>
-                <input type="text" id="gen-business" placeholder="e.g. Mama Njeri Duka" maxlength="60">
-                <p class="error" id="gen-error"></p>
-                <button class="btn" id="gen-btn" onclick="doGenerate()">Generate my free demo</button>
-            </div>
-
             <div id="used-block" class="hidden">
-                <p class="hint" style="margin-top:14px;">Your one free demo has already been used. Contact us if you need it reset.</p>
+                <p class="hint" style="margin-top:14px;">The demos are now shared and open to everyone &mdash; no sign-in needed. <a href="/#demos" style="color:var(--leaf);font-weight:600;">Open the live demos &rarr;</a></p>
             </div>
         </div>
         <button class="btn secondary" onclick="doLogout()">Sign out</button>
@@ -275,19 +266,14 @@
             document.getElementById('row-expires').textContent = data.expiresAt ? new Date(data.expiresAt).toLocaleString() : '—';
 
             const linkBlock = document.getElementById('link-block');
-            const genBlock = document.getElementById('generate-block');
             const usedBlock = document.getElementById('used-block');
-            linkBlock.classList.add('hidden'); genBlock.classList.add('hidden'); usedBlock.classList.add('hidden');
+            linkBlock.classList.add('hidden'); usedBlock.classList.add('hidden');
 
             if (data.demoStatus === 'active' && data.link) {
                 lastLink = data.link;
                 document.getElementById('link-output').value = data.link;
                 document.getElementById('open-link').href = data.link;
                 linkBlock.classList.remove('hidden');
-            } else if (!data.demoUsed) {
-                const sel = document.getElementById('gen-product');
-                sel.innerHTML = Object.entries(PRODUCTS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
-                genBlock.classList.remove('hidden');
             } else {
                 usedBlock.classList.remove('hidden');
             }
@@ -323,24 +309,6 @@
     async function verifyCheck(channel) {
         try { const r = await api('check', { channel, code: document.getElementById('vcode').value }, '/api/verify'); verifyStatus(r); }
         catch (e) { document.getElementById('verr').textContent = e.message; }
-    }
-
-    async function doGenerate() {
-        const product = document.getElementById('gen-product').value;
-        const businessName = document.getElementById('gen-business').value.trim();
-        const errEl = document.getElementById('gen-error');
-        const btn = document.getElementById('gen-btn');
-        errEl.textContent = '';
-        if (!businessName) { errEl.textContent = 'Enter your business name.'; return; }
-        btn.disabled = true; btn.textContent = 'Generating…';
-        try {
-            await api('generate-demo', { product, businessName });
-            await loadDashboard();
-        } catch (e) {
-            errEl.textContent = e.message;
-        } finally {
-            btn.disabled = false; btn.textContent = 'Generate my free demo';
-        }
     }
 
     async function doDeleteDemo() {

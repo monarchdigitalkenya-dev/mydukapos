@@ -112,7 +112,6 @@ export async function onRequestGet(context) {
     kcbSharedShortCode: cfg.kcbSharedShortCode,
     paywaveEmail: cfg.paywaveEmail,
     forcedProvider: cfg.forcedProvider || '',
-    paystackWebhookUrl: `${origin}/api/paystack-webhook?c=${encodeURIComponent(clientId)}`,
     mpesaCallbackUrl: `${origin}/api/pay-cb-stk?c=${encodeURIComponent(clientId)}`,   // zip 250: no "mpesa" in the address (Safaricom production drops those)
     paywaveWebhookUrl: shown(withKey(`${origin}/api/paywave-webhook?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'paywave'))),   // zip 185: keyed for shops created from now on
     kcbIpnUrl: shown(withKey(`${origin}/api/kcb-ipn?c=${encodeURIComponent(clientId)}`, await getCallbackKey(env, clientId, 'kcb'))),
@@ -145,6 +144,8 @@ export async function onRequestPost(context) {
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonResponse({ error: 'Invalid JSON body' }, 400);
 
+  // zip 262: Paystack is retired - a new Paystack key is refused (an old one can still be removed with DELETE which:'paystack'); forcing it is refused too
+  if (body.paystackSecretKey !== undefined || String(body.provider || '').toLowerCase() === 'paystack') return jsonResponse({ error: 'Paystack is no longer supported. Use Daraja, KCB Buni, Paywave Express, Pesapal or Co-op Bank.', code: 'paystack_retired' }, 410);
   // zip 249: a Till number is digits only
   if (body && body.mpesaPartyB !== undefined && body.mpesaPartyB !== '' && !/^\d{4,10}$/.test(String(body.mpesaPartyB).trim())) return jsonResponse({ error: 'The Till number must be digits only (4 to 10 digits).' }, 400);
   if (body && typeof body.mpesaPartyB === 'string') body.mpesaPartyB = body.mpesaPartyB.trim();

@@ -10,7 +10,8 @@
 // /api/gateway-config, scoped to this client's link). Nothing in the code or
 // the rest of the front-end needs to change either way.
 //
-// OPTION A — Paystack (simplest: one key, no Daraja app/certs needed)
+// (Paystack was retired in zip 262: no new prompt is ever sent through it; its old webhook/status lookups remain only for payments already in flight.)
+// OPTION A (retired) — Paystack
 //   Paystack secret key (sk_live_... or sk_test_...)
 //   Also add a webhook in your Paystack Dashboard -> Settings -> API Keys & Webhooks,
 //   using the URL shown in Settings -> Payment Gateway (already includes ?c=...).
@@ -48,7 +49,7 @@
 // OPTION F — Co-operative Bank (M-Pesa STK through Co-op's gateway) — Consumer Key + Secret + the token / STK addresses and shortcode from the
 //   shop's own Co-op API portal. Result comes back to /api/mpesa-callback like Daraja's.
 //
-// If you set up more than one, Paystack is used by default. Force a specific
+// If you set up more than one, the first configured one is used (Daraja, KCB, Paywave, Co-op, Pesapal). Force a specific
 // one with the "Force a specific provider" dropdown in Settings.
 //
 // Blocked with 403 if this link's license isn't currently valid (expired
@@ -389,43 +390,43 @@ async function sendViaCoop({ phone, amount, accountRef, description }, cfg, call
   return { id: checkoutId, merchantRequestId: body.MerchantRequestID, customerMessage: body.CustomerMessage || 'Prompt sent to customer phone.' };
 }
 
-/* ---------- Paystack ---------- */
+// zip 263: the send itself, shared by the till's prompt (below) and by "Get my own link" (get-my-link.js, which charges the OWNER's own gateway).
+// Sends through the provider already resolved from `cfg`, saves the pending record the callback / status endpoints update, returns the gateway's answer.
+export async function sendStk(env, request, clientId, cfg, provider, { phone, amount, accountRef, description }) {
+  const origin = callbackOrigin(request, env);
+  // The client id is embedded in the callback URL itself, so Safaricom's
+  // POST to mpesa-callback.js carries it right back to us.
+  // zip 143: the callback URL carries this shop's secret key, so only Safaricom/KCB (who were given it) can report a result
+  // zip 250: the route is called pay-cb-stk, NOT mpesa-callback: Safaricom's production system silently drops any callback URL that contains "mpesa" / "safaricom"
+  const callbackUrl = withKey(`${origin}/api/pay-cb-stk?c=${encodeURIComponent(clientId)}`, await ensureCallbackKey(env, clientId, 'stk'));
 
-async function sendViaPaystack({ phone, amount, accountRef }, cfg) {
-  const secret = cfg.paystackSecretKey;
+  const result = provider === 'kcb'
+      ? await sendViaKcb({ phone, amount, accountRef, description }, cfg, callbackUrl)
+      : provider === 'paywave'
+        ? await sendViaPaywaveExpress({ phone, amount, accountRef, description }, cfg)
+        : provider === 'coop'
+          ? await sendViaCoop({ phone, amount, accountRef, description }, cfg, callbackUrl)
+          : provider === 'pesapal'
+            ? await sendViaPesapal({ phone, amount, accountRef, description }, cfg, { env, clientId, ipnUrl: withKey(`${origin}/api/pesapal-ipn?c=${encodeURIComponent(clientId)}`, await ensureCallbackKey(env, clientId, 'pesapal')), returnUrl: `${origin}/pesapal-done.html` })
+        : await sendViaDaraja({ phone, amount, accountRef, description }, cfg, callbackUrl);
 
-  // Paystack's Charge API always requires an email to identify the "customer" —
-  // the POS doesn't collect one, so we synthesize a stable placeholder from the phone.
-  // NOTE: must NOT use a reserved pseudo-TLD like .local/.invalid/.test/.example —
-  // Paystack's email validation rejects those outright with "Invalid Email Address
-  // Passed", even though the rest of the address is well-formed. Use a real TLD.
-  const email = `${phone}@pos-customer.co.ke`;
+  // Save a "pending" placeholder — keyed by the same id in both gateways —
+  // so the status endpoint (and, for Paystack, the webhook) has an immediate
+  // record to find and update.
+  // zip 263: some Paywave answers carry only transaction_request_id; the record is then kept under that, never under "undefined"
+  result.id = result.id || result.transactionRequestId;
+  await env.mydukapos_kv.put(txKey(clientId, result.id), JSON.stringify({
+    provider,
+    status: 'pending',
+    phone,
+    amount,
+    accountRef,
+    transactionRequestId: result.transactionRequestId,
+    merchantReference: result.merchantReference,
+    createdAt: Date.now(),
+  }));
 
-  const res = await fetch('https://api.paystack.co/charge', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email,
-      amount: Math.round(amount * 100), // Paystack amounts are in the currency's subunit (cents)
-      currency: 'KES',
-      mobile_money: { phone: `+${phone}`, provider: 'mpesa' },
-      metadata: { accountRef },
-    }),
-  });
-
-  const data = await res.json();
-  if (!res.ok || data.status !== true || !data.data || !data.data.reference) {
-    throw new Error((data && (data.message || data.data?.gateway_response)) || 'Paystack declined the charge request.');
-  }
-  if (data.data.status === 'failed' || data.data.status === 'abandoned') {
-    throw new Error(data.data.display_text || 'Paystack could not start the M-Pesa prompt.');
-  }
-
-  return {
-    id: data.data.reference,
-    merchantRequestId: data.data.reference,
-    customerMessage: data.data.display_text || 'Prompt sent to customer phone.',
-  };
+  return result;
 }
 
 export async function onRequestOptions(context) {
@@ -458,6 +459,13 @@ export async function onRequestPost(context) {
     return reply({ error: 'This link is not active.', reason: license.reason }, 403);
   }
   const clientId = license.clientId;
+  // zip 262: a shared public demo never talks to a payment provider. The prompt is SIMULATED: nothing is sent, nothing is stored (the id carries
+  // the time and amount, mpesa-status answers "success" a few seconds later for a DEMO- id), and the response says so.
+  if (license.record && license.record.sharedDemo) {
+    let b = {}; try { b = await request.json(); } catch (e) { /* none */ }
+    const amt = Math.max(1, Math.round(Number(b && b.amount) || 0));
+    return reply({ checkoutRequestId: 'DEMO-' + Date.now() + '-' + amt, merchantRequestId: 'DEMO', customerMessage: 'Demo mode: no real M-Pesa prompt was sent. The payment will show as received in a few seconds.', simulated: true });
+  }
   // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
   const deviceDenied = await deviceGuard(request, env, clientId, cors);
   if (deviceDenied) return deviceDenied;
@@ -471,7 +479,7 @@ export async function onRequestPost(context) {
   const provider = resolveProvider(cfg);
   if (!provider) {
     return reply({
-      error: 'No payment gateway configured. Go to Settings -> Payment Gateway and save your Paystack secret key, your Daraja credentials, your KCB Buni credentials, your Paywave Express API key, your Pesapal keys or your Co-op Bank details.',
+      error: 'No payment gateway configured. Go to Settings -> Payment Gateway and save your Daraja credentials, your KCB Buni credentials, your Paywave Express API key, your Pesapal keys or your Co-op Bank details.',
     }, 500);
   }
 
@@ -502,38 +510,7 @@ export async function onRequestPost(context) {
   if (!limitedPhone.ok) return rateLimitResponse('payment prompts to this phone number', limitedPhone, cors);
 
   try {
-    const origin = callbackOrigin(request, env);
-    // The client id is embedded in the callback URL itself, so Safaricom's
-    // POST to mpesa-callback.js carries it right back to us.
-    // zip 143: the callback URL carries this shop's secret key, so only Safaricom/KCB (who were given it) can report a result
-    // zip 250: the route is called pay-cb-stk, NOT mpesa-callback: Safaricom's production system silently drops any callback URL that contains "mpesa" / "safaricom"
-    const callbackUrl = withKey(`${origin}/api/pay-cb-stk?c=${encodeURIComponent(clientId)}`, await ensureCallbackKey(env, clientId, 'stk'));
-
-    const result = provider === 'paystack'
-      ? await sendViaPaystack({ phone, amount, accountRef, description }, cfg)
-      : provider === 'kcb'
-        ? await sendViaKcb({ phone, amount, accountRef, description }, cfg, callbackUrl)
-        : provider === 'paywave'
-          ? await sendViaPaywaveExpress({ phone, amount, accountRef, description }, cfg)
-          : provider === 'coop'
-            ? await sendViaCoop({ phone, amount, accountRef, description }, cfg, callbackUrl)
-            : provider === 'pesapal'
-              ? await sendViaPesapal({ phone, amount, accountRef, description }, cfg, { env, clientId, ipnUrl: withKey(`${origin}/api/pesapal-ipn?c=${encodeURIComponent(clientId)}`, await ensureCallbackKey(env, clientId, 'pesapal')), returnUrl: `${origin}/pesapal-done.html` })
-          : await sendViaDaraja({ phone, amount, accountRef, description }, cfg, callbackUrl);
-
-    // Save a "pending" placeholder — keyed by the same id in both gateways —
-    // so the status endpoint (and, for Paystack, the webhook) has an immediate
-    // record to find and update.
-    await env.mydukapos_kv.put(txKey(clientId, result.id), JSON.stringify({
-      provider,
-      status: 'pending',
-      phone,
-      amount,
-      accountRef,
-      transactionRequestId: result.transactionRequestId,
-      merchantReference: result.merchantReference,
-      createdAt: Date.now(),
-    }));
+    const result = await sendStk(env, request, clientId, cfg, provider, { phone, amount, accountRef, description });
 
     return reply({
       checkoutRequestId: result.id,

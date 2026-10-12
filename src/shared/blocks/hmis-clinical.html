@@ -1,0 +1,688 @@
+<!-- HMIS CLINICAL (zip 259) ---------------------------------------------------------------------------------------------------------
+     Hospital only. (1) ONE consolidated prescription per prescribing event: every medicine on it, with Availability (Available / NA),
+     Prescribed, Dispensed and Outstanding. NA = this facility cannot supply it (not stocked, out of stock, or declined at the counter);
+     availability is read from stock, dispensing is read from the charge - the two are kept apart. (2) A preloaded, configurable lab
+     catalogue (small overrides are stored, the starter list lives in code) with a "Request Lab" picker and structured result forms
+     (urinalysis etc.: draft -> final -> verified, printable). (3) Inpatient: one admission account (bed + lab + medicines + meals +
+     services - deposits/payments = balance), bed transfer without double occupancy, meals with duplicate prevention, MAR with
+     given/withheld/refused/missed, discharge statement. Nothing is preloaded with patient findings; every function is guarded. -->
+<style id="hc-css">
+.hc-ov{position:fixed;inset:0;z-index:100001;background:rgba(20,30,40,.55);display:none;align-items:flex-start;justify-content:center;padding:3vh 10px;overflow:auto}
+.hc-ov.open{display:flex}
+.hc-box{width:100%;max-width:860px;background:var(--card-bg,#fff);color:var(--dark,#2c3e50);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.3);overflow:hidden}
+.hc-head{display:flex;align-items:center;gap:10px;padding:14px 16px;background:linear-gradient(135deg,#1a5276,#2e86c1);color:#fff}
+.hc-head h3{margin:0;font-size:18px;flex:1;color:#fff}
+.hc-x{border:0;background:rgba(255,255,255,.2);color:#fff;width:36px;height:36px;border-radius:8px;font-size:18px;cursor:pointer}
+.hc-body{padding:14px 16px 18px}
+.hc-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.hc-tab{border:1px solid #cfd8dc;background:#fff;border-radius:18px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;min-height:36px;color:#34495e}
+.hc-tab.on{background:#2e86c1;border-color:#2e86c1;color:#fff}
+.hc-card{border:1px solid var(--light,#e1e5ea);border-left:5px solid #2e86c1;border-radius:10px;padding:10px 12px;margin:0 0 10px;background:var(--card-bg,#fff)}
+.hc-card.warn{border-left-color:#e67e22}.hc-card.bad{border-left-color:#e74c3c}.hc-card.ok{border-left-color:#27ae60}
+.hc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.hc-grid label{display:block;font-size:12px;font-weight:700;color:#566573;margin-bottom:3px}
+.hc-grid input,.hc-grid select,.hc-in{width:100%;box-sizing:border-box;padding:8px;border:1px solid #cfd8dc;border-radius:8px;font-size:14px;background:#fff;color:#2c3e50}
+.hc-btn{border:0;border-radius:8px;padding:9px 14px;background:#2e86c1;color:#fff;font-weight:700;font-size:13px;cursor:pointer;min-height:38px}
+.hc-btn.g{background:#27ae60}.hc-btn.r{background:#e74c3c}.hc-btn.o{background:#95a5a6}
+.hc-btn:focus-visible,.hc-tab:focus-visible,.hc-x:focus-visible{outline:3px solid #1a73e8;outline-offset:2px}
+.hc-tbl{width:100%;border-collapse:collapse;font-size:13px}.hc-tbl th,.hc-tbl td{border-bottom:1px solid #e5e8ea;padding:6px 8px;text-align:left;vertical-align:top}
+.hc-tbl th{background:#f4f6f7;font-size:12px}
+.hc-na{background:#fdedec;color:#c0392b;font-weight:800;border-radius:6px;padding:1px 8px}
+.hc-av{background:#e9f7ef;color:#1e8449;font-weight:700;border-radius:6px;padding:1px 8px}
+.hc-pill{display:inline-block;border-radius:10px;padding:1px 8px;font-size:12px;font-weight:700;background:#eaf2f8;color:#1a5276}
+.hc-tot{font-size:15px;font-weight:800}
+.hc-ab{color:#c0392b;font-weight:800}
+.hc-grp{margin:12px 0 4px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:#1a5276}
+.hc-note{font-size:12.5px;color:#7f8c8d;line-height:1.4;margin:0 0 10px}
+</style>
+<script>
+(function () {
+  'use strict';
+  if (typeof document === 'undefined') return;
+  var W = window;
+  function esc(s) { return (typeof escapeHtml === 'function') ? escapeHtml(String(s == null ? '' : s)) : String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function toast(m, bad) { try { showToast(m, !!bad); } catch (e) { /* none */ } }
+  function money(n) { return 'KES ' + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function fdt(t) { return t ? new Date(t).toLocaleString('en-GB') : '—'; }
+  function who() { try { return activeServerName(); } catch (e) { return ''; } }
+  function uid() { try { return genSaleId(); } catch (e) { return 'h' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); } }
+  function save() {
+    try { safeSetItem('pos_hmis_config', JSON.stringify(hmisConfig)); } catch (e) { /* storage full */ }
+    try { queuePush(); } catch (e) { /* offline */ }
+  }
+  function audit(a, b, c) { try { logAudit(a, b, c); } catch (e) { /* best effort */ } }
+  function can() { return true; }     // permission model: the app's tab locks / staff roles gate who reaches these screens (see docs/HMIS_ZIP_259.md)
+
+  /* ======================================================================= 1. PRESCRIPTION ======================================== */
+  function stockOf(product, mode) { try { return getAvailableStock(product, mode || undefined); } catch (e) { return product && product.stock != null ? Number(product.stock) : 0; } }
+  // rows: [{name, qty, unit, dosage, avail:'Available'|'NA', why, dispensed, outstanding, state}]
+  function rxRowsFromDraft() {
+    var out = [];
+    (typeof visitMedicationDraft !== 'undefined' ? visitMedicationDraft : []).forEach(function (r) {
+      if (r.notStocked) {
+        var nm = (r.freeName || '').trim(); if (!nm) return;
+        out.push({ name: nm, qty: parseFloat(r.qty) || 1, unit: '', dosage: (r.dosage || '').trim(), avail: 'NA', why: 'Not stocked at this facility', dispensed: 0, state: 'external' });
+      } else if (r.code) {
+        var p = inventory.find(function (x) { return x.code === r.code; });
+        var q = parseFloat(r.qty) || 1, mode = r.saleMode === 'piece' ? 'piece' : undefined;
+        var have = p ? stockOf(p, mode) : 0;
+        out.push({ name: p ? p.name : '(unknown medication)', qty: q, unit: p ? (r.saleMode === 'piece' ? 'pcs' : p.unit) : '', dosage: (r.dosage || '').trim(),
+          avail: (p && have >= q) ? 'Available' : 'NA', why: !p ? 'Unknown item' : (have <= 0 ? 'Out of stock' : (have < q ? 'Only ' + have + ' in stock' : '')), dispensed: 0, state: 'planned' });
+      }
+    });
+    return out;
+  }
+  function rxRowsFromVisit(ref) {
+    var visit = visits.find(function (v) { return v.ref === ref; });
+    var charges = patientCharges.filter(function (c) { return c.ref === ref && c.kind === 'medication'; });
+    var out = [], used = {};
+    ((visit && visit.medications) || []).forEach(function (m) {
+      if (m.notStocked) { out.push({ name: m.name, qty: m.qty, unit: m.unit || '', dosage: m.dosage || '', avail: 'NA', why: 'Not stocked at this facility', dispensed: 0, state: 'external' }); return; }
+      var c = charges.find(function (x) { return !used[x.id] && ((m.code && x.code === m.code) || x.name === m.name); });
+      if (c) used[c.id] = 1;
+      out.push(rowFromCharge(m, c));
+    });
+    charges.forEach(function (c) { if (!used[c.id]) out.push(rowFromCharge(c, c)); });
+    return out;
+  }
+  function rowFromCharge(m, c) {
+    var row = { name: m.name, qty: m.qty, unit: m.unit || (c && c.unit) || '', dosage: m.dosage || (c && c.dosage) || '', avail: 'Available', why: '', dispensed: 0, state: 'awaiting' };
+    if (!c) { row.state = 'planned'; return row; }
+    if (c.status === 'declined') { row.avail = 'NA'; row.why = c.declinedReason || 'Not carried today'; row.state = 'external'; return row; }
+    if (c.dispensedAt || c.dispenseState === 'dispensed') { row.dispensed = c.qty; row.state = 'dispensed'; }
+    else if (c.status === 'unpaid') row.state = 'awaiting payment';
+    else row.state = 'awaiting dispensing';
+    return row;
+  }
+  function renderRx(patient, rows, meta) {
+    var na = rows.filter(function (r) { return r.avail === 'NA'; }).length;
+    var body = rows.map(function (r) {
+      var out = r.avail === 'NA' ? 0 : Math.max(0, (Number(r.qty) || 0) - (Number(r.dispensed) || 0));
+      return '<tr><td>' + esc(r.name) + '</td><td>' + esc(String(r.qty)) + ' ' + esc(r.unit) + '</td><td>' + esc(r.dosage || '—') + '</td>' +
+        '<td>' + (r.avail === 'NA' ? '<span class="hc-na">NA</span>' : '<span class="hc-av">Available</span>') + (r.why ? '<div style="font-size:11px;color:#7f8c8d">' + esc(r.why) + '</div>' : '') + '</td>' +
+        '<td>' + esc(String(r.dispensed || 0)) + '</td><td>' + (r.avail === 'NA' ? '—' : esc(String(out))) + '</td></tr>';
+    }).join('');
+    var biz = (businessName || 'Clinic');
+    document.getElementById('sales-report-body').innerHTML =
+      '<h2>' + esc(biz.toUpperCase()) + '</h2><div class="report-meta">PRESCRIPTION<br>Patient: ' + esc(patient ? patient.name : '') + ' (' + esc(patient ? patient.id : '') + ')' +
+      (patient ? ' — ' + esc(String(patient.age || '?')) + ' yrs, ' + esc(patient.sex || '?') : '') + '<br>' + (meta.diagnosis ? 'Diagnosis: ' + esc(meta.diagnosis) + '<br>' : '') +
+      (meta.ref ? 'Ref: ' + esc(meta.ref) + '<br>' : '') + 'Prescribed by: ' + esc(meta.by || who()) + '<br>Date: ' + esc(meta.when) + '</div>' +
+      '<style>.hc-rx{width:100%;table-layout:auto}.hc-rx th,.hc-rx td{padding:6px 5px!important;font-size:12px!important;}.hc-rx th{white-space:nowrap;font-size:11px!important}.hc-rx td{word-break:break-word}</style><table class="hc-rx"><thead><tr><th>Medication</th><th>Prescribed</th><th>Dosage / Instructions</th><th>Availability</th><th>Dispensed</th><th>Outstanding</th></tr></thead><tbody>' + body + '</tbody></table>' +
+      (na ? '<p style="margin-top:10px"><strong>NA</strong> = not available at this facility — buy from an outside pharmacy. The rest is dispensed here after payment.</p>' : '') +
+      (patient && patient.allergies ? '<p style="margin-top:14px;font-weight:bold;color:#c0392b">⚠️ Known allergies: ' + esc(patient.allergies) + '</p>' : '');
+    var sep = '-'.repeat(32);
+    lastReportText = [biz.toUpperCase(), 'PRESCRIPTION', 'Patient: ' + (patient ? patient.name + ' (' + patient.id + ')' : ''), meta.diagnosis ? 'Diagnosis: ' + meta.diagnosis : '', 'Prescribed by: ' + (meta.by || who()), 'Date: ' + meta.when, sep]
+      .concat(rows.map(function (r) { return r.name + ' — ' + r.qty + ' ' + r.unit + ' — ' + (r.dosage || '-') + ' — ' + (r.avail === 'NA' ? 'NA' : 'Available') + ' — dispensed ' + (r.dispensed || 0) + (r.avail === 'NA' ? '' : ' / outstanding ' + Math.max(0, (Number(r.qty) || 0) - (Number(r.dispensed) || 0))); }))
+      .concat([sep, na ? 'NA = not available here; buy from an outside pharmacy.' : '', patient && patient.allergies ? 'ALLERGIES: ' + patient.allergies : '']).filter(Boolean).join('\n');
+    document.getElementById('sales-report-modal').style.display = 'flex';
+  }
+  W.printPrescription = function () {
+    if (!currentVisitPatientId) return;
+    var patient = patients.find(function (p) { return p.id === currentVisitPatientId; }); if (!patient) return;
+    var rows = rxRowsFromDraft();
+    if (!rows.length) { toast('Add at least one medication before printing a prescription.', true); return; }
+    var dx = ''; try { dx = document.getElementById('visit-diagnosis-input').value.trim(); } catch (e) { /* none */ }
+    renderRx(patient, rows, { diagnosis: dx, when: new Date().toLocaleString('en-GB') });
+  };
+  W.printExternalPrescriptionForRef = function (ref) {
+    var visit = visits.find(function (v) { return v.ref === ref; });
+    var pid = visit ? visit.patientId : (patientCharges.find(function (c) { return c.ref === ref; }) || {}).patientId;
+    var patient = patients.find(function (p) { return p.id === pid; });
+    var rows = rxRowsFromVisit(ref);
+    if (!rows.length) { toast('Nothing to print for this prescription.', true); return; }
+    renderRx(patient, rows, { diagnosis: visit && visit.diagnosis, ref: ref, by: visit && visit.seenBy, when: new Date(visit ? (visit.timestamp || Date.now()) : Date.now()).toLocaleString('en-GB') });
+  };
+  W.hmisRxRows = { fromDraft: rxRowsFromDraft, fromVisit: rxRowsFromVisit };
+
+  /* ======================================================================= 2. LAB CATALOGUE ======================================== */
+  var NEG = ['Negative', 'Not seen', 'Normal', 'Nil'];
+  var LVL = ['Negative', 'Trace', '+', '++', '+++', '++++'];
+  function F(k, label, type, unit, ref, opts, group, normal) { return { k: k, label: label, type: type || 'text', unit: unit || '', ref: ref || '', opts: opts || null, group: group || '', normal: normal || null }; }
+  function T(id, name, cat, code, specimen, how, fields, tat) { return { id: 'lc_' + id, type: 'labtest', name: name, category: cat, code: code, specimen: specimen, instructions: how, fields: fields, price: 0, available: true, tat: tat || '1 hour', verify: true, active: true, seed: true }; }
+  var POSNEG = ['Negative', 'Positive'], REAC = ['Non-reactive', 'Reactive'];
+  var SEED_TESTS = [
+    T('urinalysis', 'Urinalysis (Urine R/E)', 'Urinalysis', 'URN', 'Urine', 'Clean-catch midstream urine in a sterile container; examine within 1 hour.', [
+      F('colour', 'Colour', 'select', '', '', ['Straw', 'Yellow', 'Dark yellow', 'Amber', 'Red', 'Brown', 'Other'], 'Macroscopy', ['Straw', 'Yellow']),
+      F('appearance', 'Appearance', 'select', '', '', ['Clear', 'Slightly turbid', 'Turbid', 'Bloody'], 'Macroscopy', ['Clear']),
+      F('ph', 'pH', 'number', '', '5.0-8.0', null, 'Chemistry (dipstick)'),
+      F('sg', 'Specific gravity', 'number', '', '1.005-1.030', null, 'Chemistry (dipstick)'),
+      F('ketones', 'Ketones', 'select', '', 'Negative', LVL, 'Chemistry (dipstick)', NEG),
+      F('leucocytes', 'Leucocytes', 'select', '', 'Negative', LVL, 'Chemistry (dipstick)', NEG),
+      F('blood', 'Blood', 'select', '', 'Negative', LVL, 'Chemistry (dipstick)', NEG),
+      F('nitrites', 'Nitrites', 'select', '', 'Negative', POSNEG, 'Chemistry (dipstick)', NEG),
+      F('protein', 'Protein', 'select', '', 'Negative', LVL, 'Chemistry (dipstick)', NEG),
+      F('glucose', 'Glucose', 'select', '', 'Negative', LVL, 'Chemistry (dipstick)', NEG),
+      F('bilirubin', 'Bilirubin', 'select', '', 'Negative', LVL, 'Chemistry (dipstick)', NEG),
+      F('urobilinogen', 'Urobilinogen', 'select', '', 'Normal', ['Normal', '+', '++', '+++'], 'Chemistry (dipstick)', ['Normal']),
+      F('rbc', 'Red blood cells', 'text', '/hpf', '0-2', null, 'Microscopy (deposits)'),
+      F('pus', 'Pus cells', 'text', '/hpf', '0-5', null, 'Microscopy (deposits)'),
+      F('epith', 'Epithelial cells', 'select', '', 'Few', ['Nil', 'Few', 'Moderate', 'Many'], 'Microscopy (deposits)', ['Nil', 'Few']),
+      F('casts', 'Casts', 'select', '', 'Not seen', ['Not seen', 'Hyaline', 'Granular', 'Cellular', 'Other'], 'Microscopy (deposits)', NEG),
+      F('crystals', 'Crystals', 'select', '', 'Not seen', ['Not seen', 'Calcium oxalate', 'Uric acid', 'Phosphate', 'Other'], 'Microscopy (deposits)', NEG),
+      F('yeast', 'Yeast cells', 'select', '', 'Not seen', ['Not seen', 'Seen'], 'Microscopy (deposits)', NEG),
+      F('bacteria', 'Bacteria', 'select', '', 'Not seen', ['Not seen', 'Few', 'Moderate', 'Many'], 'Microscopy (deposits)', NEG),
+      F('other', 'Other findings', 'text', '', '', null, 'Microscopy (deposits)')], '30 minutes'),
+    T('upt', 'Urine Pregnancy Test', 'Urinalysis', 'UPT', 'Urine', 'First-morning urine preferred.', [F('result', 'Result', 'select', '', 'Negative', POSNEG, '', ['Negative'])], '15 minutes'),
+    T('fbc', 'Full Blood Count (FBC)', 'Haematology', 'FBC', 'Whole blood (EDTA)', 'EDTA (lavender) tube; mix gently.', [
+      F('hb', 'Haemoglobin', 'number', 'g/dL', '11.5-16.5'), F('wbc', 'White cell count', 'number', 'x10^9/L', '4.0-11.0'), F('plt', 'Platelets', 'number', 'x10^9/L', '150-450'),
+      F('hct', 'Haematocrit', 'number', '%', '36-48'), F('rbc', 'Red cell count', 'number', 'x10^12/L', '3.8-5.8'), F('mcv', 'MCV', 'number', 'fL', '80-100'),
+      F('neut', 'Neutrophils', 'number', '%', '40-70'), F('lymph', 'Lymphocytes', 'number', '%', '20-45')], '1 hour'),
+    T('hb', 'Haemoglobin (Hb)', 'Haematology', 'HB', 'Whole blood (EDTA)', '', [F('hb', 'Haemoglobin', 'number', 'g/dL', '11.5-16.5')], '15 minutes'),
+    T('esr', 'ESR', 'Haematology', 'ESR', 'Whole blood (EDTA)', '', [F('esr', 'ESR (1 hr)', 'number', 'mm/hr', '0-20')], '1 hour'),
+    T('bg', 'Blood Group & Rhesus', 'Haematology', 'BG', 'Whole blood (EDTA)', '', [F('abo', 'ABO group', 'select', '', '', ['A', 'B', 'AB', 'O']), F('rh', 'Rhesus', 'select', '', '', ['Positive', 'Negative'])], '30 minutes'),
+    T('mrdt', 'Malaria RDT', 'Malaria', 'MRDT', 'Whole blood (finger prick)', 'Finger-prick blood on the cassette; read at 15 minutes.', [F('result', 'Result', 'select', '', 'Negative', ['Negative', 'Positive (P. falciparum)', 'Positive (non-falciparum)', 'Positive (mixed)', 'Invalid'], '', ['Negative'])], '15 minutes'),
+    T('mps', 'Malaria Blood Slide (BS)', 'Malaria', 'BS', 'Whole blood (finger prick)', 'Thick and thin film.', [F('result', 'Parasites', 'select', '', 'Not seen', ['Not seen', 'Seen'], '', NEG), F('species', 'Species', 'select', '', '', ['', 'P. falciparum', 'P. vivax', 'P. malariae', 'P. ovale', 'Mixed']), F('density', 'Parasite density', 'text', '/uL', '')], '1 hour'),
+    T('rbs', 'Random Blood Sugar', 'Chemistry', 'RBS', 'Capillary / venous blood', '', [F('glu', 'Glucose', 'number', 'mmol/L', '3.9-7.8')], '15 minutes'),
+    T('fbs', 'Fasting Blood Sugar', 'Chemistry', 'FBS', 'Venous blood (fasting 8h)', 'Patient fasting 8-12 hours.', [F('glu', 'Glucose', 'number', 'mmol/L', '3.9-5.6')], '30 minutes'),
+    T('rft', 'Renal Function (U&E)', 'Chemistry', 'RFT', 'Serum', 'Plain/gel tube.', [F('urea', 'Urea', 'number', 'mmol/L', '2.5-7.8'), F('creat', 'Creatinine', 'number', 'umol/L', '45-110'), F('na', 'Sodium', 'number', 'mmol/L', '135-145'), F('k', 'Potassium', 'number', 'mmol/L', '3.5-5.1'), F('cl', 'Chloride', 'number', 'mmol/L', '98-107')], '2 hours'),
+    T('lft', 'Liver Function (LFT)', 'Chemistry', 'LFT', 'Serum', 'Plain/gel tube.', [F('alt', 'ALT', 'number', 'U/L', '0-40'), F('ast', 'AST', 'number', 'U/L', '0-40'), F('alp', 'ALP', 'number', 'U/L', '40-130'), F('tbil', 'Total bilirubin', 'number', 'umol/L', '3-21'), F('alb', 'Albumin', 'number', 'g/L', '35-50')], '2 hours'),
+    T('lipid', 'Lipid Profile', 'Chemistry', 'LIP', 'Serum (fasting)', 'Fasting 10-12 hours.', [F('chol', 'Total cholesterol', 'number', 'mmol/L', '0-5.2'), F('tg', 'Triglycerides', 'number', 'mmol/L', '0-1.7'), F('hdl', 'HDL', 'number', 'mmol/L', '1.0-2.2'), F('ldl', 'LDL', 'number', 'mmol/L', '0-3.4')], '3 hours'),
+    T('stoolOP', 'Stool Microscopy (O&P)', 'Stool', 'STO', 'Stool', 'Fresh stool in a clean wide-mouth container.', [F('consistency', 'Consistency', 'select', '', '', ['Formed', 'Soft', 'Loose', 'Watery']), F('blood', 'Blood', 'select', '', 'Absent', ['Absent', 'Present'], '', ['Absent']), F('mucus', 'Mucus', 'select', '', 'Absent', ['Absent', 'Present'], '', ['Absent']), F('ova', 'Ova / cysts / parasites', 'text', '', 'None seen')], '1 hour'),
+    T('stoolOB', 'Stool Occult Blood', 'Stool', 'SOB', 'Stool', '', [F('result', 'Result', 'select', '', 'Negative', POSNEG, '', ['Negative'])], '1 hour'),
+    T('urineCS', 'Urine Culture & Sensitivity', 'Microbiology', 'UCS', 'Midstream urine (sterile)', 'Sterile container; deliver within 2 hours.', [F('growth', 'Growth', 'select', '', 'No growth', ['No growth', 'Growth'], '', ['No growth']), F('organism', 'Organism', 'text', '', ''), F('count', 'Colony count', 'text', 'CFU/mL', ''), F('sens', 'Sensitivity', 'text', '', '')], '48 hours'),
+    T('gram', 'Gram Stain', 'Microbiology', 'GRM', 'Swab / fluid', '', [F('result', 'Findings', 'text', '', '')], '1 hour'),
+    T('woundCS', 'Wound / Swab Culture', 'Microbiology', 'WCS', 'Swab', '', [F('growth', 'Growth', 'select', '', 'No growth', ['No growth', 'Growth'], '', ['No growth']), F('organism', 'Organism', 'text', '', ''), F('sens', 'Sensitivity', 'text', '', '')], '48 hours'),
+    T('hiv', 'HIV Screening', 'Serology', 'HIV', 'Blood / serum', 'Pre- and post-test counselling required.', [F('result', 'Result', 'select', '', 'Non-reactive', REAC, '', ['Non-reactive'])], '30 minutes'),
+    T('vdrl', 'Syphilis (VDRL/RPR)', 'Serology', 'VDR', 'Serum', '', [F('result', 'Result', 'select', '', 'Non-reactive', REAC, '', ['Non-reactive'])], '1 hour'),
+    T('hbsag', 'Hepatitis B (HBsAg)', 'Serology', 'HBS', 'Serum', '', [F('result', 'Result', 'select', '', 'Negative', POSNEG, '', ['Negative'])], '1 hour'),
+    T('hpylori', 'H. pylori Antibody/Antigen', 'Serology', 'HPY', 'Blood / stool', '', [F('result', 'Result', 'select', '', 'Negative', POSNEG, '', ['Negative'])], '30 minutes'),
+    T('widal', 'Widal Test', 'Serology', 'WID', 'Serum', '', [F('to', 'Salmonella O titre', 'text', '', '<1:80'), F('th', 'Salmonella H titre', 'text', '', '<1:80')], '1 hour'),
+    T('sputum', 'Sputum AFB / GeneXpert', 'Other', 'AFB', 'Sputum', 'Early-morning sputum in a sterile container.', [F('result', 'Result', 'select', '', 'Not detected', ['Not detected', 'Detected', 'Detected (RIF resistance)', 'Invalid'], '', ['Not detected'])], '3 hours')
+  ];
+  var SEED_MENU = [
+    { id: 'mn_porridge', type: 'menu', name: 'Porridge', slot: 'Breakfast', diet: 'Normal', price: 0, active: true, seed: true },
+    { id: 'mn_tea', type: 'menu', name: 'Tea & bread', slot: 'Breakfast', diet: 'Normal', price: 0, active: true, seed: true },
+    { id: 'mn_lunch', type: 'menu', name: 'Standard lunch', slot: 'Lunch', diet: 'Normal', price: 0, active: true, seed: true },
+    { id: 'mn_supper', type: 'menu', name: 'Standard supper', slot: 'Supper', diet: 'Normal', price: 0, active: true, seed: true },
+    { id: 'mn_soft', type: 'menu', name: 'Soft diet meal', slot: 'Lunch', diet: 'Soft', price: 0, active: true, seed: true },
+    { id: 'mn_diab', type: 'menu', name: 'Diabetic meal', slot: 'Lunch', diet: 'Diabetic', price: 0, active: true, seed: true }
+  ];
+  var SEED_CHARGES = [
+    { id: 'ct_nursing', type: 'chargetype', name: 'Nursing care', per: 'day', price: 0, active: true, seed: true },
+    { id: 'ct_dressing', type: 'chargetype', name: 'Dressing / procedure', per: 'once', price: 0, active: true, seed: true },
+    { id: 'ct_oxygen', type: 'chargetype', name: 'Oxygen therapy', per: 'day', price: 0, active: true, seed: true }
+  ];
+  var SEED_POLICY = { id: 'policy', type: 'policy', mealsBilling: 'charge', bedByWard: {}, seed: true };
+  function seedAll() { return SEED_TESTS.concat(SEED_MENU, SEED_CHARGES, [SEED_POLICY]); }
+  // effective record = seed merged with stored override (stored wins), custom records pass through
+  function effective() {
+    var stored = {}; (typeof hmisConfig !== 'undefined' ? hmisConfig : []).forEach(function (r) { if (r && r.id) stored[r.id] = r; });
+    var out = [];
+    seedAll().forEach(function (s) { var o = stored[s.id]; if (o && o.removed) return; out.push(o ? Object.assign({}, s, o) : s); delete stored[s.id]; });
+    Object.keys(stored).forEach(function (k) { if (!stored[k].removed) out.push(stored[k]); });
+    return out;
+  }
+  function ofType(t) { return effective().filter(function (r) { return r.type === t; }); }
+  function policy() { return ofType('policy')[0] || SEED_POLICY; }
+  function putOverride(id, patch, base) {
+    var list = hmisConfig, cur = list.find(function (r) { return r.id === id; });
+    if (!cur) { cur = { id: id, type: (base && base.type) || (patch && patch.type) }; list.push(cur); }
+    Object.assign(cur, patch); cur.updatedAt = Date.now(); cur.updatedBy = who(); save(); return cur;
+  }
+  function parseRange(ref) { var m = /^\s*(-?[\d.]+)\s*-\s*(-?[\d.]+)\s*$/.exec(ref || ''); return m ? [parseFloat(m[1]), parseFloat(m[2])] : null; }
+  function flagField(f, v) {
+    if (v == null || v === '') return '';
+    if (f.type === 'number') { var r = parseRange(f.ref), n = parseFloat(v); if (r && isFinite(n)) return n < r[0] ? 'L' : (n > r[1] ? 'H' : ''); return ''; }
+    if (f.normal && f.normal.length) return f.normal.indexOf(v) >= 0 ? '' : 'A';
+    return '';
+  }
+  function testFor(rec) {
+    var all = ofType('labtest');
+    return all.find(function (t) { return t.id === rec.testId; }) || all.find(function (t) { return t.name.toLowerCase() === String(rec.testName || '').toLowerCase(); }) || null;
+  }
+  W.hmisLab = { seed: seedAll, effective: effective, tests: function () { return ofType('labtest'); }, flagField: flagField, testFor: testFor };
+
+  /* ---------- overlay helper ---------- */
+  function overlay(id, title) {
+    var el = document.getElementById(id);
+    if (!el) {
+      el = document.createElement('div'); el.id = id; el.className = 'hc-ov'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', title);
+      el.innerHTML = '<div class="hc-box"><div class="hc-head"><h3></h3><button type="button" class="hc-x" data-hc-close aria-label="Close">✕</button></div><div class="hc-body"></div></div>';
+      document.body.appendChild(el);
+      el.addEventListener('click', function (e) { if (e.target === el || e.target.closest('[data-hc-close]')) el.classList.remove('open'); });
+    }
+    el.querySelector('h3').textContent = title; return el;
+  }
+  function openOv(el, html) { el.querySelector('.hc-body').innerHTML = html; el.classList.add('open'); }
+
+  /* ---------- Request Lab picker ---------- */
+  var RL = { ctx: 'visit', sel: {}, cat: 'All', q: '' };
+  function rlRender() {
+    var el = document.getElementById('hc-rl'); if (!el) return;
+    var tests = ofType('labtest').filter(function (t) { return t.active !== false && t.available !== false; });
+    var cats = ['All'].concat(tests.map(function (t) { return t.category; }).filter(function (c, i, a) { return a.indexOf(c) === i; }));
+    var q = RL.q.toLowerCase();
+    var list = tests.filter(function (t) { return (RL.cat === 'All' || t.category === RL.cat) && (!q || (t.name + ' ' + t.code).toLowerCase().indexOf(q) >= 0); });
+    var n = Object.keys(RL.sel).length;
+    el.querySelector('.hc-body').innerHTML =
+      '<input class="hc-in" id="hc-rl-q" placeholder="Search tests (name or code)…" value="' + esc(RL.q) + '" aria-label="Search tests">' +
+      '<div class="hc-tabs" style="margin-top:10px">' + cats.map(function (c) { return '<button type="button" class="hc-tab' + (c === RL.cat ? ' on' : '') + '" data-rl-cat="' + esc(c) + '">' + esc(c) + '</button>'; }).join('') + '</div>' +
+      (list.length ? '<table class="hc-tbl"><tbody>' + list.map(function (t) {
+        return '<tr><td style="width:34px"><input type="checkbox" data-rl-t="' + esc(t.id) + '"' + (RL.sel[t.id] ? ' checked' : '') + ' aria-label="' + esc(t.name) + '"></td><td><strong>' + esc(t.name) + '</strong> <span class="hc-pill">' + esc(t.category) + '</span><div style="font-size:12px;color:#7f8c8d">' + esc(t.specimen || '') + (t.price > 0 ? ' · ' + money(t.price) : '') + (t.tat ? ' · TAT ' + esc(t.tat) : '') + '</div></td></tr>';
+      }).join('') + '</tbody></table>' : '<p class="hc-note">No test matches. Add it under Lab Catalogue, or clear the search.</p>') +
+      '<div class="hc-grid" style="margin-top:12px"><div><label for="hc-rl-ind">Clinical indication</label><input id="hc-rl-ind" placeholder="e.g. fever 3 days, ?UTI"></div><div><label for="hc-rl-pri">Priority</label><select id="hc-rl-pri"><option>Routine</option><option>Urgent</option><option>STAT</option></select></div></div>' +
+      '<div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button type="button" class="hc-btn g" data-rl-go' + (n ? '' : ' disabled') + '>🧪 Request ' + (n ? n + ' test' + (n > 1 ? 's' : '') : '') + '</button><span class="hc-note" style="margin:0">Requested tests go to the lab queue as <b>Pending</b>; payment status shows on each.</span></div>';
+    var q2 = document.getElementById('hc-rl-q'); if (q2) { q2.focus(); q2.setSelectionRange(q2.value.length, q2.value.length); }
+  }
+  function rlOpen(ctx) {
+    if (ctx === 'visit' && !currentVisitPatientId) { toast('Open a patient visit first.', true); return; }
+    if (ctx === 'tab') { var p = document.getElementById('lab-tab-patient-select'); if (!p || !patients.find(function (x) { return x.id === p.value; })) { toast('Choose a patient first.', true); return; } }
+    RL = { ctx: ctx, sel: {}, cat: 'All', q: '' };
+    var el = overlay('hc-rl', '🧪 Request Lab Tests'); el.querySelector('.hc-body').innerHTML = ''; el.classList.add('open'); rlRender();
+  }
+  function rlSubmit() {
+    var ids = Object.keys(RL.sel); if (!ids.length) return;
+    var ind = (document.getElementById('hc-rl-ind') || {}).value || '', pri = (document.getElementById('hc-rl-pri') || {}).value || 'Routine';
+    var pid = RL.ctx === 'visit' ? currentVisitPatientId : document.getElementById('lab-tab-patient-select').value;
+    var patient = patients.find(function (p) { return p.id === pid; }); if (!patient) { toast('Choose a patient first.', true); return; }
+    var made = [], tests = ofType('labtest');
+    ids.forEach(function (tid) {
+      var t = tests.find(function (x) { return x.id === tid; }); if (!t) return;
+      var open = labResults.find(function (r) { return r.patientId === pid && r.testId === tid && r.status === 'pending' && Date.now() - r.requestedAt < 3600000; });
+      if (open) { toast(t.name + ' is already requested for this patient in the last hour.', true); return; }     // duplicate guard
+      var id = addLabTestRequest(pid, t.name), rec = labResults.find(function (r) { return r.id === id; });
+      rec.testId = t.id; rec.category = t.category; rec.specimen = t.specimen; rec.indication = ind.trim(); rec.priority = pri; rec.price = Number(t.price) || 0; rec.stage = 'requested';
+      made.push(id);
+    });
+    if (!made.length) return;
+    try { safeSetItem('pos_lab_results', JSON.stringify(labResults)); } catch (e) { /* none */ }
+    if (RL.ctx === 'visit') { made.forEach(function (i) { visitLabIds.push(i); }); try { renderPatientLabResults(pid); } catch (e) { /* none */ } }
+    else { var ref = newVisitRef(); createVisitCharges({ ref: ref, id: null }, patient, [], 0, [], made); toast(made.length + ' test(s) requested for ' + patient.name + ' — reference ' + ref + '. The patient pays at the cashier.'); }
+    audit('Lab requested', patient.name, made.length + ' test(s), ' + pri);
+    try { queuePush(); } catch (e) { /* offline */ } try { renderLaboratoryTab(); } catch (e) { /* none */ }
+    document.getElementById('hc-rl').classList.remove('open');
+    if (RL.ctx === 'visit') toast(made.length + ' test(s) requested — billed when the visit is saved.');
+  }
+
+  /* ---------- structured result form ---------- */
+  var SR = { id: null };
+  function srOpen(id) {
+    var rec = labResults.find(function (r) { return r.id === id; }); if (!rec) return;
+    var t = testFor(rec); if (!t || !t.fields || !t.fields.length) return false;
+    if (rec.status === 'completed' && rec.resultText && !rec.fields) return false;     // a result released as plain text before structured forms existed keeps its original editor (and its amendment trail)
+    SR.id = id;
+    var patient = patients.find(function (p) { return p.id === rec.patientId; }) || {};
+    var vals = rec.fields || {}, lock = rec.stage === 'verified';
+    var html = '<div class="hc-card"><strong>' + esc(patient.name || '(patient removed)') + '</strong> · ' + esc(rec.testName) + ' <span class="hc-pill">' + esc(rec.stage || rec.status) + '</span>' + (rec.priority && rec.priority !== 'Routine' ? ' <span class="hc-pill" style="background:#fdedec;color:#c0392b">' + esc(rec.priority) + '</span>' : '') +
+      '<div style="font-size:12px;color:#7f8c8d">' + (rec.indication ? 'Indication: ' + esc(rec.indication) + ' · ' : '') + 'Specimen: ' + esc(t.specimen || '—') + ' · Requested ' + fdt(rec.requestedAt) + '</div></div>';
+    var grp = null;
+    t.fields.forEach(function (f) {
+      if (f.group !== grp) { grp = f.group; if (grp) html += '<div class="hc-grp">' + esc(grp) + '</div>'; }
+      var v = vals[f.k] != null ? vals[f.k] : '';
+      var ctl = f.type === 'select'
+        ? '<select data-sr="' + esc(f.k) + '" ' + (lock ? 'disabled' : '') + '><option value="">—</option>' + (f.opts || []).filter(Boolean).map(function (o) { return '<option' + (o === v ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>'
+        : '<input data-sr="' + esc(f.k) + '" type="' + (f.type === 'number' ? 'number' : 'text') + '" step="any" value="' + esc(v) + '" ' + (lock ? 'disabled' : '') + '>';
+      html += '<div class="hc-grid" style="grid-template-columns:minmax(120px,1.2fr) 2fr 1fr;align-items:center;margin-bottom:6px"><div style="font-weight:700;font-size:13px">' + esc(f.label) + '</div><div>' + ctl + '</div><div style="font-size:12px;color:#7f8c8d">' + esc(f.ref ? 'Ref: ' + f.ref : '') + ' ' + esc(f.unit) + ' <span class="hc-ab" data-flag="' + esc(f.k) + '"></span></div></div>';
+    });
+    html += '<div class="hc-grid" style="margin-top:10px"><div style="grid-column:1/-1"><label for="hc-sr-cmt">Comment</label><input id="hc-sr-cmt" ' + (lock ? 'disabled' : '') + ' value="' + esc(rec.comment || '') + '"></div></div>' +
+      '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">' +
+      (lock ? '' : '<button type="button" class="hc-btn o" data-sr-act="draft">💾 Save draft</button><button type="button" class="hc-btn g" data-sr-act="final">✅ Finalise result</button>') +
+      (rec.stage === 'final' ? '<button type="button" class="hc-btn" data-sr-act="verify">🛡️ Verify</button>' : '') +
+      (rec.stage === 'final' || rec.stage === 'verified' ? '<button type="button" class="hc-btn o" data-sr-act="reopen">✏️ Amend</button>' : '') +
+      '<button type="button" class="hc-btn o" data-sr-act="print">🖨️ Print report</button></div>';
+    var el = overlay('hc-sr', '🧪 Lab Result'); openOv(el, html); srFlags(); return true;
+  }
+  function srRead() { var o = {}; document.querySelectorAll('#hc-sr [data-sr]').forEach(function (e) { if (e.value !== '') o[e.getAttribute('data-sr')] = e.value; }); return o; }
+  function srFlags() {
+    var rec = labResults.find(function (r) { return r.id === SR.id; }), t = rec && testFor(rec); if (!t) return;
+    var v = srRead();
+    t.fields.forEach(function (f) { var s = document.querySelector('#hc-sr [data-flag="' + f.k + '"]'); if (s) { var fl = flagField(f, v[f.k]); s.textContent = fl === 'H' ? '▲ High' : fl === 'L' ? '▼ Low' : fl === 'A' ? '⚠ Abnormal' : ''; } });
+  }
+  function summaryOf(t, vals) {
+    var ab = [], any = 0;
+    t.fields.forEach(function (f) { var v = vals[f.k]; if (v == null || v === '') return; any++; var fl = flagField(f, v); if (fl) ab.push(f.label + ' ' + v + (f.unit ? ' ' + f.unit : '') + (fl === 'H' ? ' (H)' : fl === 'L' ? ' (L)' : '')); });
+    if (t.fields.length === 1 && vals[t.fields[0].k]) return { text: vals[t.fields[0].k] + (t.fields[0].unit ? '' : ''), units: t.fields[0].unit || '', ab: ab };
+    return { text: any ? (ab.length ? 'Abnormal: ' + ab.join('; ') : 'All reported parameters within reference') : '', units: '', ab: ab };
+  }
+  function srAct(act) {
+    var rec = labResults.find(function (r) { return r.id === SR.id; }); if (!rec) return; var t = testFor(rec); if (!t) return;
+    if (act === 'print') { labPrint(rec.id); return; }
+    if (act === 'reopen') {
+      var why = typeof askRequiredReason === 'function' ? askRequiredReason('Reason for amending this released result (required - the original is kept):') : 'amended';
+      if (why === null) return;
+      rec.amendments = rec.amendments || []; rec.amendments.push({ id: uid(), at: Date.now(), by: who(), reason: why, before: { fields: Object.assign({}, rec.fields || {}), resultText: rec.resultText, stage: rec.stage } });
+      rec.stage = 'draft'; rec.verifiedAt = null; rec.verifiedBy = null; audit('Lab result amended', patientNameById(rec.patientId), rec.testName + ': ' + why);
+    } else {
+      var vals = srRead(); rec.fields = vals; rec.comment = (document.getElementById('hc-sr-cmt') || {}).value || '';
+      if (act === 'draft') { rec.stage = 'draft'; rec.draftBy = who(); rec.draftAt = Date.now(); toast('Draft saved — not yet visible as a result.'); }
+      if (act === 'final') {
+        var s = summaryOf(t, vals);
+        if (!s.text) { toast('Enter at least one finding.', true); return; }
+        rec.resultText = s.text; rec.resultUnits = s.units; rec.flag = s.ab.length ? 'abnormal' : 'normal'; rec.referenceRange = '';
+        rec.stage = 'final'; rec.status = 'completed'; rec.resultAt = rec.resultAt || Date.now(); rec.resultBy = who(); rec.verifiedAt = null; rec.verifiedBy = null;
+        audit('Lab result entered', patientNameById(rec.patientId), rec.testName + (s.ab.length ? ' — abnormal' : ''));
+        toast('Result finalised.' + (t.verify !== false ? ' Verification pending.' : ''));
+        if (t.verify === false) { rec.stage = 'verified'; rec.verifiedAt = Date.now(); rec.verifiedBy = who(); }
+      }
+      if (act === 'verify') {
+        if (rec.resultBy && rec.resultBy === who() && typeof staff !== 'undefined' && staff && staff.length > 1) { toast('A different person should verify this result.', true); return; }
+        rec.stage = 'verified'; rec.verifiedAt = Date.now(); rec.verifiedBy = who(); audit('Lab result verified', patientNameById(rec.patientId), rec.testName); toast('Result verified.');
+      }
+    }
+    rec.updatedAt = Date.now();
+    try { safeSetItem('pos_lab_results', JSON.stringify(labResults)); queuePush(); } catch (e) { /* none */ }
+    try { renderLaboratoryTab(); if (currentVisitPatientId) renderPatientLabResults(currentVisitPatientId); } catch (e) { /* none */ }
+    srOpen(rec.id);
+  }
+  function labPrint(id) {
+    var rec = labResults.find(function (r) { return r.id === id; }); if (!rec) return; var t = testFor(rec);
+    var patient = patients.find(function (p) { return p.id === rec.patientId; }) || {};
+    var biz = businessName || 'Laboratory', vals = rec.fields || {};
+    var rows = '', grp = null, lines = [];
+    if (t && t.fields) t.fields.forEach(function (f) {
+      var v = vals[f.k]; if (v == null || v === '') return;
+      if (f.group !== grp) { grp = f.group; if (grp) { rows += '<tr><td colspan="4" style="background:#f4f6f7"><strong>' + esc(grp) + '</strong></td></tr>'; lines.push('[' + grp + ']'); } }
+      var fl = flagField(f, v);
+      rows += '<tr><td>' + esc(f.label) + '</td><td' + (fl ? ' class="hc-ab"' : '') + '>' + esc(v) + (fl ? ' ' + (fl === 'H' ? '▲' : fl === 'L' ? '▼' : '⚠') : '') + '</td><td>' + esc(f.unit) + '</td><td>' + esc(f.ref) + '</td></tr>';
+      lines.push(f.label + ': ' + v + (f.unit ? ' ' + f.unit : '') + (f.ref ? '  (ref ' + f.ref + ')' : '') + (fl ? '  *' : ''));
+    });
+    if (!rows) rows = '<tr><td colspan="4">' + esc(rec.resultText || 'No result entered yet.') + '</td></tr>';
+    var status = rec.stage === 'verified' ? 'VERIFIED' : (rec.stage === 'final' || rec.status === 'completed' ? 'FINAL (awaiting verification)' : 'DRAFT — not a final result');
+    document.getElementById('sales-report-body').innerHTML = '<h2>' + esc(biz.toUpperCase()) + '</h2><div class="report-meta">LABORATORY REPORT — ' + esc(rec.testName) + '<br>Patient: ' + esc(patient.name || '') + ' (' + esc(patient.id || '') + ') — ' + esc(String(patient.age || '?')) + ' yrs, ' + esc(patient.sex || '?') + '<br>Specimen: ' + esc(rec.specimen || (t && t.specimen) || '—') + (rec.indication ? '<br>Indication: ' + esc(rec.indication) : '') + '<br>Requested: ' + fdt(rec.requestedAt) + ' · Reported: ' + fdt(rec.resultAt) + '<br>Status: <strong>' + status + '</strong></div><table><thead><tr><th>Test</th><th>Result</th><th>Units</th><th>Reference</th></tr></thead><tbody>' + rows + '</tbody></table>' + (rec.comment ? '<p>Comment: ' + esc(rec.comment) + '</p>' : '') + '<p style="margin-top:12px;font-size:12px">Entered by ' + esc(rec.resultBy || '—') + (rec.verifiedBy ? ' · Verified by ' + esc(rec.verifiedBy) + ' ' + fdt(rec.verifiedAt) : '') + '<br>▲/▼/⚠ = outside the reference range.</p>';
+    lastReportText = [biz.toUpperCase(), 'LABORATORY REPORT — ' + rec.testName, 'Patient: ' + (patient.name || '') + ' (' + (patient.id || '') + ')', 'Specimen: ' + (rec.specimen || '-'), 'Status: ' + status, '-'.repeat(32)].concat(lines, rec.comment ? ['Comment: ' + rec.comment] : [], ['-'.repeat(32), 'Entered by: ' + (rec.resultBy || '-') + (rec.verifiedBy ? ' / Verified by: ' + rec.verifiedBy : '')]).join('\n');
+    document.getElementById('sales-report-modal').style.display = 'flex';
+  }
+  var _origOpenLab = W.openLabResultModal;
+  W.openLabResultModal = function (id) { if (srOpen(id) === true) return; if (typeof _origOpenLab === 'function') _origOpenLab(id); };
+  W.hmisLabPrint = labPrint;
+
+  /* ---------- lab catalogue manager ---------- */
+  var LC = { cat: 'All', edit: null };
+  function lcRender() {
+    var el = document.getElementById('hc-lc'); if (!el) return;
+    var tests = ofType('labtest'), cats = ['All'].concat(tests.map(function (t) { return t.category; }).filter(function (c, i, a) { return a.indexOf(c) === i; }));
+    var html;
+    if (LC.edit) {
+      var t = LC.edit === 'new' ? { id: '', name: '', category: 'Other', code: '', specimen: '', instructions: '', fields: [F('result', 'Result', 'text')], price: 0, tat: '1 hour', verify: true, active: true, available: true } : tests.find(function (x) { return x.id === LC.edit; });
+      html = '<div class="hc-grid"><div><label>Name</label><input id="lc-name" value="' + esc(t.name) + '"></div><div><label>Category</label><select id="lc-cat">' + ['Urinalysis', 'Haematology', 'Malaria', 'Chemistry', 'Stool', 'Microbiology', 'Serology', 'Other'].map(function (c) { return '<option' + (c === t.category ? ' selected' : '') + '>' + c + '</option>'; }).join('') + '</select></div><div><label>Code</label><input id="lc-code" value="' + esc(t.code) + '"></div><div><label>Specimen</label><input id="lc-spec" value="' + esc(t.specimen) + '"></div><div><label>Price (KES)</label><input id="lc-price" type="number" min="0" step="1" value="' + esc(t.price) + '"></div><div><label>Turnaround time</label><input id="lc-tat" value="' + esc(t.tat) + '"></div></div>' +
+        '<div class="hc-grid" style="margin-top:8px"><div style="grid-column:1/-1"><label>Collection instructions</label><input id="lc-how" value="' + esc(t.instructions) + '"></div></div>' +
+        '<div style="margin:8px 0"><label><input type="checkbox" id="lc-ver"' + (t.verify !== false ? ' checked' : '') + '> Needs verification</label> &nbsp; <label><input type="checkbox" id="lc-act"' + (t.active !== false ? ' checked' : '') + '> Active (shown in Request Lab)</label> &nbsp; <label><input type="checkbox" id="lc-avl"' + (t.available !== false ? ' checked' : '') + '> Available (reagents in stock)</label></div>' +
+        '<div class="hc-grp">Result fields — one per line: <code>Label | number/text/select | unit | reference range | option1,option2</code></div><textarea id="lc-fields" class="hc-in" rows="8">' + esc((t.fields || []).map(function (f) { return [f.label, f.type, f.unit, f.ref, (f.opts || []).join(',')].join(' | '); }).join('\n')) + '</textarea>' +
+        '<div style="margin-top:10px;display:flex;gap:8px"><button class="hc-btn g" data-lc-save>💾 Save</button><button class="hc-btn o" data-lc-back>Back</button></div>';
+    } else {
+      var list = tests.filter(function (t) { return LC.cat === 'All' || t.category === LC.cat; });
+      html = '<p class="hc-note">Starter catalogue — switch tests off, change prices/ranges/fields, or add your own. Patient results are never preloaded. Prices left at 0 fall back to a matching Service item in Inventory.</p><div class="hc-tabs">' + cats.map(function (c) { return '<button class="hc-tab' + (c === LC.cat ? ' on' : '') + '" data-lc-cat="' + esc(c) + '">' + esc(c) + '</button>'; }).join('') + '<button class="hc-btn g" data-lc-new style="margin-left:auto">+ New test</button></div>' +
+        '<table class="hc-tbl"><thead><tr><th>Test</th><th>Code</th><th>Specimen</th><th>Price</th><th>Status</th><th></th></tr></thead><tbody>' + list.map(function (t) {
+          return '<tr><td><strong>' + esc(t.name) + '</strong><div class="hc-note" style="margin:0">' + esc(t.category) + ' · ' + (t.fields || []).length + ' field(s)</div></td><td>' + esc(t.code) + '</td><td>' + esc(t.specimen) + '</td><td>' + (t.price > 0 ? money(t.price) : '—') + '</td><td>' + (t.active === false ? '<span class="hc-pill" style="background:#f2f3f4;color:#7f8c8d">Off</span>' : (t.available === false ? '<span class="hc-pill" style="background:#fdebd0;color:#b9770e">Unavailable</span>' : '<span class="hc-av">On</span>')) + '</td><td style="white-space:nowrap"><button class="hc-btn o" data-lc-edit="' + esc(t.id) + '">Edit</button> <button class="hc-btn ' + (t.active === false ? 'g' : 'r') + '" data-lc-toggle="' + esc(t.id) + '">' + (t.active === false ? 'Enable' : 'Disable') + '</button></td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    el.querySelector('.hc-body').innerHTML = html;
+  }
+  function lcSave() {
+    var v = function (i) { return (document.getElementById(i) || {}).value || ''; };
+    var name = v('lc-name').trim(); if (!name) { toast('Enter the test name.', true); return; }
+    var fields = v('lc-fields').split('\n').map(function (ln) { return ln.trim(); }).filter(Boolean).map(function (ln, i) {
+      var p = ln.split('|').map(function (s) { return s.trim(); }); var type = ['number', 'text', 'select'].indexOf(p[1]) >= 0 ? p[1] : 'text';
+      return F('f' + i + '_' + (p[0] || '').toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12), p[0] || 'Result', type, p[2] || '', p[3] || '', type === 'select' ? (p[4] || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean) : null);
+    });
+    if (!fields.length) { toast('Add at least one result field.', true); return; }
+    var id = LC.edit === 'new' ? 'lc_c_' + uid() : LC.edit;
+    // keep the seed's stable field keys when the label is unchanged, so results already saved still line up
+    var old = ofType('labtest').find(function (t) { return t.id === id; });
+    if (old) fields.forEach(function (f) { var m = (old.fields || []).find(function (o) { return o.label === f.label; }); if (m) { f.k = m.k; f.group = m.group; f.normal = m.normal; } });
+    putOverride(id, { type: 'labtest', name: name, category: v('lc-cat'), code: v('lc-code').trim(), specimen: v('lc-spec').trim(), instructions: v('lc-how').trim(), price: Math.max(0, parseFloat(v('lc-price')) || 0), tat: v('lc-tat').trim(), verify: document.getElementById('lc-ver').checked, active: document.getElementById('lc-act').checked, available: document.getElementById('lc-avl').checked, fields: fields });
+    audit('Lab catalogue changed', name, 'saved'); LC.edit = null; lcRender(); toast('Saved.');
+  }
+  function lcOpen() { LC = { cat: 'All', edit: null }; var el = overlay('hc-lc', '📚 Lab Catalogue'); el.querySelector('.hc-body').innerHTML = ''; el.classList.add('open'); lcRender(); }
+
+  /* ======================================================================= 3. INPATIENT ============================================ */
+  function adm(id) { return admissions.find(function (a) { return a.id === id; }); }
+  function pname(a) { var p = patients.find(function (x) { return x.id === a.patientId; }); return p ? p.name : '(removed patient)'; }
+  function linked(a) {
+    var endT = a.dischargedAt ? a.dischargedAt + 6 * 3600000 : Infinity;
+    return patientCharges.filter(function (c) {
+      if (!c || ['declined', 'void', 'cancelled'].indexOf(c.status) >= 0) return false;
+      if (c.admissionId) return c.admissionId === a.id;
+      return c.patientId === a.patientId && c.createdAt >= a.admittedAt && c.createdAt <= endT && !admissions.some(function (o) { return o !== a && o.patientId === a.patientId && o.admittedAt > a.admittedAt && o.admittedAt <= c.createdAt; });
+    });
+  }
+  function acct(a) {
+    var endT = a.dischargedAt || Date.now();
+    var bed = typeof admBedTotal === 'function' ? admBedTotal(a, endT) : 0;
+    var lines = linked(a), cat = {};
+    lines.forEach(function (c) { var k = c.kind || 'other'; var amt = (Number(c.price) || 0) * (Number(c.qty) || 0); cat[k] = cat[k] || { total: 0, paid: 0, n: 0 }; cat[k].total += amt; cat[k].n++; if (c.status === 'paid' || c.status === 'billed') cat[k].paid += amt; });
+    var chargeTotal = 0, chargePaid = 0; Object.keys(cat).forEach(function (k) { chargeTotal += cat[k].total; chargePaid += cat[k].paid; });
+    var deposit = Number(a.depositAmount) || 0;
+    var credits = chargePaid + (a.dischargedAt ? Math.max(deposit, bed) : deposit);
+    var total = bed + chargeTotal;
+    return { bed: bed, cat: cat, lines: lines, chargeTotal: chargeTotal, chargePaid: chargePaid, deposit: deposit, total: total, credits: credits, balance: Math.round((total - credits) * 100) / 100, unpaid: lines.filter(function (c) { return c.status === 'unpaid'; }) };
+  }
+  W.hmisAccount = acct;
+  var KIND = { consultation: '🩺 Consultation', lab: '🧪 Laboratory', medication: '💊 Pharmacy', meal: '🍽️ Meals', service: '🛎️ Services', other: 'Other' };
+  var IP = { id: null, tab: 'account' };
+  function ipRender() {
+    var el = document.getElementById('hc-ip'); if (!el) return; var a = adm(IP.id); if (!a) return;
+    var A = acct(a), tabs = [['account', '💼 Account'], ['meals', '🍽️ Meals'], ['mar', '💊 MAR'], ['charges', '🛎️ Charges'], ['transfer', '🛏️ Bed & leave']];
+    var h = '<div class="hc-card"><strong>' + esc(pname(a)) + '</strong> · ' + esc(a.bedLabel) + ' (' + esc(a.wardType) + ') · admitted ' + fdt(a.admittedAt) + (a.status === 'discharged' ? ' · <span class="hc-pill">Discharged ' + fdt(a.dischargedAt) + '</span>' : '') + (a.readmitOf ? ' · <span class="hc-pill">Readmission</span>' : '') + (a.diet ? ' · Diet: ' + esc(a.diet) : '') + '<div class="hc-note" style="margin:2px 0 0">' + esc(a.diagnosis || '') + '</div></div>' +
+      '<div class="hc-tabs">' + tabs.map(function (t) { return '<button class="hc-tab' + (IP.tab === t[0] ? ' on' : '') + '" data-ip-tab="' + t[0] + '">' + t[1] + '</button>'; }).join('') + '</div>';
+    var open = a.status === 'admitted';
+    if (IP.tab === 'account') {
+      h += '<table class="hc-tbl"><thead><tr><th>Item</th><th>Billed</th><th>Paid</th><th>Outstanding</th></tr></thead><tbody><tr><td>🛏️ Bed &amp; nursing (' + (typeof admissionDaysSoFar === 'function' ? admissionDaysSoFar(a, a.dischargedAt) : '?') + ' day(s))</td><td>' + money(A.bed) + '</td><td colspan="2" style="color:#7f8c8d">billed at discharge, after deposit</td></tr>';
+      Object.keys(A.cat).forEach(function (k) { var c = A.cat[k]; h += '<tr><td>' + (KIND[k] || k) + ' (' + c.n + ')</td><td>' + money(c.total) + '</td><td>' + money(c.paid) + '</td><td>' + money(c.total - c.paid) + '</td></tr>'; });
+      h += '</tbody></table><div class="hc-card ' + (A.balance > 0 ? 'warn' : 'ok') + '" style="margin-top:10px"><div>Total charges: <b>' + money(A.total) + '</b> · Deposits / payments: <b>' + money(A.deposit) + '</b> · Paid at cashier: <b>' + money(A.chargePaid) + '</b></div><div class="hc-tot">' + (A.balance >= 0 ? 'Balance due: ' + money(A.balance) : 'Credit to refund: ' + money(-A.balance)) + '</div>' + (A.unpaid.length ? '<div class="hc-note" style="margin:4px 0 0">' + A.unpaid.length + ' item(s) are still unpaid — the cashier collects them from the patient\'s bill (Sales Counter → Patient Bill). Nothing is marked paid until it is.</div>' : '') + '</div>';
+      if (A.lines.length) h += '<details><summary>All lines (' + A.lines.length + ')</summary><table class="hc-tbl"><tbody>' + A.lines.slice().sort(function (x, y) { return x.createdAt - y.createdAt; }).map(function (c) { return '<tr><td>' + fdt(c.createdAt) + '</td><td>' + esc(c.name) + '</td><td>' + esc(String(c.qty)) + '</td><td>' + money(c.price * c.qty) + '</td><td>' + esc(c.status) + '</td></tr>'; }).join('') + '</tbody></table></details>';
+      var led = a.ledger || [];
+      h += '<div class="hc-grp">Deposits, payments &amp; refunds</div>' + (led.length ? '<table class="hc-tbl"><tbody>' + led.map(function (l) { return '<tr><td>' + fdt(l.at) + '</td><td>' + esc(l.type) + (l.reversedBy ? ' <span class="hc-pill">reversed</span>' : '') + '</td><td>' + money(l.amount) + '</td><td>' + esc(l.by || '') + (l.reason ? ' — ' + esc(l.reason) : '') + '</td><td>' + (!l.reversedBy && l.type === 'payment' ? '<button class="hc-btn o" data-ip-rev="' + esc(l.id) + '">Reverse</button>' : '') + '</td></tr>'; }).join('') + '</tbody></table>' : '<p class="hc-note">The admission deposit (' + money(a.depositAmount) + ') was posted to the till when the patient was admitted.</p>');
+      if (open) h += '<div class="hc-grid" style="margin-top:8px"><div><label for="ip-amt">Amount (KES)</label><input id="ip-amt" type="number" min="0" step="1"></div><div><label for="ip-reason">Note / reason</label><input id="ip-reason"></div></div><div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="hc-btn g" data-ip-pay>➕ Take payment / deposit (cash)</button><button class="hc-btn r" data-ip-refund>↩ Refund to patient</button></div>';
+      h += '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="hc-btn" data-ip-stmt>🖨️ Print statement</button>' + (open ? '<button class="hc-btn g" data-ip-discharge="' + esc(a.id) + '">🏁 Discharge…</button>' : '') + '</div>';
+    } else if (IP.tab === 'meals') {
+      var menu = ofType('menu').filter(function (m) { return m.active !== false; }), meals = A.lines.filter(function (c) { return c.kind === 'meal'; }).sort(function (x, y) { return y.createdAt - x.createdAt; });
+      var pol = policy();
+      h += '<p class="hc-note">Meal billing policy: <b>' + (pol.mealsBilling === 'included' ? 'included in the bed rate (recorded at no charge)' : 'charged per meal') + '</b>. The same meal is never added twice for the same day.</p>';
+      if (open) h += '<div class="hc-grid"><div><label for="ip-meal">Menu item</label><select id="ip-meal">' + menu.map(function (m) { return '<option value="' + esc(m.id) + '">' + esc(m.slot + ' — ' + m.name + (m.diet && m.diet !== 'Normal' ? ' (' + m.diet + ')' : '') + (m.price > 0 && pol.mealsBilling !== 'included' ? ' · ' + money(m.price) : '')) + '</option>'; }).join('') + '</select></div><div><label for="ip-mdate">Date</label><input id="ip-mdate" type="date" value="' + new Date().toISOString().slice(0, 10) + '"></div><div><label for="ip-mdiet">Patient diet</label><select id="ip-mdiet">' + ['', 'Normal', 'Soft', 'Diabetic', 'Low salt', 'Liquid', 'Nil by mouth'].map(function (d) { return '<option' + (d === (a.diet || '') ? ' selected' : '') + '>' + d + '</option>'; }).join('') + '</select></div></div><div style="margin:8px 0"><button class="hc-btn g" data-ip-meal>🍽️ Add meal</button> <button class="hc-btn o" data-ip-diet>Save diet</button></div>';
+      h += meals.length ? '<table class="hc-tbl"><tbody>' + meals.map(function (c) { return '<tr><td>' + esc(c.mealDate || '') + '</td><td>' + esc(c.name) + '</td><td>' + money(c.price * c.qty) + '</td><td>' + esc(c.status) + '</td><td>' + (c.status === 'unpaid' && open ? '<button class="hc-btn o" data-ip-void="' + esc(c.id) + '">Cancel</button>' : '') + '</td></tr>'; }).join('') + '</tbody></table>' : '<p class="hc-note">No meals recorded yet.</p>';
+    } else if (IP.tab === 'mar') {
+      var mar = (a.mar || []).slice().sort(function (x, y) { return y.at - x.at; });
+      if (open) h += '<div class="hc-grid"><div><label for="mr-drug">Medicine</label><input id="mr-drug" list="mr-dl"><datalist id="mr-dl">' + inventory.filter(function (p) { return p.type !== 'service'; }).slice(0, 400).map(function (p) { return '<option value="' + esc(p.name) + '">'; }).join('') + '</datalist></div><div><label for="mr-dose">Dose</label><input id="mr-dose"></div><div><label for="mr-route">Route</label><select id="mr-route">' + ['Oral', 'IV', 'IM', 'SC', 'Topical', 'Inhaled', 'PR', 'Other'].map(function (r) { return '<option>' + r + '</option>'; }).join('') + '</select></div><div><label for="mr-st">Outcome</label><select id="mr-st"><option value="given">Administered</option><option value="withheld">Withheld</option><option value="refused">Refused</option><option value="missed">Missed</option></select></div><div><label for="mr-why">Reason (needed unless given)</label><input id="mr-why"></div></div><div style="margin:8px 0"><button class="hc-btn g" data-ip-mar>➕ Record</button></div>';
+      h += mar.length ? '<table class="hc-tbl"><thead><tr><th>Time</th><th>Medicine</th><th>Dose / route</th><th>Outcome</th><th>By</th></tr></thead><tbody>' + mar.map(function (m) { return '<tr><td>' + fdt(m.at) + '</td><td>' + esc(m.drug) + '</td><td>' + esc(m.dose || '') + ' ' + esc(m.route || '') + '</td><td><span class="hc-pill" style="' + (m.status === 'given' ? '' : 'background:#fdebd0;color:#b9770e') + '">' + esc(m.status) + '</span>' + (m.reason ? '<div class="hc-note" style="margin:0">' + esc(m.reason) + '</div>' : '') + '</td><td>' + esc(m.by || '') + '</td></tr>'; }).join('') + '</tbody></table>' : '<p class="hc-note">No doses recorded yet. Recording a dose does not change stock or the bill — dispensing and charging stay in Pharmacy.</p>';
+    } else if (IP.tab === 'charges') {
+      var cts = ofType('chargetype').filter(function (c) { return c.active !== false; }), pl = policy();
+      if (open) h += '<div class="hc-grid"><div><label for="ip-ct">Charge</label><select id="ip-ct">' + cts.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.name + (c.per === 'day' ? ' (per day)' : '') + (c.price > 0 ? ' · ' + money(c.price) : '')) + '</option>'; }).join('') + '</select></div><div><label for="ip-cq">Qty</label><input id="ip-cq" type="number" min="1" value="1"></div><div><label for="ip-cd">Date</label><input id="ip-cd" type="date" value="' + new Date().toISOString().slice(0, 10) + '"></div></div><div style="margin:8px 0"><button class="hc-btn g" data-ip-charge>➕ Post charge</button></div><p class="hc-note">A per-day charge can only be posted once per date. Prices, the meals policy and ward bed rates are under Setup below.</p>';
+      var wards = {}; Object.keys(bedTypes || {}).forEach(function (b) { wards[bedTypes[b] || 'General'] = 1; }); wards.General = 1;
+      h += '<details><summary>⚙️ Setup — charge types, meal policy, bed rates</summary><div class="hc-grid" style="margin-top:8px"><div><label for="su-meal">Meals billing</label><select id="su-meal"><option value="charge"' + (pl.mealsBilling !== 'included' ? ' selected' : '') + '>Charge per meal</option><option value="included"' + (pl.mealsBilling === 'included' ? ' selected' : '') + '>Included in bed rate</option></select></div></div>' +
+        '<div class="hc-grp">Ward bed rates (used when transferring / admitting)</div><div class="hc-grid">' + Object.keys(wards).map(function (w) { var r = (pl.bedByWard || {})[w] || {}; return '<div><label>' + esc(w) + ' — bed / nursing per day</label><div style="display:flex;gap:4px"><input data-su-bed="' + esc(w) + '" type="number" min="0" value="' + esc(r.bed != null ? r.bed : '') + '"><input data-su-nur="' + esc(w) + '" type="number" min="0" value="' + esc(r.nursing != null ? r.nursing : '') + '"></div></div>'; }).join('') + '</div>' +
+        '<div class="hc-grp">Charge types &amp; meal prices</div><table class="hc-tbl"><tbody>' + cts.concat(ofType('menu')).map(function (c) { return '<tr><td>' + esc(c.name) + ' <span class="hc-pill">' + (c.type === 'menu' ? 'meal' : c.per) + '</span></td><td><input class="hc-in" style="max-width:110px" type="number" min="0" data-su-price="' + esc(c.id) + '" value="' + esc(c.price || 0) + '"></td></tr>'; }).join('') + '</tbody></table><div style="margin-top:8px"><button class="hc-btn g" data-su-save>💾 Save setup</button></div></details>';
+    } else {
+      var segs = a.bedHistory || [];
+      h += '<div class="hc-card"><b>Current bed:</b> ' + esc(a.bedLabel) + ' (' + esc(a.wardType) + ') · ' + money(a.dailyBedRate) + ' bed + ' + money(a.dailyNursingRate) + ' nursing per day</div>';
+      if (open) {
+        var free = rooms.filter(function (r) { var st = roomStates[r]; return r !== a.bedLabel && (!st || st.status === 'available'); });
+        h += '<div class="hc-grid"><div><label for="ip-bed">Move to bed</label><select id="ip-bed"><option value="">— choose a free bed —</option>' + free.map(function (r) { return '<option value="' + esc(r) + '">' + esc(r + ' (' + (bedTypes[r] || 'General') + ')') + '</option>'; }).join('') + '</select></div><div><label for="ip-bwhy">Reason</label><input id="ip-bwhy"></div></div><div style="margin:8px 0"><button class="hc-btn g" data-ip-move>🛏️ Transfer</button> <button class="hc-btn o" data-ip-leave>' + ((a.leaves || []).some(function (l) { return !l.to; }) ? '↩ Return from leave' : '🚶 Start leave of absence') + '</button></div><p class="hc-note">The old bed goes to Cleaning; the new bed is checked free at the moment of transfer. Days are billed once overall — a day is charged at the bed occupied when that day started. A bed stays held and billed during leave.</p>';
+      }
+      var h2 = segs.map(function (s) { return '<tr><td>' + esc(s.bed) + ' (' + esc(s.ward) + ')</td><td>' + fdt(s.from) + '</td><td>' + (s.to ? fdt(s.to) : 'now') + '</td><td>' + esc(s.reason || '') + '</td></tr>'; }).join('');
+      h += (h2 ? '<div class="hc-grp">Bed history</div><table class="hc-tbl"><tbody>' + h2 + '</tbody></table>' : '<p class="hc-note">No transfers yet.</p>');
+      if ((a.leaves || []).length) h += '<div class="hc-grp">Leave</div><table class="hc-tbl"><tbody>' + a.leaves.map(function (l) { return '<tr><td>' + fdt(l.from) + '</td><td>' + (l.to ? fdt(l.to) : 'on leave') + '</td><td>' + esc(l.reason || '') + '</td></tr>'; }).join('') + '</tbody></table>';
+    }
+    el.querySelector('.hc-body').innerHTML = h;
+  }
+  function ipOpen(id, tab) { var a = adm(id); if (!a) return; IP = { id: id, tab: tab || 'account' }; var el = overlay('hc-ip', '🏥 Inpatient — ' + pname(a)); el.querySelector('.hc-body').innerHTML = ''; el.classList.add('open'); ipRender(); }
+  function persistAdm() { try { safeSetItem('pos_admissions', JSON.stringify(admissions)); safeSetItem('pos_patient_charges', JSON.stringify(patientCharges)); queuePush(); } catch (e) { /* none */ } }
+  function stampAdm(a) { a.updatedAt = Date.now(); }
+  function val(i) { return (document.getElementById(i) || {}).value || ''; }
+  function ipPay(kind) {
+    var a = adm(IP.id); if (!a || a.status !== 'admitted') return;
+    var amt = Math.round((parseFloat(val('ip-amt')) || 0) * 100) / 100; if (!(amt > 0)) { toast('Enter an amount above zero.', true); return; }
+    var reason = val('ip-reason').trim();
+    a.ledger = a.ledger || [];
+    if (kind === 'refund') {
+      if (!reason) { toast('A refund needs a reason.', true); return; }
+      var A = acct(a); if (amt > Math.max(0, -A.balance) + 0.001) { toast('Refund is more than the patient\'s credit (' + money(Math.max(0, -A.balance)) + ').', true); return; }
+      a.depositAmount = Math.round((a.depositAmount - amt) * 100) / 100;
+      a.ledger.push({ id: uid(), type: 'refund', amount: amt, at: Date.now(), by: who(), reason: reason });
+      try { expenses.push({ id: uid(), timestamp: new Date().toISOString(), category: 'Admission refund', description: 'Refund — ' + pname(a) + ' (' + a.bedLabel + '): ' + reason, amount: amt, transactionCost: 0, auto: true, admissionId: a.id }); saveExpenses(); } catch (e) { /* ledger still has it */ }
+      audit('Admission refund', pname(a), money(amt) + ' — ' + reason);
+    } else {
+      var lid = uid();
+      salesLog.push({ id: uid(), refNumber: typeof generateReceiptRef === 'function' ? generateReceiptRef() : undefined, timestamp: new Date().toISOString(), servedBy: who(), customerName: pname(a) + ' (' + a.patientId + ') — Admission Payment', items: [{ name: 'Admission payment — ' + a.bedLabel, price: amt, qty: 1, unit: 'payment', wholesalePrice: 0, isService: true, vatCategory: 'A' }], paymentMethod: 'cash', paid: true, cashAmount: amt, mpesaAmount: 0, amountTendered: amt, change: 0, admissionId: a.id, ledgerId: lid });
+      try { safeSetItem('pos_sales_log', JSON.stringify(salesLog)); } catch (e) { /* none */ }
+      a.depositAmount = Math.round((a.depositAmount + amt) * 100) / 100;
+      a.ledger.push({ id: lid, type: 'payment', amount: amt, at: Date.now(), by: who(), reason: reason });
+      audit('Admission payment', pname(a), money(amt));
+    }
+    stampAdm(a); persistAdm(); try { renderAdmissionsTable(); renderDailySales(); } catch (e) { /* none */ } ipRender(); toast(kind === 'refund' ? 'Refund recorded.' : 'Payment recorded.');
+  }
+  function ipReverse(lid) {
+    var a = adm(IP.id); if (!a) return; var l = (a.ledger || []).find(function (x) { return x.id === lid; }); if (!l || l.reversedBy || l.type !== 'payment') return;
+    var why = typeof askRequiredReason === 'function' ? askRequiredReason('Reason for reversing this payment (required — the original stays on the record):') : 'reversed'; if (why === null) return;
+    var rid = uid(); l.reversedBy = rid; a.depositAmount = Math.round((a.depositAmount - l.amount) * 100) / 100;
+    a.ledger.push({ id: rid, type: 'reversal', reverses: l.id, amount: l.amount, at: Date.now(), by: who(), reason: why });
+    try { expenses.push({ id: uid(), timestamp: new Date().toISOString(), category: 'Admission refund', description: 'Payment reversal — ' + pname(a) + ': ' + why, amount: l.amount, transactionCost: 0, auto: true, admissionId: a.id, reverses: l.id }); saveExpenses(); } catch (e) { /* none */ }
+    audit('Admission payment reversed', pname(a), money(l.amount) + ' — ' + why); stampAdm(a); persistAdm(); try { renderAdmissionsTable(); } catch (e) { /* none */ } ipRender(); toast('Payment reversed.');
+  }
+  function postCharge(a, base) {
+    var key = base.postKey; if (key && patientCharges.some(function (c) { return c.postKey === key && ['void', 'cancelled'].indexOf(c.status) < 0; })) return null;
+    var rec = Object.assign({ id: uid(), status: 'unpaid', createdAt: Date.now(), createdBy: who(), updatedAt: Date.now(), ref: a.chargeRef || (a.chargeRef = (typeof newVisitRef === 'function' ? newVisitRef() : 'ADM-' + a.id)), patientId: a.patientId, patientName: pname(a), admissionId: a.id, isService: true, unit: 'use', vatCategory: 'A', code: '' }, base);
+    patientCharges.push(rec); return rec;
+  }
+  function ipMeal() {
+    var a = adm(IP.id); if (!a) return; var m = ofType('menu').find(function (x) { return x.id === val('ip-meal'); }); var d = val('ip-mdate'); if (!m || !d) { toast('Choose a meal and date.', true); return; }
+    var inc = policy().mealsBilling === 'included', price = inc ? 0 : (Number(m.price) || 0);
+    var rec = postCharge(a, { kind: 'meal', name: 'Meal: ' + m.name + ' (' + m.slot + ')', qty: 1, price: price, mealDate: d, postKey: 'meal|' + a.id + '|' + d + '|' + m.id, status: (inc || price === 0) ? 'paid' : 'unpaid', note: inc ? 'included in bed rate' : '' });
+    if (!rec) { toast('That meal is already recorded for ' + d + '.', true); return; }
+    audit('Meal added', pname(a), m.name + ' ' + d); stampAdm(a); persistAdm(); ipRender(); toast('Meal added.');
+  }
+  function ipCharge() {
+    var a = adm(IP.id); if (!a) return; var ct = ofType('chargetype').find(function (x) { return x.id === val('ip-ct'); }); var d = val('ip-cd'), q = Math.max(1, parseInt(val('ip-cq'), 10) || 1);
+    if (!ct) return; if (!(ct.price > 0)) { toast('Set a price for "' + ct.name + '" under Setup first.', true); return; }
+    var rec = postCharge(a, { kind: 'service', name: ct.name, qty: ct.per === 'day' ? 1 : q, price: ct.price, postKey: ct.per === 'day' ? 'ct|' + a.id + '|' + ct.id + '|' + d : undefined });
+    if (!rec) { toast('"' + ct.name + '" is already posted for ' + d + '.', true); return; }
+    audit('Charge posted', pname(a), ct.name); stampAdm(a); persistAdm(); ipRender(); toast('Charge posted.');
+  }
+  function ipMar() {
+    var a = adm(IP.id); if (!a) return; var drug = val('mr-drug').trim(), st = val('mr-st'), why = val('mr-why').trim();
+    if (!drug) { toast('Enter the medicine.', true); return; } if (st !== 'given' && !why) { toast('Give a reason for ' + st + '.', true); return; }
+    a.mar = a.mar || []; a.mar.push({ id: uid(), drug: drug, dose: val('mr-dose').trim(), route: val('mr-route'), status: st, reason: why, at: Date.now(), by: who() });
+    audit('MAR ' + st, pname(a), drug); stampAdm(a); persistAdm(); ipRender();
+  }
+  function ipMove() {
+    var a = adm(IP.id); if (!a || a.status !== 'admitted') return; var nb = val('ip-bed'), why = val('ip-bwhy').trim();
+    if (!nb) { toast('Choose a free bed.', true); return; }
+    var st = roomStates[nb]; if (st && st.status && st.status !== 'available') { toast(nb + ' is no longer free.', true); ipRender(); return; }
+    if (admissions.some(function (o) { return o.status === 'admitted' && o.bedLabel === nb; })) { toast(nb + ' is occupied.', true); ipRender(); return; }
+    var now = Date.now(), ward = bedTypes[nb] || 'General', pol = (policy().bedByWard || {})[ward] || {};
+    if (!a.bedHistory) a.bedHistory = [{ bed: a.bedLabel, ward: a.wardType, from: a.admittedAt, bedRate: a.dailyBedRate, nursingRate: a.dailyNursingRate }];
+    a.bedHistory[a.bedHistory.length - 1].to = now; a.bedHistory[a.bedHistory.length - 1].reason = why;
+    var old = a.bedLabel;
+    a.bedLabel = nb; a.wardType = ward; if (pol.bed != null && pol.bed !== '') a.dailyBedRate = Number(pol.bed) || 0; if (pol.nursing != null && pol.nursing !== '') a.dailyNursingRate = Number(pol.nursing) || 0;
+    a.bedHistory.push({ bed: nb, ward: ward, from: now, bedRate: a.dailyBedRate, nursingRate: a.dailyNursingRate, reason: why });
+    if (roomStates[old]) { roomStates[old].status = 'cleaning'; delete roomStates[old].patientId; delete roomStates[old].admissionId; }
+    roomStates[nb] = Object.assign(roomStates[nb] || {}, { status: 'occupied', reservation: null, patientId: a.patientId, admissionId: a.id });
+    try { safeSetItem('pos_room_states', JSON.stringify(roomStates)); } catch (e) { /* none */ }
+    audit('Bed transfer', pname(a), old + ' → ' + nb + (why ? ' — ' + why : '')); stampAdm(a); persistAdm();
+    try { renderTablesRoomsLists(); renderAdmitBedSelect(); renderAdmissionsTable(); } catch (e) { /* none */ } ipRender(); toast('Moved to ' + nb + '.');
+  }
+  function ipLeave() {
+    var a = adm(IP.id); if (!a) return; a.leaves = a.leaves || []; var cur = a.leaves.find(function (l) { return !l.to; });
+    if (cur) { cur.to = Date.now(); audit('Returned from leave', pname(a), ''); } else { a.leaves.push({ from: Date.now(), reason: val('ip-bwhy').trim() }); audit('Leave of absence', pname(a), val('ip-bwhy')); }
+    stampAdm(a); persistAdm(); ipRender();
+  }
+  function ipSetup() {
+    var pol = Object.assign({}, policy()); pol.mealsBilling = val('su-meal') || 'charge'; pol.bedByWard = {};
+    document.querySelectorAll('#hc-ip [data-su-bed]').forEach(function (e) { var w = e.getAttribute('data-su-bed'), n = document.querySelector('#hc-ip [data-su-nur="' + w + '"]'); if (e.value !== '' || (n && n.value !== '')) pol.bedByWard[w] = { bed: e.value === '' ? null : Number(e.value), nursing: !n || n.value === '' ? null : Number(n.value) }; });
+    putOverride('policy', { type: 'policy', mealsBilling: pol.mealsBilling, bedByWard: pol.bedByWard });
+    document.querySelectorAll('#hc-ip [data-su-price]').forEach(function (e) { var id = e.getAttribute('data-su-price'), cur = effective().find(function (r) { return r.id === id; }); var p = Math.max(0, parseFloat(e.value) || 0); if (cur && Number(cur.price || 0) !== p) putOverride(id, { type: cur.type, price: p }); });
+    audit('Inpatient setup changed', '', 'meals/charges/bed rates'); ipRender(); toast('Setup saved.');
+  }
+  function stmtHtml(a) {
+    var A = acct(a), biz = businessName || 'Hospital';
+    var rows = ['<tr><td>Bed &amp; nursing</td><td>' + money(A.bed) + '</td></tr>'].concat(Object.keys(A.cat).map(function (k) { return '<tr><td>' + esc(KIND[k] || k) + '</td><td>' + money(A.cat[k].total) + '</td></tr>'; }));
+    var html = '<h2 style="text-align:center">' + esc(biz) + '</h2><h3 style="text-align:center;margin-top:0">Admission Account Statement</h3><p><strong>Patient:</strong> ' + esc(pname(a)) + ' (' + esc(a.patientId) + ')<br><strong>Admitted:</strong> ' + fdt(a.admittedAt) + (a.dischargedAt ? '<br><strong>Discharged:</strong> ' + fdt(a.dischargedAt) : '') + '</p><table><thead><tr><th>Item</th><th>Amount</th></tr></thead><tbody>' + rows.join('') + '</tbody></table><p><strong>Total:</strong> ' + money(A.total) + '<br><strong>Deposits / payments:</strong> ' + money(A.deposit) + '<br><strong>Paid at cashier:</strong> ' + money(A.chargePaid) + '<br><strong>' + (A.balance >= 0 ? 'Balance due' : 'Credit') + ':</strong> ' + money(Math.abs(A.balance)) + '</p>';
+    var txt = [biz.toUpperCase(), 'ADMISSION ACCOUNT STATEMENT', 'Patient: ' + pname(a), 'Admitted: ' + fdt(a.admittedAt), '-'.repeat(32), 'Bed & nursing: ' + money(A.bed)].concat(Object.keys(A.cat).map(function (k) { return (KIND[k] || k) + ': ' + money(A.cat[k].total); }), ['-'.repeat(32), 'Total: ' + money(A.total), 'Deposits/payments: ' + money(A.deposit), 'Paid at cashier: ' + money(A.chargePaid), (A.balance >= 0 ? 'Balance due: ' : 'Credit: ') + money(Math.abs(A.balance))]).join('\n');
+    return { html: html, txt: txt };
+  }
+  function ipStatement() { var a = adm(IP.id); if (!a) return; var s = stmtHtml(a); document.getElementById('sales-report-body').innerHTML = s.html; lastReportText = s.txt; document.getElementById('sales-report-modal').style.display = 'flex'; }
+  W.hmisOpenInpatient = ipOpen;
+
+  var _origConfirmDischarge = W.confirmDischarge;
+  W.confirmDischarge = function () {
+    var a = admissions.find(function (x) { return x.id === pendingDischargeAdmissionId; });
+    if (a) {
+      var A = acct(a);
+      if (A.unpaid.length && !confirm(A.unpaid.length + ' item(s) (' + money(A.unpaid.reduce(function (s, c) { return s + c.price * c.qty; }, 0)) + ') are still unpaid on this admission. They stay on the patient bill for the cashier. Discharge anyway?')) return;
+    }
+    _origConfirmDischarge.apply(this, arguments);
+    if (a && a.status === 'discharged') { var B = acct(a); a.finalAccount = { at: Date.now(), bed: B.bed, chargeTotal: B.chargeTotal, deposit: B.deposit, balance: B.balance, unpaidItems: B.unpaid.length }; stampAdm(a); persistAdm(); }
+  };
+  var _origPrintDs = W.printDischargeSummary;
+  W.printDischargeSummary = function (admission) {
+    _origPrintDs.apply(this, arguments);
+    try { var s = stmtHtml(admission); document.getElementById('sales-report-body').insertAdjacentHTML('beforeend', '<hr>' + s.html.replace(/<h2[\s\S]*?<\/h3>/, '<h3>Admission account</h3>')); lastReportText += '\n' + '-'.repeat(32) + '\n' + s.txt.split('\n').slice(4).join('\n'); } catch (e) { /* summary still printed */ }
+  };
+  var _origAdmit = W.admitPatient;
+  W.admitPatient = function () {
+    var before = admissions.length; _origAdmit.apply(this, arguments);
+    if (admissions.length > before) { var n = admissions[admissions.length - 1]; var prev = admissions.filter(function (x) { return x !== n && x.patientId === n.patientId && x.status === 'discharged'; }).sort(function (x, y) { return y.dischargedAt - x.dischargedAt; })[0]; if (prev) { n.readmitOf = prev.id; stampAdm(n); persistAdm(); } }
+  };
+  document.addEventListener('change', function (e) {
+    if (!e.target || e.target.id !== 'admit-bed-select') return;
+    var ward = bedTypes[e.target.value] || 'General', r = (policy().bedByWard || {})[ward]; if (!r) return;
+    var b = document.getElementById('admit-bed-rate-input'), n = document.getElementById('admit-nursing-rate-input');
+    if (b && r.bed != null && !parseFloat(b.value)) b.value = r.bed; if (n && r.nursing != null && !parseFloat(n.value)) n.value = r.nursing;
+  });
+
+  function visitSummary(pid) {
+    var p = patients.find(function (x) { return x.id === pid; }); if (!p) return '';
+    var vs = visits.filter(function (v) { return v.patientId === pid; }).sort(function (a, b) { return (b.timestamp || 0) - (a.timestamp || 0); });
+    var last = vs[0], labs = labResults.filter(function (l) { return l.patientId === pid && l.status === 'completed'; }).sort(function (a, b) { return (b.resultAt || 0) - (a.resultAt || 0); }).slice(0, 3);
+    var ad = admissions.find(function (a) { return a.patientId === pid && a.status === 'admitted'; });
+    var h = '<div class="hc-card" id="hc-vsum"><strong>📋 History at a glance</strong> <span class="hc-note" style="margin:0">(' + vs.length + ' previous visit' + (vs.length === 1 ? '' : 's') + ')</span>';
+    if (p.allergies) h += '<div class="hc-ab">⚠️ Allergies: ' + esc(p.allergies) + '</div>';
+    if (ad) h += '<div>🛏️ Currently admitted: ' + esc(ad.bedLabel) + ' since ' + fdt(ad.admittedAt) + '</div>';
+    if (last) h += '<div>Last visit ' + fdt(last.timestamp) + (last.diagnosis ? ' — <b>' + esc(last.diagnosis) + '</b>' : '') + '</div>' + ((last.medications || []).length ? '<div>Last prescription: ' + last.medications.map(function (m) { return esc(m.name); }).join(', ') + '</div>' : '');
+    else h += '<div class="hc-note" style="margin:0">First visit for this patient.</div>';
+    if (labs.length) h += '<div>Recent results: ' + labs.map(function (l) { return esc(l.testName) + ' — ' + esc((l.resultText || '').slice(0, 60)) + (l.flag && l.flag !== 'normal' ? ' <span class="hc-ab">(' + esc(l.flag) + ')</span>' : ''); }).join('; ') + '</div>';
+    return h + '<div style="margin-top:6px"><button type="button" class="hc-btn o" onclick="openPatientTimeline(\'' + esc(pid) + '\')">Full timeline</button></div></div>';
+  }
+  var _origOpenVisit = W.openPatientVisitModal;
+  W.openPatientVisitModal = function (pid) {
+    _origOpenVisit.apply(this, arguments);
+    try { var old = document.getElementById('hc-vsum'); if (old) old.remove(); var warn = document.getElementById('patient-allergy-warning'); if (warn && currentVisitPatientId === pid) warn.insertAdjacentHTML('afterend', visitSummary(pid)); } catch (e) { /* summary is optional */ }
+  };
+  W.hmisVisitSummary = visitSummary;
+
+  /* ---------- wiring ---------- */
+  document.addEventListener('click', function (e) {
+    var t = e.target; if (!t || !t.closest) return; var b;
+    if ((b = t.closest('[data-rl-cat]'))) { RL.cat = b.getAttribute('data-rl-cat'); rlRender(); }
+    else if ((b = t.closest('[data-rl-go]'))) rlSubmit();
+    else if ((b = t.closest('[data-rl-t]'))) { var id = b.getAttribute('data-rl-t'); if (b.checked) RL.sel[id] = 1; else delete RL.sel[id]; var go = document.querySelector('[data-rl-go]'); var n = Object.keys(RL.sel).length; if (go) { go.disabled = !n; go.textContent = '🧪 Request ' + (n ? n + ' test' + (n > 1 ? 's' : '') : ''); } }
+    else if ((b = t.closest('[data-sr-act]'))) srAct(b.getAttribute('data-sr-act'));
+    else if ((b = t.closest('[data-lc-cat]'))) { LC.cat = b.getAttribute('data-lc-cat'); lcRender(); }
+    else if (t.closest('[data-lc-new]')) { LC.edit = 'new'; lcRender(); }
+    else if ((b = t.closest('[data-lc-edit]'))) { LC.edit = b.getAttribute('data-lc-edit'); lcRender(); }
+    else if ((b = t.closest('[data-lc-toggle]'))) { var tid = b.getAttribute('data-lc-toggle'), cur = ofType('labtest').find(function (x) { return x.id === tid; }); if (cur) { putOverride(tid, { type: 'labtest', active: cur.active === false }); audit('Lab catalogue changed', cur.name, cur.active === false ? 'enabled' : 'disabled'); lcRender(); } }
+    else if (t.closest('[data-lc-save]')) lcSave();
+    else if (t.closest('[data-lc-back]')) { LC.edit = null; lcRender(); }
+    else if ((b = t.closest('[data-ip-tab]'))) { IP.tab = b.getAttribute('data-ip-tab'); ipRender(); }
+    else if (t.closest('[data-ip-pay]')) ipPay('payment');
+    else if (t.closest('[data-ip-refund]')) ipPay('refund');
+    else if ((b = t.closest('[data-ip-rev]'))) ipReverse(b.getAttribute('data-ip-rev'));
+    else if (t.closest('[data-ip-stmt]')) ipStatement();
+    else if ((b = t.closest('[data-ip-discharge]'))) { document.getElementById('hc-ip').classList.remove('open'); openDischargeModal(b.getAttribute('data-ip-discharge')); }
+    else if (t.closest('[data-ip-meal]')) ipMeal();
+    else if (t.closest('[data-ip-diet]')) { var a = adm(IP.id); if (a) { a.diet = val('ip-mdiet'); stampAdm(a); persistAdm(); ipRender(); toast('Diet saved.'); } }
+    else if ((b = t.closest('[data-ip-void]'))) { var c = patientCharges.find(function (x) { return x.id === b.getAttribute('data-ip-void'); }); if (c && c.status === 'unpaid') { c.status = 'void'; c.updatedAt = Date.now(); c.voidBy = who(); audit('Meal cancelled', c.patientName || '', c.name); var a2 = adm(IP.id); if (a2) stampAdm(a2); persistAdm(); ipRender(); } }
+    else if (t.closest('[data-ip-mar]')) ipMar();
+    else if (t.closest('[data-ip-charge]')) ipCharge();
+    else if (t.closest('[data-ip-move]')) ipMove();
+    else if (t.closest('[data-ip-leave]')) ipLeave();
+    else if (t.closest('[data-su-save]')) ipSetup();
+    else if ((b = t.closest('[data-ip-open]'))) ipOpen(b.getAttribute('data-ip-open'));
+  });
+  document.addEventListener('input', function (e) { if (e.target && e.target.id === 'hc-rl-q') { RL.q = e.target.value; rlRender(); } if (e.target && e.target.closest && e.target.closest('#hc-sr')) srFlags(); });
+  document.addEventListener('change', function (e) { if (e.target && e.target.closest && e.target.closest('#hc-sr')) srFlags(); });
+  function inject() {
+    var vi = document.getElementById('lab-test-name-input');
+    if (vi && !document.getElementById('hc-rl-visit')) { var b1 = document.createElement('button'); b1.type = 'button'; b1.id = 'hc-rl-visit'; b1.className = 'settings-small-btn'; b1.textContent = '📚 Browse / Request Lab'; b1.onclick = function () { rlOpen('visit'); }; vi.parentNode.appendChild(b1); }
+    var ti = document.getElementById('lab-tab-test-name-input');
+    if (ti && !document.getElementById('hc-rl-tab')) { var wrap = ti.closest('div[style*="flex"]'); var b2 = document.createElement('button'); b2.type = 'button'; b2.id = 'hc-rl-tab'; b2.className = 'btn-main'; b2.textContent = '📚 Request Lab'; b2.onclick = function () { rlOpen('tab'); }; var b3 = document.createElement('button'); b3.type = 'button'; b3.id = 'hc-lc-btn'; b3.className = 'settings-small-btn'; b3.textContent = '⚙️ Lab Catalogue'; b3.onclick = lcOpen; if (wrap) { wrap.appendChild(b2); wrap.appendChild(b3); } }
+    var dl = document.getElementById('hc-lab-dl');
+    if (!dl) { dl = document.createElement('datalist'); dl.id = 'hc-lab-dl'; document.body.appendChild(dl); ['lab-test-name-input', 'lab-tab-test-name-input'].forEach(function (i) { var x = document.getElementById(i); if (x) x.setAttribute('list', 'hc-lab-dl'); }); }
+    dl.innerHTML = ofType('labtest').filter(function (t) { return t.active !== false; }).map(function (t) { return '<option value="' + esc(t.name) + '">'; }).join('');
+  }
+  W.hmisInject = inject;
+  W.hmisOpenRequestLab = rlOpen; W.hmisOpenLabCatalogue = lcOpen;
+  function boot() { inject(); setTimeout(inject, 600); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

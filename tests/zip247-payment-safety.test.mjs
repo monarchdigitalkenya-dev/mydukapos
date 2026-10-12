@@ -58,10 +58,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---------------------------------------------------------------- 1. the encryption box
 test('secret box: round trip; bound to its shop; wrong / missing key is "unreadable"; old key still opens (and asks for a re-seal)', async () => {
   const env = { PAYMENT_SECRETS_KEY: 'k'.repeat(32) };
-  const raw = await box.sealRecord(env, 'gateway|A', { paystackSecretKey: 'sk_live_TOPSECRET' });
+  const raw = await box.sealRecord(env, 'gateway|A', { paywaveApiKey: 'sk_live_TOPSECRET' });
   assert.ok(!raw.includes('TOPSECRET') && raw.includes('_enc'), 'sealed in KV');
   const ok = await box.openRecord(env, 'gateway|A', raw);
-  assert.equal(ok.ok, true); assert.equal(ok.value.paystackSecretKey, 'sk_live_TOPSECRET'); assert.equal(ok.encrypted, true);
+  assert.equal(ok.ok, true); assert.equal(ok.value.paywaveApiKey, 'sk_live_TOPSECRET'); assert.equal(ok.encrypted, true);
   assert.equal((await box.openRecord(env, 'gateway|B', raw)).ok, false, 'another shop\'s record cannot be pasted over this one');
   assert.equal((await box.openRecord({}, 'gateway|A', raw)).ok, false, 'no key set: unreadable (never silently empty)');
   assert.equal((await box.openRecord({ PAYMENT_SECRETS_KEY: 'z'.repeat(32) }, 'gateway|A', raw)).ok, false, 'wrong key');
@@ -93,17 +93,17 @@ test('gateway-config: no proof / wrong password / a cashier\'s PIN / a removed m
   r = await call(gw, 'POST', s, { body, proof: adminProof('shoppass') });
   assert.equal(r.status, 200, JSON.stringify(r.d)); assert.equal(r.d.confirmedBy, 'Admin');
   assert.equal((await gwl.loadGatewayConfig(s.env, s.id)).mpesaConsumerKey, 'ck1', 'first-time setup applies at once');
-  r = await call(gw, 'POST', s, { body: { paystackSecretKey: 'sk_test_x' }, proof: mgrProof('m1', '7777') });
+  r = await call(gw, 'POST', s, { body: { paywaveApiKey: 'sk_test_x' }, proof: mgrProof('m1', '7777') });
   assert.equal(r.status, 200); assert.equal(r.d.confirmedBy, 'Manager Mary');
   // a proof that is a sealed hash (what a device keeps) is not accepted as the password
-  r = await call(gw, 'POST', s, { body: { paystackSecretKey: 'sk_test_y' }, proof: hdr({ a: true, p: sealed('shoppass') }) });
+  r = await call(gw, 'POST', s, { body: { paywaveApiKey: 'sk_test_y' }, proof: hdr({ a: true, p: sealed('shoppass') }) });
   assert.equal(r.status, 401, 'the sealed hash is not the password');
   // DELETE (reset) needs it too
-  r = await call(gw, 'DELETE', s, { body: { which: 'paystack' } });
+  r = await call(gw, 'DELETE', s, { body: { which: 'paywave' } });
   assert.equal(r.status, 401);
-  r = await call(gw, 'DELETE', s, { body: { which: 'paystack' }, proof: adminProof('shoppass') });
+  r = await call(gw, 'DELETE', s, { body: { which: 'paywave' }, proof: adminProof('shoppass') });
   assert.equal(r.status, 200);
-  assert.equal((await gwl.loadGatewayConfig(s.env, s.id)).paystackSecretKey, '');
+  assert.equal((await gwl.loadGatewayConfig(s.env, s.id)).paywaveApiKey, '');
 });
 
 test('a shop with NO password has nothing to prove with: it passes (and is still alerted); a guessing brake stops password guessing', async () => {
@@ -171,9 +171,9 @@ test('with PAYMENT_SECRETS_KEY set, payment keys are never plain in KV; a plain 
 
   // an old plain record (written before this release) is sealed the first time it is read
   const old = await shop({ env: { PAYMENT_SECRETS_KEY: KEY } });
-  await old.kv.put('gateway-config:v1:' + old.id, JSON.stringify({ paystackSecretKey: 'sk_live_PLAINONE' }));
+  await old.kv.put('gateway-config:v1:' + old.id, JSON.stringify({ paywaveApiKey: 'sk_live_PLAINONE' }));
   await old.kv.put('sms-config:' + old.id, JSON.stringify({ provider: 'africastalking', atUsername: 'u', atApiKey: 'AT_PLAIN_KEY' }));
-  assert.equal((await gwl.loadGatewayConfig(old.env, old.id)).paystackSecretKey, 'sk_live_PLAINONE');
+  assert.equal((await gwl.loadGatewayConfig(old.env, old.id)).paywaveApiKey, 'sk_live_PLAINONE');
   assert.ok(!(await old.kv.get('gateway-config:v1:' + old.id)).includes('PLAINONE'), 'sealed after the first read');
   const smsStore = await imp('_sms-store.js');
   assert.equal((await smsStore.readSmsConfig(old.env, old.id)).atApiKey, 'AT_PLAIN_KEY');
@@ -184,7 +184,7 @@ test('with PAYMENT_SECRETS_KEY set, payment keys are never plain in KV; a plain 
   const before = await s.kv.get('gateway-config:v1:' + s.id);
   assert.equal((await gwl.loadGatewayConfig(lost.env, s.id)).secretsUnreadable, true);
   assert.equal((await call(gw, 'GET', lost)).status, 503);
-  const w = await call(gw, 'POST', lost, { body: { paystackSecretKey: 'sk_x' }, proof: P });
+  const w = await call(gw, 'POST', lost, { body: { paywaveApiKey: 'sk_x' }, proof: P });
   assert.equal(w.status, 503); assert.equal(w.d.code, 'secrets_unreadable');
   assert.equal(await s.kv.get('gateway-config:v1:' + s.id), before, 'never overwritten');
   // key rotation: the new key + the old one still opens, and the record is re-sealed with the new one on the next read
@@ -360,7 +360,7 @@ test('owner-secrets: status reports sealed / plain / grace without ever returnin
   const kv = makeKV();
   const env = { mydukapos_kv: kv, LICENSE_CACHE_MS: '0' };
   const a = await lic.createClient(env, 'permanent', 'Alpha', 'shop'), b = await lic.createClient(env, 'permanent', 'Beta', 'shop');
-  await kv.put('gateway-config:v1:' + a.id, JSON.stringify({ paystackSecretKey: 'sk_live_ALPHA' }));
+  await kv.put('gateway-config:v1:' + a.id, JSON.stringify({ paywaveApiKey: 'sk_live_ALPHA' }));
   await kv.put('sms-config:' + b.id, JSON.stringify({ atUsername: 'u', atApiKey: 'BETA_KEY' }));
   const os = await imp('owner-secrets.js');
   const oa = await imp('_owner-auth.js');
@@ -447,7 +447,7 @@ function loadSw(file, { fetchImpl, cachesImpl, clients = [], href }) {
   const handlers = {};
   const code = fs.readFileSync(path.join(ROOT, file), 'utf8').replace('NAVIGATION_NETWORK_TIMEOUT_MS = 3500', 'NAVIGATION_NETWORK_TIMEOUT_MS = 40');
   const self = { addEventListener: (t, fn) => { handlers[t] = fn; }, location: { origin: 'https://x.test', href }, skipWaiting() {}, clients: { claim() {}, matchAll: async () => clients } };
-  vm.runInNewContext(code, { self, caches: cachesImpl, fetch: fetchImpl, Request, Response, URL, AbortController, setTimeout, clearTimeout, crypto: globalThis.crypto, console: { warn() {}, log() {} } });
+  vm.runInNewContext(code, { self, caches: cachesImpl, fetch: fetchImpl, Request, Response, URL, AbortController, setTimeout, clearTimeout, crypto: globalThis.crypto, TextDecoder, TextEncoder, console: { warn() {}, log() {} } });
   return handlers;
 }
 const memCaches = (initial = {}) => {
@@ -494,7 +494,7 @@ for (const file of SW_FILES) {
     assert.equal(await (await (await caches.open(`${id}-shell-abc`)).match('./index.html')).text(), 'THE APP v2');
     await (await nav(h, `https://x.test${root}?c=1`, kept)).text(); await Promise.all(kept.splice(0));
     assert.equal(told.length, 1, 'the same release again: silent');
-    assert.match(fs.readFileSync(path.join(ROOT, file), 'utf8'), /SW_VERSION = 'zip-248'/);
+    assert.match(fs.readFileSync(path.join(ROOT, file), 'utf8'), /SW_VERSION = 'zip-263'/);
   });
 }
 
@@ -601,3 +601,20 @@ for (const app of APPS) {
     if (app !== 'water/index.html') assert.match(s, /zip 247: a dish \/ service that already exists is not an error either/);
   });
 }
+
+// zip 263: per-request rewriting by Cloudflare (random e-mail obfuscation key) is not an update, and the window that was just shown the NEW network copy is not told "newer version"
+test('sw.js zip 263: a random e-mail-obfuscation key is not an update; a freshly shown window is not told, another open window is', async () => {
+  const mail = (key) => `<p><a href="/cdn-cgi/l/email-protection#${key}" class="__cf_email__" data-cfemail="${key}">[email protected]</a></p>`;
+  const stores = { 'minimartpos-shell-pointer': { 'https://sw-internal/current-cache-name': new Response('minimartpos-shell-abc') }, 'minimartpos-shell-abc': { './index.html': new Response('APP v1' + mail('aa11')) } };
+  const caches = memCaches(stores);
+  let page = 'APP v1' + mail('bb22');
+  const told = [];
+  const clients = [{ id: 'new', url: 'https://x.test/', postMessage: (m) => told.push(['new', m.type]) }, { id: 'old', url: 'https://x.test/', postMessage: (m) => told.push(['old', m.type]) }];
+  const h = loadSw('sw.js', { cachesImpl: caches, clients, href: 'https://x.test/sw.js', fetchImpl: async () => new Response(page, { status: 200 }) });
+  const kept = [];
+  const open = async () => { let p; h.fetch({ request: { method: 'GET', url: 'https://x.test/', mode: 'navigate' }, resultingClientId: 'new', respondWith: (x) => { p = x; }, waitUntil: (x) => kept.push(x) }); await (await p).text(); await Promise.all(kept.splice(0)); };
+  await open(); page = 'APP v1' + mail('cc33'); await open();
+  assert.deepEqual(told, [], 'same app, different obfuscation key: silent');
+  page = 'APP v2' + mail('dd44'); await open();
+  assert.deepEqual(told, [['old', 'app-update-ready']], 'a real release: only the window that was not just shown the new copy is told');
+});

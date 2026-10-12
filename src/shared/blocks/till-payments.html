@@ -1,0 +1,295 @@
+<!-- TILL PAYMENTS (zip 259) -------------------------------------------------------------------------------------------------------
+     Sales Counter -> "Till Payments": money customers paid straight to the shop's M-PESA Till (Safaricom calls our server - nothing here polls
+     Safaricom). Newest first, each with the name Safaricom supplied, the amount, the M-PESA code, the payment time and Unlinked / Applied.
+     A cashier picks a payment and matches it to a BILL (the instalment goes through the app's own bill-settlement code, so the balance, status,
+     receipt, tokens and e-TIMS behave exactly as when the cashier types the code) or to a SALE that was recorded as M-PESA without a proven
+     receipt. The server links a code ONCE (functions/api/till-payments.js); the bill / sale carries the code back (tillCode) so it traces both ways.
+     Nothing is applied until the cashier confirms the summary. Every function is guarded: a page lacking something does nothing. -->
+<style id="tp-css">
+.tp-open{display:inline-flex;align-items:center;gap:5px;padding:0 10px;border:0;border-radius:8px;background:#27ae60;color:#fff;font-weight:700;font-size:13px;cursor:pointer;min-height:36px;white-space:nowrap}
+.tp-open[hidden]{display:none}
+.tp-open:focus-visible,.tp-btn:focus-visible,.tp-chip:focus-visible{outline:3px solid #1a73e8;outline-offset:2px}
+.tp-badge{display:inline-block;min-width:20px;padding:1px 7px;border-radius:10px;background:#e74c3c;color:#fff;font-size:12px;font-weight:800;text-align:center}
+.tp-badge[hidden]{display:none}
+#tp-overlay{position:fixed;inset:0;z-index:100000;background:rgba(20,30,40,.55);display:none;align-items:flex-start;justify-content:center;padding:4vh 10px;overflow:auto}
+#tp-overlay.open{display:flex}
+.tp-box{width:100%;max-width:720px;background:var(--card-bg,#fff);color:var(--dark,#2c3e50);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.3);overflow:hidden}
+.tp-head{display:flex;align-items:center;gap:10px;padding:14px 16px;background:linear-gradient(135deg,#1e8449,#27ae60);color:#fff}
+.tp-head h3{margin:0;font-size:18px;flex:1;color:#fff}
+.tp-x{border:0;background:rgba(255,255,255,.2);color:#fff;width:36px;height:36px;border-radius:8px;font-size:18px;cursor:pointer}
+.tp-body{padding:14px 16px 18px}
+.tp-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.tp-chip{border:1px solid #cfd8dc;background:#fff;color:#34495e;border-radius:18px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;min-height:36px}
+.tp-chip.on{background:#27ae60;border-color:#27ae60;color:#fff}
+.tp-hint{font-size:12.5px;color:#7f8c8d;margin:0 0 10px;line-height:1.4}
+.tp-card{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:12px;margin-bottom:8px;border:1px solid var(--light,#e1e5ea);border-radius:10px;background:#fafcfb}
+.tp-card.applied{background:#f4f6f7}
+.tp-main{flex:1;min-width:200px}
+.tp-name{font-weight:700;font-size:15px}
+.tp-amt{font-weight:800;font-size:16px;color:#1e8449;white-space:nowrap}
+.tp-meta{font-size:12.5px;color:#6b7a86;margin-top:2px;word-break:break-word}
+.tp-code{font-family:ui-monospace,Consolas,monospace;font-weight:700;color:#34495e}
+.tp-st{display:inline-block;padding:2px 9px;border-radius:10px;font-size:11.5px;font-weight:800;letter-spacing:.3px}
+.tp-st.u{background:#fdebd0;color:#b9770e}.tp-st.a{background:#d5f5e3;color:#1e8449}
+.tp-btn{border:0;border-radius:8px;padding:9px 14px;font-weight:700;font-size:13px;cursor:pointer;min-height:40px;background:#27ae60;color:#fff}
+.tp-btn.sec{background:#ecf0f1;color:#2c3e50}.tp-btn[disabled]{opacity:.5;cursor:not-allowed}
+.tp-empty{text-align:center;padding:26px 12px;color:#7f8c8d}
+.tp-empty strong{display:block;color:#2c3e50;font-size:16px;margin-bottom:4px}
+.tp-sum{border:2px solid #27ae60;border-radius:12px;padding:12px 14px;margin:10px 0;background:#f0faf4}
+.tp-sum dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:14px}.tp-sum dt{color:#6b7a86}.tp-sum dd{margin:0;font-weight:700;text-align:right}
+.tp-warn{border-left:4px solid #e67e22;background:#fef5e7;padding:8px 10px;border-radius:6px;font-size:13px;margin:8px 0}
+.tp-err{border-left:4px solid #e74c3c;background:#fdedec;padding:8px 10px;border-radius:6px;font-size:13px;margin:8px 0;color:#922b21}
+.tp-find{width:100%;padding:10px 12px;border:1px solid #cfd8dc;border-radius:8px;font-size:15px;box-sizing:border-box;margin:6px 0 10px}
+.tp-cand[disabled]{opacity:.6}
+@media (max-width:520px){.tp-body{padding:12px}.tp-card{padding:10px}.tp-btn{width:100%}}
+</style>
+<script>
+(function () {
+  'use strict';
+  if (window.__tillPay) return;
+  var TP = window.__tillPay = { rows: [], status: 'UNLINKED', more: false, next: 0, loading: false, error: '', sel: null, kind: 'bill', pick: null, busy: false, unlinked: 0 };
+
+  function esc(s) { try { if (typeof escapeHtml === 'function') return escapeHtml(s); } catch (e) { /* below */ } return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function toast(m, bad) { try { if (typeof showToast === 'function') showToast(m, !!bad); } catch (e) { /* cosmetic */ } }
+  function money(n) { return 'KES ' + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function when(ms) { if (!ms) return ''; try { return new Date(ms).toLocaleString('en-KE', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch (e) { return ''; } }
+  function url(p) { try { return typeof apiUrl === 'function' ? apiUrl(p) : p; } catch (e) { return p; } }
+  function hasBills() { try { return typeof bills !== 'undefined' && Array.isArray(bills) && typeof getOpenBillsList === 'function' && typeof confirmBillSettleImpl === 'function'; } catch (e) { return false; } }
+  function hasSales() { try { return typeof salesLog !== 'undefined' && Array.isArray(salesLog); } catch (e) { return false; } }
+  function r2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+
+  // ---------------------------------------------------------------- server calls
+  function call(method, path, body) {
+    return fetch(url(path), { method: method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
+      .then(function (res) { return res.json().catch(function () { return {}; }).then(function (d) { d.__status = res.status; return d; }); });
+  }
+  function load(more) {
+    if (TP.loading) return Promise.resolve();
+    TP.loading = true; TP.error = ''; render();
+    var q = '/api/till-payments?limit=25' + (TP.status !== 'ALL' ? '&status=' + TP.status : '') + (more && TP.next ? '&before=' + TP.next : '');
+    return call('GET', q).then(function (d) {
+      if (d.__status >= 400 || !Array.isArray(d.payments)) throw new Error(d.error || 'Could not load');
+      TP.rows = more ? TP.rows.concat(d.payments) : d.payments; TP.more = !!d.more; TP.next = d.next || 0;
+      if (TP.status === 'UNLINKED' && !more) { TP.unlinked = TP.rows.length; badge(); }
+    }).catch(function (e) { TP.error = (typeof netErrText === 'function' ? netErrText('Could not load Till Payments') : 'Could not load Till Payments. Check your connection and try again.'); })
+      .then(function () { TP.loading = false; render(); });
+  }
+  function badge() { var b = document.getElementById('tp-badge'); if (b) { b.hidden = !TP.unlinked; b.textContent = TP.unlinked >= 25 ? '25+' : String(TP.unlinked); } }
+
+  // ---------------------------------------------------------------- the button on the Sales Counter
+  // zip 262: a compact "Till" button beside Hold sale in the checkout header (no banner). Shown ONLY when Safaricom Daraja is saved for this
+  // business — read from the existing /api/gateway-config booleans (never a secret); any error leaves it hidden.
+  var cfgBusy = false, CFG_KEY = 'pos_till_daraja', CFG_TTL = 3600000;   // cached on this device for an hour: one extra config read per hour at most, not per page load
+  function cfgRead() { try { var o = JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); return o && typeof o.at === 'number' ? o : null; } catch (e) { return null; } }
+  function applyDaraja(on) { var b = document.getElementById('tp-open-btn'); if (b) b.hidden = !on; TP.daraja = !!on; }
+  function refreshDaraja(force) {
+    var c = cfgRead();
+    if (!force && c && Date.now() - c.at < CFG_TTL) { applyDaraja(c.on); return; }
+    if (cfgBusy) return;
+    cfgBusy = true;
+    fetch(typeof apiUrl === 'function' ? apiUrl('/api/gateway-config') : '/api/gateway-config').then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { var on = !!(j && j.hasDarajaConfig); try { localStorage.setItem(CFG_KEY, JSON.stringify({ at: Date.now(), on: on })); } catch (e) { /* not cached */ } applyDaraja(on); if (on) load(false); })
+      .catch(function () { applyDaraja(false); }).then(function () { cfgBusy = false; });
+  }
+  TP.refreshDaraja = refreshDaraja; TP.applyDaraja = applyDaraja;
+  /* opening Settings > Payment Gateway (or saving there) re-reads the config, so the button follows a change at once */
+  try { var _cpgs = window.checkPaymentGatewayStatus; if (typeof _cpgs === 'function' && !_cpgs.__tp) { var w = function () { var r = _cpgs.apply(this, arguments); Promise.resolve(r).then(function () { refreshDaraja(true); }, function () {}); return r; }; w.__tp = 1; window.checkPaymentGatewayStatus = w; } } catch (e) { /* cosmetic */ }
+  function ensureBar() {
+    if (document.getElementById('tp-open-btn')) return;
+    var h3 = document.querySelector('.pos-checkout > h3') || document.querySelector('#active-checkout-cart-panel > h3') || document.querySelector('#cart-and-payment-panel > h3');
+    if (!h3) return;
+    var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'tp-open'; btn.id = 'tp-open-btn'; btn.hidden = true;
+    btn.setAttribute('aria-haspopup', 'dialog'); btn.title = 'Till Payments';
+    btn.innerHTML = '📲 Till <span class="tp-badge" id="tp-badge" hidden aria-label="unlinked payments"></span>';
+    var hold = document.getElementById('held-sale-bar'), cnt = document.getElementById('pos-ck-count');
+    h3.insertBefore(btn, (hold && hold.parentNode === h3 ? hold.nextSibling : cnt) || null);
+    btn.addEventListener('click', open);
+  }
+
+  // ---------------------------------------------------------------- the dialog
+  function shell() {
+    var o = document.getElementById('tp-overlay'); if (o) return o;
+    o = document.createElement('div'); o.id = 'tp-overlay'; o.setAttribute('role', 'dialog'); o.setAttribute('aria-modal', 'true'); o.setAttribute('aria-labelledby', 'tp-title');
+    o.innerHTML = '<div class="tp-box"><div class="tp-head"><h3 id="tp-title">Till Payments</h3><button type="button" class="tp-x" id="tp-close" aria-label="Close">✕</button></div><div class="tp-body" id="tp-body"></div></div>';
+    document.body.appendChild(o);
+    o.addEventListener('click', function (e) { if (e.target === o) close(); });
+    document.getElementById('tp-close').addEventListener('click', close);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && o.classList.contains('open')) close(); });
+    return o;
+  }
+  function open() { shell().classList.add('open'); TP.sel = null; TP.pick = null; load(false); setTimeout(function () { var c = document.getElementById('tp-close'); if (c) c.focus(); }, 0); }
+  function close() { var o = document.getElementById('tp-overlay'); if (o) o.classList.remove('open'); TP.sel = null; var b = document.getElementById('tp-open-btn'); if (b) b.focus(); }
+
+  function card(p) {
+    var applied = p.status === 'APPLIED';
+    var trace = applied ? '<div class="tp-meta">' + traceText(p) + '</div>' : '';
+    var act = applied ? (p.targetType === 'bill' || p.targetType === 'sale' ? '<button type="button" class="tp-btn sec" data-view="' + esc(p.code) + '">View ' + esc(p.targetType) + '</button>' : '')
+      : '<button type="button" class="tp-btn" data-match="' + esc(p.code) + '">Match…</button>';
+    return '<div class="tp-card' + (applied ? ' applied' : '') + '"><div class="tp-main"><div class="tp-name">' + esc(p.name || 'Name not supplied') + ' <span class="tp-st ' + (applied ? 'a' : 'u') + '">' + (applied ? 'APPLIED' : 'UNLINKED') + '</span></div>' +
+      '<div class="tp-meta"><span class="tp-code">' + esc(p.code) + '</span> · ' + esc(when(p.paidAt)) + (p.ref ? ' · Ref: ' + esc(p.ref) : '') + (p.phoneHint ? ' · ' + esc(p.phoneHint) : '') + '</div>' + trace + '</div>' +
+      '<div class="tp-amt">' + money(p.amount) + '</div>' + act + '</div>';
+  }
+  function traceText(p) {
+    var t = p.targetType === 'bill' ? 'Bill' : p.targetType === 'sale' ? 'Sale' : 'Marked as matched';
+    return 'Applied to ' + esc(t) + (p.targetLabel ? ' ' + esc(p.targetLabel) : p.targetId ? ' ' + esc(p.targetId) : '') + (p.appliedBy ? ' · by ' + esc(p.appliedBy) : '') + (p.appliedAt ? ' · ' + esc(when(p.appliedAt)) : '');
+  }
+
+  function render() {
+    var body = document.getElementById('tp-body'); if (!body) return;
+    if (TP.sel) { renderMatch(body); return; }
+    var chips = ['UNLINKED', 'APPLIED', 'ALL'].map(function (s) { return '<button type="button" class="tp-chip' + (TP.status === s ? ' on' : '') + '" data-st="' + s + '" aria-pressed="' + (TP.status === s) + '">' + ({ UNLINKED: 'Unlinked', APPLIED: 'Applied', ALL: 'All' })[s] + '</button>'; }).join('');
+    var h = '<p class="tp-hint">Payments customers made directly to your Till, newest first. Link each one to the bill or sale it paid for; a payment can be linked only once.</p><div class="tp-tools">' + chips + '<button type="button" class="tp-chip" id="tp-refresh">↻ Refresh</button></div>';
+    if (TP.notice) h += '<div class="tp-err" role="alert">' + esc(TP.notice) + ' Nothing was changed on this till.</div>';
+    if (TP.error) h += '<div class="tp-err" role="alert">' + esc(TP.error) + '</div>';
+    if (TP.loading && !TP.rows.length) h += '<p class="tp-empty">Loading…</p>';
+    else if (!TP.rows.length && !TP.error) h += '<div class="tp-empty"><strong>' + (TP.status === 'APPLIED' ? 'No linked payments yet' : 'No Till payments waiting') + '</strong>Payments appear here as soon as a customer pays your Till. If you expect some, check Settings → Payment Gateway → <em>Register Till URLs</em>.</div>';
+    else h += TP.rows.map(card).join('');
+    if (TP.more) h += '<div style="text-align:center;margin-top:8px"><button type="button" class="tp-btn sec" id="tp-more"' + (TP.loading ? ' disabled' : '') + '>Load more</button></div>';
+    body.innerHTML = h;
+  }
+
+  // ---------------------------------------------------------------- matching
+  function words(s) { return String(s || '').toLowerCase().split(/[^a-z]+/).filter(function (w) { return w.length > 2; }); }
+  function nameScore(a, b) { var wa = words(a), wb = words(b); return wa.filter(function (w) { return wb.indexOf(w) >= 0; }).length; }
+  function billCandidates(p) {
+    if (!hasBills()) return [];
+    var out = [];
+    getOpenBillsList(false).forEach(function (b) {
+      if (b.kind !== 'sale' || !(b.amount > 0.005)) return;
+      var score = 0; if (Math.abs(b.amount - p.amount) < 0.01) score += 4; score += nameScore(p.name, b.customerLabel) * 2; if (p.ref && (String(b.id).indexOf(p.ref) >= 0 || String(b.customerLabel).toLowerCase().indexOf(String(p.ref).toLowerCase()) >= 0)) score += 2;
+      out.push({ type: 'bill', id: b.id, label: b.customerLabel, sub: (b.detailLabel || '').slice(0, 90), when: b.date, total: b.total, paid: b.amountPaid, due: b.amount, score: score, over: p.amount > b.amount + 0.01, exact: Math.abs(b.amount - p.amount) < 0.01, phone: b.phone });
+    });
+    return out;
+  }
+  function saleCandidates(p) {
+    if (!hasSales()) return [];
+    var out = [];
+    for (var i = salesLog.length - 1; i >= 0 && out.length < 80; i--) {
+      var s = salesLog[i]; if (!s || s.voided || s.billId || !(Number(s.mpesaAmount) > 0)) continue;
+      if (s.mpesaCheck && s.mpesaCheck.status === 'verified') continue;
+      if (s.tillCode) continue;
+      var amt = Number(s.mpesaAmount), score = 0; if (Math.abs(amt - p.amount) <= 0.5) score += 4; score += nameScore(p.name, s.customerName) * 2; if (s.mpesaReceiptNumber && String(s.mpesaReceiptNumber).toUpperCase() === p.code) score += 5;
+      out.push({ type: 'sale', id: s.id, label: (s.refNumber || s.id) + (s.customerName ? ' · ' + s.customerName : ''), sub: (s.items || []).map(function (l) { return l.name + ' ×' + l.qty; }).join(', ').slice(0, 90), when: Date.parse(s.timestamp) || 0, total: amt, paid: 0, due: amt, score: score, over: Math.abs(amt - p.amount) > 0.5, exact: Math.abs(amt - p.amount) <= 0.5, typed: s.mpesaReceiptNumber || '' });
+    }
+    return out;
+  }
+  function renderMatch(body) {
+    var p = TP.sel;
+    var tabs = '<div class="tp-tools" role="tablist">' + (hasBills() ? '<button type="button" role="tab" class="tp-chip' + (TP.kind === 'bill' ? ' on' : '') + '" data-kind="bill">Bills</button>' : '') + (hasSales() ? '<button type="button" role="tab" class="tp-chip' + (TP.kind === 'sale' ? ' on' : '') + '" data-kind="sale">M-Pesa sales without a receipt</button>' : '') + '</div>';
+    var h = '<button type="button" class="tp-btn sec" id="tp-back">← Back to payments</button>' + '<div class="tp-card" style="margin-top:10px"><div class="tp-main"><div class="tp-name">' + esc(p.name || 'Name not supplied') + '</div><div class="tp-meta"><span class="tp-code">' + esc(p.code) + '</span> · ' + esc(when(p.paidAt)) + '</div></div><div class="tp-amt">' + money(p.amount) + '</div></div>';
+    if (TP.pick) { body.innerHTML = h + confirmHtml(p, TP.pick); return; }
+    var q = (document.getElementById('tp-find') || {}).value || '';
+    var list = (TP.kind === 'bill' ? billCandidates(p) : saleCandidates(p));
+    if (q) { var ql = q.toLowerCase(); list = list.filter(function (c) { return (c.label + ' ' + c.sub + ' ' + (c.phone || '') + ' ' + c.due).toLowerCase().indexOf(ql) >= 0; }); }
+    list.sort(function (a, b) { return (b.score - a.score) || ((b.when || 0) - (a.when || 0)); });
+    var rows = list.slice(0, 40).map(function (c, i) {
+      return '<div class="tp-card"><div class="tp-main"><div class="tp-name">' + esc(c.label) + (c.exact ? ' <span class="tp-st a">AMOUNT MATCHES</span>' : '') + '</div><div class="tp-meta">' + esc(c.sub) + '</div><div class="tp-meta">' + esc(when(c.when)) + (c.type === 'bill' ? ' · Total ' + money(c.total) + ' · Paid ' + money(c.paid) : '') + '</div></div><div class="tp-amt">' + (c.type === 'bill' ? 'Owes ' : '') + money(c.due) + '</div><button type="button" class="tp-btn tp-cand" data-pick="' + i + '"' + (c.over ? ' disabled title="' + (c.type === 'bill' ? 'The payment is more than this balance' : 'The amount differs from this sale') + '"' : '') + '>' + (c.over ? (c.type === 'bill' ? 'More than owed' : 'Amount differs') : 'Select') + '</button></div>';
+    }).join('');
+    TP._list = list.slice(0, 40);
+    body.innerHTML = h + tabs + '<input type="search" class="tp-find" id="tp-find" placeholder="Search by name, phone or amount" aria-label="Search" value="' + esc(q) + '">' + (rows || '<div class="tp-empty"><strong>' + (TP.kind === 'bill' ? 'No open bills' : 'No M-Pesa sales waiting for a receipt') + '</strong>Nothing here can take this payment.</div>');
+    var f = document.getElementById('tp-find'); if (f && q) { f.focus(); f.setSelectionRange(q.length, q.length); }
+  }
+  function confirmHtml(p, c) {
+    var after = r2(c.due - p.amount), nm = p.name && c.label && c.type === 'bill' && !nameScore(p.name, c.label);
+    var h = '<div class="tp-sum" role="group" aria-label="Confirm match"><dl>' +
+      '<dt>Payment</dt><dd>' + money(p.amount) + ' · ' + esc(p.code) + '</dd><dt>Paid by</dt><dd>' + esc(p.name || 'Name not supplied') + '</dd>' +
+      '<dt>Apply to</dt><dd>' + (c.type === 'bill' ? 'Bill — ' : 'Sale — ') + esc(c.label) + '</dd>' +
+      (c.type === 'bill' ? '<dt>Balance now</dt><dd>' + money(c.due) + '</dd><dt>Balance after</dt><dd>' + money(Math.max(0, after)) + '</dd><dt>Bill becomes</dt><dd>' + (after <= 0.01 ? 'Fully paid' : 'Partly paid') + '</dd>' : '<dt>Sale M-Pesa amount</dt><dd>' + money(c.due) + '</dd><dt>Sale receipt</dt><dd>' + esc(p.code) + ' (verified)</dd>') + '</dl></div>';
+    if (nm) h += '<div class="tp-warn">The name on this payment (' + esc(p.name) + ') does not look like the bill’s customer. Check it is the right bill before applying.</div>';
+    if (c.type === 'sale' && c.typed && String(c.typed).toUpperCase() !== p.code) h += '<div class="tp-warn">This sale has another M-Pesa code typed in (' + esc(c.typed) + '). Applying will replace it with ' + esc(p.code) + '.</div>';
+    h += '<div id="tp-msg"></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="tp-btn" id="tp-apply"' + (TP.busy ? ' disabled' : '') + '>Apply payment</button><button type="button" class="tp-btn sec" id="tp-unpick">Choose another</button></div>';
+    return h;
+  }
+  function say(msg) { var m = document.getElementById('tp-msg'); if (m) m.innerHTML = '<div class="tp-err" role="alert">' + esc(msg) + '</div>'; }
+
+  // ---------------------------------------------------------------- applying
+  function localHas(code) {
+    try {
+      if (hasSales() && salesLog.some(function (s) { return s && !s.voided && s.tillCode === code; })) return true;
+      if (typeof bills !== 'undefined' && bills.some(function (b) { return (b.paymentHistory || []).some(function (x) { return x && x.tillCode === code; }); })) return true;
+    } catch (e) { /* next */ }
+    return false;
+  }
+  function applyBillLocal(p, c) {
+    var bill = bills.find(function (b) { return String(b.id) === String(c.id); });
+    if (!bill) return 'That bill could not be found - it may have been settled or removed.';
+    var due = r2(Math.max(0, billTotalOf(bill) - (bill.amountPaid || 0)));
+    if (p.amount > due + 0.01) return 'This payment (' + money(p.amount) + ') is more than the ' + money(due) + ' still owed on the bill.';
+    var before = (bill.paymentHistory || []).length, salesBefore = salesLog.length;
+    try {
+      pendingSettle = { kind: 'sale', id: bill.id };
+      if (typeof setBillSettlePayMethod === 'function') setBillSettlePayMethod('mpesa'); else billSettlePayMethod = 'mpesa';
+      document.getElementById('bill-settle-amount-input').value = String(p.amount);
+      document.getElementById('bill-settle-mpesa-code-input').value = p.code;
+      confirmBillSettleImpl(true);
+    } catch (e) { return 'The bill could not be updated: ' + ((e && e.message) || e); }
+    if ((bill.paymentHistory || []).length === before) { var er = document.getElementById('bill-settle-modal-error'); return (er && er.textContent) || 'The bill was not updated.'; }
+    var last = bill.paymentHistory[bill.paymentHistory.length - 1]; last.tillCode = p.code; last.source = 'till';
+    for (var i = salesLog.length - 1; i >= salesBefore; i--) { if (salesLog[i] && salesLog[i].billId === bill.id) { salesLog[i].tillCode = p.code; salesLog[i].updatedAt = Date.now(); break; } }
+    bill.updatedAt = Date.now();
+    try { safeSetItem('pos_bills', JSON.stringify(bills)); safeSetItem('pos_sales_log', JSON.stringify(salesLog)); } catch (e) { /* next save */ }
+    try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll sends it */ }
+    return '';
+  }
+  function applySaleLocal(p, c) {
+    var s = salesLog.find(function (x) { return x && String(x.id) === String(c.id); });
+    if (!s || s.voided) return 'That sale could not be found.';
+    if (Math.abs(Number(s.mpesaAmount) - p.amount) > 0.5) return 'The sale’s M-Pesa amount (' + money(s.mpesaAmount) + ') differs from this payment.';
+    s.mpesaReceiptNumber = p.code; s.tillCode = p.code;
+    s.mpesaCheck = { status: 'verified', at: Date.now(), tries: ((s.mpesaCheck && s.mpesaCheck.tries) || 0), paid: p.amount, source: 'till' };
+    s.updatedAt = Date.now();
+    try { safeSetItem((window.__LOG_KEYS && window.__LOG_KEYS.salesLog) || 'pos_sales_log', JSON.stringify(salesLog)); } catch (e) { /* next save */ }
+    try { if (typeof queuePush === 'function') queuePush(); } catch (e) { /* the poll sends it */ }
+    return '';
+  }
+  function who() { try { return typeof activeServerName === 'function' ? activeServerName() : ''; } catch (e) { return ''; } }
+  function doApply() {
+    var p = TP.sel, c = TP.pick; if (!p || !c || TP.busy) return;
+    TP.busy = true; var btn = document.getElementById('tp-apply'); if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
+    var label = c.type === 'bill' ? c.label : (c.label || c.id);
+    var fail = function (m) { TP.busy = false; render(); say(m); };
+    call('POST', '/api/till-payments', { action: 'apply', code: p.code, targetType: c.type, targetId: String(c.id), label: String(label).slice(0, 80), by: who() }).then(function (d) {
+      if (d.__status === 409) { TP.busy = false; TP.sel = null; TP.pick = null; TP.notice = d.error || 'This payment was already applied.'; return load(false); }
+      if (!d.ok) return fail(d.error || 'The server did not accept this - nothing was changed. Check your connection and try again.');
+      var skip = d.repeated && localHas(p.code);            // already on this device from an earlier attempt: do not record it twice
+      var err = skip ? '' : (c.type === 'bill' ? applyBillLocal(p, c) : applySaleLocal(p, c));
+      if (err) {
+        return call('POST', '/api/till-payments', { action: 'release', code: p.code, targetType: c.type, targetId: String(c.id) }).then(function () { fail(err + ' The payment is still unlinked.'); }, function () { fail(err); });
+      }
+      TP.busy = false; TP.sel = null; TP.pick = null; TP.status = 'UNLINKED';
+      toast('Payment ' + p.code + ' applied to ' + (c.type === 'bill' ? 'the bill' : 'the sale') + '.');
+      return load(false);
+    }).catch(function () { fail('Could not reach the server - nothing was changed. Connect and try again.'); });
+  }
+
+  // ---------------------------------------------------------------- events
+  document.addEventListener('click', function (e) {
+    var t = e.target; if (!t || !t.closest) return;
+    var ov = t.closest('#tp-overlay'); if (!ov) return;
+    var b; TP.notice = (t.closest('#tp-apply') ? TP.notice : '');
+    if ((b = t.closest('[data-st]'))) { TP.status = b.getAttribute('data-st'); TP.rows = []; TP.next = 0; load(false); }
+    else if (t.closest('#tp-refresh')) load(false);
+    else if (t.closest('#tp-more')) load(true);
+    else if ((b = t.closest('[data-match]'))) { var code = b.getAttribute('data-match'); TP.sel = TP.rows.filter(function (r) { return r.code === code; })[0] || null; TP.pick = null; TP.kind = hasBills() ? 'bill' : 'sale'; render(); }
+    else if ((b = t.closest('[data-view]'))) { viewTarget(b.getAttribute('data-view')); }
+    else if (t.closest('#tp-back')) { TP.sel = null; TP.pick = null; render(); }
+    else if ((b = t.closest('[data-kind]'))) { TP.kind = b.getAttribute('data-kind'); render(); }
+    else if ((b = t.closest('[data-pick]'))) { TP.pick = (TP._list || [])[+b.getAttribute('data-pick')] || null; render(); }
+    else if (t.closest('#tp-unpick')) { TP.pick = null; render(); }
+    else if (t.closest('#tp-apply')) doApply();
+  });
+  document.addEventListener('input', function (e) { if (e.target && e.target.id === 'tp-find') { render(); } });
+  function viewTarget(code) {
+    var p = TP.rows.filter(function (r) { return r.code === code; })[0]; if (!p) return;
+    try {
+      if (p.targetType === 'sale' && hasSales() && typeof renderReceipt === 'function') { var s = salesLog.find(function (x) { return String(x.id) === String(p.targetId); }); if (s) { close(); renderReceipt(s); return; } }
+      if (p.targetType === 'bill') { close(); var t = document.querySelector('[data-tab="bills-tab"]'); if (t) t.click(); return; }
+    } catch (e) { /* below */ }
+    toast('That record is not on this device.', true);
+  }
+  TP.open = open; TP.close = close; TP.load = load; TP._applyBillLocal = applyBillLocal; TP._applySaleLocal = applySaleLocal;
+
+  function boot() { ensureBar(); setTimeout(ensureBar, 1500); setTimeout(function () { ensureBar(); refreshDaraja(false); }, 6000); setInterval(function () { ensureBar(); refreshDaraja(false); }, 60000); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>

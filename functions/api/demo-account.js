@@ -12,9 +12,8 @@
 //   - The Owner Console can list every registered demo account as a lead
 //     (owner-list) and manually reset one back to unused (owner-reset).
 //
-// This does NOT replace or remove public-demo.js — that endpoint still
-// exists for any legacy/anonymous entry point. New product-page demo
-// panels should call THIS endpoint instead.
+// zip 262: public-demo.js is retired (410) and 'generate-demo' is gone: the website uses shared live demos (shared-demos.js). 'register' still
+// creates the account (and, for the in-app sign-up only, its trial shop).
 //
 // Storage (all in the same mydukapos_kv namespace as _license.js):
 //   demo-account:<lowercased email>   -> account record (JSON)
@@ -202,7 +201,9 @@ export async function onRequestPost(context) {
     let expiresAt = null;
     const product = body.product;
     const businessName = String(body.businessName || '').trim().slice(0, 60);   // zip 185: same 60-character cap as public-demo.js
-    if (product && businessName) {
+    // zip 262: the public website no longer makes a shop for a visitor - it uses the shared live demos. Only the in-app sign-up (channel 'app')
+    // still provisions its trial shop together with the account, because that flow IS the account creation.
+    if (product && businessName && body.channel !== 'website') {
       const validProducts = listProducts().map((p) => p.id);
       if (!validProducts.includes(product)) {
         return jsonResponse({ error: 'Unknown product.' }, 400);
@@ -342,46 +343,8 @@ export async function onRequestPost(context) {
   }
 
   if (action === 'generate-demo') {
-    const email = await emailFromToken(env, body.token);
-    if (!email) return jsonResponse({ error: 'Session expired — please sign in again.' }, 401);
-    const account = await getAccount(env, email);
-    if (!account) return jsonResponse({ error: 'Account not found.' }, 404);
-    if (verificationRequired(env) && !isVerified(account)) return jsonResponse({ error: 'Please verify your email or WhatsApp number first.', code: 'verification_required' }, 403);
-    if (account.demoUsed) {
-      return jsonResponse({ error: 'Your one free demo has already been used. Contact us if you need it reset.' }, 403);
-    }
-    const product = body.product;
-    const businessName = String(body.businessName || '').trim().slice(0, 60);   // zip 185: 60-character cap, as public-demo.js
-    const validProducts = listProducts().map((p) => p.id);
-    if (!validProducts.includes(product)) return jsonResponse({ error: 'Unknown product.' }, 400);
-    if (!businessName) return jsonResponse({ error: 'Enter your business name.' }, 400);
-
-    const record = await createClient(env, 'demo', businessName, product, {
-      durationMs: await getDemoDurationMs(env),
-      phone: account.phone,
-      clientName: account.fullName,
-      email: realEmailOf(account),
-      svcType: body.svcType,          // Services POS business type (optional passthrough)
-    });
-    await ensureShopCallbackKeys(env, record.id);         // zip 185: new shop = signed payment-callback URLs from the start
-    account.demoUsed = true;
-    account.demoClientId = record.id;
-    account.demoStatus = 'active';
-    account.product = product;
-    account.branchName = businessName;
-    account.generatedAt = Date.now();
-    account.expiresAt = record.expiresAt;
-    await saveAccount(env, account);
-    // NOTE: unlike the combined register+demo path above, this action is
-    // reached from an already-open dashboard session — there's no
-    // plaintext password in this request to seed the link's pos-sync
-    // record with (see seedInitialState() there for why that matters).
-    // Until this account's password is re-verified somewhere in this
-    // flow, a link generated here still needs its own device-side Sign Up
-    // the first time it's opened, same as a link with no account behind
-    // it at all.
-    const origin = new URL(request.url).origin;
-    return jsonResponse({ link: clientLink(env, record, origin), expiresAt: record.expiresAt });
+    // zip 262: retired. Visitors use the shared live demos (/api/shared-demos); nothing is created per visitor any more.
+    return jsonResponse({ error: 'Demos are now shared and open to everyone - there is nothing to generate. Visit the website and press "Try Live Demo".', code: 'demo_generation_retired' }, 410);
   }
 
   if (action === 'delete-demo') {

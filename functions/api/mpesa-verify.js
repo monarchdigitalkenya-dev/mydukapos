@@ -72,5 +72,9 @@ export async function onRequestPost(context) {
     if (used && used !== saleId) return reply({ status: 'duplicate', usedBy: used, paid, source });
     if (!used) await kv.put(usedKey, saleId, { expirationTtl: 400 * 24 * 3600 });
   }
+  // zip 259: a till payment verified by a typed code in a sale is LINKED to that sale in the Till Payments list too (so it cannot also be applied to a bill)
+  if (source === 'till' && db && (!owner || owner === saleId)) {
+    try { await db.prepare(`UPDATE till_payments SET status = 'APPLIED', target_type = 'sale', target_id = ?, applied_at = ?, applied_by = 'typed code' WHERE client_id = ? AND code = ? AND status = 'UNLINKED'`).bind(saleId, Date.now(), c, code).run(); } catch (e) { /* table not created yet: nothing to link */ }
+  }
   return reply({ status: 'verified', amount: paid, source, name: rec.customerName || '' });
 }

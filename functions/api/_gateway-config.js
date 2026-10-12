@@ -162,7 +162,7 @@ export async function saveGatewayConfig(env, clientId, updates, opts = {}) {
   if (updates.kcbSharedShortCode !== undefined && merged.kcbSharedShortCode !== !!updates.kcbSharedShortCode) { merged.kcbSharedShortCode = !!updates.kcbSharedShortCode; immediate.add('kcbSharedShortCode'); }
 
   const fields = [
-    'paystackSecretKey',
+    /* zip 262: 'paystackSecretKey' is no longer accepted - Paystack is retired (an old stored key can only be removed, never set) */
     'mpesaEnv',
     'mpesaConsumerKey',
     'mpesaConsumerSecret',
@@ -269,16 +269,15 @@ export function hasCoopConfig(cfg) {
 }
 
 // An explicit forcedProvider wins (if that provider is actually configured);
-// otherwise Paystack is preferred if more than one happens to be configured.
+// otherwise the first configured one in the order below. zip 262: Paystack is RETIRED - it is never chosen for a new prompt, even when an old
+// key is still stored (a stored key stays only so old, in-flight Paystack payments can still be looked up; it can be removed with DELETE which:'paystack').
 export function resolveProvider(cfg) {
   const forced = (cfg.forcedProvider || '').trim().toLowerCase();
-  if (forced === 'paystack' && hasPaystackConfig(cfg)) return 'paystack';
   if (forced === 'daraja' && hasDarajaConfig(cfg)) return 'daraja';
   if (forced === 'kcb' && hasKcbConfig(cfg)) return 'kcb';
   if (forced === 'paywave' && hasPaywaveConfig(cfg)) return 'paywave';
   if (forced === 'pesapal' && hasPesapalConfig(cfg)) return 'pesapal';
   if (forced === 'coop' && hasCoopConfig(cfg)) return 'coop';
-  if (hasPaystackConfig(cfg)) return 'paystack';
   if (hasDarajaConfig(cfg)) return 'daraja';
   if (hasKcbConfig(cfg)) return 'kcb';
   if (hasPaywaveConfig(cfg)) return 'paywave';

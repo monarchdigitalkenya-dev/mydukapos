@@ -757,9 +757,7 @@ async function checkPaymentGatewayStatus() {
                 const stkData = await stkRes.json();
                 const cfg = await cfgRes.json();
 
-                if (stkData.provider === 'paystack') {
-                    el.innerHTML = '<p class="settings-msg success">✅ Using Paystack for the M-Pesa STK prompt.</p>';
-                } else if (stkData.provider === 'daraja') {
+                if (stkData.provider === 'daraja') {
                     el.innerHTML = '<p class="settings-msg success">✅ Using Safaricom Daraja directly for the M-Pesa STK prompt.</p>';
                 } else if (stkData.provider === 'kcb') {
                     el.innerHTML = '<p class="settings-msg success">✅ Using KCB Buni for the M-Pesa STK prompt.</p>';
@@ -769,11 +767,9 @@ async function checkPaymentGatewayStatus() {
                     el.innerHTML = '<p class="settings-msg error">⚠️ Not configured yet — fill in one of the options below.</p>';
                 }
 
-                const paystackBadge = document.getElementById('paystack-configured-badge');
                 const darajaBadge = document.getElementById('daraja-configured-badge');
                 const kcbBadge = document.getElementById('kcb-configured-badge');
                 const paywaveBadge = document.getElementById('paywave-configured-badge');
-                if (paystackBadge) paystackBadge.innerText = cfg.hasPaystackKey ? '✅ Saved' : '';
                 if (darajaBadge) darajaBadge.innerText = cfg.hasDarajaConfig ? '✅ Saved' : '';
                 if (kcbBadge) kcbBadge.innerText = cfg.hasKcbConfig ? '✅ Saved' : '';
                 if (paywaveBadge) paywaveBadge.innerText = cfg.hasPaywaveConfig ? '✅ Saved' : '';
@@ -782,12 +778,6 @@ async function checkPaymentGatewayStatus() {
                 // "configured" panel with a Reset button instead — there's nothing to
                 // re-show the saved secret to, so the fields would just sit there empty
                 // and confusing.
-                const paystackFields = document.getElementById('paystack-config-fields');
-                const paystackConfigured = document.getElementById('paystack-configured-panel');
-                if (paystackFields && paystackConfigured) {
-                    paystackFields.style.display = cfg.hasPaystackKey ? 'none' : 'block';
-                    paystackConfigured.style.display = cfg.hasPaystackKey ? 'block' : 'none';
-                }
                 const darajaFields = document.getElementById('daraja-config-fields');
                 const darajaConfigured = document.getElementById('daraja-configured-panel');
                 if (darajaFields && darajaConfigured) {
@@ -807,8 +797,6 @@ async function checkPaymentGatewayStatus() {
                     paywaveConfigured.style.display = cfg.hasPaywaveConfig ? 'block' : 'none';
                 }
 
-                const paystackUrlEl = document.getElementById('gateway-paystack-webhook-url');
-                if (paystackUrlEl) paystackUrlEl.value = cfg.paystackWebhookUrl || '';
                 const callbackUrlEl = document.getElementById('gateway-mpesa-callback-url');
                 if (callbackUrlEl) callbackUrlEl.value = cfg.mpesaCallbackUrl || '';
                 const paywaveUrlEl = document.getElementById('gateway-paywave-webhook-url');
@@ -2678,7 +2666,8 @@ function getCurrentActiveTabId() {
 //@fn getCustomerStatementSales
 function getCustomerStatementSales(customer, preset) {
             const range = customerStatementPeriodRange(preset);
-            let matching = salesLog.filter(s => !s.voided && (s.customerPhone === customer.phone || s.mpesaPhone === customer.phone));
+            const want = normalizeKenyanPhone(customer.phone);   // zip 258: 0712.. and +254712.. are one customer (registration already treats them so; === made such sales vanish from the profile)
+            let matching = salesLog.filter(s => !s.voided && (s.customerPhone === customer.phone || s.mpesaPhone === customer.phone || (want && ((s.customerPhone && normalizeKenyanPhone(s.customerPhone) === want) || (s.mpesaPhone && normalizeKenyanPhone(s.mpesaPhone) === want)))));
             if (range) {
                 matching = matching.filter(s => {
                     const t = new Date(s.timestamp);
@@ -5555,6 +5544,25 @@ async function pullState() {
             if (window.__pullAgain) { window.__pullAgain = false; setTimeout(() => { try { pullState().catch(() => {}); } catch (e) { /* the poll will */ } }, 0); }
         }
 
+//@fn syncPollTick
+function syncPollTick() {
+            // zip 260: the 7 s timer keeps ticking (a tick is free, it runs on the device) but it only goes to the server when it is needed.
+            //  - live connection healthy (open for 15 s+): the server tells this device the moment something changes, so the poll is only a
+            //    safety net, once per 45 s;
+            //  - connection down / reconnecting / never opened: exactly the old behaviour, a pull every tick;
+            //  - hidden tab: the pull on becoming visible (visibilitychange / focus) already catches up, so only a 5-minute check.
+            // pullState() itself, the push on every edit and the foreground catch-up are untouched.
+            try {
+                const now = Date.now(), since = now - (window.__pullStartedAt || 0);
+                const sock = (typeof syncSocket !== 'undefined') ? syncSocket : null;
+                const live = !!(sock && sock.readyState === 1 && window.__wsOpenedAt && now - window.__wsOpenedAt > 15000);
+                let every = live ? 45000 : 6500;
+                if (typeof document !== 'undefined' && document.visibilityState === 'hidden') every = Math.max(every, 300000);
+                if (since < every) return;
+            } catch (e) { /* any doubt: poll as before */ }
+            pullState();
+        }
+
 //@fn pullStateOnce
 async function pullStateOnce() {
             // navigator.onLine === false is only a hint; ask the server before believing it.
@@ -6919,21 +6927,22 @@ async function renderTillPayments(forceRefresh) {
             if (!el) return;
             el.innerHTML = '<p class="settings-msg">Loading…</p>';
             try {
-                const res = await fetch(apiUrl('/api/till-payments'));
+                const res = await fetch(apiUrl('/api/till-payments?limit=25'));
                 const data = await res.json();
                 const payments = data.payments || [];
                 if (payments.length === 0) {
                     el.innerHTML = '<p class="settings-hint">No direct till payments captured yet.</p>';
                     return;
                 }
+                // zip 259: the full list, with linking to a bill or sale, is on the Sales Counter (Till Payments). This panel stays a quick glance.
                 el.innerHTML = payments.map(p => `
                     <div style="padding:8px 0; border-bottom:1px solid var(--light); display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
                         <div>
-                            <strong>${escapeHtml(p.customerName || 'Unknown')}</strong> — KES ${p.amount.toFixed(2)}
-                            <div style="font-size:12px; color:#7f8c8d;">${escapeHtml(p.phone)} · ${escapeHtml(p.transId)}${p.accountRef ? ' · Ref: ' + escapeHtml(p.accountRef) : ''}</div>
+                            <strong>${escapeHtml(p.name || 'Unknown')}</strong> — KES ${Number(p.amount || 0).toFixed(2)}
+                            <div style="font-size:12px; color:#7f8c8d;">${escapeHtml(p.code)}${p.phoneHint ? ' · ' + escapeHtml(p.phoneHint) : ''}${p.ref ? ' · Ref: ' + escapeHtml(p.ref) : ''}</div>
                         </div>
-                        <button type="button" class="settings-small-btn" style="background:${p.matched ? '#27ae60' : ''}; ${p.matched ? 'color:white;' : ''}" onclick="markTillPaymentMatched('${escapeJsAttr(p.transId)}', ${!p.matched})">${p.matched ? '✅ Matched' : 'Mark as matched'}</button>
-                    </div>`).join('');
+                        <span style="font-size:12px; font-weight:700; color:${p.status === 'APPLIED' ? '#27ae60' : '#b9770e'};">${p.status === 'APPLIED' ? '✅ Applied' : 'Unlinked'}</span>
+                    </div>`).join('') + '<p class="settings-hint" style="margin-top:8px;">Link a payment to a bill or sale from <strong>🛒 Sales Counter → Till Payments</strong>.</p>';
             } catch (e) {
                 el.innerHTML = '<p class="settings-msg error">' + escapeHtml(netErrText('Could not load')) + '</p>';
             }
@@ -7719,33 +7728,6 @@ async function saveGatewayKcbConfig() {
                 msgEl.textContent = 'Saved.';
                 document.getElementById('gateway-kcb-consumer-secret-input').value = '';
                 document.getElementById('gateway-kcb-org-passkey-input').value = '';
-                checkPaymentGatewayStatus();
-            } catch (e) {
-                msgEl.className = 'settings-msg error';
-                msgEl.textContent = 'Could not save — try again.';
-            }
-        }
-
-//@fn saveGatewayPaystackKey
-async function saveGatewayPaystackKey() {
-            const input = document.getElementById('gateway-paystack-key-input');
-            const msgEl = document.getElementById('gateway-paystack-msg');
-            const key = input.value.trim();
-            if (!key) {
-                msgEl.className = 'settings-msg error';
-                msgEl.textContent = 'Enter a key first.';
-                return;
-            }
-            try {
-                const res = await fetch(apiUrl('/api/gateway-config'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ paystackSecretKey: key }),
-                });
-                if (!res.ok) throw new Error('save failed');
-                msgEl.className = 'settings-msg success';
-                msgEl.textContent = 'Saved.';
-                input.value = '';
                 checkPaymentGatewayStatus();
             } catch (e) {
                 msgEl.className = 'settings-msg error';
@@ -18733,3 +18715,281 @@ async function receiptSizeTestPrint() {
                 if (printBtn) printBtn.disabled = false;
             }
         }
+
+//@fn customerLedgerBuild
+// zip 262: ONE derived ledger per customer — used by the on-screen profile, the printed statement, the PDF/share text and the invoice, so they cannot disagree.
+// Nothing is stored: every figure is derived from the authoritative records (bills + their paymentHistory, salesLog, debts + their payments, returns).
+// SIGN CONVENTION (balance = what the customer owes us; + owes, - we owe them / credit): a row's effect = charged - paid - credit, where
+//   charged = purchase / bill / debt amount; paid = money received (negative = money handed back); credit = refund or store credit that reduces what is owed.
+// NO DOUBLE COUNTING: a bill stays in `bills` for life; every instalment is in its paymentHistory AND mirrored as a salesLog sale carrying `billId`. Mirrors
+// (billId / installment, or any sale whose id or receipt no. is a bill's) are skipped as purchases - the bill row + its payment rows are the only account of it.
+function customerLedgerBuild(customer, preset) {
+            const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+            const ms = (x) => { const n = new Date(x).getTime(); return isFinite(n) ? n : 0; };
+            const want = normalizeKenyanPhone(customer.phone);
+            const same = (p) => !!p && (p === customer.phone || (!!want && normalizeKenyanPhone(p) === want));
+            const nameKey = String(customer.name || '').trim().toLowerCase();
+            const BL = Array.isArray(typeof bills !== 'undefined' ? bills : null) ? bills : [];
+            const SL = Array.isArray(typeof salesLog !== 'undefined' ? salesLog : null) ? salesLog : [];
+            const DL = Array.isArray(typeof debts !== 'undefined' ? debts : null) ? debts : [];
+            const RL = Array.isArray(typeof returns !== 'undefined' ? returns : null) ? returns : [];
+            const billIds = new Set(), billRefs = new Set();
+            BL.forEach((b) => { if (b && b.id != null) billIds.add(String(b.id)); if (b && b.refNumber) billRefs.add(String(b.refNumber)); });
+            const rows = [], open = [], notes = []; let seq = 0, skippedMirrors = 0;
+            const add = (o) => { o.seq = seq++; o.charged = r2(o.charged); o.paid = r2(o.paid); o.credit = r2(o.credit); rows.push(o); };
+            const when = (x) => x || new Date(0).toISOString();
+            // ---- bills (linked by phone only; a name match without a phone is reported, never silently assigned)
+            const unlinked = [];
+            BL.forEach((b) => {
+                if (!b || b._deleted) return;
+                const mine = same(b.customerPhone) || same(b.mpesaPhone);
+                if (!mine) { if (!(b.customerPhone || b.mpesaPhone) && nameKey && String(b.customerName || '').trim().toLowerCase() === nameKey) unlinked.push('bill ' + (b.refNumber || b.id)); return; }
+                const total = billTotalOf(b), voided = !!b.voided, ref = b.refNumber || String(b.id);
+                const hist = (Array.isArray(b.paymentHistory) ? b.paymentHistory : []).filter((h) => h && Number(h.amount) > 0);
+                const histSum = r2(hist.reduce((s, h) => s + Number(h.amount), 0));
+                const paidTotal = Math.max(r2(b.amountPaid), histSum), outstanding = r2(Math.max(0, total - paidTotal));
+                const status = voided ? 'Voided' : (outstanding <= 0.005 ? 'Paid' : (paidTotal > 0 ? 'Partially paid' : 'Unpaid'));
+                const desc = (b.items || []).map((l) => l.name + (l.qty != null ? ' x' + l.qty : '')).join(', ') || 'Bill';
+                add({ t: ms(b.timestamp), at: when(b.timestamp), type: 'Bill', ref, desc, charged: voided ? 0 : total, paid: 0, credit: 0, status, billTotal: total });
+                hist.forEach((h) => add({ t: ms(h.timestamp), at: when(h.timestamp), type: 'Payment', ref: h.reference || ('on bill ' + ref), desc: 'Payment on bill ' + ref + (h.method ? ' (' + String(h.method).toUpperCase() + ')' : ''), charged: 0, paid: voided ? 0 : Number(h.amount), credit: 0, status: voided ? 'Voided with bill' : '' }));
+                if (paidTotal > histSum + 0.005) add({ t: ms(b.timestamp), at: when(b.timestamp), type: 'Payment', ref: 'on bill ' + ref, desc: 'Payment on bill ' + ref + ' (earlier record, no detail)', charged: 0, paid: voided ? 0 : r2(paidTotal - histSum), credit: 0, status: voided ? 'Voided with bill' : '' });
+                if (!voided && outstanding > 0.005) open.push({ type: 'Bill', at: when(b.timestamp), ref, desc, original: total, applied: paidTotal, outstanding, due: b.dueDate || '' });
+            });
+            // ---- purchases (completed sales). Mirrors of bill payments are skipped (see above).
+            const mySales = {};
+            SL.forEach((s) => {
+                if (!s || s._deleted || !(same(s.customerPhone) || same(s.mpesaPhone))) return;
+                if (s.billId != null || s.installment || billIds.has(String(s.id)) || (s.refNumber && billRefs.has(String(s.refNumber)))) { skippedMirrors++; return; }
+                const total = r2((s.cashAmount || 0) + (s.mpesaAmount || 0) + (s.cardAmount || 0));
+                if (s.refNumber) mySales[String(s.refNumber)] = s;
+                add({ t: ms(s.timestamp), at: when(s.timestamp), type: 'Purchase', ref: s.refNumber || String(s.id || ''), desc: (s.items || []).map((i) => i.name).join(', ') || 'Sale', charged: s.voided ? 0 : total, paid: s.voided ? 0 : total, credit: 0, status: s.voided ? 'Voided' : 'Paid', billTotal: total });
+            });
+            // ---- debts recorded on the account
+            DL.forEach((d) => {
+                if (!d) return;
+                if (!same(d.phone)) { if (!d.phone && nameKey && String(d.customerName || '').trim().toLowerCase() === nameKey) unlinked.push('debt ' + String(d.id).slice(-6)); return; }
+                const pays = (Array.isArray(d.payments) ? d.payments : []).filter((p) => p && Number(p.amount) > 0);
+                const paid = r2(pays.reduce((s, p) => s + Number(p.amount), 0)), amount = r2(d.amount), outstanding = r2(Math.max(0, amount - paid));
+                const status = outstanding <= 0.005 ? 'Paid' : (paid > 0 ? 'Partially paid' : 'Unpaid'), ref = 'D-' + String(d.id).slice(-6);
+                add({ t: ms(d.createdAt), at: when(d.createdAt), type: 'Debt', ref, desc: d.notes || 'Recorded debt', charged: amount, paid: 0, credit: 0, status, billTotal: amount });
+                pays.forEach((p) => add({ t: ms(p.timestamp), at: when(p.timestamp), type: 'Payment', ref: 'on ' + ref, desc: 'Payment on debt ' + ref + (p.method ? ' (' + String(p.method).toUpperCase() + ')' : ''), charged: 0, paid: Number(p.amount), credit: 0, status: '' }));
+                if (outstanding > 0.005) open.push({ type: 'Debt', at: when(d.createdAt), ref, desc: d.notes || 'Recorded debt', original: amount, applied: paid, outstanding, due: '' });
+            });
+            // ---- refunds and credits from the returns register
+            RL.forEach((r) => {
+                if (!r || r._deleted) return;
+                if (r.type === 'return' && r.refNumber && mySales[String(r.refNumber)] && !mySales[String(r.refNumber)].voided) {
+                    const line = (mySales[String(r.refNumber)].items || []).find((l) => l.code === r.itemCode);
+                    const amt = line ? r2((Number(line.price) || 0) * (Number(r.qty) || 0)) : 0;
+                    add({ t: ms(r.timestamp), at: when(r.timestamp), type: 'Refund', ref: r.refNumber, desc: 'Return: ' + (r.itemName || r.itemCode || 'item') + ' x' + r.qty, charged: 0, paid: -amt, credit: amt, status: line ? 'Refunded' : 'Amount not recorded' });
+                } else if (Number(r.storeCreditIssued) > 0 && same(r.customerPhone)) {
+                    add({ t: ms(r.timestamp), at: when(r.timestamp), type: 'Credit', ref: r.refNumber || String(r.id || ''), desc: 'Store credit issued on exchange', charged: 0, paid: 0, credit: Number(r.storeCreditIssued), status: 'Credit' });
+                }
+            });
+            rows.sort((a, b) => (a.t - b.t) || (a.seq - b.seq));
+            let bal = 0;
+            rows.forEach((x) => { x.delta = r2(x.charged - x.paid - x.credit); bal = r2(bal + x.delta); x.balance = bal; });
+            const range = customerStatementPeriodRange(preset);
+            const inR = range ? rows.filter((x) => x.t >= range.from.getTime() && x.t <= range.to.getTime()) : rows.slice();
+            const opening = inR.length ? r2(inR[0].balance - inR[0].delta) : (range ? (rows.filter((x) => x.t < range.from.getTime()).slice(-1)[0] || { balance: 0 }).balance : 0);
+            const sum = (f) => r2(inR.reduce((s, x) => s + f(x), 0));
+            const T = {
+                charges: sum((x) => x.charged), received: sum((x) => Math.max(0, x.paid)), refundedOut: sum((x) => Math.max(0, -x.paid)), credits: sum((x) => x.credit)
+            };
+            T.purchases = sum((x) => (x.type === 'Purchase' ? x.charged : 0)); T.bills = sum((x) => (x.type === 'Bill' ? x.charged : 0)); T.debts = sum((x) => (x.type === 'Debt' ? x.charged : 0));
+            const closing = inR.length ? inR[inR.length - 1].balance : opening;
+            const outstandingTotal = r2(open.reduce((s, o) => s + o.outstanding, 0));
+            const fullBalance = rows.length ? rows[rows.length - 1].balance : 0;
+            if (unlinked.length) notes.push('Not included (no phone number on the record, so not linked to this customer): ' + unlinked.join(', ') + '.');
+            return { customer, preset: preset || 'full', label: customerStatementPeriodLabel(preset || 'full'), allHistory: !range, rows: inR, opening, closing, totals: T, open: open.sort((a, b) => ms(a.at) - ms(b.at)), outstandingTotal, fullBalance, creditOnAccount: fullBalance < -0.005 ? r2(-fullBalance) : 0, notes, skippedMirrors, reconciles: Math.abs(r2(opening + T.charges - T.received + T.refundedOut - T.credits) - closing) < 0.011 };
+        }
+
+//@fn customerLedgerMoney
+function customerLedgerMoney(n) {
+            const v = Math.round((Number(n) || 0) * 100) / 100;
+            return (v < 0 ? '-' : '') + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        }
+
+//@fn customerLedgerTableHtml
+// The same table on screen and on paper. `compact` only trims the type-specific colouring/padding; the columns and numbers are identical.
+function customerLedgerTableHtml(L, compact) {
+            const m = customerLedgerMoney, esc = escapeHtml;
+            const pad = compact ? '5px 6px' : '6px 8px', fs = compact ? '12px' : '12px';
+            const tag = { Purchase: '#2980b9', Bill: '#e67e22', Payment: '#27ae60', Refund: '#c0392b', Credit: '#8e44ad', Debt: '#d35400' };
+            const head = ['Date', 'Type', 'Ref', 'Description', 'Charged', 'Paid / credit', 'Balance'];
+            const body = L.rows.length === 0 ? '<tr><td colspan="7" style="padding:10px;color:#7f8c8d;">No activity in this period.</td></tr>' : L.rows.map((x) => {
+                const dim = /Voided/.test(x.status) ? 'opacity:.55;text-decoration:line-through;' : '';
+                const paidCol = x.credit ? m(x.credit) + (x.paid < 0 ? ' (refund out)' : '') : (x.paid ? m(x.paid) : '');
+                const dt = new Date(x.at);
+                return '<tr style="page-break-inside:avoid;' + dim + '"><td style="padding:' + pad + ';white-space:nowrap;">' + dt.toLocaleDateString('en-GB') + '<br><span style="color:#7f8c8d;font-size:10px;">' + dt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) + '</span></td>'
+                    + '<td style="padding:' + pad + ';"><b style="color:' + (tag[x.type] || '#2c3e50') + ';">' + x.type + '</b>' + (x.status && x.type !== 'Payment' ? '<br><span style="font-size:10px;color:#566573;">' + esc(x.status) + '</span>' : (x.status ? '<br><span style="font-size:10px;color:#566573;">' + esc(x.status) + '</span>' : '')) + '</td>'
+                    + '<td style="padding:' + pad + ';">' + esc(String(x.ref || '')) + '</td><td style="padding:' + pad + ';">' + esc(x.desc) + '</td>'
+                    + '<td style="padding:' + pad + ';text-align:right;">' + (x.charged ? m(x.charged) : '') + '</td><td style="padding:' + pad + ';text-align:right;">' + paidCol + '</td>'
+                    + '<td style="padding:' + pad + ';text-align:right;font-weight:700;">' + m(x.balance) + '</td></tr>';
+            }).join('');
+            return '<table class="cl-table" style="width:100%;border-collapse:collapse;font-size:' + fs + ';"><thead style="display:table-header-group;"><tr>' + head.map((h, i) => '<th style="padding:' + pad + ';text-align:' + (i >= 4 ? 'right' : 'left') + ';border-bottom:2px solid #2c3e50;background:#f4f6f7;">' + h + '</th>').join('') + '</tr></thead><tbody>' + body + '</tbody></table>';
+        }
+
+//@fn customerLedgerTotalsHtml
+function customerLedgerTotalsHtml(L) {
+            const m = customerLedgerMoney, T = L.totals;
+            const row = (a, b, strong) => '<tr><td style="padding:3px 8px;' + (strong ? 'font-weight:700;border-top:1px solid #2c3e50;' : '') + '">' + a + '</td><td style="padding:3px 8px;text-align:right;' + (strong ? 'font-weight:700;border-top:1px solid #2c3e50;' : '') + '">KES ' + b + '</td></tr>';
+            return '<table style="margin-left:auto;font-size:13px;border-collapse:collapse;min-width:260px;">'
+                + row('Opening balance' + (L.allHistory ? '' : ' (before this period)'), m(L.opening))
+                + row('Purchases', m(T.purchases)) + row('Bills raised', m(T.bills)) + (T.debts ? row('Debts recorded', m(T.debts)) : '')
+                + row('Payments received', '-' + m(T.received)) + (T.refundedOut ? row('Refunds paid out', m(T.refundedOut)) : '') + (T.credits ? row('Refunds / credits', '-' + m(T.credits)) : '')
+                + row(L.closing >= 0 ? 'Closing balance (owed)' : 'Closing balance (credit)', m(L.closing), true) + '</table>'
+                + '<p style="font-size:11px;color:#7f8c8d;margin:6px 0 0;text-align:right;">Balance = what the customer owes. Charges add to it; payments, refunds and credits reduce it. '
+                + (L.allHistory ? 'Covers the customer&rsquo;s full account history.' : 'Totals cover ' + escapeHtml(L.label) + ' only; the opening balance carries what came before.') + '</p>'
+                + L.notes.map((n) => '<p style="font-size:11px;color:#b9770e;margin:4px 0 0;">&#9888; ' + escapeHtml(n) + '</p>').join('');
+        }
+
+//@fn customerLedgerText
+// Plain-text statement / invoice laid out for the paper this till prints on (58 mm = ~32 characters, 80 mm = ~48). The same lines feed the thermal
+// printer / PDF text AND the on-screen preview of a narrow-paper document, so what is seen is what prints. Nothing here is wider than `cols`.
+function customerLedgerText(L, mode, colsIn) {
+            const m = customerLedgerMoney, cols = Math.max(24, Number(colsIn) || getPaperCols()), sep = '-'.repeat(cols), c = L.customer;
+            const wrap = (t, ind) => {
+                const pad = ' '.repeat(ind || 0), out = []; let line = '';
+                String(t == null ? '' : t).split(/\s+/).filter(Boolean).forEach((w0) => {
+                    let w = w0;
+                    while (w.length > cols - pad.length) { if (line) { out.push(pad + line); line = ''; } out.push(pad + w.slice(0, cols - pad.length)); w = w.slice(cols - pad.length); }
+                    if ((line ? line.length + 1 : 0) + w.length > cols - pad.length) { out.push(pad + line); line = w; } else line = line ? line + ' ' + w : w;
+                });
+                if (line) out.push(pad + line);
+                return out;
+            };
+            const mid = (t) => { const w = String(t); return ' '.repeat(Math.max(0, Math.floor((cols - w.length) / 2))) + w; };
+            const row = (l, r) => { l = String(l); r = String(r); if (l.length + r.length + 1 > cols) return wrap(l, 0).concat([' '.repeat(Math.max(0, cols - r.length)) + r]); return [l + ' '.repeat(cols - l.length - r.length) + r]; };
+            const out = [];
+            wrap((businessName || 'Business POS').toUpperCase()).forEach((x) => out.push(mid(x.trim())));
+            (mode === 'invoice' ? ['INVOICE - OUTSTANDING'] : ['CUSTOMER STATEMENT', L.allHistory ? 'All activity' : L.label]).forEach((x) => out.push(mid(x)));
+            out.push(sep);
+            wrap('Customer: ' + (c.name || 'Unnamed Customer')).forEach((x) => out.push(x));
+            out.push('Phone: ' + (c.phone || ''));
+            out.push('Date: ' + new Date().toLocaleDateString('en-GB'));
+            if (mode === 'invoice') out.push('Invoice: INV-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(c.phone || '').replace(/\D/g, '').slice(-4));
+            out.push(sep);
+            if (mode === 'invoice') {
+                if (!L.open.length) out.push('Nothing outstanding.');
+                L.open.forEach((o) => {
+                    wrap(new Date(o.at).toLocaleDateString('en-GB') + ' ' + o.type + ' ' + o.ref).forEach((x) => out.push(x));
+                    wrap(o.desc, 2).forEach((x) => out.push(x));
+                    row('  Original', m(o.original)).forEach((x) => out.push(x));
+                    if (o.applied) row('  Paid/credits', '-' + m(o.applied)).forEach((x) => out.push(x));
+                    row('  Outstanding', m(o.outstanding)).forEach((x) => out.push(x));
+                    out.push('');
+                });
+                out.push(sep);
+                const tl = 'TOTAL OUTSTANDING: KES ' + m(L.outstandingTotal);
+                if (tl.length <= cols) out.push(tl); else { out.push('TOTAL OUTSTANDING'); row('', 'KES ' + m(L.outstandingTotal)).forEach((x) => out.push(x)); }
+                if (L.creditOnAccount) wrap('Credit on account (not deducted): KES ' + m(L.creditOnAccount)).forEach((x) => out.push(x));
+                const pay = receiptPaymentDetailsList();
+                if (pay.length) { out.push(sep); out.push('How to pay:'); pay.forEach((l) => wrap(l).forEach((x) => out.push(x))); }
+                L.notes.forEach((n) => wrap(n).forEach((x) => out.push(x)));
+                out.push(sep); wrap('Unpaid items only. See the Statement for full history.').forEach((x) => out.push(x));
+                return out.join('\n');
+            }
+            row('Opening balance', m(L.opening)).forEach((x) => out.push(x));
+            if (!L.rows.length) out.push('No activity in this period.');
+            L.rows.forEach((x) => {
+                out.push('');
+                wrap(new Date(x.at).toLocaleDateString('en-GB') + ' ' + x.type + ' ' + x.ref + (x.status ? ' [' + x.status + ']' : '')).forEach((l) => out.push(l));
+                wrap(x.desc, 2).forEach((l) => out.push(l));
+                if (x.charged) row('  Charged', m(x.charged)).forEach((l) => out.push(l));
+                if (x.credit) row(x.paid < 0 ? '  Refund' : '  Credit', m(x.credit)).forEach((l) => out.push(l));
+                else if (x.paid) row('  Paid', m(x.paid)).forEach((l) => out.push(l));
+                row('  Balance', m(x.balance)).forEach((l) => out.push(l));
+            });
+            out.push(sep);
+            const T = L.totals;
+            row('Purchases', m(T.purchases)).forEach((x) => out.push(x)); row('Bills raised', m(T.bills)).forEach((x) => out.push(x));
+            if (T.debts) row('Debts recorded', m(T.debts)).forEach((x) => out.push(x));
+            row('Payments received', '-' + m(T.received)).forEach((x) => out.push(x));
+            if (T.refundedOut) row('Refunds paid out', m(T.refundedOut)).forEach((x) => out.push(x));
+            if (T.credits) row('Refunds/credits', '-' + m(T.credits)).forEach((x) => out.push(x));
+            out.push(sep);
+            const cl = 'Closing balance: KES ' + m(L.closing) + (L.closing < 0 ? ' (credit)' : ' owed');
+            if (cl.length <= cols) out.push(cl); else { out.push('Closing balance' + (L.closing < 0 ? ' (credit)' : ' (owed)')); row('', 'KES ' + m(L.closing)).forEach((x) => out.push(x)); }
+            L.notes.forEach((n) => wrap(n).forEach((x) => out.push(x)));
+            wrap('Balance = what the customer owes. Charges add; payments, refunds and credits reduce it.').forEach((x) => out.push(x));
+            return out.join('\n');
+        }
+
+//@fn customerStatementDocHtml
+// Statement or invoice, as the HTML placed in the report modal (the same pipeline Daily Sales / Stock Report print through).
+function customerStatementDocHtml(L, mode) {
+            const esc = escapeHtml, m = customerLedgerMoney, c = L.customer, now = new Date().toLocaleDateString('en-GB');
+            // 58 mm / 80 mm roll printers: a narrow receipt layout (monospace, one entry per block) instead of a wide table - same lines the printer / PDF get.
+            if (receiptPaperMm() <= 90) {
+                const pt = receiptFontPtNow();
+                return '<pre class="cl-thermal" style="font-family:\'Courier New\',monospace;font-size:' + pt + 'pt;line-height:1.25;margin:0;white-space:pre;overflow:hidden;">' + esc(customerLedgerText(L, mode, getPaperCols())) + '</pre>';
+            }
+            const css = '<style>@media print{.cl-table thead{display:table-header-group}.cl-table tr{page-break-inside:avoid}.cl-keep{page-break-inside:avoid}}</style>';
+            const head = '<h2 style="text-align:center;margin-bottom:2px;">' + esc(businessName || 'Business POS') + '</h2>';
+            const who = '<div class="cl-keep" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:10px 0;font-size:13px;"><div><b>Customer:</b> ' + esc(c.name || 'Unnamed Customer') + '<br><b>Phone:</b> ' + esc(c.phone || '') + '</div><div style="text-align:right;"><b>Date:</b> ' + now + '<br>';
+            if (mode === 'invoice') {
+                const no = 'INV-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(c.phone || '').replace(/\D/g, '').slice(-4);
+                const pay = receiptPaymentDetailsList();
+                const lines = L.open.length === 0 ? '<tr><td colspan="7" style="padding:10px;color:#7f8c8d;">Nothing outstanding &mdash; this account is fully settled.</td></tr>' : L.open.map((o) => '<tr style="page-break-inside:avoid;"><td style="padding:6px 8px;"><b>' + o.type + '</b></td><td style="padding:6px 8px;white-space:nowrap;">' + new Date(o.at).toLocaleDateString('en-GB') + '</td><td style="padding:6px 8px;">' + esc(String(o.ref)) + '</td><td style="padding:6px 8px;">' + esc(o.desc) + (o.due ? '<br><span style="font-size:10px;color:#7f8c8d;">Due ' + esc(String(o.due)) + '</span>' : '') + '</td><td style="padding:6px 8px;text-align:right;">' + m(o.original) + '</td><td style="padding:6px 8px;text-align:right;">' + m(o.applied) + '</td><td style="padding:6px 8px;text-align:right;font-weight:700;">' + m(o.outstanding) + '</td></tr>').join('');
+                return css + head + '<h3 style="text-align:center;margin:0;">INVOICE &mdash; OUTSTANDING BALANCE</h3><p style="text-align:center;font-size:11px;color:#7f8c8d;margin:2px 0;">Unpaid items only. For the full history including settled items, use the Statement.</p>'
+                    + who + '<b>Invoice no:</b> ' + no + '</div></div>'
+                    + '<table class="cl-table" style="width:100%;border-collapse:collapse;font-size:12px;"><thead style="display:table-header-group;"><tr>' + ['Type', 'Date', 'Ref', 'Description', 'Original', 'Paid / credits applied', 'Outstanding'].map((h, i) => '<th style="padding:6px 8px;text-align:' + (i >= 4 ? 'right' : 'left') + ';border-bottom:2px solid #2c3e50;background:#f4f6f7;">' + h + '</th>').join('') + '</tr></thead><tbody>' + lines + '</tbody></table>'
+                    + '<p class="cl-keep" style="text-align:right;font-size:16px;font-weight:700;margin:12px 0 4px;">TOTAL OUTSTANDING: KES ' + m(L.outstandingTotal) + '</p>'
+                    + (L.creditOnAccount ? '<p style="text-align:right;font-size:12px;margin:0;">Credit held on account (not deducted above): KES ' + m(L.creditOnAccount) + '</p>' : '')
+                    + (pay.length ? '<div class="cl-keep" style="margin-top:12px;padding:8px 10px;border:1px solid #d5dbdb;border-radius:8px;font-size:12px;"><b>How to pay</b><br>' + pay.map(esc).join('<br>') + '</div>' : '')
+                    + L.notes.map((n) => '<p style="font-size:11px;color:#b9770e;">&#9888; ' + esc(n) + '</p>').join('');
+            }
+            return css + head + '<h3 style="text-align:center;margin:0;">Customer Statement &mdash; ' + esc(L.label) + '</h3><p style="text-align:center;font-size:11px;color:#7f8c8d;margin:2px 0;">' + (L.allHistory ? 'All activity' : esc(L.label)) + ' &middot; a historical record, not a demand for payment (use Generate invoice for that)</p>'
+                + who + '</div></div>' + customerLedgerTableHtml(L, false) + '<div class="cl-keep" style="margin-top:12px;">' + customerLedgerTotalsHtml(L) + '</div>';
+        }
+
+//@fn renderCustomerProfileBody
+function renderCustomerProfileBody() {
+            const customer = customers.find(c => c.id === currentCustomerProfileId);
+            if (!customer) return;
+            const L = customerLedgerBuild(customer, currentCustomerStatementPeriod), m = customerLedgerMoney;
+            const stat = (label, value, color) => `<div><div style="font-size:18px; font-weight:bold;${color ? 'color:' + color + ';' : ''}">${value}</div><div style="font-size:11px; color:#7f8c8d;">${label}</div></div>`;
+            const hasTokens = typeof loyaltyEnabled !== 'undefined' && typeof tokenValueKES !== 'undefined';   // production has no loyalty tokens
+            const tokenLabel = hasTokens ? (loyaltyEnabled ? `${customer.tokens || 0} <span style="font-size:11px; font-weight:normal; color:#7f8c8d;">(KES ${((customer.tokens || 0) * tokenValueKES).toFixed(2)})</span>` : (customer.tokens || 0)) : '';
+            const sumEl = document.getElementById('customer-profile-summary'), oneLine = document.getElementById('customer-profile-purchases');   // AquaPOS has a one-line summary instead of the stat boxes
+            if (!sumEl && oneLine) oneLine.textContent = `Purchases KES ${m(L.totals.purchases)} · Bills raised KES ${m(L.totals.bills + L.totals.debts)} · Payments KES ${m(L.totals.received)} · ${L.closing < 0 ? 'Credit' : 'Owes'} KES ${m(Math.abs(L.closing))}`;
+            if (sumEl) sumEl.innerHTML =
+                stat('Purchases', 'KES ' + m(L.totals.purchases)) + stat('Bills raised', 'KES ' + m(L.totals.bills + L.totals.debts)) + stat('Payments', 'KES ' + m(L.totals.received))
+                + stat(L.closing < 0 ? 'Credit' : 'Owes', 'KES ' + m(Math.abs(L.closing)), L.closing > 0.005 ? '#c0392b' : '#27ae60') + (hasTokens ? stat('Tokens', tokenLabel) : '');
+            const titleEl = document.getElementById('customer-profile-history-title');
+            if (titleEl) titleEl.textContent = L.label + (L.allHistory ? '' : ' · opening balance KES ' + m(L.opening));
+            const historyEl = document.getElementById('customer-profile-history');
+            historyEl.innerHTML = customerLedgerTableHtml(L, true) + `<div style="margin-top:10px;">${customerLedgerTotalsHtml(L)}</div>`;
+        }
+
+//@fn buildCustomerStatementText
+function buildCustomerStatementText() {
+            const customer = customers.find(c => c.id === currentCustomerProfileId);
+            if (!customer) return null;
+            const L = customerLedgerBuild(customer, currentCustomerStatementPeriod);
+            return { customer, sales: L.rows, running: L.closing, periodLabel: L.label, text: customerLedgerText(L, 'statement') };
+        }
+
+//@fn printCustomerStatement
+function printCustomerStatement() {
+            const customer = customers.find(c => c.id === currentCustomerProfileId);
+            if (!customer) return;
+            const L = customerLedgerBuild(customer, currentCustomerStatementPeriod);
+            document.getElementById('sales-report-body').innerHTML = customerStatementDocHtml(L, 'statement');
+            lastReportText = customerLedgerText(L, 'statement', getPaperCols());
+            document.getElementById('sales-report-modal').style.display = 'flex';
+            if (typeof window.triggerAutoPrintReport === "function") window.triggerAutoPrintReport();   // not every till has the auto-print hook
+        }
+
+//@fn printCustomerInvoice
+function printCustomerInvoice() {
+            const customer = customers.find(c => c.id === currentCustomerProfileId);
+            if (!customer) return;
+            const L = customerLedgerBuild(customer, 'full');   // an invoice is always the whole outstanding debt, whatever period the statement is showing
+            document.getElementById('sales-report-body').innerHTML = customerStatementDocHtml(L, 'invoice');
+            lastReportText = customerLedgerText(L, 'invoice', getPaperCols());
+            document.getElementById('sales-report-modal').style.display = 'flex';
+            if (typeof window.triggerAutoPrintReport === "function") window.triggerAutoPrintReport();   // not every till has the auto-print hook
+        }
+

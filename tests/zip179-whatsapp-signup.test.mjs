@@ -68,6 +68,6 @@ test('verification is never forced and its box is hidden by default', async () =
   const tok = (await r.json()).token;
   r = await call({ action: 'dashboard', token: tok }); assert.equal((await r.json()).verifyUi, false);
   r = await call({ action: 'generate-demo', token: tok, product: 'shop', businessName: 'Duka 2' });
-  assert.notEqual((await r.json()).code, 'verification_required');
+  assert.equal(r.status, 410); assert.equal((await r.json()).code, 'demo_generation_retired', 'zip 262: no per-visitor demo is generated any more');
   env.SHOW_VERIFY_UI = '1'; r = await call({ action: 'dashboard', token: tok }); assert.equal((await r.json()).verifyUi, true);
 });

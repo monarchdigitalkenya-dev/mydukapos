@@ -40,7 +40,7 @@
 import { requireOwnerAuth } from './_owner-auth.js';
 import { mirrorGroupIncome, mirrorGroupIncomeClear } from './_owner-db.js';
 import { readState, readStateRaw, writeState, shopMode } from './_state-store.js';
-import { listClientSummaries, getLicense, saveLicense, deleteClient, restoreClient, PRODUCTS, getDemoDurationHours } from './_license.js';
+import { listClientSummaries, getLicense, saveLicense, deleteClient, restoreClient, purgeExpiredTrash, PRODUCTS, getDemoDurationHours } from './_license.js';
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -149,6 +149,14 @@ export async function onRequestPost(context) {
     await context.env.mydukapos_kv.delete(GROUP_INCOME_KEY);
     await mirrorGroupIncomeClear(context.env);               // zip 187
     return jsonResponse({ ok: true, cleared });
+  }
+
+  // zip 263: "Empty trash" (everything in Trash) and "Delete forever" (one link): the real, unrecoverable removal, now instead of waiting 30 days. The phone
+  // number and email the link was signed up with are freed too (see _forget.js), so they are never reported as already existing.
+  if (body.action === 'emptyTrash') return jsonResponse({ purged: await purgeExpiredTrash(context.env, { all: true }) });
+  if (body.action === 'purge') {
+    const n = await purgeExpiredTrash(context.env, { only: String(body.c || '') });
+    return n ? jsonResponse({ purged: n }) : jsonResponse({ error: 'That link is not in Trash.' }, 404);
   }
 
   if (body.action === 'delete') {

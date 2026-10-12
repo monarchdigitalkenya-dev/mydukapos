@@ -77,34 +77,47 @@ export async function onRequestPost(context) {
   // zip 250: the number that RECEIVES the customers' money. For a Till (Buy Goods) shop that is the Till number (the Store / Head Office number is only
   // for the STK prompt's BusinessShortCode + password); for a Paybill it is the Paybill. Registering the Store number would listen on the wrong number.
   const isTill = cfg.mpesaTransactionType === 'CustomerBuyGoodsOnline';
-  const shortCode = (isTill && cfg.mpesaPartyB) ? String(cfg.mpesaPartyB).trim() : String(cfg.mpesaShortcode || '').trim();
+  // zip 263: the Till number and the Shortcode (Store / Head Office / Paybill) can be different numbers, and which one C2B accepts depends on the app's C2B version
+  // and the account. So both are tried, one at a time, preferred one first (Till for a Till shop, Shortcode otherwise), until Safaricom accepts one.
+  const till = String(cfg.mpesaPartyB || '').trim(), code = String(cfg.mpesaShortcode || '').trim();
+  const candidates = [...new Set((isTill ? [till, code] : [code, till]).filter(Boolean))];
+  let shortCode = candidates[0] || '';
 
   try {
     const token = await darajaAccessToken(cfg);
-    const res = await fetch(`${darajaBaseUrl(cfg)}/mpesa/c2b/v1/registerurl`, {
+    // zip 262: "Invalid Access Token [401.003.01]" on RegisterURL while STK Push works means the token is real but this app is not allowed on THAT version of the C2B
+    // API (an app can be subscribed to v1 or v2 only). So when the first version answers 401, the other one is tried once, and the version that worked is reported.
+    const first = String((env && env.DARAJA_C2B_VERSION) || 'v1').toLowerCase() === 'v2' ? 'v2' : 'v1';
+    const post = (ver, sc) => fetch(`${darajaBaseUrl(cfg)}/mpesa/c2b/${ver}/registerurl`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ShortCode: shortCode,
-        ResponseType: 'Completed',
-        ConfirmationURL: confirmationUrl,
-        ValidationURL: validationUrl,
-      }),
+      body: JSON.stringify({ ShortCode: sc, ResponseType: 'Completed', ConfirmationURL: confirmationUrl, ValidationURL: validationUrl }),
     });
-    let data = {};
-    try { data = await res.json(); } catch (e) { /* not JSON (an HTML error page): handled below */ }
-    if (!res.ok || (data.ResponseCode !== undefined && String(data.ResponseCode) !== '0')) {
-      const why = data.errorMessage || data.ResponseDescription || `Safaricom declined the URL registration (HTTP ${res.status}).`;
+    let usedVersion = first, res, data, why = '';
+    for (const sc of candidates.length ? candidates : ['']) {
+      shortCode = sc;
+      usedVersion = first;
+      res = await post(first, sc);
+      if (res.status === 401) { const alt = first === 'v1' ? 'v2' : 'v1'; const r2 = await post(alt, sc); if (r2.status !== 401) { res = r2; usedVersion = alt; } }
+      data = {};
+      try { data = await res.json(); } catch (e) { /* not JSON (an HTML error page): handled below */ }
+      if (res.ok && !(data.ResponseCode !== undefined && String(data.ResponseCode) !== '0')) { why = ''; break; }
+      why = data.errorMessage || data.ResponseDescription || `Safaricom declined the URL registration (HTTP ${res.status}).`;
+      // only a "wrong number" answer moves on to the next number; anything else (already registered, no C2B access, bad URL) is the real answer
+      if (!/invalid (short)?code|shortcode|400\.003\.02/i.test(why + (data.errorCode || ''))) break;
+    }
+    if (why) {
       let hint = '';
       // production lets a shortcode's URLs be registered ONCE; changing them means deleting the old ones first
       if (/duplicate notification/i.test(why)) hint = ' These URLs are already registered for this number. If you changed the address, delete the old URLs in the Daraja portal (My Apps > your app > URL Management / Self Services), then press Register again - or email apisupport@safaricom.co.ke.';
-      else if (/invalid (short)?code|shortcode/i.test(why)) hint = ` The number sent was ${shortCode}: for a Till it must be the Till number (set in the Till number box), for a Paybill the Paybill, and the C2B API must be enabled on your live Daraja app.`;
+      else if (/invalid (short)?code|shortcode/i.test(why)) hint = ` Numbers tried: ${candidates.join(', ') || 'none'} (Till number box and Shortcode). Safaricom refused all of them: the number must be the one that receives the money, and the C2B API must be enabled on your live Daraja app for it.`;
+      else if (res.status === 401 || /invalid access token|401\.003\.01/i.test(why + (data.errorCode || ''))) hint = ' Your keys work for the payment prompt but Safaricom has not switched the C2B (customer-to-business) service on for this app, on either v1 or v2. In the Daraja portal open My Apps, edit this app and make sure the C2B API is ticked; for a live Till also ask Safaricom (apis@safaricom.co.ke, or the Go-Live request) to enable C2B URL registration for the Till number ' + shortCode + ' - it is granted per number, not per key. Nothing in MyDukaPOS can bypass that step.';
       else if (/url/i.test(why)) hint = ' The address must be public https and must not contain the words mpesa / safaricom.';
       throw new Error(`${why}${data.errorCode ? ` [${data.errorCode}]` : ''}${hint}`);
     }
     // The key went to Safaricom server-to-server; the page is shown the URLs without it (zip 143).
     const shown = (u) => u.replace(/&k=[^&]*/, '&k=•••');
-    return jsonResponse({ success: true, shortCode, confirmationUrl: shown(confirmationUrl), validationUrl: shown(validationUrl), message: data.ResponseDescription || 'Registered.' });
+    return jsonResponse({ success: true, shortCode, confirmationUrl: shown(confirmationUrl), validationUrl: shown(validationUrl), message: (data.ResponseDescription || 'Registered.') + (usedVersion !== first ? ' (accepted on C2B ' + usedVersion + ')' : '') + (shortCode !== candidates[0] ? ' (number ' + shortCode + ' accepted after ' + candidates[0] + ' was refused)' : ''), c2bVersion: usedVersion });
   } catch (err) {
     return jsonResponse({ error: err.message || 'Unexpected error contacting Safaricom.' }, 500);
   }

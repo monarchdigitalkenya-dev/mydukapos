@@ -248,6 +248,17 @@ async function slugTaken(env, slug) {
 export const RESERVED_SLUGS = new Set(['www', 'api', 'app', 'apps', 'admin', 'administrator', 'owner', 'crm', 'mail', 'webmail', 'email', 'smtp', 'imap', 'pop', 'pop3', 'ftp', 'ns', 'ns1', 'ns2', 'mx',
   'login', 'signin', 'signup', 'register', 'account', 'accounts', 'dashboard', 'console', 'billing', 'pay', 'payments', 'secure', 'security', 'support', 'help', 'status', 'blog', 'docs', 'cdn',
   'static', 'assets', 'img', 'media', 'staging', 'stage', 'dev', 'beta', 'root', 'autodiscover', 'mydukapos', 'myduka', 'official', 'wildcard', 'router']);
+// zip 263: a buyer types the web address they want. { ok:false, error } when it cannot be used at all; else { ok:true, slug, taken } where slug is the name itself
+// when it is free, and otherwise name-1 (name-2 ... if that is taken too), which is what they are told before they pay.
+export async function chooseSlug(env, wanted) {
+  let base = String(wanted || '').trim().toLowerCase().replace(/^[a-z]+:\/\//, '').split(/[./]/)[0]
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30).replace(/-+$/, '');
+  if (base.length < 3) return { ok: false, error: 'Use at least 3 letters or numbers for your address.' };
+  if (base === 'demo' || base.startsWith('demo-')) return { ok: false, error: 'An address cannot start with "demo-". Pick another.' };
+  let slug = base, n = 1;
+  while (RESERVED_SLUGS.has(slug) || await slugTaken(env, slug)) { slug = `${base}-${n}`; n += 1; }
+  return { ok: true, slug, taken: slug !== base };
+}
 async function pickUniqueSlug(env, label) {
   const wanted = slugify(label);
   let candidate = wanted;
@@ -278,7 +289,7 @@ export async function pickNextBranchSlug(env, mainSlug) {
   return candidate;
 }
 
-async function claimSlug(env, slug, clientId) {
+export async function claimSlug(env, slug, clientId) {
   await env.mydukapos_kv.put(SLUG_PREFIX + slug, clientId);
   rememberSlug(env, slug, clientId);
 }
@@ -381,7 +392,8 @@ export async function updateIndexBusinessName(env, clientId, businessName) {
 export async function createClient(env, type, label, product, extra = {}) {
   const id = randomToken(10);
   const now = Date.now();
-  const slug = await pickUniqueSlug(env, label);
+  // zip 263: a caller may ask for an exact address (chooseSlug, used by Get my own link); it is used only if it is still free, else the usual pick
+  const slug = extra.slug && !RESERVED_SLUGS.has(extra.slug) && !(await slugTaken(env, extra.slug)) ? extra.slug : await pickUniqueSlug(env, label);
   // Every caller gets the owner-configured demo window (default 72h — see
   // getDemoDurationHours above) unless it explicitly passes its own
   // extra.durationMs — nothing currently does, but the override stays
@@ -621,20 +633,20 @@ async function permanentlyDeleteClient(env, clientId, record) {
   await removeIndexSummary(env, clientId);
 }
 
-// Sweeps Trash for anything past its 30-day window and permanently removes it — including freeing up the
-// email it was signed up with. Cheap to call on every Trash-tab load (one index read, and only per-client
-// KV work for entries actually old enough to purge, which should be rare).
-export async function purgeExpiredTrash(env) {
+// Sweeps Trash and permanently removes what is due: by default anything past its 30-day window; { all: true } = everything in Trash ("Empty trash");
+// { only: id } = that one link ("Delete forever"). Also frees the contact details it was signed up with (see _forget.js). Cheap to call on every
+// Trash-tab load (one index read, and only per-client KV work for entries actually purged, which should be rare).
+export async function purgeExpiredTrash(env, opts = {}) {
   const list = await readIndex(env);
   const now = Date.now();
-  const due = list.filter((e) => e.deleted && e.deletedAt && now - e.deletedAt > TRASH_RETENTION_MS);
+  const due = list.filter((e) => e.deleted && (opts.only ? e.id === opts.only : opts.all || (e.deletedAt && now - e.deletedAt > TRASH_RETENTION_MS)));
   for (const entry of due) {
     const record = await getLicense(env, entry.id);
     await permanentlyDeleteClient(env, entry.id, record);
     try {
-      const { removeClientLink } = await import('./account-recovery.js');
-      await removeClientLink(env, entry.id);
-    } catch (e) { /* best effort — a stuck email link is recoverable by hand, unlike lost data */ }
+      const { forgetClientContacts } = await import('./_forget.js');
+      await forgetClientContacts(env, entry.id, record || entry);
+    } catch (e) { /* best effort: a stuck contact link is recoverable by hand, unlike lost data */ }
   }
   return due.length;
 }
@@ -652,6 +664,7 @@ export function evaluateLicense(record) {
   if (record.deleted) return { valid: false, reason: 'deleted', record, now };
   if (record.locked) return { valid: false, reason: 'locked', record, now };
   if (record.type === 'permanent') return { valid: true, reason: 'permanent', record, now };
+  if (record.sharedDemo) return { valid: true, reason: 'shared_demo', record, now, remainingMs: null };      // zip 262: the fixed public demos never expire
   const remainingMs = (record.expiresAt || 0) - now;
   if (remainingMs <= 0) return { valid: false, reason: 'expired', record, now, remainingMs: 0 };
   return { valid: true, reason: 'demo_active', record, now, remainingMs };
@@ -774,10 +787,45 @@ export async function resolveLicense(request, env) {
   return { clientId: r.clientId, record };
 }
 
+// zip 262: the shared public demos are READ-ONLY on the server. Anything that would change a shop's stored state (every method except GET/HEAD/OPTIONS)
+// is refused here for a demo, centrally, unless the endpoint is one that is safe or simulated for demos (a sale push is acknowledged without being
+// stored; an M-Pesa prompt is simulated; client logs / hit counters / lookups carry no shop state).
+const DEMO_WRITE_OK = new Set(['/api/pos-sync', '/api/mpesa-stkpush', '/api/client-log', '/api/hit', '/api/barcode-lookup', '/api/image-proxy', '/api/image-search', '/api/health']);
 export async function requireValidLicense(request, env) {
   const { clientId, record } = await resolveLicense(request, env);
   const result = evaluateLicense(record);
+  if (result.valid && record && record.sharedDemo) {
+    const m = String(request.method || 'GET').toUpperCase();
+    let path = ''; try { path = new URL(request.url).pathname; } catch (e) { /* none */ }
+    if (m !== 'GET' && m !== 'HEAD' && m !== 'OPTIONS' && !DEMO_WRITE_OK.has(path)) return { valid: false, reason: 'demo_readonly', demo: true, record, clientId, now: result.now };
+  }
   return { ...result, clientId };
+}
+
+// zip 262: create (or refresh) one FIXED shared demo shop. Idempotent: the id and the web address never change, the record is only written when it is
+// missing or its details changed, and nothing is ever created per visitor. `spec` = { id, product, slug, label, seedVersion }.
+export async function ensureSharedDemoRecord(env, spec) {
+  const id = String(spec.id);
+  const raw = await env.mydukapos_kv.get(LICENSE_PREFIX + id);
+  let record = raw ? JSON.parse(raw) : null;
+  if (record && record.sharedDemo && record.product === spec.product && record.slug === spec.slug && record.label === spec.label) return { record, created: false };
+  const owner = await env.mydukapos_kv.get(SLUG_PREFIX + spec.slug);
+  if (owner && owner !== id) throw new Error('The address ' + spec.slug + ' already belongs to another shop - rename that shop before the shared demo can use it.');
+  const now = Date.now();
+  record = {
+    ...(record || {}),
+    id, slug: spec.slug, type: 'demo', sharedDemo: true, product: PRODUCTS[spec.product] ? spec.product : DEFAULT_PRODUCT,
+    svcType: spec.product === 'services' ? normalizeSvcType(spec.svcType) : '', label: spec.label,
+    createdAt: (record && record.createdAt) || now, expiresAt: null, locked: false, paymentClaimed: false, paymentClaimedAt: null, confirmedAt: null,
+    branchGroupId: null, isMainBranch: false, branchAllowance: 0, branchAddonClaimed: false, branchAddonClaimedAt: null,
+    clientName: 'Shared public demo', preferredName: '', notes: 'Shared demo - read-only on the server; visitors\' edits stay on their own device.',
+    phone: '', email: '', source: 'shared-demo', agreedAmount: 0, paidAmount: 0, balanceOwed: 0,
+  };
+  await env.mydukapos_kv.put(LICENSE_PREFIX + id, JSON.stringify(record));
+  rememberLicense(env, record);
+  await claimSlug(env, spec.slug, id);
+  await upsertIndexSummary(env, record);
+  return { record, created: true };
 }
 
 

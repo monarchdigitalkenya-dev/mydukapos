@@ -458,6 +458,8 @@ export const MERGE_BY_ID_FIELDS = [
   // Hospital/HMIS clinical records. Previously replaced as whole arrays, so two devices (reception + triage + doctor) could overwrite each
   // other. Now per-record newest-updatedAt-wins; removals (patients, notes, lab requests, appointments, queue entries) are tombstones.
   'patients', 'visits', 'labResults', 'admissions', 'appointments', 'queue', 'patientNotes',
+  // zip 259: lab-catalogue / menu / charge-type / policy overrides and custom records (small; the starter lists live in the app).
+  'hmisConfig',
   // Hospital cashier shifts (open -> closed -> approval / adjustments). Merged per record so two tills' shifts both survive.
   'cashShifts',
   // Refund / approval requests (pending -> approved / rejected / cancelled).

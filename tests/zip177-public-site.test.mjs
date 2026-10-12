@@ -181,3 +181,13 @@ test('analytics: only known public paths are counted per day, nothing personal i
   assert.ok(![...env.mydukapos_kv.data.values()].some((v) => String(v.value).includes('1.1.1.1')), 'no IP stored');
   assert.equal((await hit.onRequestPost({ request: post(APEX + '/api/hit', { action: 'report' }), env })).status, 401);
 });
+
+// zip 263: the account page's links go to the marketing home, and on the apex /index.html is that home (never the Shop POS app that sits at the same file name)
+test('apex /index.html is the marketing home; dashboard.html links to "/" not to a relative index.html', async () => {
+  assert.doesNotMatch(fs.readFileSync(path.join(ROOT, 'public-site/dashboard.html'), 'utf8'), /href="index\.html/);
+  const mw = await load('functions/_middleware.js');
+  const ASSETS = { fetch: async (req) => new Response('<title>' + new URL(req.url).pathname + '</title>', { status: 200 }) };
+  const get = (host, p) => mw.onRequest({ request: R(host + p), env: { ASSETS }, next: async () => new Response('NEXT') });
+  assert.match(await (await get(APEX, '/index.html')).text(), /public-site\/index\.html/);
+  assert.equal(await (await get('https://shop1.mydukapos.store', '/index.html')).text(), 'NEXT', 'a client shop still gets its own app');
+});

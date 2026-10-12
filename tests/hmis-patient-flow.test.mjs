@@ -44,6 +44,12 @@ const finish = (w, entryId, type = 'Discharged home', followUp = '', note = '') 
 const call = (w, station) => J(w, `(hmisCallNext('${station}') || {}).patientId || null`);
 const labResult = (w, testId, value) => {
   w.eval(`openLabResultModal('${testId}')`);
+  const sr = w.document.getElementById('hc-sr');
+  if (sr && sr.classList.contains('open')) {          // zip 259: a catalogue test (e.g. Malaria RDT) opens its structured form
+    const f = sr.querySelector('[data-sr]'); f.value = value;
+    sr.querySelector('[data-sr-act="final"]').click(); sr.classList.remove('open');
+    return;
+  }
   w.document.getElementById('lab-result-value-input').value = value;
   w.eval('confirmLabResult()');
 };

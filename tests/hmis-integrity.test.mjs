@@ -1326,23 +1326,22 @@ test('carry checklist: leaving everything ticked behaves exactly as a normal bil
   b.close();
 });
 
-test('printExternalPrescriptionForRef prints the not-stocked and declined medicines together, with dosage, and refuses when there is nothing to print', async () => {
+test('printExternalPrescriptionForRef (zip 259: one consolidated prescription) lists not-stocked and declined medicines as NA with dosage, and refuses when there is nothing to print', async () => {
   const b = await boot(APP, { storage: {
     pos_patients: JSON.stringify([PATIENT]),
     pos_visits: JSON.stringify([{ ...VISIT, ref: 'V3REF', medications: [{ name: 'Metformin', qty: 30, dosage: '1 tab twice daily', notStocked: true }] }]),
-    pos_patient_charges: JSON.stringify([{ id: 'C9', ref: 'V3REF', patientId: 'PT-1', patientName: 'Jane Mwangi', kind: 'medication', name: 'Ibuprofen', qty: 1, price: 20, status: 'declined', declinedReason: 'out of stock', dosage: '1 tab as needed' }]),
+    pos_patient_charges: JSON.stringify([{ id: 'C9', ref: 'V3REF', patientId: 'PT-1', patientName: 'Jane Mwangi', kind: 'medication', name: 'Ibuprofen', qty: 1, price: 20, status: 'declined', declinedReason: 'out of stock', createdAt: Date.now() }]),
   }, wait: 1200 });
   const { w } = b;
-  w.eval("showToast = function () {}");
-  let opened = null;
-  w.eval("window.open = () => { window.__win = { document: { write(h) { window.__html = h; }, close(){} }, focus(){}, print(){} }; return window.__win; }");
+  w.eval("window.__toasts = []; showToast = function (m) { window.__toasts.push(m); }");
   w.eval("printExternalPrescriptionForRef('V3REF')");
-  const html = w.eval("window.__html");
-  assert.ok(html.includes('Metformin') && html.includes('1 tab twice daily'));
-  assert.ok(html.includes('Ibuprofen') && html.includes('out of stock'));
-  let refused = false;
-  w.eval("window.open = () => { window.__called = true; return window.__win; }; window.__called = false;");
-  w.eval("printExternalPrescriptionForRef('NO-SUCH-REF')");
-  assert.equal(w.eval("window.__called"), false, 'nothing to print -> no window opened');
+  const text = w.document.getElementById('sales-report-body').textContent;
+  assert.ok(text.includes('Metformin') && text.includes('1 tab twice daily'));
+  assert.ok(text.includes('Ibuprofen') && text.includes('out of stock'));
+  assert.equal(w.document.querySelectorAll('#sales-report-body tbody tr').length, 2, 'one document, both rows');
+  assert.ok([...w.document.querySelectorAll('#sales-report-body tbody tr')].every((r) => /NA/.test(r.textContent)));
+  w.eval("document.getElementById('sales-report-body').innerHTML = ''; printExternalPrescriptionForRef('NO-SUCH-REF')");
+  assert.equal(w.document.getElementById('sales-report-body').textContent.trim(), '', 'nothing to print -> nothing shown');
+  assert.ok(w.eval("window.__toasts.length") >= 1);
   b.close();
 });

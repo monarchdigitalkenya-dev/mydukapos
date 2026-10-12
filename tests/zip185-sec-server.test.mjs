@@ -128,17 +128,17 @@ test('3: gateway-config / branches / backups: no change in staff-session "off" m
   const gw = await load('functions/api/gateway-config.js'), br = await load('functions/api/branches.js'), bk = await load('functions/api/backups.js');
   const staff = await load('functions/api/_staff-auth.js');
   const g = (body) => gw.onRequestPost({ request: post('https://x/api/gateway-config?c=C1', body), env }).then((r) => r.status);
-  assert.equal(await g({ paystackSecretKey: 'sk_test_x' }), 200, 'off mode: as before');
-  const del = (h = {}) => gw.onRequestDelete({ request: post('https://x/api/gateway-config?c=C1', { which: 'paystack' }, h), env }).then((r) => r.status);
+  assert.equal(await g({ paywaveApiKey: 'sk_test_x' }), 200, 'off mode: as before');
+  const del = (h = {}) => gw.onRequestDelete({ request: post('https://x/api/gateway-config?c=C1', { which: 'paywave' }, h), env }).then((r) => r.status);
   assert.equal(await del(), 200);
   await staff.writeMode(env, 'C1', 'enforce');
-  assert.equal(await g({ paystackSecretKey: 'sk_test_x' }), 401, 'enforce, no session');
+  assert.equal(await g({ paywaveApiKey: 'sk_test_x' }), 401, 'enforce, no session');
   const cashier = await staff.issueSession(env, 'C1', { id: 's1', name: 'Cashier', perms: ['*'], mgr: false });
   const mgr = await staff.issueSession(env, 'C1', { id: 'admin', name: 'Admin', perms: ['*'], mgr: true });
   const withTok = (t) => ({ 'X-Staff-Token': t.token });
   assert.equal(await del(withTok(cashier)), 403, 'a non-manager cannot erase payment credentials');
   assert.equal(await del(withTok(mgr)), 200);
-  assert.equal(await gw.onRequestPost({ request: post('https://x/api/gateway-config?c=C1', { paystackSecretKey: 'sk' }, withTok(mgr)), env }).then((r) => r.status), 200);
+  assert.equal(await gw.onRequestPost({ request: post('https://x/api/gateway-config?c=C1', { paywaveApiKey: 'sk' }, withTok(mgr)), env }).then((r) => r.status), 200);
   // backups restore
   const rb = (h) => bk.onRequestPost({ request: post('https://x/api/backups?c=C1', { date: '2026-01-01' }, h), env }).then((r) => r.status);
   assert.equal(await rb(withTok(cashier)), 403);

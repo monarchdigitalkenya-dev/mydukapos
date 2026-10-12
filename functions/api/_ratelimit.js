@@ -30,7 +30,12 @@ export const LIMITS = {
   // zip 247: typed Admin password / manager PIN checks when changing payment or SMS credentials, per shop per hour (a guessing brake)
   payProof: (env) => num(env && env.PAY_PROOF_HOURLY_LIMIT, 12),
   // zip 247: payment prompts to ONE phone number (per shop + number), per hour — stops a leaked link being used to pester a customer
+  // zip 262: opening a shared public demo, per caller IP per hour (the open link seeds a demo at most once per fortnight; this only brakes a script)
+  demoOpen: (env) => num(env && env.DEMO_OPEN_HOURLY_LIMIT, 120),
   stkPhone: (env) => num(env && env.STK_PHONE_HOURLY_LIMIT, 6),
+  // zip 263: "Get my own link" requests (each can send a payment prompt), per caller IP per hour
+  buyLink: (env) => num(env && env.BUY_LINK_HOURLY_LIMIT, 12),
+  slugCheck: (env) => num(env && env.SLUG_CHECK_HOURLY_LIMIT, 240),      // typing an address checks it as you go, per caller IP per hour
 };
 
 // -> { ok, used, limit, retryAfter }   `cost` = how many units this request would consume (e.g. recipients).

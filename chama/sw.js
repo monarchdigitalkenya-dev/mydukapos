@@ -27,7 +27,7 @@ const NAVIGATION_NETWORK_TIMEOUT_MS = 3500;
 // zip 145 — BUMP THIS WITH EVERY RELEASE. A service worker only updates when THIS file changes; it had not changed for many releases,
 // so installed apps kept the service worker (and the old cached page) they were installed with. A new version here makes every
 // installed app install this worker, which re-downloads the whole shell (refreshShell) — the stuck phones catch up by themselves.
-const SW_VERSION = 'zip-248';
+const SW_VERSION = 'zip-263';
 
 // zip 247 - "UPDATE AVAILABLE" WHEN NOTHING WAS PUBLISHED. The notice used to be decided by the page's ETag, and (1) a changed ETag with identical bytes
 // (Cloudflare re-labels a compressed copy as weak, another edge answers with another tag) announced an update that did not exist, (2) ANY page opened
@@ -133,16 +133,27 @@ async function currentCache() {
   return caches.open(name || `${APP_ID}-shell-fallback`);
 }
 
+// zip 263 - the fingerprint of the page, WITHOUT the parts Cloudflare may rewrite on every request. Email obfuscation re-encodes any e-mail address in
+// the page with a new random key each time, and the edge can inject beacon / rocket-loader attributes: identical app, different bytes, so every open
+// announced "a newer version" that did not exist. Those pieces are removed before the hash.
+async function pageHash(buf) {
+  let t;
+  try { t = new TextDecoder().decode(buf); } catch (e) { return sha256Hex([buf]); }
+  t = t.replace(/data-cfemail="[0-9a-fA-F]+"/g, '').replace(/\/cdn-cgi\/l\/email-protection#[0-9a-fA-F]+/g, '')
+    .replace(/<script[^>]*(?:cdn-cgi\/(?:scripts|challenge-platform)|beacon\.min\.js)[^>]*>[\s\S]*?<\/script>/g, '').replace(/ data-cf-[a-z-]+="[^"]*"/g, '');
+  return sha256Hex([new TextEncoder().encode(t).buffer]);
+}
+
 // Stores a fresh copy of the page and tells the open app that a newer version is ready - but ONLY when the page's own bytes changed (a fingerprint of
 // the content, never the ETag: a tag can change with identical bytes).
-async function savePageCopy(copyPromise) {
+async function savePageCopy(copyPromise, ctx) {
   const got = await copyPromise;
   if (!got) return;
   try {
     const copy = got.copy;
-    const hash = await sha256Hex([await copy.clone().arrayBuffer()]);
+    const hash = await pageHash(await copy.clone().arrayBuffer());
     const pointer = await caches.open(POINTER_CACHE);
-    const prev = await pointer.match('https://sw-internal/page-hash');
+    const prev = await pointer.match('https://sw-internal/page-hash-2');
     const prevHash = prev ? await prev.text() : null;
     if (prevHash && prevHash === hash) return;                      // the very page already held: nothing to store, nothing to announce
     const cache = await currentCache();
@@ -150,12 +161,13 @@ async function savePageCopy(copyPromise) {
     // new copy differs from the one it was shown. With no fingerprint remembered yet (the first run of this release), the stored copy is compared by content.
     const old = await cache.match('./index.html');
     let differs = !!prevHash;
-    if (!differs && old) { try { differs = (await sha256Hex([await old.clone().arrayBuffer()])) !== hash; } catch (e) { differs = true; } }
+    if (!differs && old) { try { differs = (await pageHash(await old.clone().arrayBuffer())) !== hash; } catch (e) { differs = true; } }
     await cache.put('./index.html', copy);
-    await pointer.put('https://sw-internal/page-hash', new Response(hash));
+    await pointer.put('https://sw-internal/page-hash-2', new Response(hash));
     if (differs) {
       const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      wins.forEach((c) => { if (isAppClientUrl(c.url)) { try { c.postMessage({ type: 'app-update-ready', sw: SW_VERSION }); } catch (e) { /* closed */ } } });
+      // zip 263: the window that was just SHOWN the network copy already has the new version - only the cached-copy window and other open windows are told
+      wins.forEach((c) => { if (isAppClientUrl(c.url) && (!ctx || ctx.servedCache || c.id !== ctx.clientId)) { try { c.postMessage({ type: 'app-update-ready', sw: SW_VERSION }); } catch (e) { /* closed */ } } });
     }
   } catch (e) { /* quota - not fatal */ }
 }
@@ -243,9 +255,10 @@ self.addEventListener('fetch', (event) => {
     event.__pageNetwork = fetch(new Request(req.url, { cache: 'no-cache', credentials: 'same-origin' }));
     // the copy for the cache is cloned FIRST (before the browser starts reading the page), in the very first handler attached
     // zip 247: only THIS app's own page is kept as the app's page (a receipt, QR-order or help page opened under this worker is not)
+    event.__pageCtx = { servedCache: false, clientId: event.resultingClientId || null };
     if (isAppPagePath(url.pathname)) {
       const pageCopy = event.__pageNetwork.then((r) => (r && r.ok ? { copy: r.clone(), headers: r.headers } : null), () => null);
-      event.waitUntil(savePageCopy(pageCopy));                // keeps the worker alive until the new copy is stored
+      event.waitUntil(savePageCopy(pageCopy, event.__pageCtx));                // keeps the worker alive until the new copy is stored
     }
   }
 
@@ -292,6 +305,7 @@ self.addEventListener('fetch', (event) => {
         // clearance cookie and returns to the app); serving the cached app instead meant an installed app could never pass it, and every
         // request to the POS server stayed blocked ("offline" / "server refused") with working internet.
         if (res && res !== 'timeout' && String(res.headers.get('cf-mitigated') || '').toLowerCase() === 'challenge') return res;
+        if (event.__pageCtx) event.__pageCtx.servedCache = true;      // from here the window is shown the cached copy, so a different network copy IS news to it
         const fallback = await cachedPage();
         if (fallback) return fallback;                                 // offline, slow, or an error answer: the cached app
         if (res && res !== 'timeout') return res;                      // an error answer and nothing cached

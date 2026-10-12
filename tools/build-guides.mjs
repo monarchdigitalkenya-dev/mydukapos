@@ -70,7 +70,7 @@ function setup(M) {
       '**⚙️ Settings ▸ General** — business name, logo, phone and address. They print on every receipt.',
       '**Settings ▸ 🧾 Receipt Settings** — header and footer lines, **🔠 Adjust receipt size** (paper 58 mm, 80 mm or custom, and how big the letters are), how many copies, whether to print the reference number and its barcode.',
       '**Settings ▸ 🧾 Tax & Alerts** — VAT rates, and the **low-stock level** (items at or below it are flagged and offered as buttons when you restock).',
-      '**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Paystack, or Safaricom Daraja with your Till/Paybill) so you can send payment prompts to customers.',
+      '**Settings ▸ 💳 Payment Gateway** — connect M-Pesa (Safaricom Daraja with your Till/Paybill, KCB Buni, Paywave Express, Pesapal or Co-op Bank) so you can send payment prompts to customers.',
       '**Settings ▸ 🖨️ Hardware** — connect your receipt printer (see the **Printers & hardware** chapter).',
       `Add your ${M.itemsPlural} (see **${M.addTab}**), then **Settings ▸ 👥 Staff Accounts** to invite your staff.`,
       '**Settings ▸ 🗄️ Backups** — check that backups are on. **Settings ▸ 📥 Data Import** brings in data from another system.',

@@ -93,13 +93,13 @@ export async function onRequest(context) {
 
   // anything that is not "/" and not a public-site path goes straight on (the apex and a client subdomain both) — but a client's own pages are
   // marked noindex on the way out
-  const needsApex = path === '/' || path in APEX_PAGES || path.startsWith('/products/') || path.startsWith('/shop/') || APEX_FILES.test(path);
+  const needsApex = path === '/' || path === '/index.html' || path in APEX_PAGES || path.startsWith('/products/') || path.startsWith('/shop/') || APEX_FILES.test(path);
   if (!needsApex) return noindexIfShop(request, env, await next());
 
   if (!isApexRequest(request, env)) return noindexIfShop(request, env, await next());
 
   // Served as a plain static-asset fetch, not a redirect — the address bar keeps showing the clean apex URL rather than jumping to /public-site/.
-  if (path === '/') return servePublic(env, request, 'index.html');
+  if (path === '/' || path === '/index.html') return servePublic(env, request, 'index.html');   // zip 263: on the apex /index.html is the marketing home, never the Shop POS app (old links and bookmarks land here)
   if (path in APEX_PAGES) return servePublic(env, request, APEX_PAGES[path] + '.html');
   if (path.startsWith('/shop/')) return servePublic(env, request, 'shop.html');            // the storefront's own routes: /shop/p/<item>, /shop/s/<system>
   if (path.startsWith('/products/')) {

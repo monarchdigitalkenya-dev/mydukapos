@@ -27,6 +27,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
+import { DEMO_PASSWORD_HASH, DEMO_PW_ENFORCE_FROM } from './_demo-const.js';
 import { requireValidLicense, updateIndexBusinessName } from './_license.js';
 import { maybeSnapshotBackup } from './_backups.js';
 import { corsHeadersFor } from './_cors.js';
@@ -255,6 +256,9 @@ async function handlePost(context) {
     return jsonResponse({ error: 'This link is not active.', reason: license.reason }, 403, cors);
   }
   const clientId = license.clientId;
+  // zip 262: the shared public demo is read-only on the server - a visitor's edits stay on their own device. Acknowledge so no device ever sees an
+  // error loop, store nothing (no KV / D1 / Durable Object write at all).
+  if (license.record && license.record.sharedDemo) return jsonResponse({ ok: true, demo: true, stored: false, updatedAt: Date.now() }, 200, cors);
   // PAIRED DEVICES ONLY when the shop has switched that on (see _device-auth.js); otherwise no change
   const deviceDenied = await deviceGuard(request, env, clientId, corsHeadersFor(request, env));
   if (deviceDenied) return deviceDenied;
@@ -268,6 +272,11 @@ async function handlePost(context) {
 
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return jsonResponse({ error: 'Request body must be a JSON object.' }, 400, cors);
+  }
+
+  // zip 262: the shared-demo password (0000) can never become the password of a real shop created from now on (see _demo-const.js)
+  if ((body.pwHash === DEMO_PASSWORD_HASH || body.adminPwHash === DEMO_PASSWORD_HASH) && license.record && Number(license.record.createdAt) >= DEMO_PW_ENFORCE_FROM) {
+    return jsonResponse({ error: 'That password is reserved for the public demos. Choose a different one.', code: 'demo_password_reserved' }, 400, cors);
   }
 
   // WHO MADE EACH SALE (zip 141): check each sale's staff signature and stamp what was found (see _staff-auth.js). Never refuses or
