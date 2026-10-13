@@ -17,6 +17,7 @@
 //
 // Requires a KV namespace bound as `mydukapos_kv` on this Pages project.
 
+import { readSettings, enforcementOn, eatDateTime } from './_billing-core.js';
 import { evaluateLicense, resolveLicense, getLicense as getLicenseNoCache, wasPermanentlyDeleted, hostnameFromRequest, subdomainLabel, getRootDomain } from './_license.js';
 
 const CORS_HEADERS = {
@@ -38,10 +39,11 @@ export async function onRequestOptions() {
 
 export async function onRequestGet(context) {
   const { request, env } = context;
-  let clientId, record, result, diag = null;
+  let clientId, record, result, diag = null, billingSettings = null;
   try {
     ({ clientId, record } = await resolveLicense(request, env));          // zip 159: one cached lookup, not three KV reads every 30 s per device
-    result = evaluateLicense(record);
+    billingSettings = record && record.type === 'permanent' && record.billing ? await readSettings(env) : null;     // zip 267: only a shop with a subscription record costs the one cached read
+    result = evaluateLicense(record, { subscriptions: enforcementOn(billingSettings) });
     // zip 245: "not found" is not "deleted". Say 'deleted' only with proof (a tombstone left when a link was permanently removed);
     // a request that names no shop at all is 'no_link'; anything else stays 'not_found' (the app then says it could not confirm the link,
     // never that it was removed).
@@ -81,6 +83,12 @@ export async function onRequestGet(context) {
     product: record ? record.product || 'shop' : '',                // which app this link is for (the native apps check it — zip 148)
     branchGroupId: record ? record.branchGroupId || null : null,
     isMainBranch: record ? !!record.isMainBranch : false,
+    // zip 267: a subscribed shop sees its own paid period, grace and what to do next (Nairobi time). Absent for every shop that predates billing.
+    subscription: result.subscription && result.subscription.billable ? (() => {
+      const sb = result.subscription, b = record.billing || {};
+      return { state: sb.state, blocking: !!sb.blocking && result.reason === 'subscription_suspended', enforcing: enforcementOn(billingSettings), paidThrough: sb.paidThrough, paidThroughLabel: eatDateTime(sb.paidThrough), nextRenewalLabel: eatDateTime(sb.nextRenewalAt), graceEndsAt: sb.graceEndsAt, graceEndsLabel: eatDateTime(sb.graceEndsAt),
+        daysLeft: sb.daysLeft === undefined ? null : sb.daysLeft, price: sb.price, periodDays: sb.periodDays, claimPending: !!sb.claimPending, owner: sb.why === 'owner', followsMain: b.followsMain || '' };
+    })() : null,
     // A payment reminder from the owner that the admin has not dismissed yet (see owner-notice.js).
     notice: record && record.notice && !record.notice.ackAt ? { id: record.notice.id, message: record.notice.message, at: record.notice.at, balance: record.notice.balance || 0 } : null,
   });

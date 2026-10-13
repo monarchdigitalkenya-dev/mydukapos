@@ -1,5 +1,6 @@
 import { MODE_PREFIX, forgetShopMode } from './_state-store.js';
 import { withRetry } from './_retry.js';
+import { subscriptionState, readSettings as readBillingSettings, enforcementOn } from './_billing-core.js';   // zip 267: leaf module (no imports), so no cycle
 import { mirrorClient, mirrorRemove } from './_owner-db.js';   // zip 187: best-effort OWNER_DB read model; KV below stays the source of truth
 // functions/api/_license.js — shared helper, NOT a route.
 //
@@ -344,6 +345,8 @@ function summaryFromRecord(record) {
     // The owner's own income bookkeeping for this link (see owner-lock.js 'recordRevenue') and the last payment reminder sent to its admin.
     revenue: record.revenue || null,
     notice: record.notice ? { at: record.notice.at, ackAt: record.notice.ackAt || null } : null,
+    // zip 267: the small part of a shop's subscription the owner's lists need (absent = the shop predates billing = exempt). The full record stays on the licence.
+    billing: record.billing && record.billing.cohort ? { cohort: record.billing.cohort, paidThrough: record.billing.paidThrough || 0, price: record.billing.price || 0, graceDays: record.billing.graceDays, comped: !!record.billing.comped, exempt: !!record.billing.exempt, suspended: !!record.billing.suspended, claim: !!record.billing.claim } : null,
   };
 }
 
@@ -390,7 +393,11 @@ export async function updateIndexBusinessName(env, clientId, businessName) {
 // transactions) once that becomes a real workload rather than an edge case.
 
 export async function createClient(env, type, label, product, extra = {}) {
-  const id = randomToken(10);
+  // zip 267: a caller may fix the id (only a plain lower-case token). "Get my own link" derives it from the purchase, so two requests finishing the SAME payment at once write the
+  // SAME record instead of two shops (KV has no compare-and-set). A record that already has that id is returned as it is, never overwritten.
+  const fixedId = extra.id && /^[a-z0-9]{8,32}$/.test(String(extra.id)) ? String(extra.id) : '';
+  if (fixedId) { const have = await getLicense(env, fixedId); if (have) return have; }
+  const id = fixedId || randomToken(10);
   const now = Date.now();
   // zip 263: a caller may ask for an exact address (chooseSlug, used by Get my own link); it is used only if it is still free, else the usual pick
   const slug = extra.slug && !RESERVED_SLUGS.has(extra.slug) && !(await slugTaken(env, extra.slug)) ? extra.slug : await pickUniqueSlug(env, label);
@@ -658,12 +665,18 @@ export async function purgeExpiredTrash(env, opts = {}) {
 // Works identically whether given a full record or just its summary shape
 // (both carry type/locked/expiresAt), which is what makes the cheap
 // summary-only listing above safe to reuse for status checks too.
-export function evaluateLicense(record) {
+export function evaluateLicense(record, opts) {
   const now = Date.now();
   if (!record) return { valid: false, reason: 'not_found', now };
   if (record.deleted) return { valid: false, reason: 'deleted', record, now };
   if (record.locked) return { valid: false, reason: 'locked', record, now };
-  if (record.type === 'permanent') return { valid: true, reason: 'permanent', record, now };
+  if (record.type === 'permanent') {
+    // zip 267: a subscribed shop (billing.cohort 'new') whose paid period AND grace have ended is suspended, but only where the caller asked for it (opts.subscriptions =
+    // billing is live and enforcement is on). Every other caller, and every shop without a billing record, behaves exactly as before. Nothing is ever deleted by this.
+    const sub = subscriptionState(record, now);
+    if (opts && opts.subscriptions && sub.blocking) return { valid: false, reason: 'subscription_suspended', record, now, subscription: sub };
+    return { valid: true, reason: 'permanent', record, now, subscription: sub };
+  }
   if (record.sharedDemo) return { valid: true, reason: 'shared_demo', record, now, remainingMs: null };      // zip 262: the fixed public demos never expire
   const remainingMs = (record.expiresAt || 0) - now;
   if (remainingMs <= 0) return { valid: false, reason: 'expired', record, now, remainingMs: 0 };
@@ -793,7 +806,8 @@ export async function resolveLicense(request, env) {
 const DEMO_WRITE_OK = new Set(['/api/pos-sync', '/api/mpesa-stkpush', '/api/client-log', '/api/hit', '/api/barcode-lookup', '/api/image-proxy', '/api/image-search', '/api/health']);
 export async function requireValidLicense(request, env) {
   const { clientId, record } = await resolveLicense(request, env);
-  const result = evaluateLicense(record);
+  const settings = record && record.type === 'permanent' && record.billing ? await readBillingSettings(env) : null;      // zip 267: one cached read (30 s), only for a shop that has a subscription record
+  const result = evaluateLicense(record, { subscriptions: enforcementOn(settings) });
   if (result.valid && record && record.sharedDemo) {
     const m = String(request.method || 'GET').toUpperCase();
     let path = ''; try { path = new URL(request.url).pathname; } catch (e) { /* none */ }

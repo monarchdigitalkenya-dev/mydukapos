@@ -2043,7 +2043,7 @@
         <button id="owner-messages-tab-btn" class="tab-link" data-tab="owner-messages-tab" onclick="guardedSwitchTab(event, &#39;owner-messages-tab&#39;)">📣 Messages</button>
         <button id="owner-offers-tab-btn" class="tab-link" data-tab="owner-offers-tab" onclick="guardedSwitchTab(event, &#39;owner-offers-tab&#39;)">🏷️ Offers</button>
         <button id="owner-catalog-tab-btn" class="tab-link" data-tab="owner-catalog-tab" onclick="guardedSwitchTab(event, &#39;owner-catalog-tab&#39;)">🛍️ Catalogue</button>
-        <button id="prices-tab-btn" class="tab-link" data-tab="prices-tab" onclick="guardedSwitchTab(event, &#39;prices-tab&#39;)">💲 Prices</button>
+        <button id="billing-tab-btn" class="tab-link" data-tab="billing-tab" onclick="guardedSwitchTab(event, &#39;billing-tab&#39;)">💳 Billing</button>
         <button id="owner-apps-tab-btn" class="tab-link" data-tab="owner-apps-tab" onclick="guardedSwitchTab(event, &#39;owner-apps-tab&#39;)">📦 Apps &amp; Versions</button>
         <button id="settings-tab-btn" class="tab-link" data-tab="settings-tab" onclick="guardedSwitchTab(event, &#39;settings-tab&#39;)">⚙️ Settings</button>
         <button type="button" id="tabs-more-btn" class="tab-link tabs-more-btn" style="display:none;" onclick="toggleTabsOverflowMenu(event)">☰ More</button>
@@ -2309,17 +2309,10 @@
             <h4 style="margin:24px 0 4px;">Pricing &amp; Payment</h4>
             <p class="settings-hint" style="margin:0 0 14px;">This is what every demo tells the client to pay, and what the public site advertises.</p>
             <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px;">
-                <div style="flex:1; min-width:180px;">
-                    <label class="label">Price (KES, one-time)</label>
-                    <input type="number" id="website-price-input" min="0" step="1" placeholder="e.g. 3000">
-                </div>
-                <div style="flex:1; min-width:140px;">
-                    <label class="label">Days included</label>
-                    <input type="number" id="website-included-days-input" min="0" step="1" placeholder="e.g. 60">
-                </div>
-                <div style="flex:1; min-width:140px;">
-                    <label class="label">Then per month (KES, 0 = none)</label>
-                    <input type="number" id="website-monthly-fee-input" min="0" step="1" placeholder="e.g. 400">
+                <div style="flex:2; min-width:260px;">
+                    <label class="label">Price and subscription</label>
+                    <p class="settings-hint" style="margin:0;">Set under <b>Billing &#9656; Pricing</b>, so the public site, checkout and receipts always agree. Nothing to edit here.</p>
+                    <input type="hidden" id="website-price-input"><input type="hidden" id="website-included-days-input"><input type="hidden" id="website-monthly-fee-input">
                 </div>
                 <div style="flex:1; min-width:180px;">
                     <label class="label">M-Pesa number to pay</label>
@@ -2687,13 +2680,66 @@
             <div id="ct-body"><p style="color:#95a5a6;">Loading…</p></div>
         </div>
     </div>
-    <div id="prices-tab" class="tab-content">
-        <div class="panel" style="max-width:720px; margin:0 auto;">
-            <h3>💲 Prices</h3>
-            <p class="settings-hint" style="margin:0 0 12px;">What a permanent link costs, per product. This is the price a client pays under <b>Get my own link</b> in a sample shop. Leave a box empty to use the website price (<span id="pr-site">…</span>, set under 🌐 Website). A <b>branch</b> costs the same as its product unless you set a branch price. (The hardware prices on the website are under 🛍️ Catalogue.)</p>
-            <div id="pr-rows"><p class="settings-hint">Loading…</p></div>
-            <p id="pr-msg" role="status" class="settings-hint" style="min-height:20px;"></p>
-            <button type="button" class="btn-main" id="pr-save" onclick="saveProductPrices()" style="width:100%;">Save prices</button>
+<style id="bl-css">
+.bl-wrap{max-width:980px;margin:0 auto}
+.bl-lead{margin:0 0 10px}
+.bl-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 10px;border-bottom:1px solid var(--border-color,#dfe5e8);padding-bottom:8px}
+.bl-tabs button{border:1px solid var(--border-color,#cfd8dc);background:var(--card-bg,#fff);color:inherit;border-radius:8px;padding:8px 13px;font-weight:600;font-size:13.5px;cursor:pointer;min-height:38px}
+.bl-tabs button.on{background:var(--accent,#1f8a70);border-color:var(--accent,#1f8a70);color:#fff}
+.bl-tabs button:focus-visible,.bl-wrap button:focus-visible,.bl-wrap input:focus-visible,.bl-wrap select:focus-visible{outline:3px solid #1a73e8;outline-offset:2px}
+.bl-msg{min-height:20px;margin:0 0 8px}
+.bl-sec{border:1px solid var(--border-color,#dfe5e8);border-radius:10px;padding:12px 14px;margin:0 0 12px}
+.bl-sec h4{margin:0 0 8px;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.bl-badge{display:inline-block;padding:2px 9px;border-radius:10px;font-size:11.5px;font-weight:700;background:#ecf0f1;color:#2c3e50}
+.bl-badge.rec{background:#d6eaf8;color:#1b4f72}
+.bl-badge.ok{background:#d5f5e3;color:#1e8449}.bl-badge.warn{background:#fdebd0;color:#b9770e}.bl-badge.bad{background:#fadbd8;color:#922b21}.bl-badge.mute{background:#ecf0f1;color:#5d6d7e}
+.bl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px 14px}
+.bl-f label{display:block;font-weight:600;font-size:13px;margin-bottom:3px}
+.bl-f input,.bl-f select{width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid var(--border-color,#cfd8dc);border-radius:8px;font-size:15px;font-variant-numeric:tabular-nums}
+.bl-f small{display:block;color:#6b7a86;font-size:12px;margin-top:2px}
+.bl-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.bl-prev{background:#f4f9f7;border:2px solid #1f8a70;border-radius:12px;padding:12px 14px;margin:0 0 12px}
+.bl-prev dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:4px 14px;font-size:14px}.bl-prev dd{margin:0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+.bl-t{width:100%;border-collapse:collapse;font-size:13.5px}
+.bl-t th,.bl-t td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--border-color,#e5e9ec);vertical-align:top}
+.bl-t th{font-size:12px;color:#6b7a86;font-weight:700}
+.bl-t td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.bl-scroll{overflow-x:auto}
+.bl-kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px 14px;margin:0 0 10px}
+.bl-kv div b{display:block;font-size:12px;color:#6b7a86;font-weight:700}
+.bl-kv div span{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
+.bl-errs{border-left:4px solid #e74c3c;background:#fdedec;padding:8px 10px;border-radius:6px;margin:8px 0;font-size:13.5px}
+.bl-effect{border-left:4px solid #1f8a70;background:#eef8f4;padding:8px 10px;border-radius:6px;margin:8px 0;font-size:13.5px}
+.bl-effect ul,.bl-errs ul{margin:4px 0 0 18px;padding:0}
+.bl-modal{position:fixed;inset:0;z-index:100000;background:rgba(20,30,40,.55);display:flex;align-items:center;justify-content:center;padding:14px}
+.bl-modal[hidden]{display:none}
+.bl-modal{overscroll-behavior:contain}.bl-modal-box{background:var(--card-bg,#fff);color:var(--dark,#2c3e50);border-radius:12px;max-width:460px;width:100%;padding:16px 18px;box-shadow:0 18px 50px rgba(0,0,0,.3)}
+.bl-modal-box h4{margin:0 0 8px}
+.bl-link{background:none;border:0;color:#1a73e8;cursor:pointer;padding:0;font:inherit;text-decoration:underline}
+@media (max-width:560px){.bl-tabs button{flex:1 1 45%}}
+</style>
+    <div id="billing-tab" class="tab-content">
+        <div class="panel bl-wrap">
+            <h3>💳 Billing</h3>
+            <p class="settings-hint bl-lead">Prices, the subscription, discounts and referral rewards, in one place. Every price a customer sees (public site, sample shop, Get my own link, renewals, receipts) comes from the numbers on the <b>Pricing</b> screen.</p>
+            <div class="bl-tabs" role="tablist" id="bl-tabs">
+                <button type="button" role="tab" data-v="pricing" class="on" aria-selected="true">Pricing</button>
+                <button type="button" role="tab" data-v="launch" aria-selected="false">Launch &amp; exempt shops</button>
+                <button type="button" role="tab" data-v="offers" aria-selected="false">Discounts</button>
+                <button type="button" role="tab" data-v="referrals" aria-selected="false">Referrals</button>
+                <button type="button" role="tab" data-v="shops" aria-selected="false">Shops</button>
+                <button type="button" role="tab" data-v="payments" aria-selected="false">Payments</button>
+            </div>
+            <p id="bl-msg" role="status" class="settings-hint bl-msg"></p>
+            <div id="bl-body" role="tabpanel" aria-live="polite"><p class="settings-hint">Loading…</p></div>
+        </div>
+        <div id="bl-confirm" class="bl-modal" role="dialog" aria-modal="true" aria-labelledby="bl-confirm-title" hidden>
+            <div class="bl-modal-box">
+                <h4 id="bl-confirm-title">Please confirm</h4>
+                <ul id="bl-confirm-list"></ul>
+                <p class="settings-hint">Nothing is deleted. Shop data and queued sales are kept.</p>
+                <div class="bl-row"><button type="button" class="btn-main" id="bl-confirm-yes">Confirm</button><button type="button" class="btn-sec" id="bl-confirm-no">Cancel</button></div>
+            </div>
         </div>
     </div>
     <div id="owner-apps-tab" class="tab-content">
@@ -4752,11 +4798,7 @@
             errEl.textContent = '';
             statusEl.textContent = '';
 
-            const price = parseFloat(document.getElementById('website-price-input').value);
-            if (isNaN(price) || price < 0) {
-                errEl.textContent = 'Enter a valid price.';
-                return;
-            }
+            const price = parseFloat(document.getElementById('website-price-input').value) || 0;      // zip 267: kept only so older saves stay readable; the server ignores it (price lives in Billing)
             const paymentPhone = document.getElementById('website-phone-input').value.trim();
             if (!paymentPhone) {
                 errEl.textContent = 'Enter a payment phone number.';
@@ -5149,36 +5191,342 @@
 
 
 
-        /* ---------- Prices (what a link costs, per product) ---------- */
-        async function loadProductPrices() {
-            const box = document.getElementById('pr-rows'), msg = document.getElementById('pr-msg');
+        /* ---------- Billing (zip 267): pricing source, launch, discounts, referrals, per-shop licences, payments ---------- */
+        var BL = { v: 'pricing', s: null, products: [], offers: [], live: false, enforcing: false, names: {}, shop: null, offerEdit: null, ready: false };
+        function blKes(n) { return 'KES ' + Number(n || 0).toLocaleString('en-KE'); }
+        function blEatInput(ms) { if (!ms) return ''; return new Date(ms + 3 * 3600000).toISOString().slice(0, 16); }          // Nairobi wall-clock for a datetime-local box
+        function blInputEat(v) { var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(v || ''); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) - 3 * 3600000 : 0; }
+        function blWhen(ms) { if (!ms) return ''; try { return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms)); } catch (e) { return new Date(ms).toISOString(); } }
+        function blMsg(t, bad) { var m = document.getElementById('bl-msg'); if (m) { m.textContent = t || ''; m.style.color = bad ? '#c0392b' : ''; } }
+        async function blApi(action, body) {
             try {
-                const res = await fetch('/api/product-prices', { method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() }, body: JSON.stringify({ action: 'get' }) });
-                const d = await res.json();
-                if (!res.ok) { box.innerHTML = ''; msg.textContent = d.error || 'Could not load the prices.'; return; }
-                document.getElementById('pr-site').textContent = 'KES ' + Number(d.websitePrice).toLocaleString();
-                box.innerHTML = '<div style="display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr); gap:8px 10px; align-items:center;"><b>Product</b><b>Price (KES)</b><b>Branch price (KES)</b>'
-                    + d.products.map((p) => `<label for="pr-p-${p.id}" style="font-weight:600;">${escapeHtml(p.label)}</label>`
-                        + `<input type="number" inputmode="numeric" min="1" step="1" id="pr-p-${p.id}" placeholder="${d.websitePrice}" value="${d.prices[p.id] || ''}">`
-                        + `<input type="number" inputmode="numeric" min="1" step="1" id="pr-b-${p.id}" aria-label="Branch price for ${escapeHtml(p.label)}" placeholder="same" value="${d.branchPrices[p.id] || ''}">`).join('')
-                    + '</div>';
-                box.dataset.ids = d.products.map((p) => p.id).join(',');
-                msg.textContent = '';
-            } catch (e) { box.innerHTML = ''; msg.textContent = ownerErrText('Could not reach the server'); }
+                var res = await fetch('/api/owner-billing', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, ownerAuthHeaders()), body: JSON.stringify(Object.assign({ action: action }, body || {})) });
+                var j = await res.json().catch(function () { return {}; });
+                return { status: res.status, ok: res.ok, j: j };
+            } catch (e) { return { status: 0, ok: false, j: { error: ownerErrText('Could not reach the server') } }; }
         }
-        async function saveProductPrices() {
-            const box = document.getElementById('pr-rows'), msg = document.getElementById('pr-msg'), btn = document.getElementById('pr-save');
-            const prices = {}, branchPrices = {};
-            (box.dataset.ids || '').split(',').filter(Boolean).forEach((id) => { prices[id] = document.getElementById('pr-p-' + id).value; branchPrices[id] = document.getElementById('pr-b-' + id).value; });
-            btn.disabled = true; msg.textContent = 'Saving…';
-            try {
-                const res = await fetch('/api/product-prices', { method: 'POST', headers: { 'Content-Type': 'application/json', ...ownerAuthHeaders() }, body: JSON.stringify({ action: 'set', prices, branchPrices }) });
-                const d = await res.json();
-                msg.textContent = res.ok ? 'Saved. New purchases use these prices straight away.' : (d.error || 'Could not save.');
-                if (res.ok) showToast('Prices saved.');
-            } catch (e) { msg.textContent = ownerErrText('Could not reach the server'); }
-            btn.disabled = false;
+        function blConfirm(lines) {
+            return new Promise(function (resolve) {
+                var box = document.getElementById('bl-confirm'), list = document.getElementById('bl-confirm-list'), yes = document.getElementById('bl-confirm-yes'), no = document.getElementById('bl-confirm-no');
+                list.innerHTML = (lines || []).map(function (l) { return '<li>' + escapeHtml(l) + '</li>'; }).join('');
+                var opener = document.activeElement; box.hidden = false; yes.focus();
+                function done(v) { box.hidden = true; try { if (opener && opener.focus && document.contains(opener)) opener.focus(); } catch (e) { /* cosmetic */ } yes.onclick = no.onclick = null; document.removeEventListener('keydown', esc); resolve(v); }
+                function esc(e) { if (e.key === 'Escape') done(false); }
+                document.addEventListener('keydown', esc); yes.onclick = function () { done(true); }; no.onclick = function () { done(false); };
+            });
         }
+        function blField(id, label, val, o) {
+            o = o || {};
+            return '<div class="bl-f"><label for="' + id + '">' + label + '</label><input id="' + id + '" type="' + (o.type || 'number') + '" inputmode="numeric" ' + (o.min != null ? 'min="' + o.min + '" ' : '') + (o.max != null ? 'max="' + o.max + '" ' : '') + 'step="1" value="' + escapeHtml(val == null ? '' : val) + '"' + (o.ph ? ' placeholder="' + escapeHtml(o.ph) + '"' : '') + '>' + (o.hint ? '<small>' + o.hint + '</small>' : '') + '</div>';
+        }
+        function blNum(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+        function blChip(state) {
+            var cls = { active: 'ok', grace: 'warn', suspended: 'bad', grandfathered: 'mute', exempt: 'mute', comped: 'ok', awaiting: 'warn' }[state] || 'mute';
+            var txt = { grandfathered: 'exempt (existing)', awaiting: 'awaiting payment' }[state] || state;
+            return '<span class="bl-badge ' + cls + '">' + escapeHtml(txt) + '</span>';
+        }
+
+        async function loadBilling() {
+            blMsg('');
+            var r = await blApi('get');
+            if (!r.ok) { document.getElementById('bl-body').innerHTML = ''; blMsg(r.j.error || 'Could not load billing.', true); return; }
+            BL.s = r.j.settings; BL.products = r.j.products || []; BL.offers = r.j.offers || []; BL.live = !!r.j.live; BL.enforcing = !!r.j.enforcing; BL.ready = true;
+            blRender();
+        }
+        function blSetView(v) {
+            BL.v = v; BL.shop = null;
+            document.querySelectorAll('#bl-tabs button').forEach(function (b) { var on = b.getAttribute('data-v') === v; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
+            blMsg(''); blRender();
+        }
+        function blRender() {
+            if (!BL.ready) return;
+            var body = document.getElementById('bl-body');
+            if (BL.v === 'pricing') body.innerHTML = blPricingHtml();
+            else if (BL.v === 'launch') { body.innerHTML = blLaunchHtml(); blLoadCohort(); }
+            else if (BL.v === 'offers') body.innerHTML = blOffersHtml();
+            else if (BL.v === 'referrals') { body.innerHTML = blReferralsHtml(); blLoadRefLedger(); }
+            else if (BL.v === 'shops') { body.innerHTML = BL.shop ? blShopHtml() : blShopsHtml(); if (!BL.shop) blLoadShops(''); }
+            else if (BL.v === 'payments') { body.innerHTML = '<p class="settings-hint">Loading…</p>'; blLoadPayments(); }
+            if (BL.v === 'pricing') blPreview();
+        }
+
+        /* ----- Pricing ----- */
+        function blPricingHtml() {
+            var s = BL.s, p = s.prices;
+            var ov = BL.products.map(function (pr) { return blField('bl-lp-' + pr.id, escapeHtml(pr.label), s.linkPrices[pr.id] || '', { min: 1, ph: String(p.link), hint: '' }); }).join('');
+            return '<div class="bl-prev" aria-live="polite"><b>What a new customer sees</b><dl id="bl-prev"></dl></div>'
+                + '<div class="bl-sec"><h4>New link or branch link <span class="bl-badge">one-time</span></h4><div class="bl-grid">'
+                + blField('bl-p-link', 'Price (KES)', p.link, { min: 1, hint: 'Charged once. A branch bought as a link costs the same.' }) + '</div>'
+                + '<details style="margin-top:8px"><summary>Different price for one product</summary><div class="bl-grid" style="margin-top:8px">' + ov + '</div><small class="settings-hint">Leave a box empty to use the price above.</small></details></div>'
+                + '<div class="bl-sec"><h4>Add-ons for a subscribed shop <span class="bl-badge">one-time</span></h4><div class="bl-grid">'
+                + blField('bl-p-extraBranch', 'One extra branch (KES)', p.extraBranch, { min: 0 })
+                + blField('bl-p-branchBundle', 'Branch bundle price (KES)', p.branchBundle, { min: 0 }) + blField('bl-bundleBranches', 'Branches in a bundle', s.bundleBranches, { min: 2, max: 50 })
+                + blField('bl-p-staffBlock', 'Staff block price (KES)', p.staffBlock, { min: 0 }) + blField('bl-staffBlockSize', 'Staff slots in a block', s.staffBlockSize, { min: 1, max: 500, hint: 'Shared across all the shop branches.' }) + '</div></div>'
+                + '<div class="bl-sec"><h4>Subscription <span class="bl-badge rec">recurring</span></h4><div class="bl-grid">'
+                + blField('bl-p-subscription', 'Price per cycle, per shop (KES)', p.subscription, { min: 0 })
+                + blField('bl-periodDays', 'Billing period (days)', s.periodDays, { min: 1, max: 366, hint: 'The first period starts when the purchase is confirmed.' })
+                + blField('bl-graceDays', 'Grace period (days)', s.graceDays, { min: 0, max: 60, hint: 'The shop stays online this long after the renewal is due.' })
+                + blField('bl-includedBranches', 'Branches included', s.includedBranches, { min: 1, max: 100, hint: 'The main shop counts as one.' })
+                + blField('bl-includedStaffPerBranch', 'Staff slots per branch', s.includedStaffPerBranch, { min: 0, max: 500 }) + '</div></div>'
+                + '<div id="bl-save-out"></div><div class="bl-row"><button type="button" class="btn-main" data-act="save-pricing">Save prices</button></div>'
+                + '<p class="settings-hint">A price change applies to new purchases. What an existing customer already agreed does not change unless you edit that shop under Shops. ' + (s.updatedAt ? 'Last saved ' + escapeHtml(blWhen(s.updatedAt)) + ' (Nairobi).' : 'Nothing saved yet: the defaults above are in use.') + '</p>';
+        }
+        function blPreview() {
+            var el = document.getElementById('bl-prev'); if (!el) return;
+            var link = Number(blNum('bl-p-link')) || 0, sub = Number(blNum('bl-p-subscription')) || 0, days = Number(blNum('bl-periodDays')) || 0, live = BL.live;
+            var rows = '<dt>New link, paid once</dt><dd>' + blKes(link) + '</dd>';
+            rows += live ? '<dt>Then, every ' + days + ' days</dt><dd>' + blKes(sub) + '</dd><dt>Includes your first ' + days + ' days</dt><dd>&nbsp;</dd>' : '<dt>Subscription</dt><dd>not charged yet (set a launch date)</dd>';
+            rows += '<dt>Extra branch, once</dt><dd>' + blKes(blNum('bl-p-extraBranch')) + '</dd><dt>' + escapeHtml(blNum('bl-bundleBranches') || '3') + ' branches, once</dt><dd>' + blKes(blNum('bl-p-branchBundle')) + '</dd><dt>' + escapeHtml(blNum('bl-staffBlockSize') || '5') + ' staff slots, once</dt><dd>' + blKes(blNum('bl-p-staffBlock')) + '</dd>';
+            el.innerHTML = rows;
+        }
+        function blShowSave(r) {
+            var out = document.getElementById('bl-save-out') || document.getElementById('bl-msg');
+            if (!r.ok) { var errs = r.j.errors || [r.j.error || 'Could not save.']; out.innerHTML = '<div class="bl-errs" role="alert"><b>Not saved.</b><ul>' + errs.map(function (e) { return '<li>' + escapeHtml(e) + '</li>'; }).join('') + '</ul></div>'; return; }
+            var fx = r.j.effect || [];
+            out.innerHTML = '<div class="bl-effect"><b>Saved.</b> ' + escapeHtml(r.j.takesEffect || '') + (fx.length ? '<ul>' + fx.map(function (e) { return '<li>' + escapeHtml(e) + '</li>'; }).join('') + '</ul>' : ' Nothing changed.') + '</div>';
+            if (typeof showToast === 'function') showToast('Billing saved.');
+        }
+        async function blSavePricing() {
+            var linkPrices = {}; BL.products.forEach(function (pr) { linkPrices[pr.id] = blNum('bl-lp-' + pr.id); });
+            var r = await blApi('settings-save', { patch: { prices: { link: blNum('bl-p-link'), subscription: blNum('bl-p-subscription'), extraBranch: blNum('bl-p-extraBranch'), branchBundle: blNum('bl-p-branchBundle'), staffBlock: blNum('bl-p-staffBlock') },
+                linkPrices: linkPrices, bundleBranches: blNum('bl-bundleBranches'), staffBlockSize: blNum('bl-staffBlockSize'), periodDays: blNum('bl-periodDays'), graceDays: blNum('bl-graceDays'), includedBranches: blNum('bl-includedBranches'), includedStaffPerBranch: blNum('bl-includedStaffPerBranch') } });
+            if (r.ok) { BL.s = r.j.settings; BL.live = !!(r.j.terms && r.j.terms.launched); }
+            blShowSave(r);
+        }
+
+        /* ----- Launch, exempt shops, rollback ----- */
+        function blLaunchHtml() {
+            var s = BL.s;
+            return '<div class="bl-sec"><h4>Billing launch ' + (BL.live ? '<span class="bl-badge ok">live</span>' : s.launchAt ? '<span class="bl-badge warn">scheduled</span>' : '<span class="bl-badge mute">off</span>') + '</h4>'
+                + '<p class="settings-hint">Links whose payment is confirmed on or after this time start a subscription. Every link that already exists stays exempt: same address, same data, never blocked.</p>'
+                + '<div class="bl-grid"><div class="bl-f"><label for="bl-launch">Launch date and time (Nairobi)</label><input id="bl-launch" type="datetime-local" value="' + blEatInput(s.launchAt) + '"><small>Empty = billing off.</small></div></div>'
+                + '<label style="display:flex;gap:8px;align-items:flex-start;margin-top:10px"><input type="checkbox" id="bl-enforce" ' + (s.enforce ? 'checked' : '') + '> <span><b>Block shops whose paid period and grace have ended.</b><br><small>Turn this off to keep tracking subscriptions but never block anyone. This is the safe switch if something goes wrong.</small></span></label>'
+                + '<div id="bl-save-out"></div><div class="bl-row"><button type="button" class="btn-main" data-act="save-launch">Save launch settings</button><button type="button" class="btn-sec" data-act="clear-launch">Switch billing off</button></div></div>'
+                + '<div class="bl-sec"><h4>Who is affected</h4><div id="bl-cohort"><p class="settings-hint">Loading…</p></div></div>'
+                + '<div class="bl-sec"><h4>Rollback</h4><p class="settings-hint" style="margin:0">Switching billing off (or turning blocking off above) stops every new subscription and every block at once, within 30 seconds. Licences, payments, price snapshots and shop data are all kept, so you can switch it back on later.</p></div>';
+        }
+        async function blLoadCohort() {
+            var r = await blApi('cohort'), el = document.getElementById('bl-cohort'); if (!el) return;
+            if (!r.ok) { el.innerHTML = '<p class="settings-hint">' + escapeHtml(r.j.error || 'Could not load.') + '</p>'; return; }
+            var c = r.j;
+            el.innerHTML = '<div class="bl-kv"><div><b>Existing permanent shops (exempt)</b><span>' + c.existing.permanentShops + '</span></div><div><b>Marked exempt on record</b><span>' + c.existing.markedGrandfathered + '</span></div><div><b>Not marked yet (still exempt)</b><span>' + c.existing.unmarked + '</span></div><div><b>In the subscription cohort now</b><span>' + c.inCohort.subscribed + '</span></div><div><b>Payments waiting for you</b><span>' + c.inCohort.pendingPaymentClaims + '</span></div></div>'
+                + '<p class="settings-hint">' + escapeHtml(c.inCohort.rule) + '</p><p class="settings-hint">' + escapeHtml(c.existing.note) + '</p>'
+                + (c.existing.unmarked ? '<div class="bl-row"><button type="button" class="btn-sec" data-act="grandfather">Mark the ' + c.existing.unmarked + ' existing shops exempt on record</button></div>' : '')
+                + (c.sample.length ? '<details style="margin-top:8px"><summary>Newest shops</summary><div class="bl-scroll"><table class="bl-t"><tr><th>Shop</th><th>Since</th><th>Status</th></tr>' + c.sample.map(function (e) { return '<tr><td>' + escapeHtml(e.label) + '</td><td>' + escapeHtml(blWhen(e.confirmedAt)) + '</td><td>' + escapeHtml(e.state) + '</td></tr>'; }).join('') + '</table></div></details>' : '');
+        }
+        async function blSaveLaunch(clear) {
+            var launchAt = clear ? 0 : blInputEat(blNum('bl-launch'));
+            var r = await blApi('settings-save', { patch: { launchAt: launchAt, enforce: clear ? BL.s.enforce : document.getElementById('bl-enforce').checked } });
+            if (r.ok) { BL.s = r.j.settings; BL.live = !!(r.j.terms && r.j.terms.launched); }
+            blShowSave(r); if (r.ok) { var i = document.getElementById('bl-launch'); if (i) i.value = blEatInput(BL.s.launchAt); blLoadCohort(); }
+        }
+        async function blGrandfather() {
+            var left = 1, total = 0;
+            while (left > 0) { var r = await blApi('grandfather'); if (!r.ok) { blMsg(r.j.error || 'Could not mark shops.', true); return; } total += r.j.marked; left = r.j.remaining; if (!r.j.marked) break; }
+            blMsg('Marked ' + total + ' shops exempt on record. Nothing about their access changed.'); blLoadCohort();
+        }
+
+        /* ----- Discounts ----- */
+        function blOfferStatus(o) {
+            var now = Date.now();
+            if (o.state === 'paused') return ['paused', 'mute'];
+            if (o.startsAt && now < o.startsAt) return ['scheduled', 'warn'];
+            if (o.endsAt && now >= o.endsAt) return ['expired', 'bad'];
+            if (o.limitTotal > 0 && (o.used || 0) >= o.limitTotal) return ['used up', 'bad'];
+            return ['active', 'ok'];
+        }
+        function blOffersHtml() {
+            var rows = BL.offers.map(function (o) {
+                var st = blOfferStatus(o);
+                return '<tr><td><b>' + escapeHtml(o.name) + '</b>' + (o.code ? '<br><small>Code ' + escapeHtml(o.code) + '</small>' : '<br><small>No code needed</small>') + '</td><td class="n">' + (o.type === 'percent' ? o.value + '%' : blKes(o.value)) + (o.maxDiscount ? '<br><small>max ' + blKes(o.maxDiscount) + '</small>' : '') + '</td><td>' + escapeHtml((o.appliesTo || []).map(function (x) { return { link: 'new link', renewal: 'renewal', addon: 'add-on' }[x]; }).join(', ')) + '<br><small>for ' + escapeHtml({ buyer: 'the buyer', referrer: 'the referrer', both: 'buyer and referrer' }[o.beneficiary] || o.beneficiary) + (o.cohort === 'referred' ? ', referred only' : '') + '</small></td><td>' + (o.startsAt ? escapeHtml(blWhen(o.startsAt)) : 'now') + ' to ' + (o.endsAt ? escapeHtml(blWhen(o.endsAt)) : 'no end') + '</td><td class="n">' + (o.used || 0) + (o.limitTotal ? ' / ' + o.limitTotal : '') + '</td><td><span class="bl-badge ' + st[1] + '">' + st[0] + '</span>' + (o.stackable ? '<br><small>can combine</small>' : '') + '</td><td><button type="button" class="bl-link" data-act="offer-edit" data-id="' + o.id + '">Edit</button> <button type="button" class="bl-link" data-act="offer-toggle" data-id="' + o.id + '" data-state="' + (o.state === 'paused' ? 'active' : 'paused') + '">' + (o.state === 'paused' ? 'Resume' : 'Pause') + '</button> <button type="button" class="bl-link" data-act="offer-delete" data-id="' + o.id + '">Delete</button></td></tr>';
+            }).join('');
+            return '<p class="settings-hint">A discount is worked out by the server from the offer you set here; a customer cannot type an amount. By default only one offer applies per checkout; tick "can combine" on offers that may stack. A discount never takes the price below zero.</p>'
+                + (rows ? '<div class="bl-scroll"><table class="bl-t"><tr><th>Offer</th><th>Discount</th><th>Applies to</th><th>When</th><th>Used</th><th>Status</th><th></th></tr>' + rows + '</table></div>' : '<p class="settings-hint">No discounts yet. Create one below, for example 20% off a new link.</p>')
+                + '<div class="bl-row"><button type="button" class="btn-main" data-act="offer-new">New discount</button></div><div id="bl-offer-form"></div>';
+        }
+        function blOfferForm(o) {
+            o = o || { type: 'percent', value: 20, appliesTo: ['link'], beneficiary: 'buyer', cohort: 'all', state: 'active' };
+            var ck = function (k, label) { return '<label style="display:inline-flex;gap:5px;margin-right:12px"><input type="checkbox" data-ap="' + k + '" ' + ((o.appliesTo || []).indexOf(k) >= 0 ? 'checked' : '') + '> ' + label + '</label>'; };
+            var sel = function (id, label, opts, cur) { return '<div class="bl-f"><label for="' + id + '">' + label + '</label><select id="' + id + '">' + opts.map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === cur ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></div>'; };
+            return '<div class="bl-sec" style="margin-top:10px"><h4>' + (o.id ? 'Edit discount' : 'New discount') + '</h4><input type="hidden" id="bl-o-id" value="' + escapeHtml(o.id || '') + '">'
+                + '<div class="bl-grid">' + blField('bl-o-name', 'Name', o.name || '', { type: 'text' }) + blField('bl-o-code', 'Code (optional)', o.code || '', { type: 'text', hint: 'Leave empty to apply to everyone it fits.' })
+                + sel('bl-o-type', 'Type', [['percent', 'Percentage'], ['fixed', 'Fixed amount (KES)']], o.type) + blField('bl-o-value', 'Value', o.value, { min: 1 }) + blField('bl-o-max', 'Largest discount (KES, optional)', o.maxDiscount || '', { min: 0 })
+                + sel('bl-o-who', 'Who gets it', [['buyer', 'The new customer'], ['referrer', 'The referring shop'], ['both', 'Both']], o.beneficiary) + sel('bl-o-cohort', 'Eligible customers', [['all', 'Everyone'], ['referred', 'Referred customers only']], o.cohort || 'all')
+                + '<div class="bl-f"><label for="bl-o-start">Starts (Nairobi, optional)</label><input id="bl-o-start" type="datetime-local" value="' + blEatInput(o.startsAt) + '"></div><div class="bl-f"><label for="bl-o-end">Ends (Nairobi, optional)</label><input id="bl-o-end" type="datetime-local" value="' + blEatInput(o.endsAt) + '"></div>'
+                + blField('bl-o-limit', 'Redemption limit (0 = none)', o.limitTotal || 0, { min: 0 }) + '</div>'
+                + '<p style="margin:10px 0 4px"><b>Applies to</b></p><div>' + ck('link', 'First link or setup') + ck('renewal', 'Subscription renewal') + ck('addon', 'Add-ons') + '</div>'
+                + '<label style="display:flex;gap:6px;margin-top:8px"><input type="checkbox" id="bl-o-stack" ' + (o.stackable ? 'checked' : '') + '> Can combine with other offers</label>'
+                + '<div id="bl-offer-out"></div><div class="bl-row"><button type="button" class="btn-main" data-act="offer-save">Save discount</button><button type="button" class="btn-sec" data-act="offer-cancel">Cancel</button></div></div>';
+        }
+        async function blOfferSave() {
+            var ap = []; document.querySelectorAll('#bl-offer-form [data-ap]').forEach(function (c) { if (c.checked) ap.push(c.getAttribute('data-ap')); });
+            var offer = { id: blNum('bl-o-id') || undefined, name: blNum('bl-o-name'), code: blNum('bl-o-code'), type: blNum('bl-o-type'), value: blNum('bl-o-value'), maxDiscount: blNum('bl-o-max'), beneficiary: blNum('bl-o-who'), cohort: blNum('bl-o-cohort'), startsAt: blInputEat(blNum('bl-o-start')), endsAt: blInputEat(blNum('bl-o-end')), limitTotal: blNum('bl-o-limit'), appliesTo: ap, stackable: document.getElementById('bl-o-stack').checked };
+            var prior = BL.offers.find(function (x) { return x.id === offer.id; }); if (prior) offer.state = prior.state;
+            var r = await blApi('offer-save', { offer: offer }), out = document.getElementById('bl-offer-out');
+            if (!r.ok) { out.innerHTML = '<div class="bl-errs" role="alert"><ul>' + (r.j.errors || [r.j.error || 'Could not save.']).map(function (e) { return '<li>' + escapeHtml(e) + '</li>'; }).join('') + '</ul></div>'; return; }
+            BL.offers = r.j.offers; blRender(); blMsg('Discount saved.');
+        }
+
+        /* ----- Referrals ----- */
+        function blReferralsHtml() {
+            var r = BL.s.referral;
+            var sel = function (id, label, opts, cur) { return '<div class="bl-f"><label for="' + id + '">' + label + '</label><select id="' + id + '">' + opts.map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === cur ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></div>'; };
+            return '<div class="bl-sec"><h4>Referral rewards ' + (r.enabled ? '<span class="bl-badge ok">on</span>' : '<span class="bl-badge mute">off</span>') + '</h4>'
+                + '<p class="settings-hint">A shop shares its referral link. When the new customer’s payment is confirmed, the referring shop earns a reward. A click, sign-up or unpaid request earns nothing. A shop cannot refer itself.</p>'
+                + '<label style="display:flex;gap:8px;margin-bottom:10px"><input type="checkbox" id="bl-r-on" ' + (r.enabled ? 'checked' : '') + '> <b>Reward referrals</b></label>'
+                + '<div class="bl-grid">' + sel('bl-r-type', 'Reward type', [['percent', 'Percentage off'], ['fixed', 'Fixed KES off']], r.rewardType) + blField('bl-r-value', 'Reward value', r.rewardValue, { min: 1 })
+                + sel('bl-r-elig', 'Who can refer', [['all', 'Any permanent shop'], ['new', 'Subscribed shops only']], r.eligible) + blField('bl-r-max', 'Most rewards per shop', r.maxRewardsPerReferrer, { min: 1, max: 1000 }) + blField('bl-r-exp', 'Reward expires after (days, 0 = never)', r.expiryDays, { min: 0, max: 3650 }) + '</div>'
+                + '<p style="margin:10px 0 4px"><b>The reward can be used on</b></p><label style="margin-right:12px"><input type="checkbox" id="bl-r-ren" ' + (r.appliesTo.indexOf('renewal') >= 0 ? 'checked' : '') + '> The next subscription renewal</label><label><input type="checkbox" id="bl-r-add" ' + (r.appliesTo.indexOf('addon') >= 0 ? 'checked' : '') + '> Add-ons (extra branch, staff block)</label>'
+                + '<p class="settings-hint">A shop that predates billing has no subscription to discount, so for those the reward waits until it buys an add-on or subscribes. Rewards are never forced onto an existing shop.</p>'
+                + '<div id="bl-save-out"></div><div class="bl-row"><button type="button" class="btn-main" data-act="save-referral">Save referral rules</button></div></div>'
+                + '<div class="bl-sec"><h4>Referral ledger</h4><div id="bl-refledger"><p class="settings-hint">Loading…</p></div></div>';
+        }
+        async function blSaveReferral() {
+            var ap = []; if (document.getElementById('bl-r-ren').checked) ap.push('renewal'); if (document.getElementById('bl-r-add').checked) ap.push('addon');
+            var r = await blApi('settings-save', { patch: { referral: { enabled: document.getElementById('bl-r-on').checked, rewardType: blNum('bl-r-type'), rewardValue: blNum('bl-r-value'), eligible: blNum('bl-r-elig'), maxRewardsPerReferrer: blNum('bl-r-max'), expiryDays: blNum('bl-r-exp'), appliesTo: ap } } });
+            if (r.ok) BL.s = r.j.settings; blShowSave(r);
+        }
+        async function blShopNames() {
+            if (Object.keys(BL.names).length) return;
+            var r = await blApi('shops', {}); if (r.ok) (r.j.shops || []).forEach(function (s) { BL.names[s.id] = s.label; });
+        }
+        async function blLoadRefLedger() {
+            await blShopNames();
+            var r = await blApi('ledger', {}), el = document.getElementById('bl-refledger'); if (!el) return;
+            if (!r.ok) { el.innerHTML = '<p class="settings-hint">' + escapeHtml(r.j.error || 'Could not load.') + '</p>'; return; }
+            var rows = (r.j.rows || []).filter(function (e) { return e.kind === 'reward' || e.kind === 'flag' || e.kind === 'reversal'; });
+            el.innerHTML = rows.length ? '<div class="bl-scroll"><table class="bl-t"><tr><th>When (Nairobi)</th><th>Shop</th><th>What happened</th><th></th></tr>' + rows.map(function (e) {
+                var what = e.kind === 'reward' ? 'Reward earned for a confirmed referral' : e.kind === 'reversal' ? 'Payment reversed' : (e.note || 'Flagged for review');
+                return '<tr><td>' + escapeHtml(blWhen(e.at)) + '</td><td>' + escapeHtml(BL.names[e.clientId] || e.clientId || '') + '</td><td>' + escapeHtml(what) + '</td><td>' + (e.clientId ? '<button type="button" class="bl-link" data-act="shop-open" data-id="' + escapeHtml(e.clientId) + '">Open shop</button>' : '') + '</td></tr>';
+            }).join('') + '</table></div>' : '<p class="settings-hint">No referral activity yet.</p>';
+        }
+
+        /* ----- Shops: the per-shop licence panel ----- */
+        function blShopsHtml() {
+            return '<div class="bl-f" style="max-width:420px"><label for="bl-q">Find a shop</label><input id="bl-q" type="search" placeholder="Name, address or phone" autocomplete="off"></div><div id="bl-shops" style="margin-top:10px"><p class="settings-hint">Loading…</p></div>';
+        }
+        async function blLoadShops(q) {
+            var r = await blApi('shops', { q: q || '' }), el = document.getElementById('bl-shops'); if (!el) return;
+            if (!r.ok) { el.innerHTML = '<p class="settings-hint">' + escapeHtml(r.j.error || 'Could not load.') + '</p>'; return; }
+            (r.j.shops || []).forEach(function (s) { BL.names[s.id] = s.label; });
+            el.innerHTML = r.j.shops.length ? '<div class="bl-scroll"><table class="bl-t"><tr><th>Shop</th><th>Status</th><th>Paid through (Nairobi)</th><th>Price</th><th></th></tr>' + r.j.shops.map(function (s) {
+                return '<tr><td><b>' + escapeHtml(s.label) + '</b><br><small>' + escapeHtml(s.clientName || s.phone || '') + '</small></td><td>' + blChip(s.state) + (s.claim ? ' <span class="bl-badge warn">payment waiting</span>' : '') + (s.locked ? ' <span class="bl-badge bad">locked</span>' : '') + '</td><td>' + escapeHtml(s.paidThroughLabel || '') + '</td><td class="n">' + (s.price ? blKes(s.price) : '') + '</td><td><button type="button" class="bl-link" data-act="shop-open" data-id="' + escapeHtml(s.id) + '">Manage</button></td></tr>';
+            }).join('') + '</table></div>' : '<p class="settings-hint">No shops match.</p>';
+        }
+        async function blOpenShop(id) {
+            var r = await blApi('shop', { id: id });
+            if (!r.ok) { blMsg(r.j.error || 'Could not open the shop.', true); return; }
+            BL.shop = r.j; if (BL.v !== 'shops') { BL.v = 'shops'; document.querySelectorAll('#bl-tabs button').forEach(function (b) { var on = b.getAttribute('data-v') === 'shops'; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); }); }
+            blMsg(''); document.getElementById('bl-body').innerHTML = blShopHtml();
+        }
+        function blShopHtml() {
+            var d = BL.shop, b = d.billing, sub = b.cohort === 'new';
+            var kv = function (k, v) { return '<div><b>' + k + '</b><span>' + v + '</span></div>'; };
+            var allow = b.allowance ? b.usage.branches + ' of ' + b.allowance.branches + ' branches, ' + (b.usage.staff == null ? 'staff n/a' : b.usage.staff) + ' of ' + b.allowance.staff + ' staff' : 'unlimited (predates billing)';
+            var h = '<p><button type="button" class="bl-link" data-act="shops-back">Back to shops</button></p><h4 style="margin:0 0 6px">' + escapeHtml(d.shop.label) + ' ' + blChip(b.state) + (b.suspended ? ' <span class="bl-badge bad">on hold by you</span>' : '') + (b.comped ? ' <span class="bl-badge ok">complimentary</span>' : '') + (d.shop.locked ? ' <span class="bl-badge bad">locked</span>' : '') + '</h4>'
+                + '<div class="bl-kv">' + kv('Paid through (Nairobi)', escapeHtml(b.paidThroughLabel || 'not applicable')) + kv('Next renewal', escapeHtml(b.nextRenewalLabel || 'not applicable')) + kv('Grace ends', escapeHtml(b.graceEndsLabel || 'not applicable')) + kv('Agreed price per cycle', b.price ? blKes(b.price) : 'none') + kv('Allowance and use', escapeHtml(allow)) + kv('Referral code', escapeHtml(d.refCode || 'none yet')) + '</div>';
+            if (!sub) return h + '<div class="bl-sec"><p class="settings-hint" style="margin:0">This shop was created before billing, so it is exempt: it is never blocked and has no subscription. To block it or change its access, use Lock / Unlock under Clients &amp; Links.</p></div>' + blRewardsHtml(d) + blShopAuditHtml(d);
+            h += '<div class="bl-sec"><h4>Licence settings</h4><div class="bl-grid">'
+                + blField('bl-e-price', 'Price per cycle (KES)', b.price, { min: 0 }) + '<div class="bl-f"><label for="bl-e-paid">Paid through (Nairobi)</label><input id="bl-e-paid" type="datetime-local" value="' + blEatInput(b.paidThrough) + '"></div>'
+                + blField('bl-e-grace', 'Grace days', b.graceDays, { min: 0, max: 60 }) + blField('bl-e-ib', 'Branches included', b.allowance ? b.allowance.branches - b.allowance.extraBranches : '', { min: 1, max: 100 }) + blField('bl-e-xb', 'Extra branches bought', b.allowance ? b.allowance.extraBranches : 0, { min: 0, max: 1000 })
+                + blField('bl-e-sb', 'Staff blocks bought', b.allowance ? b.allowance.staffBlocks : 0, { min: 0, max: 1000 }) + '</div>'
+                + '<div style="margin-top:8px"><label style="margin-right:14px"><input type="checkbox" id="bl-e-comp" ' + (b.comped ? 'checked' : '') + '> Complimentary (never blocked, nothing to pay)</label><label><input type="checkbox" id="bl-e-ex" ' + (b.exempt ? 'checked' : '') + '> Exempt from the subscription</label></div>'
+                + '<div class="bl-f" style="margin-top:8px;max-width:420px"><label for="bl-e-note">Note for the audit trail (optional)</label><input id="bl-e-note" type="text" maxlength="200"></div><div id="bl-shop-out"></div>'
+                + '<div class="bl-row"><button type="button" class="btn-main" data-act="shop-save">Save changes</button>' + (b.suspended ? '<button type="button" class="btn-sec" data-act="shop-reactivate">Reactivate</button>' : '<button type="button" class="btn-sec" data-act="shop-suspend">Suspend this shop</button>') + '</div></div>'
+                + '<div class="bl-sec"><h4>Confirm a payment by hand</h4><p class="settings-hint">Use this when the shop paid you another way. It adds time to the end of the current paid period; it never shortens it.</p><div class="bl-grid">' + blField('bl-m-cycles', 'Cycles paid', 1, { min: 1, max: 12 }) + blField('bl-m-receipt', 'M-Pesa code (optional)', '', { type: 'text' }) + '</div><div class="bl-row"><button type="button" class="btn-sec" data-act="shop-manual">Confirm payment</button></div></div>';
+            h += '<div class="bl-sec"><h4>Payment history</h4>' + (b.history.length ? '<div class="bl-scroll"><table class="bl-t"><tr><th>When (Nairobi)</th><th>What</th><th>Paid</th><th>Discount</th><th>Method</th><th></th></tr>' + b.history.map(function (x) { return '<tr><td>' + escapeHtml(x.label) + '</td><td>' + escapeHtml(x.kind) + (x.cycles ? ' x' + x.cycles : '') + (x.paidThroughAfter ? '<br><small>to ' + escapeHtml(x.paidThroughAfter) + '</small>' : '') + '</td><td class="n">' + blKes(x.amount) + '</td><td class="n">' + (x.discount ? blKes(x.discount) : '') + '</td><td>' + escapeHtml(x.method || '') + (x.receipt ? '<br><small>' + escapeHtml(x.receipt) + '</small>' : '') + '</td><td><button type="button" class="bl-link" data-act="reverse" data-ref="' + escapeHtml(x.ref) + '">Reverse</button></td></tr>'; }).join('') + '</table></div>' : '<p class="settings-hint">No payments recorded.</p>') + '</div>';
+            return h + blRewardsHtml(d) + blShopAuditHtml(d);
+        }
+        function blRewardsHtml(d) {
+            var rw = d.rewards || []; if (!rw.length) return '';
+            return '<div class="bl-sec"><h4>Referral rewards</h4><div class="bl-scroll"><table class="bl-t"><tr><th>Reward</th><th>Status</th><th>Applies to</th><th></th></tr>' + rw.map(function (r) {
+                var cls = { available: 'ok', reserved: 'warn', used: 'mute', void: 'bad', review: 'warn' }[r.status] || 'mute';
+                return '<tr><td>' + (r.type === 'percent' ? r.value + '%' : blKes(r.value)) + '<br><small>' + escapeHtml(r.note || '') + '</small></td><td><span class="bl-badge ' + cls + '">' + escapeHtml(r.status) + '</span></td><td>' + escapeHtml((r.appliesTo || []).join(', ')) + '</td><td>' + (r.status === 'review' ? '<button type="button" class="bl-link" data-act="reward" data-d="approve" data-rid="' + escapeHtml(r.id) + '">Approve</button> ' : '') + (r.status !== 'used' && r.status !== 'void' ? '<button type="button" class="bl-link" data-act="reward" data-d="void" data-rid="' + escapeHtml(r.id) + '">Void</button>' : '') + '</td></tr>';
+            }).join('') + '</table></div></div>';
+        }
+        function blShopAuditHtml(d) {
+            var a = d.audit || []; if (!a.length) return '';
+            return '<div class="bl-sec"><h4>Changes to this shop</h4><div class="bl-scroll"><table class="bl-t"><tr><th>When (Nairobi)</th><th>Who</th><th>What</th></tr>' + a.map(function (x) { return '<tr><td>' + escapeHtml(blWhen(x.at)) + '</td><td>' + escapeHtml(x.actor) + '</td><td>' + escapeHtml(x.action + (x.note ? ': ' + x.note : '')) + '</td></tr>'; }).join('') + '</table></div></div>';
+        }
+        async function blShopEdit(patch) {
+            var id = BL.shop.shop.id, note = blNum('bl-e-note');
+            var r = await blApi('shop-edit', { id: id, patch: patch, note: note });
+            if (r.status === 409 && r.j.needConfirm) { if (!(await blConfirm(r.j.summary))) return; r = await blApi('shop-edit', { id: id, patch: patch, note: note, confirm: true }); }
+            var out = document.getElementById('bl-shop-out');
+            if (!r.ok) { if (out) out.innerHTML = '<div class="bl-errs" role="alert"><ul>' + (r.j.errors || [r.j.error || 'Could not save.']).map(function (e) { return '<li>' + escapeHtml(e) + '</li>'; }).join('') + '</ul></div>'; return; }
+            await blOpenShop(id); blMsg('Saved. The change is recorded in the audit trail.');
+        }
+        function blEditPatch() {
+            var b = BL.shop.billing, ib = Number(blNum('bl-e-ib'));
+            return { price: blNum('bl-e-price'), paidThrough: blInputEat(blNum('bl-e-paid')) || b.paidThrough, graceDays: blNum('bl-e-grace'), includedBranches: ib || undefined, addons: { branches: blNum('bl-e-xb'), staffBlocks: blNum('bl-e-sb') }, comped: document.getElementById('bl-e-comp').checked, exempt: document.getElementById('bl-e-ex').checked };
+        }
+
+        /* ----- Payments ----- */
+        async function blLoadPayments() {
+            await blShopNames();
+            var rs = await Promise.all([blApi('pays'), blApi('ledger', {}), blApi('audit', {})]), el = document.getElementById('bl-body'); if (!el || BL.v !== 'payments') return;
+            var pays = rs[0].ok ? rs[0].j.pays : [], led = rs[1].ok ? rs[1].j.rows : [], aud = rs[2].ok ? rs[2].j.rows : [];
+            var pend = pays.filter(function (p) { return p.status === 'claimed' || p.status === 'pending'; });
+            el.innerHTML = '<div class="bl-sec"><h4>Waiting for you <span class="bl-badge warn">' + pend.length + '</span></h4>' + (pend.length ? '<div class="bl-scroll"><table class="bl-t"><tr><th>Shop</th><th>For</th><th>Amount</th><th>Status</th><th></th></tr>' + pend.map(function (p) {
+                return '<tr><td>' + escapeHtml(BL.names[p.clientId] || p.clientId) + '</td><td>' + escapeHtml({ renewal: 'Renewal', extraBranch: 'Extra branch', branchBundle: 'Branch bundle', staffBlock: 'Staff block' }[p.kind] || p.kind) + (p.qty > 1 ? ' x' + p.qty : '') + '</td><td class="n">' + blKes(p.amount) + '</td><td>' + (p.status === 'claimed' ? 'says it paid' : 'prompt sent') + '</td><td><button type="button" class="bl-link" data-act="pay-confirm" data-id="' + escapeHtml(p.id) + '">Confirm paid</button> <button type="button" class="bl-link" data-act="pay-reject" data-id="' + escapeHtml(p.id) + '">Reject</button></td></tr>';
+            }).join('') + '</table></div><p class="settings-hint">Confirm only after you see the money in M-Pesa. Nothing changes for the shop until you do.</p>' : '<p class="settings-hint">Nothing is waiting.</p>') + '</div>'
+                + '<div class="bl-sec"><h4>Payment ledger</h4>' + (led.length ? '<div class="bl-scroll"><table class="bl-t"><tr><th>When (Nairobi)</th><th>Shop</th><th>What</th><th>Amount</th><th></th></tr>' + led.filter(function (e) { return e.kind !== 'flag'; }).map(function (e) {
+                    return '<tr><td>' + escapeHtml(blWhen(e.at)) + '</td><td>' + escapeHtml(BL.names[e.clientId] || e.clientId || '') + '</td><td>' + escapeHtml(e.kind) + (e.method ? ' <small>(' + escapeHtml(e.method) + ')</small>' : '') + (e.reversed ? ' <span class="bl-badge bad">reversed</span>' : '') + '</td><td class="n">' + (e.amount ? blKes(e.amount) : '') + '</td><td>' + ((e.kind === 'purchase' || e.kind === 'renewal' || e.kind === 'addon') && !e.reversed ? '<button type="button" class="bl-link" data-act="reverse" data-ref="' + escapeHtml(e.ref) + '">Reverse</button>' : '') + '</td></tr>';
+                }).join('') + '</table></div>' : '<p class="settings-hint">No payments recorded yet.</p>') + '</div>'
+                + '<div class="bl-sec"><h4>Audit trail</h4>' + (aud.length ? '<div class="bl-scroll"><table class="bl-t"><tr><th>When (Nairobi)</th><th>Who</th><th>What</th></tr>' + aud.map(function (x) { return '<tr><td>' + escapeHtml(blWhen(x.at)) + '</td><td>' + escapeHtml(x.actor) + '</td><td>' + escapeHtml((BL.names[x.clientId] ? BL.names[x.clientId] + ': ' : '') + x.action + (x.note ? ': ' + x.note : '')) + '</td></tr>'; }).join('') + '</table></div>' : '<p class="settings-hint">No changes recorded yet.</p>') + '</div>';
+        }
+        async function blReverse(ref) {
+            var r = await blApi('reverse', { ref: ref });
+            if (r.status === 409 && r.j.needConfirm) { if (!(await blConfirm(r.j.summary))) return; r = await blApi('reverse', { ref: ref, confirm: true, note: 'reversed by owner' }); }
+            if (!r.ok) { blMsg(r.j.error || 'Could not reverse.', true); return; }
+            blMsg(r.j.dup ? 'Already reversed.' : 'Payment marked reversed.' + (r.j.voided ? ' ' + r.j.voided + ' unused reward voided.' : ''));
+            if (BL.shop) await blOpenShop(BL.shop.shop.id); else blRender();
+        }
+
+        /* ----- one place for every click in the Billing area ----- */
+        (function () {
+            function wire() {
+                var tabs = document.getElementById('bl-tabs'), body = document.getElementById('bl-body');
+                if (!tabs || tabs.dataset.wired) return; tabs.dataset.wired = '1';
+                tabs.addEventListener('click', function (e) { var b = e.target.closest('button[data-v]'); if (b) blSetView(b.getAttribute('data-v')); });
+                tabs.addEventListener('keydown', function (e) {            // arrow keys move between the sub-tabs, as on any tab list
+                    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+                    var all = Array.prototype.slice.call(tabs.querySelectorAll('button[data-v]')), i = all.indexOf(document.activeElement); if (i < 0) return;
+                    var n = all[(i + (e.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length]; n.focus(); blSetView(n.getAttribute('data-v')); e.preventDefault();
+                });
+                body.addEventListener('input', function (e) { if (BL.v === 'pricing') blPreview(); if (e.target.id === 'bl-q') { clearTimeout(blWire.t); blWire.t = setTimeout(function () { blLoadShops(e.target.value); }, 250); } });
+                body.addEventListener('click', async function (e) {
+                    var el = e.target.closest('[data-act]'); if (!el) return;
+                    var a = el.getAttribute('data-act'), id = el.getAttribute('data-id');
+                    if (a === 'save-pricing') await blSavePricing();
+                    else if (a === 'save-launch') await blSaveLaunch(false);
+                    else if (a === 'clear-launch') { if (await blConfirm(['Switch billing off: no new subscriptions start and nobody is blocked. Existing licences, payments and data are kept.'])) await blSaveLaunch(true); }
+                    else if (a === 'grandfather') await blGrandfather();
+                    else if (a === 'save-referral') await blSaveReferral();
+                    else if (a === 'offer-new') { BL.offerEdit = null; document.getElementById('bl-offer-form').innerHTML = blOfferForm(null); }
+                    else if (a === 'offer-edit') { document.getElementById('bl-offer-form').innerHTML = blOfferForm(BL.offers.find(function (o) { return o.id === id; })); }
+                    else if (a === 'offer-cancel') document.getElementById('bl-offer-form').innerHTML = '';
+                    else if (a === 'offer-save') await blOfferSave();
+                    else if (a === 'offer-toggle') { var r = await blApi('offer-state', { id: id, state: el.getAttribute('data-state') }); if (r.ok) { BL.offers = r.j.offers; blRender(); } else blMsg((r.j.errors || [r.j.error])[0] || 'Could not change the offer.', true); }
+                    else if (a === 'offer-delete') { if (await blConfirm(['Delete this discount. Customers can no longer use its code. Payments already made with it are unchanged.'])) { var d = await blApi('offer-delete', { id: id }); if (d.ok) { BL.offers = d.j.offers; blRender(); } } }
+                    else if (a === 'shop-open') await blOpenShop(id);
+                    else if (a === 'shops-back') { BL.shop = null; blRender(); }
+                    else if (a === 'shop-save') await blShopEdit(blEditPatch());
+                    else if (a === 'shop-suspend') await blShopEdit({ suspended: true });
+                    else if (a === 'shop-reactivate') await blShopEdit({ suspended: false });
+                    else if (a === 'shop-manual') {
+                        var m = await blApi('manual-renewal', { id: BL.shop.shop.id, cycles: blNum('bl-m-cycles'), receipt: blNum('bl-m-receipt') });
+                        if (!m.ok) blMsg(m.j.error || 'Could not confirm.', true); else { await blOpenShop(BL.shop.shop.id); blMsg('Payment confirmed. The paid period was extended.'); }
+                    }
+                    else if (a === 'reward') { var rr = await blApi('reward-review', { clientId: BL.shop.shop.id, rewardId: el.getAttribute('data-rid'), decision: el.getAttribute('data-d') }); if (rr.ok) await blOpenShop(BL.shop.shop.id); else blMsg(rr.j.error || 'Could not update the reward.', true); }
+                    else if (a === 'reverse') await blReverse(el.getAttribute('data-ref'));
+                    else if (a === 'pay-confirm') { var pc = await blApi('confirm-pay', { id: id }); blMsg(pc.ok ? 'Confirmed. The shop’s plan was updated.' : (pc.j.error || 'Could not confirm.'), !pc.ok); blLoadPayments(); }
+                    else if (a === 'pay-reject') { if (await blConfirm(['Reject this payment claim. The shop is told nothing was received; its plan is unchanged.'])) { var pr = await blApi('reject-pay', { id: id }); blMsg(pr.ok ? 'Rejected.' : (pr.j.error || 'Could not reject.'), !pr.ok); blLoadPayments(); } }
+                });
+            }
+            window.blWire = { t: 0, wire: wire };
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire); else wire();
+        })();
 
         /* ---------- Generate Link: Demo (ready-made links) / Permanent (payments waiting + the form) ---------- */
         function setLinkGenView(view) {
@@ -8201,7 +8549,7 @@
             if (tabId === 'owner-messages-tab') loadOwnerMessages();
             if (tabId === 'owner-offers-tab') loadOwnerOffers();
             if (tabId === 'owner-catalog-tab' && typeof loadOwnerCatalog === 'function') loadOwnerCatalog();
-            if (tabId === 'prices-tab') loadProductPrices();
+            if (tabId === 'billing-tab') loadBilling();
             if (tabId === 'owner-apps-tab') loadAppReleases();
             if (tabId === 'health-tab' && !healthData) loadHealth(0);
             if (tabId === 'sales-tab') { const pg = document.getElementById('link-gen-staff-pin-group'); if (pg) pg.style.display = consoleStaffMode ? 'block' : 'none'; }
@@ -18724,7 +19072,7 @@ async function storageMeasureUnknown() {
 
 <!-- @shared-block:guide-data:begin -->
 <!-- GUIDE DATA (owner) — generated by tools/build-guides.mjs; edit that file, not this one. -->
-<script>window.__GUIDE_DATA = {"key":"owner","title":"Owner Console — User Guide","tagline":"For the owner of the software business — create and manage client links, watch their health, and run your own shop.","module":"Owner Console","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Owner Console works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"signin","icon":"🔑","title":"Signing in","steps":["Open the Owner Console address. The **first time**, tap **Create Account** and make the owner account (email or phone and a password). After that, sign in with the same details — you stay signed in on that device.","**Staff do not use your email.** A staff member opens their own invite / personal link and signs in with their PIN."]},{"id":"links","icon":"🔗","title":"Creating a client link","steps":["Open **🔗 Generate Link**. Choose the **Product** (Shop, Hotel, Hospital, Production, Services, Pharmacy or Aqua), type the **client name** (and phone/email), a **link name** and the **Link type**.","**🕐 Demo (72 hours)** lets the client try it; **✅ Permanent** is a paid link. Tap **Generate Link** and **Copy** — it is live on its own subdomain at once.","Send the client the link. On the client’s first visit they sign up and become that shop’s Admin."]},{"id":"manage","icon":"✅","title":"Managing demo and permanent clients","steps":["Open **🕐 Demo** or **✅ Permanent** and tap a client for full details: link, product, notes, storage size.","From there you can **lock/unlock**, **extend** a demo, **confirm** a demo as permanent (its data is moved to its own database), and **delete**.","Under **Permanent**, use the **💰 income toggle** to record money agreed and paid: paying part creates a bill for the balance with **Settle** and **Remind** (the client’s admin sees a payment reminder banner until they press OK)."]},{"id":"catalogue","icon":"🛍️","title":"The hardware catalogue","steps":["Open **🛍️ Catalogue**. The first time, tap **⬇️ Load starter items** to import a starting list, or add your own with **➕ New product**.","**Products:** name, category, price, picture style, stock status, SKU, short and full description, specs, up to 12 pictures (the first is the main one), related products. **Hide** keeps an item off the website without deleting it; **☆ Feature** puts it on the home page.","**Special offers:** tick *This item is on offer*, enter the offer price and the start and end time (Nairobi time). The website works out the discount amount and percent, and stops the offer by itself at the end time.","**Complete systems:** pick existing products and quantities. The website shows the Individual value, the System price and **YOU SAVE** automatically (only when every part has a price). A product that is part of a system cannot be deleted until you remove it from the system.","**Categories:** make as many as you like (product categories and system types). Changes show on the website within about 30 seconds."]},{"id":"website","icon":"🌐","title":"The public website","steps":["Open **🌐 Website** to change the logo, headline, feature cards, showcase photos, **price** and **payment methods**, and testimonials. **Save & Publish Changes** updates the public site and the upgrade prompt every demo shows when its trial ends."]},{"id":"health","icon":"🐞","title":"Errors and Storage","steps":["**🐞 Errors** lists errors reported by every client app in the last 7 days; the same bug on many devices is one line with a count. Tap a line for the stack and device.","**💾 Storage** shows every shop’s data size. Use **🗜️ Compress all large shops**, **📏 Measure unknown**, **🗄️ Move all to database** (permanent shops), **🖼️ Shrink all photos**, and **🧪 Test the database**.","A shop that gets very large is told to archive old history; Storage shows which shops are near their limit."]},{"id":"ownpos","icon":"🛒","title":"Using the console as your own shop","steps":["The tabs **Bills, Daily Sales, Profits & Expenses, Staff** and the Settings sections work like the Shop POS for your own business — see the Shop guide chapters for making sales, receipts and printers (Settings ▸ Hardware)."]},{"id":"offline","icon":"📶","title":"Backups and your own data","steps":["The console keeps working through short internet cuts and catches up when it is back.","Settings ▸ 🗄️ Backups keeps your own business data safe; every client’s data is stored on the server and can be restored by you.","Use **Settings ▸ ✉️ Email (Password Resets)** so clients (and you) can reset a forgotten password by email, and **📸 AI Capture List** to add the AI key that reads photos of stock lists for your clients."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**A client says the app is slow or broken:** open **🐞 Errors** and **💾 Storage** — a shop that is too big or repeating an error shows up there.","**A client is locked out:** find them under **Demo** or **Permanent** and unlock, or extend the demo.","**A staff member cannot sign in:** send them a fresh staff link from **👥 Staff** (an old link may pre-date a change).","**A payment reminder keeps showing for a client:** it stays until their admin taps OK; settle or remove the bill under their record."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Owner Console, in the order they appear:","tabs":[["Dashboard","Your business at a glance: clients, demos, income."],["Generate Link","Create a demo or permanent POS link for a client on their own address."],["Demo","Every demo link across all products, grouped by client."],["Permanent","Every permanent (paid) client: manage, record income, remind, storage."],["Trash","Deleted links, restorable for 30 days before they’re removed for good."],["Tables & Rooms","Set-up used by your own hospitality POS."],["Website","Edit the public website, pricing, payment methods and testimonials."],["Catalogue","The products, complete systems, categories, prices, offers and pictures shown on the public /shop page and home page."],["Bills","What clients owe you (permanent-link balances) — settle or remind."],["Daily Sales","Your own sales and income records."],["Profits & Expenses","Your expenses and profit."],["Staff","Your own staff and their access to the console."],["Errors","Errors reported by every client’s app, grouped so one bug on many devices is one line."],["Storage","How big each shop’s data is; compress, move to a database, shrink photos."],["Health","Every paying shop at once: does its stock agree with its history, items below zero, its devices and their app release, whether it only syncs with paired devices, and whether it should move to its own database. Also runs by itself each morning and emails you only when something needs attention."],["Messages","Send announcements, app updates, installation offers, maintenance or security notices to all shops, chosen apps or chosen shops — optionally only on the browser, Android or Windows app and certain app versions, from / until a date. Shops see them in their app (one at a time, and under Settings ▸ Install App); a device that is offline gets them when it reconnects."],["Offers","Timed offers for the public website: write the offer, set the start and end in Nairobi time, then Publish. The website judges the countdown by the server clock; Pause, Back to draft or Archive hide it. Every change is logged."],["Apps & Versions","The Android (APK) and Windows (EXE / MSI) apps of each product: add a version, upload the real file (the server records its size and SHA-256), publish, withdraw. A shop is offered only its own app under Settings ▸ Install App."],["Settings","Business details, email for password resets, AI capture key, security, backups."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
+<script>window.__GUIDE_DATA = {"key":"owner","title":"Owner Console — User Guide","tagline":"For the owner of the software business — create and manage client links, watch their health, and run your own shop.","module":"Owner Console","version":"1.0.0","chapters":[{"id":"start","icon":"🚀","title":"Getting started","intro":"Owner Console works on a phone, tablet or computer, online or offline. Everything below applies on every device you use.","steps":["Open the link your provider gave you (or the app icon, once installed). The very first time on a new business, tap **Sign Up**, type the business name, your name and a **password** — you become the **Admin**. After that, tap **Log In**.","On **Who’s logging in?** pick **Admin** (type the password) or a staff member (type their PIN). Staff only see the tabs the Admin gave them.","Look at the small dot at the top: **green** = online and saved, **orange** = syncing, **black** = offline. Offline is fine — keep selling; everything is saved on the device and sent when the internet is back.","Tabs run across the top. **☰ More** holds the ones that do not fit. Tap the **📖** button at the top any time to open this guide.","Install it like an app: **⚙️ Settings ▸ 📱 Install App ▸ Install / Add to Home Screen**. After the first load it opens with no internet at all."],"tips":["Do the first load of the app **while online** on every device — that is what lets it open offline later.","Settings ▸ Install App ▸ Version shows the version and the build on this device, so you can confirm an update reached it."]},{"id":"signin","icon":"🔑","title":"Signing in","steps":["Open the Owner Console address. The **first time**, tap **Create Account** and make the owner account (email or phone and a password). After that, sign in with the same details — you stay signed in on that device.","**Staff do not use your email.** A staff member opens their own invite / personal link and signs in with their PIN."]},{"id":"links","icon":"🔗","title":"Creating a client link","steps":["Open **🔗 Generate Link**. Choose the **Product** (Shop, Hotel, Hospital, Production, Services, Pharmacy or Aqua), type the **client name** (and phone/email), a **link name** and the **Link type**.","**🕐 Demo (72 hours)** lets the client try it; **✅ Permanent** is a paid link. Tap **Generate Link** and **Copy** — it is live on its own subdomain at once.","Send the client the link. On the client’s first visit they sign up and become that shop’s Admin."]},{"id":"manage","icon":"✅","title":"Managing demo and permanent clients","steps":["Open **🕐 Demo** or **✅ Permanent** and tap a client for full details: link, product, notes, storage size.","From there you can **lock/unlock**, **extend** a demo, **confirm** a demo as permanent (its data is moved to its own database), and **delete**.","Under **Permanent**, use the **💰 income toggle** to record money agreed and paid: paying part creates a bill for the balance with **Settle** and **Remind** (the client’s admin sees a payment reminder banner until they press OK)."]},{"id":"catalogue","icon":"🛍️","title":"The hardware catalogue","steps":["Open **🛍️ Catalogue**. The first time, tap **⬇️ Load starter items** to import a starting list, or add your own with **➕ New product**.","**Products:** name, category, price, picture style, stock status, SKU, short and full description, specs, up to 12 pictures (the first is the main one), related products. **Hide** keeps an item off the website without deleting it; **☆ Feature** puts it on the home page.","**Special offers:** tick *This item is on offer*, enter the offer price and the start and end time (Nairobi time). The website works out the discount amount and percent, and stops the offer by itself at the end time.","**Complete systems:** pick existing products and quantities. The website shows the Individual value, the System price and **YOU SAVE** automatically (only when every part has a price). A product that is part of a system cannot be deleted until you remove it from the system.","**Categories:** make as many as you like (product categories and system types). Changes show on the website within about 30 seconds."]},{"id":"website","icon":"🌐","title":"The public website","steps":["Open **🌐 Website** to change the logo, headline, feature cards, showcase photos, **price** and **payment methods**, and testimonials. **Save & Publish Changes** updates the public site and the upgrade prompt every demo shows when its trial ends."]},{"id":"health","icon":"🐞","title":"Errors and Storage","steps":["**🐞 Errors** lists errors reported by every client app in the last 7 days; the same bug on many devices is one line with a count. Tap a line for the stack and device.","**💾 Storage** shows every shop’s data size. Use **🗜️ Compress all large shops**, **📏 Measure unknown**, **🗄️ Move all to database** (permanent shops), **🖼️ Shrink all photos**, and **🧪 Test the database**.","A shop that gets very large is told to archive old history; Storage shows which shops are near their limit."]},{"id":"ownpos","icon":"🛒","title":"Using the console as your own shop","steps":["The tabs **Bills, Daily Sales, Profits & Expenses, Staff** and the Settings sections work like the Shop POS for your own business — see the Shop guide chapters for making sales, receipts and printers (Settings ▸ Hardware)."]},{"id":"offline","icon":"📶","title":"Backups and your own data","steps":["The console keeps working through short internet cuts and catches up when it is back.","Settings ▸ 🗄️ Backups keeps your own business data safe; every client’s data is stored on the server and can be restored by you.","Use **Settings ▸ ✉️ Email (Password Resets)** so clients (and you) can reset a forgotten password by email, and **📸 AI Capture List** to add the AI key that reads photos of stock lists for your clients."]},{"id":"trouble","icon":"🛟","title":"When something is wrong","steps":["**A client says the app is slow or broken:** open **🐞 Errors** and **💾 Storage** — a shop that is too big or repeating an error shows up there.","**A client is locked out:** find them under **Demo** or **Permanent** and unlock, or extend the demo.","**A staff member cannot sign in:** send them a fresh staff link from **👥 Staff** (an old link may pre-date a change).","**A payment reminder keeps showing for a client:** it stays until their admin taps OK; settle or remove the bill under their record."]},{"id":"alltabs","icon":"🗂️","title":"Every tab at a glance","intro":"The tabs of Owner Console, in the order they appear:","tabs":[["Dashboard","Your business at a glance: clients, demos, income."],["Generate Link","Create a demo or permanent POS link for a client on their own address."],["Demo","Every demo link across all products, grouped by client."],["Permanent","Every permanent (paid) client: manage, record income, remind, storage."],["Trash","Deleted links, restorable for 30 days before they’re removed for good."],["Tables & Rooms","Set-up used by your own hospitality POS."],["Website","Edit the public website, payment methods and testimonials. Prices and the subscription are set under Billing."],["Catalogue","The products, complete systems, categories, prices, offers and pictures shown on the public /shop page and home page."],["Bills","What clients owe you (permanent-link balances) — settle or remind."],["Daily Sales","Your own sales and income records."],["Profits & Expenses","Your expenses and profit."],["Staff","Your own staff and their access to the console."],["Errors","Errors reported by every client’s app, grouped so one bug on many devices is one line."],["Storage","How big each shop’s data is; compress, move to a database, shrink photos."],["Health","Every paying shop at once: does its stock agree with its history, items below zero, its devices and their app release, whether it only syncs with paired devices, and whether it should move to its own database. Also runs by itself each morning and emails you only when something needs attention."],["Messages","Send announcements, app updates, installation offers, maintenance or security notices to all shops, chosen apps or chosen shops — optionally only on the browser, Android or Windows app and certain app versions, from / until a date. Shops see them in their app (one at a time, and under Settings ▸ Install App); a device that is offline gets them when it reconnects."],["Offers","Timed offers for the public website: write the offer, set the start and end in Nairobi time, then Publish. The website judges the countdown by the server clock; Pause, Back to draft or Archive hide it. Every change is logged."],["Billing","One place for every price and the subscription: Pricing (new link, add-ons, subscription, grace), Launch & exempt shops (the start date, the switch that blocks overdue shops, who is affected), Discounts, Referrals (rewards for shops that bring a paying customer), Shops (each shop’s plan, paid-through date, allowances, suspend / reactivate / complimentary, payment history, audit trail) and Payments (renewals waiting for you, the ledger, reversals). Existing shops stay exempt. Every price on the website, sample shops, checkout and receipts comes from here."],["Apps & Versions","The Android (APK) and Windows (EXE / MSI) apps of each product: add a version, upload the real file (the server records its size and SHA-256), publish, withdraw. A shop is offered only its own app under Settings ▸ Install App."],["Settings","Business details, email for password resets, AI capture key, security, backups."],["More","The rest of the tabs that do not fit on the screen."]]}]};</script>
 <!-- @shared-block:guide-data:end -->
 
 <!-- @shared-block:error-reporting:begin -->
@@ -19900,7 +20248,7 @@ async function storageMeasureUnknown() {
         GROUPS = [
             { id: 'o-clients', label: 'Clients & Links', icon: '🔗', tabs: ['sales-tab', 'demo-links-tab', 'permanent-links-tab', 'trash-tab'] },
             { id: 'o-money', label: 'Money', icon: '💰', tabs: ['daily-sales-tab', 'profits-tab', 'bills-tab'] },
-            { id: 'o-content', label: 'Content', icon: '🛍️', tabs: ['website-tab', 'owner-catalog-tab', 'prices-tab', 'owner-offers-tab', 'owner-messages-tab', 'tables-rooms-tab'] },
+            { id: 'o-content', label: 'Content', icon: '🛍️', tabs: ['website-tab', 'owner-catalog-tab', 'billing-tab', 'owner-offers-tab', 'owner-messages-tab', 'tables-rooms-tab'] },
             { id: 'o-watch', label: 'Monitoring', icon: '🩺', tabs: ['health-tab', 'errors-tab', 'storage-tab'] },
             { id: 'o-team', label: 'Team', icon: '👥', tabs: ['staff-tab'] },
             { id: 'o-sys', label: 'System', icon: '⚙️', tabs: ['owner-apps-tab', 'settings-tab'] }
@@ -20517,7 +20865,8 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
 <!-- SHOP BACKUP & RESTORE (zip 259) — owner console only. Download Permanent Shops Backup / Restore Permanent Shops Backup.
      The package is ONE file (NDJSON, optionally gzip): header line, then for each permanent shop its link record, KV keys, database rows,
      shop-database (Durable Object) state, pictures and website login record, a per-shop end line with record counts and a SHA-256, and a trailer.
-     Secrets (payment credentials, sessions, tokens, callback keys) are never included. See docs/SHOP_BACKUP_RESTORE.md. -->
+     Passwords and secret keys (payment / SMS / eTIMS credentials, callback keys, device pairing, staff keys) can be included (zip 267): they are locked inside the file with a passphrase
+     (AES-256-GCM, key from PBKDF2) and are sealed again with the new deployment's key on restore. Sessions and the owner's own sign-in are never included. See docs/SHOP_BACKUP_RESTORE.md. -->
 <style id="sb-css">
 .sb-panel{border:1px solid var(--light,#e1e5ea);border-left:5px solid #2980b9;border-radius:10px;padding:14px 16px;margin:0 0 16px;background:var(--card-bg,#fff)}
 .sb-panel h3{margin:0 0 4px}.sb-panel p{margin:0 0 10px;color:#6b7a86;font-size:13.5px;line-height:1.45}
@@ -20543,7 +20892,7 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
   'use strict';
   if (window.__shopBackup) return;
   var SB = window.__shopBackup = {};
-  var FORMAT = 'mydukapos-permanent-shops-backup', VERSION = 1, LIMITS = { kvBatch: 40, rowsBytes: 1500000, doPiece: 700000 };
+  var FORMAT = 'mydukapos-permanent-shops-backup', VERSION = 2, LIMITS = { kvBatch: 40, rowsBytes: 1500000, doPiece: 700000 };
 
   function el(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -20595,6 +20944,21 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
   SB.sha256 = function (text) { return new Sha().update(ENC.encode(text)).hex(); };
   SB._Sha = Sha;
 
+  // ---- passphrase lock for secrets (zip 267): AES-256-GCM, key from PBKDF2-SHA256. Each secret / platform record is its own sealed line, so a large file never needs one big decrypt. ----
+  var SEC = SB.sec = {};
+  SEC.iter = 250000;
+  SEC.b64 = function (buf) { var b = new Uint8Array(buf), t = ''; for (var i = 0; i < b.length; i += 0x8000) t += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(t); };
+  SEC.unb64 = function (t) { var bin = atob(t), u = new Uint8Array(bin.length); for (var i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
+  SEC.derive = async function (pass, salt, iter) {
+    var km = await crypto.subtle.importKey('raw', ENC.encode(String(pass)), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: salt, iterations: iter, hash: 'SHA-256' }, km, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  };
+  SEC.seal = async function (key, obj) { var iv = crypto.getRandomValues(new Uint8Array(12)); var ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, ENC.encode(JSON.stringify(obj))); return { iv: SEC.b64(iv), ct: SEC.b64(ct) }; };
+  SEC.open = async function (key, o) { var pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: SEC.unb64(o.iv) }, key, SEC.unb64(o.ct)); return JSON.parse(new TextDecoder().decode(pt)); };
+  // the file header carries what is needed to check a typed passphrase BEFORE anything is restored
+  SEC.newLock = async function (pass) { var salt = crypto.getRandomValues(new Uint8Array(16)), key = await SEC.derive(pass, salt, SEC.iter); return { key: key, lock: { kdf: 'PBKDF2-SHA256', iter: SEC.iter, salt: SEC.b64(salt), check: await SEC.seal(key, 'mdp-secrets-ok') } }; };
+  SEC.unlock = async function (lock, pass) { try { var key = await SEC.derive(pass, SEC.unb64(lock.salt), lock.iter); return (await SEC.open(key, lock.check)) === 'mdp-secrets-ok' ? key : null; } catch (e) { return null; } };
+
   // ---- dialog ----
   function dialog(title, restore) {
     var o = el('sb-overlay');
@@ -20624,7 +20988,7 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
   SB.exportAll = async function (opts) {
     opts = opts || {};
     var body = dialog('Download Permanent Shops Backup'); var ui = progress(body); SB.busy = true;
-    var errors = [], parts = [], lines = 0, totals = { shops: 0, kv: 0, rows: 0, do: 0, media: 0, accounts: 0 }, shopHashes = [];
+    var errors = [], parts = [], lines = 0, totals = { shops: 0, kv: 0, rows: 0, do: 0, media: 0, accounts: 0, secrets: 0, platform: 0 }, shopHashes = [];
     var push = function (obj, sha) { var s = JSON.stringify(obj) + '\n'; parts.push(s); lines++; if (sha) sha.update(ENC.encode(s)); };
     try {
       ui.stage('Reading what this deployment holds…', 2);
@@ -20640,11 +21004,17 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
       var perShop = {}, excluded = {}, cur = '', pages = 0; ids.forEach(function (i) { perShop[i] = []; });
       do { var sc = await api('x-kv-scan', { cursor: cur, ids: ids }); if (!sc.ok) throw new Error(sc.error || 'KV scan failed'); sc.keys.forEach(function (k) { perShop[k.shop].push(k.k); }); Object.keys(sc.excluded || {}).forEach(function (p) { excluded[p] = (excluded[p] || 0) + sc.excluded[p]; }); cur = sc.cursor; pages++; ui.stage('Finding each shop’s stored records (page ' + pages + ')…', 5); } while (cur);
       var accounts = (await api('x-accounts', { ids: ids })).accounts || [];
-      var header = { t: 'header', format: FORMAT, version: VERSION, createdAt: new Date().toISOString(), source: { host: location.host, rootDomain: schema.rootDomain }, resources: schema.resources, tables: tables, notPerShop: schema.notPerShop, excludedKeyPrefixes: excluded, includes: { media: !!opts.includeMedia }, shopCount: shops.length,
-        notIncluded: ['Payment-gateway, SMS, SHA, eTIMS and e-mail credentials', 'Callback keys, device pairing, staff sessions and keys, owner sessions, OTPs, tokens', 'Daily KV snapshot copies (pos-data:backup:*) - regenerated by the app', 'Demo shops, trashed shops', 'The platform owner account itself (created again in the new deployment)'] };
+      // zip 267: passwords and secret keys, only into a passphrase-locked file. The server hands them over opened; they are locked here before anything is written.
+      var lockInfo = null, secretPerShop = {};
+      if (opts.secretsPass) {
+        lockInfo = await SEC.newLock(opts.secretsPass); ids.forEach(function (i) { secretPerShop[i] = []; });
+        var scur = ''; do { var ss = await api('x-secret-scan', { cursor: scur, ids: ids }); if (!ss.ok) throw new Error(ss.error || 'secret scan failed'); ss.keys.forEach(function (k) { secretPerShop[k.shop].push(k.k); }); scur = ss.done ? '' : ss.cursor; } while (scur);
+      }
+      var header = { t: 'header', format: FORMAT, version: VERSION, createdAt: new Date().toISOString(), source: { host: location.host, rootDomain: schema.rootDomain }, resources: schema.resources, tables: tables, notPerShop: schema.notPerShop, excludedKeyPrefixes: excluded, includes: { media: !!opts.includeMedia, secrets: !!lockInfo, platform: !!opts.includePlatform }, secrets: lockInfo ? lockInfo.lock : undefined, shopCount: shops.length,
+        notIncluded: [].concat(lockInfo ? [] : ['Passwords and secret keys: payment-gateway, SMS, SHA, eTIMS credentials, callback keys, device pairing, staff keys (this file was made without them)']).concat(['Staff and website sessions, owner sessions, OTPs, pairing codes, tokens', 'Daily KV snapshot copies (pos-data:backup:*) - regenerated by the app', 'Demo shops, trashed shops', 'The platform owner account itself (created again in the new deployment)']) };
       push(header);
       for (var si = 0; si < shops.length; si++) {
-        var shop = shops[si], sha = new Sha(), counts = { kv: 0, rows: {}, do: 0, media: 0, accounts: 0 }, start = parts.length;
+        var shop = shops[si], sha = new Sha(), counts = { kv: 0, rows: {}, do: 0, media: 0, accounts: 0, secrets: 0 }, start = parts.length;
         ui.stage('Shop ' + (si + 1) + ' of ' + shops.length + ': ' + (shop.label || shop.slug || shop.id), 8 + 90 * si / shops.length);
         try {
           push({ t: 'shop', id: shop.id, slug: shop.slug, product: shop.product, label: shop.label, path: shop.path, link: shop.link, mode: shop.mode, record: shop.record }, sha);
@@ -20666,11 +21036,27 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
             while (mkeys.length) { var mg = await api('x-media-get', { shop: shop.id, keys: mkeys.splice(0, 20) }); mg.items.forEach(function (it) { if (it.missing) return; push({ t: 'media', key: it.key, type: it.type, b64: it.b64 }, sha); counts.media++; }); if (mg.rest && mg.rest.length) mkeys = mg.rest.concat(mkeys); }
           }
           accounts.filter(function (a) { return a.shop === shop.id; }).forEach(function (a) { push({ t: 'account', account: a.account }, sha); counts.accounts++; });
+          if (lockInfo) {
+            var sk = (secretPerShop[shop.id] || []).slice();
+            while (sk.length) { var sg = await api('x-secret-get', { keys: sk.splice(0, 40) }); if (!sg.ok) throw new Error(sg.error || 'secret read failed'); for (var sj = 0; sj < sg.items.length; sj++) { var sealed = await SEC.seal(lockInfo.key, sg.items[sj]); push({ t: 'secret', iv: sealed.iv, ct: sealed.ct }, sha); counts.secrets++; if (sg.items[sj].unreadable) errors.push('Shop ' + (shop.label || shop.id) + ': a stored secret could not be opened here (' + sg.items[sj].key + '); it is saved as stored and only works where the same PAYMENT_SECRETS_KEY is set.'); } }
+          }
         } catch (e) { errors.push('Shop ' + (shop.label || shop.id) + ': ' + e.message); ui.log('Problem with ' + (shop.label || shop.id) + ': ' + e.message, 'sb-bad'); counts.error = e.message; }
         var hex = sha.hex(); shopHashes.push(hex);
         push({ t: 'shop-end', id: shop.id, counts: counts, lines: parts.length - start, sha256: hex });
-        totals.shops++; totals.kv += counts.kv; totals.do += counts.do ? 1 : 0; totals.media += counts.media; totals.accounts += counts.accounts; Object.keys(counts.rows).forEach(function (k) { totals.rows += counts.rows[k]; });
+        totals.shops++; totals.secrets += counts.secrets || 0; totals.kv += counts.kv; totals.do += counts.do ? 1 : 0; totals.media += counts.media; totals.accounts += counts.accounts; Object.keys(counts.rows).forEach(function (k) { totals.rows += counts.rows[k]; });
         ui.log((counts.error ? 'INCOMPLETE ' : 'ok ') + (shop.label || shop.slug) + ': ' + counts.kv + ' keys, ' + Object.keys(counts.rows).reduce(function (a, k) { return a + counts.rows[k]; }, 0) + ' rows' + (counts.do ? ', shop database' : '') + (counts.media ? ', ' + counts.media + ' pictures' : ''), counts.error ? 'sb-bad' : 'sb-ok');
+      }
+      if (opts.includePlatform) {
+        ui.stage('Prices, discounts, payment ledger and website settings…', 97);
+        var psha = new Sha(), pn = 0; push({ t: 'platform-begin' }, psha);
+        var pp = 0, pcur = '';
+        for (;;) {
+          var pr = await api('x-platform', { p: pp, cursor: pcur, secrets: !!lockInfo }); if (!pr.ok) throw new Error(pr.error || 'billing data read failed');
+          for (var pi2 = 0; pi2 < pr.items.length; pi2++) { var pit = pr.items[pi2]; if (lockInfo) { var ps = await SEC.seal(lockInfo.key, pit); push({ t: 'platform', iv: ps.iv, ct: ps.ct }, psha); } else push({ t: 'platform', key: pit.key, value: pit.value }, psha); pn++; }
+          if (pr.done) break; pp = pr.p; pcur = pr.cursor;
+        }
+        var phex = psha.hex(); push({ t: 'platform-end', n: pn, lines: pn + 1, sha256: phex }); shopHashes.push(phex); totals.platform = pn;
+        ui.log('Billing data: ' + pn + ' records');
       }
       push({ t: 'trailer', complete: errors.length === 0, shops: shops.length, totals: totals, errors: errors, sha256: SB.sha256(shopHashes.join('|')), createdAt: new Date().toISOString() });
       ui.stage('Building the file…', 99);
@@ -20678,15 +21064,31 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
       if (typeof CompressionStream === 'function') { blob = await new Response(blob.stream().pipeThrough(new CompressionStream('gzip'))).blob(); name += '.gz'; }
       var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
       ui.stage(errors.length ? 'Finished WITH PROBLEMS' : 'Backup downloaded', 100);
-      ui.final((errors.length ? '<div class="sb-note e"><b>This backup is INCOMPLETE.</b> Do not rely on it. ' + esc(errors.length) + ' problem(s):<br>' + errors.map(esc).join('<br>') + '</div>' : '<div class="sb-note"><b>Complete.</b> ' + totals.shops + ' shops, ' + totals.kv + ' stored records, ' + totals.rows + ' database rows, ' + totals.media + ' pictures, ' + totals.accounts + ' logins. File: ' + esc(name) + ' (' + Math.round(blob.size / 1024) + ' KB). It contains customer and sales data - keep it private.</div>'));
+      ui.final((errors.length ? '<div class="sb-note e"><b>This backup is INCOMPLETE.</b> Do not rely on it. ' + esc(errors.length) + ' problem(s):<br>' + errors.map(esc).join('<br>') + '</div>' : '<div class="sb-note"><b>Complete.</b> ' + totals.shops + ' shops, ' + totals.kv + ' stored records, ' + totals.rows + ' database rows, ' + totals.media + ' pictures, ' + totals.accounts + ' logins' + (totals.secrets ? ', ' + totals.secrets + ' secret keys (locked with your passphrase)' : '') + (totals.platform ? ', ' + totals.platform + ' billing records' : '') + '. File: ' + esc(name) + ' (' + Math.round(blob.size / 1024) + ' KB). It contains customer and sales data' + (totals.secrets ? ' and payment credentials. Keep the file AND the passphrase private; without the passphrase the secret keys cannot be recovered' : ' - keep it private') + '.</div>'));
     } catch (e) { ui.stage('Stopped', 100); ui.final('<div class="sb-note e"><b>Backup not made:</b> ' + esc(e.message) + '</div>'); }
     SB.busy = false; SB.lastExportErrors = errors;
   };
   SB.exportClick = function () {
     var body = dialog('Download Permanent Shops Backup');
-    body.innerHTML = '<p>One file with every <b>permanent</b> shop: its link (exact subdomain, product and <code>c</code> code), all its records, stock and sales history, staff, settings, customers, shop-database state and website login (password <i>hashes</i> only). Demo shops are left out.</p><div class="sb-note w"><b>Never included:</b> payment-gateway / SMS / e-TIMS credentials, sessions, tokens and callback keys. After restoring, each shop re-enters its payment credentials.</div><label style="display:block;margin:8px 0"><input type="checkbox" id="sb-media" checked> Include shop pictures (larger file)</label><label style="display:block;margin:8px 0"><input type="checkbox" id="sb-ownershop"> Include the Owner Console’s own shop record</label><div class="sb-row"><button type="button" class="sb-btn" id="sb-go">Create backup</button><button type="button" class="sb-btn sec" id="sb-no">Cancel</button></div>';
+    body.innerHTML = '<p>One file with every <b>permanent</b> shop: its link (exact subdomain, product and <code>c</code> code, and its billing record), all its records, stock and sales history, staff, settings, customers, shop-database state, pictures and website login. Demo shops are left out.</p>'
+      + '<div class="sb-note"><b>Passwords:</b> the apps never store a password or PIN as text, only a fingerprint (hash). The file carries those hashes, so everyone keeps their current passwords and PINs after a restore.</div>'
+      + '<label style="display:block;margin:8px 0"><input type="checkbox" id="sb-secrets" checked> <b>Include secret keys</b> (payment-gateway, SMS, SHA and eTIMS credentials, callback keys, paired devices, staff keys)</label>'
+      + '<div id="sb-passbox" class="sb-note w"><b>Lock them with a passphrase.</b> Without it the secrets cannot be read back, and nobody can recover it for you. Anyone who has this file AND the passphrase can use these shops\u2019 payment accounts.<br><label for="sb-pass" style="display:block;margin-top:6px">Passphrase (at least 10 characters)</label><input id="sb-pass" type="password" autocomplete="new-password" style="width:100%;box-sizing:border-box;padding:8px" maxlength="200"><label for="sb-pass2" style="display:block;margin-top:6px">Type it again</label><input id="sb-pass2" type="password" autocomplete="new-password" style="width:100%;box-sizing:border-box;padding:8px" maxlength="200"><div id="sb-passerr" class="sb-bad" role="alert"></div></div>'
+      + '<label style="display:block;margin:8px 0"><input type="checkbox" id="sb-platform" checked> Include prices, discounts, the payment ledger and the platform settings (Billing, Website text, catalogue, app releases, messages)</label>'
+      + '<label style="display:block;margin:8px 0"><input type="checkbox" id="sb-media" checked> Include shop pictures (larger file)</label><label style="display:block;margin:8px 0"><input type="checkbox" id="sb-ownershop"> Include the Owner Console\u2019s own shop record</label>'
+      + '<p class="settings-hint">Never included: staff and website sessions, one-time codes, and your own Owner Console sign-in (you create that again in the new deployment).</p>'
+      + '<div class="sb-row"><button type="button" class="sb-btn" id="sb-go">Create backup</button><button type="button" class="sb-btn sec" id="sb-no">Cancel</button></div>';
+    el('sb-secrets').onchange = function () { el('sb-passbox').style.display = this.checked ? '' : 'none'; };
     el('sb-no').onclick = function () { el('sb-overlay').classList.remove('open'); };
-    el('sb-go').onclick = function () { SB.exportAll({ includeMedia: el('sb-media').checked, includeOwnerShop: el('sb-ownershop').checked }); };
+    el('sb-go').onclick = function () {
+      var want = el('sb-secrets').checked, pass = want ? el('sb-pass').value : '', err = el('sb-passerr');
+      if (want) {
+        if (pass.length < 10) { err.textContent = 'The passphrase needs at least 10 characters.'; return; }
+        if (pass !== el('sb-pass2').value) { err.textContent = 'The two passphrases are not the same.'; return; }
+        if (!(window.crypto && crypto.subtle)) { err.textContent = 'This browser cannot lock the file (it needs a secure https page). Untick the secret keys or use another browser.'; return; }
+      }
+      SB.exportAll({ includeMedia: el('sb-media').checked, includeOwnerShop: el('sb-ownershop').checked, includePlatform: el('sb-platform').checked, secretsPass: pass });
+    };
   };
 
   // ================================================================ RESTORE
@@ -20701,28 +21103,35 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
 
   // Pass 1: no change to anything. Verifies structure, version, per-shop hashes and counts, trailer.
   SB.validate = async function (file, onProgress) {
-    var res = { ok: true, problems: [], header: null, shops: [], trailer: null, lines: 0 }, cur = null, hashes = [], first = true;
+    var res = { ok: true, problems: [], header: null, shops: [], trailer: null, lines: 0, platform: null }, cur = null, plat = null, hashes = [], first = true;
     try {
       for await (var line of readLines(file)) {
         res.lines++; var o; try { o = JSON.parse(line); } catch (e) { res.problems.push('Line ' + res.lines + ' is not valid JSON.'); res.ok = false; break; }
-        if (first) { first = false; if (o.t !== 'header' || o.format !== FORMAT) { res.problems.push('This is not a MyDukaPOS permanent-shops backup.'); res.ok = false; break; } if (o.version !== VERSION) { res.problems.push('Unsupported backup version ' + o.version + ' (this console reads version ' + VERSION + ').'); res.ok = false; break; } res.header = o; continue; }
-        if (o.t === 'shop') { if (cur) { res.problems.push('Shop ' + cur.id + ' has no end line (the file is cut off).'); res.ok = false; } cur = { id: o.id, slug: o.slug, product: o.product, label: o.label, path: o.path, link: o.link, mode: o.mode, sha: new Sha().update(ENC.encode(line + '\n')), n: { kv: 0, rows: {}, do: 0, media: 0, accounts: 0 }, lines: 1 }; res.shops.push(cur); }
+        if (first) { first = false; if (o.t !== 'header' || o.format !== FORMAT) { res.problems.push('This is not a MyDukaPOS permanent-shops backup.'); res.ok = false; break; } if (o.version !== 1 && o.version !== VERSION) { res.problems.push('Unsupported backup version ' + o.version + ' (this console reads versions 1 and ' + VERSION + ').'); res.ok = false; break; } res.header = o; continue; }
+        if (o.t === 'shop') { if (cur) { res.problems.push('Shop ' + cur.id + ' has no end line (the file is cut off).'); res.ok = false; } cur = { id: o.id, slug: o.slug, product: o.product, label: o.label, path: o.path, link: o.link, mode: o.mode, sha: new Sha().update(ENC.encode(line + '\n')), n: { kv: 0, rows: {}, do: 0, media: 0, accounts: 0, secrets: 0 }, lines: 1 }; res.shops.push(cur); }
         else if (o.t === 'shop-end') {
           if (!cur || cur.id !== o.id) { res.problems.push('Unexpected end line for shop ' + o.id + '.'); res.ok = false; continue; }
-          var hex = cur.sha.hex(); cur.hash = hex; cur.endCounts = o.counts; cur.hashOk = hex === o.sha256; cur.countOk = o.lines === cur.lines && o.counts.kv === cur.n.kv && (o.counts.do || 0) === cur.n.do && o.counts.media === cur.n.media && o.counts.accounts === cur.n.accounts && JSON.stringify(o.counts.rows) === JSON.stringify(cur.n.rows);
+          var hex = cur.sha.hex(); cur.hash = hex; cur.endCounts = o.counts; cur.hashOk = hex === o.sha256; cur.countOk = o.lines === cur.lines && o.counts.kv === cur.n.kv && (o.counts.do || 0) === cur.n.do && o.counts.media === cur.n.media && o.counts.accounts === cur.n.accounts && (o.counts.secrets || 0) === cur.n.secrets && JSON.stringify(o.counts.rows) === JSON.stringify(cur.n.rows);
           if (!cur.hashOk) { res.problems.push('Shop "' + (cur.label || cur.id) + '": integrity check failed (the data was changed or damaged).'); res.ok = false; }
           if (!cur.countOk) { res.problems.push('Shop "' + (cur.label || cur.id) + '": record counts do not match the manifest.'); res.ok = false; }
           if (o.counts.error) { res.problems.push('Shop "' + (cur.label || cur.id) + '" was exported with an error: ' + o.counts.error); res.ok = false; }
           hashes.push(o.sha256); cur = null;
         } else if (o.t === 'trailer') { res.trailer = o; }
+        else if (o.t === 'platform-begin') { if (cur) { res.problems.push('The billing section starts inside shop ' + cur.id + '.'); res.ok = false; } plat = { sha: new Sha().update(ENC.encode(line + '\n')), n: 0, lines: 1 }; }
+        else if (plat && o.t === 'platform') { plat.sha.update(ENC.encode(line + '\n')); plat.lines++; plat.n++; }
+        else if (o.t === 'platform-end') {
+          if (!plat) { res.problems.push('An unexpected billing end line.'); res.ok = false; }
+          else { var phx = plat.sha.hex(); if (phx !== o.sha256 || o.n !== plat.n || o.lines !== plat.lines) { res.problems.push('The billing section failed its integrity check.'); res.ok = false; } hashes.push(o.sha256); res.platform = { n: plat.n }; plat = null; }
+        }
         else if (cur) {
           cur.sha.update(ENC.encode(line + '\n')); cur.lines++;
           if (o.t === 'kv') cur.n.kv++; else if (o.t === 'row') { var k = o.db + '.' + o.table; cur.n.rows[k] = (cur.n.rows[k] || 0) + 1; }
-          else if (o.t === 'do') cur.n.do = o.total || 1; else if (o.t === 'media') cur.n.media++; else if (o.t === 'account') cur.n.accounts++;
+          else if (o.t === 'do') cur.n.do = o.total || 1; else if (o.t === 'media') cur.n.media++; else if (o.t === 'account') cur.n.accounts++; else if (o.t === 'secret') cur.n.secrets++;
         } else { res.problems.push('A record appears outside any shop (line ' + res.lines + ').'); res.ok = false; }
         if (onProgress && res.lines % 2000 === 0) onProgress(res.lines);
       }
       if (cur) { res.problems.push('The file ends in the middle of shop ' + cur.id + '.'); res.ok = false; }
+      if (plat) { res.problems.push('The file ends in the middle of the billing section.'); res.ok = false; }
       if (!res.trailer) { res.problems.push('The file has no trailer: it is incomplete.'); res.ok = false; }
       else {
         if (res.trailer.shops !== res.shops.length) { res.problems.push('The trailer lists ' + res.trailer.shops + ' shops but the file holds ' + res.shops.length + '.'); res.ok = false; }
@@ -20740,19 +21149,29 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
   }
 
   // Pass 2: writes. resolutions: { shopId: 'overwrite' | 'skip' }
-  SB.restoreAll = async function (file, val, resolutions, ui) {
+  SB.restoreAll = async function (file, val, resolutions, ui, extra) {
+    extra = extra || {};
     var results = {}, tablesByKey = {}; (val.header.tables || []).forEach(function (t) { tablesByKey[t.db + '.' + t.name] = t; });
     var allIds = val.shops.map(function (s) { return s.id; });
     await api('r-schema');
-    var cur = null, kvB = [], kvBytes = 0, rowB = null, rowBytes = 0, doText = [], medB = [], accB = [], doneLines = 0;
-    function R(id) { return results[id] || (results[id] = { id: id, status: 'ok', problems: [], inserted: 0, ignored: 0, kv: 0, media: 0, accounts: 0, doParts: 0, skipped: false }); }
+    var cur = null, kvB = [], kvBytes = 0, rowB = null, rowBytes = 0, doText = [], medB = [], accB = [], secB = [], platB = [], platRes = { put: 0, kept: 0, problems: [] }, doneLines = 0;
+    function R(id) { return results[id] || (results[id] = { id: id, status: 'ok', problems: [], inserted: 0, ignored: 0, kv: 0, media: 0, accounts: 0, secrets: 0, doParts: 0, skipped: false }); }
     async function flushKv() { if (!kvB.length) return; var r = await api('r-kv', { items: kvB, ids: allIds }); R(cur.id).kv += r.put || 0; (r.errors || []).forEach(function (e) { R(cur.id).problems.push('KV ' + e.key + ': ' + e.error); }); kvB = []; kvBytes = 0; }
     async function flushRows() { if (!rowB || !rowB.rows.length) { rowB = null; return; } var t = tablesByKey[rowB.db + '.' + rowB.table], r = await api('r-rows', { db: rowB.db, table: rowB.table, ddl: t ? t.ddl : [], rows: rowB.rows, ids: allIds }); var x = R(cur.id); x.inserted += r.inserted || 0; x.ignored += r.ignored || 0; if (!r.ok) x.problems.push('Table ' + rowB.table + ': ' + (r.error || 'not written')); rowB = null; rowBytes = 0; }
     async function flushMed() { if (!medB.length) return; var r = await api('r-media', { shop: cur.id, items: medB }); R(cur.id).media += r.put || 0; (r.errors || []).forEach(function (e) { R(cur.id).problems.push('Picture ' + e.key + ': ' + e.error); }); medB = []; }
-    async function flushAll() { await flushKv(); await flushRows(); await flushMed(); }
+    async function flushSec() { if (!secB.length) return; var r = await api('r-secrets', { items: secB, ids: allIds }); R(cur.id).secrets += r.put || 0; (r.errors || []).forEach(function (e) { R(cur.id).problems.push('Secret ' + e.key + ': ' + e.error); }); secB = []; }
+    async function flushPlat() { if (!platB.length) return; var r = await api('r-platform', { items: platB }); platRes.put += r.put || 0; platRes.kept += r.kept || 0; (r.errors || []).forEach(function (e) { platRes.problems.push(e.key + ': ' + e.error); }); platB = []; }
+    async function flushAll() { await flushKv(); await flushRows(); await flushMed(); await flushSec(); }
     for await (var line of readLines(file)) {
       var o = JSON.parse(line); doneLines++;
       if (o.t === 'header' || o.t === 'trailer') continue;
+      if (o.t === 'platform-begin') { cur = null; continue; }
+      if (o.t === 'platform') {
+        if (!extra.restorePlatform) continue;
+        try { var pit = o.ct ? await SEC.open(extra.secretKey, o) : { key: o.key, value: o.value }; platB.push(pit); if (platB.length >= 100) await flushPlat(); } catch (e) { platRes.problems.push('A billing record could not be read: ' + e.message); }
+        continue;
+      }
+      if (o.t === 'platform-end') { await flushPlat(); SB.lastPlatform = platRes; ui.log('Billing data: ' + platRes.put + ' added, ' + platRes.kept + ' already there (kept)' + (platRes.problems.length ? ', ' + platRes.problems.length + ' problem(s)' : ''), platRes.problems.length ? 'sb-bad' : 'sb-ok'); continue; }
       if (o.t === 'shop') {
         cur = { id: o.id, skip: false, exp: null }; var res = resolutions[o.id] || 'auto';
         if (res === 'skip') { cur.skip = true; R(o.id).skipped = true; R(o.id).status = 'skipped'; ui.log('Skipped ' + (o.label || o.id) + ' (conflict left as is).', 'sb-warn'); continue; }
@@ -20768,6 +21187,10 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
       else if (o.t === 'do') { doText.push(o.text); }
       else if (o.t === 'media') { medB.push({ key: o.key, type: o.type, b64: o.b64 }); if (medB.length >= 8) await flushMed(); }
       else if (o.t === 'account') { accB.push({ account: o.account }); }
+      else if (o.t === 'secret') {
+        if (!extra.restoreSecrets) continue;
+        try { secB.push(await SEC.open(extra.secretKey, o)); if (secB.length >= 40) await flushSec(); } catch (e) { R(cur.id).problems.push('A secret key could not be unlocked: ' + e.message); }
+      }
       else if (o.t === 'shop-end') {
         await flushAll(); var x = R(cur.id);
         if (doText.length) { try { var pcs = doPieces(doText.join('')); for (var pi = 0; pi < pcs.length; pi++) { var dr = await api('r-do', { shop: cur.id, text: pcs[pi] }); if (!dr.ok) throw new Error(dr.error || 'refused'); x.doParts++; } } catch (e) { x.problems.push('Shop database: ' + e.message); } doText = []; }
@@ -20776,8 +21199,9 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
         if (!vr.license || !vr.slug) x.problems.push('The shop link record or subdomain is not in place after restore.');
         Object.keys(exp.rows || {}).forEach(function (k) { var nm = k.split('.').slice(1).join('.'); if ((vr.tables[nm] == null ? -1 : vr.tables[nm]) < exp.rows[k]) x.problems.push('Table ' + nm + ' has ' + vr.tables[nm] + ' rows, expected at least ' + exp.rows[k] + '.'); });
         if (x.kv !== exp.kv) x.problems.push('Stored records written: ' + x.kv + ' of ' + exp.kv + '.');
+        if (extra.restoreSecrets && (exp.secrets || 0) !== x.secrets) x.problems.push('Secret keys written: ' + x.secrets + ' of ' + (exp.secrets || 0) + '.');
         x.expected = exp; x.status = x.problems.length ? 'problems' : 'ok';
-        ui.log((x.problems.length ? 'PROBLEMS ' : 'ok ') + o.id + ': ' + x.kv + ' keys, ' + x.inserted + ' rows added' + (x.ignored ? ' (' + x.ignored + ' already present)' : '') + (x.doParts ? ', shop database' : '') + (x.media ? ', ' + x.media + ' pictures' : ''), x.problems.length ? 'sb-bad' : 'sb-ok');
+        ui.log((x.problems.length ? 'PROBLEMS ' : 'ok ') + o.id + ': ' + x.kv + ' keys, ' + x.inserted + ' rows added' + (x.ignored ? ' (' + x.ignored + ' already present)' : '') + (x.doParts ? ', shop database' : '') + (x.media ? ', ' + x.media + ' pictures' : '') + (x.secrets ? ', ' + x.secrets + ' secret keys' : ''), x.problems.length ? 'sb-bad' : 'sb-ok');
         cur = null;
       }
     }
@@ -20806,6 +21230,8 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
     }).join('') + '</tbody></table>';
     var ex = val.header.excludedKeyPrefixes || {}, exN = Object.keys(ex).reduce(function (a, k) { return a + ex[k]; }, 0);
     h += '<div class="sb-note w"><b>Not in the package (by design):</b> ' + (val.header.notIncluded || []).map(esc).join('; ') + (exN ? '. ' + exN + ' secret/session/cache records were left out.' : '') + '<br><b>Logins:</b> website sign-in accounts and staff PIN hashes are restored, so people keep their current passwords and PINs. Shops must re-enter payment-gateway credentials, and everyone signs in once more (sessions are not carried over).</div>';
+    if (val.header.secrets) h += '<div class="sb-note w"><b>This backup contains secret keys</b> (payment and SMS credentials, callback keys, paired devices, staff keys), locked with the passphrase chosen when it was made.<label style="display:block;margin-top:6px"><input type="checkbox" id="sb-rsec" checked> Restore the secret keys</label><label for="sb-rpass" style="display:block;margin-top:6px">Passphrase</label><input id="sb-rpass" type="password" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px" maxlength="200"><div id="sb-rpasserr" class="sb-bad" role="alert"></div></div>';
+    if (val.platform) h += '<label style="display:block;margin:8px 0"><input type="checkbox" id="sb-rplat" checked> Also restore prices, discounts and the payment ledger (' + val.platform.n + ' records). Anything this deployment already has is kept, never replaced.</label>';
     h += '<div class="sb-row"><button type="button" class="sb-btn rs" id="sb-do" disabled>Restore ' + val.shops.length + ' shops</button><button type="button" class="sb-btn sec" id="sb-cancel">Cancel</button></div><div id="sb-run"></div>';
     box.innerHTML = h;
     var go = el('sb-do'); function ready() { var all = true; document.querySelectorAll('[data-sb-res]').forEach(function (s) { if (!s.value) all = false; }); go.disabled = !all || (chk.blockers || []).length > 0; }
@@ -20813,12 +21239,18 @@ html body:not(#z186) :is(td, th, .qty-controls, .capture-review-table, .loc-card
     el('sb-cancel').onclick = function () { el('sb-overlay').classList.remove('open'); };
     go.onclick = async function () {
       if (!confirm('Restore ' + val.shops.length + ' shops into THIS deployment? Existing shops are never overwritten unless you chose that for a conflict.')) return;
+      var extra = { restoreSecrets: !!(val.header.secrets && el('sb-rsec') && el('sb-rsec').checked), restorePlatform: !!(val.platform && el('sb-rplat') && el('sb-rplat').checked), secretKey: null };
+      if (val.header.secrets && (extra.restoreSecrets || extra.restorePlatform)) {
+        var perr = el('sb-rpasserr'); perr.textContent = '';
+        extra.secretKey = await SEC.unlock(val.header.secrets, (el('sb-rpass') || {}).value || '');
+        if (!extra.secretKey) { perr.textContent = 'That passphrase is not right. Nothing has been changed.'; return; }
+      }
       var res = {}; document.querySelectorAll('[data-sb-res]').forEach(function (s) { res[s.getAttribute('data-sb-res')] = s.value; });
       var run = el('sb-run'); var ui = progress(run); SB.busy = true; go.disabled = true;
-      var results; try { results = await SB.restoreAll(file, val, res, ui); } catch (e) { ui.final('<div class="sb-note e"><b>Restore stopped:</b> ' + esc(e.message) + '<br>It is safe to run the same file again: records already restored are not duplicated.</div>'); SB.busy = false; return; }
+      var results; try { results = await SB.restoreAll(file, val, res, ui, extra); } catch (e) { ui.final('<div class="sb-note e"><b>Restore stopped:</b> ' + esc(e.message) + '<br>It is safe to run the same file again: records already restored are not duplicated.</div>'); SB.busy = false; return; }
       SB.busy = false; ui.stage('Restore finished', 100); SB.lastRestore = results;
       var ids = Object.keys(results), bad = ids.filter(function (i) { return results[i].status === 'problems' || results[i].status === 'failed'; });
-      ui.final('<div class="sb-note ' + (bad.length ? 'e' : '') + '"><b>' + (bad.length ? bad.length + ' shop(s) need attention.' : 'All restored shops verified.') + '</b> Running the same file again is safe.</div><table class="sb-tbl"><thead><tr><th>Shop</th><th>Status</th><th>Details</th></tr></thead><tbody>' + ids.map(function (i) { var r = results[i], s = val.shops.filter(function (x) { return x.id === i; })[0] || {}; return '<tr><td>' + esc(s.label || i) + '</td><td class="' + (r.status === 'ok' ? 'sb-ok' : r.status === 'skipped' ? 'sb-warn' : 'sb-bad') + '">' + esc(r.status) + '</td><td>' + r.kv + ' records, ' + r.inserted + ' rows added, ' + r.ignored + ' already present' + (r.problems.length ? '<br>' + r.problems.map(esc).join('<br>') : '') + '</td></tr>'; }).join('') + '</tbody></table>');
+      ui.final('<div class="sb-note ' + (bad.length ? 'e' : '') + '"><b>' + (bad.length ? bad.length + ' shop(s) need attention.' : 'All restored shops verified.') + '</b> Running the same file again is safe.</div><table class="sb-tbl"><thead><tr><th>Shop</th><th>Status</th><th>Details</th></tr></thead><tbody>' + ids.map(function (i) { var r = results[i], s = val.shops.filter(function (x) { return x.id === i; })[0] || {}; return '<tr><td>' + esc(s.label || i) + '</td><td class="' + (r.status === 'ok' ? 'sb-ok' : r.status === 'skipped' ? 'sb-warn' : 'sb-bad') + '">' + esc(r.status) + '</td><td>' + r.kv + ' records, ' + r.inserted + ' rows added, ' + r.ignored + ' already present' + (r.secrets ? ', ' + r.secrets + ' secret keys' : '') + (r.problems.length ? '<br>' + r.problems.map(esc).join('<br>') : '') + '</td></tr>'; }).join('') + '</tbody></table>');
     };
   };
 

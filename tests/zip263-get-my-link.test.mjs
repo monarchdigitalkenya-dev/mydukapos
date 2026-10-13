@@ -84,7 +84,12 @@ test('a phone or email already on a shop of this product is offered a BRANCH, no
   assert.equal((await w.call({ action: 'start', name: 'Mary W', phone: '0700111222', email: 'mary@example.com' })).j.needChoice, true, 'the email matches (any case)');
   assert.equal((await w.call({ action: 'start', name: 'Hotel Man', phone: '0799000111', email: '' })).j.needChoice, undefined, 'a hotel shop does not make a shop-sample buyer a branch');
   // choose a branch: cheaper, and the link joins the existing shop's group only after payment is confirmed
-  const br = await w.call({ action: 'start', name: 'Mary W', phone: '0712345678', email: '', choice: 'branch' });
+  // zip 267: a phone or email is not proof of owning a shop: joining its group needs that shop's own Admin password (its SHA-256, as the apps send it)
+  const pw = (await import('node:crypto')).createHash('sha256').update('maryadmin').digest('hex');
+  w.kv.data.set('pos-data:state:' + mine.id, { value: JSON.stringify({ pwHash: pw }) });
+  assert.equal((await w.call({ action: 'start', name: 'Mary W', phone: '0712345678', email: '', choice: 'branch' })).r.status, 403, 'no password: not attached');
+  assert.equal((await w.call({ action: 'start', name: 'Mary W', phone: '0712345678', email: '', choice: 'branch', branchProof: '0'.repeat(64) })).r.status, 403, 'a wrong password: not attached');
+  const br = await w.call({ action: 'start', name: 'Mary W', phone: '0712345678', email: '', choice: 'branch', branchProof: pw });
   assert.equal(br.j.kind, 'branch'); assert.equal(br.j.amount, 3000);
   assert.ok(!(await getLicense(w.env, mine.id)).branchGroupId, 'nothing changed before payment');
   await w.call({ action: 'claim', id: br.j.id, token: br.j.token });

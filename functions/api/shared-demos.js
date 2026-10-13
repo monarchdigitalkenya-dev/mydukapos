@@ -31,7 +31,11 @@ export async function onRequestGet(context) {
   const rl = await checkRateLimit(env, 'demoOpen', ip);
   if (!rl.ok) return rateLimitResponse('opening demos', rl, cors);
   try { await ensureSharedDemo(env, spec); } catch (e) { return json({ error: 'The demo could not be prepared right now. Please try again in a minute.', detail: String(e && e.message || e).slice(0, 160) }, 503, cors); }
-  return new Response(null, { status: 302, headers: { Location: demoLink(env, spec, url.origin), 'Cache-Control': 'no-store', ...cors } });
+  // zip 267: a referral code (only its shape is checked here; the purchase flow validates it) rides along into the sample shop, so a referred visitor stays referred
+  let dest = demoLink(env, spec, url.origin);
+  const ref = String(url.searchParams.get('ref') || '').toUpperCase();
+  if (/^[A-Z0-9]{6,12}$/.test(ref)) { try { const d = new URL(dest); d.searchParams.set('ref', ref); dest = d.toString(); } catch (e) { /* the plain link */ } }
+  return new Response(null, { status: 302, headers: { Location: dest, 'Cache-Control': 'no-store', ...cors } });
 }
 
 export async function onRequestPost(context) {

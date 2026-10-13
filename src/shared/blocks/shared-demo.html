@@ -32,6 +32,9 @@ body.sd-on{padding-bottom:60px}
 #sd-buy .sd-close{position:absolute;top:10px;right:10px;flex:none;width:40px;min-height:40px;border:0;font-size:20px;border-radius:50%}
 #sd-buy .sd-hint{margin:6px 0 0;font-size:13px;min-height:19px;font-weight:600;color:var(--muted,#5b6d70)}
 #sd-buy .sd-hint.ok{color:var(--tint-success-text,#1e8449)}
+#sd-buy .sd-sum{border:2px solid var(--accent,#0b7a5f);border-radius:12px;padding:10px 12px;margin:8px 0 6px}
+#sd-buy .sd-sum dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:3px 12px;font-size:14.5px}
+#sd-buy .sd-sum dd{margin:0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
 #sd-buy .sd-hint.no{color:#c93a3a}
 #sd-buy .sd-addr{display:flex;align-items:center;gap:6px}
 #sd-buy .sd-addr input{flex:1;min-width:0}
@@ -125,28 +128,49 @@ body.sd-on{padding-bottom:60px}
     }
     function body(html) { var b = document.getElementById('sd-buy-body'); b.innerHTML = html; return b; }
     function money(n) { return 'KES ' + Number(n || 0).toLocaleString('en-KE'); }
+    // zip 267: a referral code arrives as ?ref=CODE (the public site adds it to the demo link); kept for this visit and sent with the request, where the SERVER checks it
+    function myRef() {
+        try { var q = new URLSearchParams(location.search).get('ref'); if (q && /^[A-Za-z0-9]{6,12}$/.test(q)) sessionStorage.setItem('sd_ref', q.toUpperCase()); return sessionStorage.getItem('sd_ref') || ''; } catch (e) { return ''; }
+    }
+    // the price box: every number comes from the server's quote (one pricing source), never from this page
+    function priceBox(t) {
+        var q = t.quote; if (!q) return '<p>Your own shop on your own web address, with your own data. One payment of <b>' + money(t.amount) + '</b>.</p>';
+        var rows = q.lines.map(function (l) { return '<dt>' + esc(l.label) + ' <span class="sd-hint" style="display:inline">(paid once)</span></dt><dd>' + money(l.amount) + '</dd>'; }).join('');
+        if (q.discount && q.discount.total) rows += '<dt>Discount' + (q.discount.offers.length ? ' (' + esc(q.discount.offers.map(function (o) { return o.name; }).join(', ')) + ')' : '') + '</dt><dd>- ' + money(q.discount.total) + '</dd>';
+        return '<p>Your own shop on your own web address, with your own data. Your link is created as soon as the payment is confirmed.</p><div class="sd-sum" aria-live="polite"><dl>' + rows + '<dt><b>You pay now</b></dt><dd>' + money(q.total) + '</dd></dl>' + (q.recurringNote ? '<p class="sd-hint" style="margin:6px 0 0">' + esc(q.recurringNote.text) + '</p>' : '') + (t.referralApplied ? '<p class="sd-hint ok" style="margin:6px 0 0">\u2713 You were referred by a MyDukaPOS shop.</p>' : '') + '</div>';
+    }
     function openBuy() {
         shell().classList.add('on');
         B.ref = refGet();
         if (B.ref && B.ref.paid && B.ref.link) { ready(B.ref); return; }
         if (B.ref && B.ref.id) { waiting(B.ref.method === 'claim' && !B.ref.claimed ? 'pay' : 'wait'); return; }
         body('<p><span class="sd-spin"></span>One moment&hellip;</p>');
-        post({ action: 'options' }).then(function (t) { if (!t.__ok) throw new Error(t.error || 'Not available right now.'); B.terms = t; form(); })
+        post({ action: 'options', ref: myRef() }).then(function (t) { if (!t.__ok) throw new Error(t.error || 'Not available right now.'); B.terms = t; form(); })
             .catch(function (e) { body('<h2 id="sd-buy-h">Get my own link</h2><p class="sd-err" role="alert">' + esc(e.message || 'Could not load. Please try again.') + '</p>'); });
     }
     function form() {
         var t = B.terms;
-        body('<h2 id="sd-buy-h">Get your own link</h2><p>Your own shop on your own web address, with your own data. One payment of <b>' + money(t.amount) + '</b>. Your link is created as soon as the payment is confirmed.</p>' +
+        body('<h2 id="sd-buy-h">Get your own link</h2><div id="sd-pricebox">' + priceBox(t) + '</div>' +
             '<label for="sd-n">Your name</label><input id="sd-n" autocomplete="name" maxlength="80">' +
             '<label for="sd-p">Phone number</label><input id="sd-p" type="tel" inputmode="tel" autocomplete="tel" placeholder="0712 345 678" maxlength="20">' +
             '<label for="sd-e">Email <span style="font-weight:500;color:var(--muted,#5b6d70)">(optional)</span></label><input id="sd-e" type="email" autocomplete="email" maxlength="120" placeholder="you@example.com">' +
             '<label for="sd-s">Your web address <span style="font-weight:500;color:var(--muted,#5b6d70)">(optional)</span></label><div class="sd-addr"><input id="sd-s" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="40" placeholder="your-shop"><span>.' + esc(t.root || 'mydukapos.store') + '</span></div>' +
             '<p class="sd-hint" id="sd-sm" role="status" aria-live="polite">Leave it empty and we use your name.</p>' +
+            '<label for="sd-o">Discount code <span style="font-weight:500;color:var(--muted,#5b6d70)">(optional)</span></label><div class="sd-addr"><input id="sd-o" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="24" placeholder="e.g. LAUNCH20"><button type="button" id="sd-oc" style="margin-left:6px;white-space:nowrap">Apply</button></div>' +
             '<p class="sd-err" id="sd-err" role="alert"></p>' +
             '<div class="sd-row"><button type="button" class="sd-go" id="sd-go">' + (t.stk ? 'Pay ' + money(t.amount) + ' with M-Pesa' : 'Continue') + '</button></div>');
-        if (B.form) { document.getElementById('sd-n').value = B.form.name || ''; document.getElementById('sd-p').value = B.form.phone || ''; document.getElementById('sd-e').value = B.form.email || ''; document.getElementById('sd-s').value = B.form.slug || ''; }
+        if (B.form) { document.getElementById('sd-o').value = B.form.offer || ''; document.getElementById('sd-n').value = B.form.name || ''; document.getElementById('sd-p').value = B.form.phone || ''; document.getElementById('sd-e').value = B.form.email || ''; document.getElementById('sd-s').value = B.form.slug || ''; }
         document.getElementById('sd-n').focus();
         document.getElementById('sd-go').onclick = function () { submit(''); };
+        document.getElementById('sd-oc').onclick = function () {
+            var code = (document.getElementById('sd-o').value || '').trim(), pb = document.getElementById('sd-pricebox'), go = document.getElementById('sd-go');
+            B.form = B.form || {}; B.form.offer = code;
+            post({ action: 'quote', offer: code, ref: myRef() }).then(function (r) {
+                if (!r.__ok || !r.quote) return; B.terms = Object.assign({}, B.terms, { quote: r.quote, amount: r.amount, referralApplied: r.referralApplied });
+                pb.innerHTML = priceBox(B.terms); if (go && B.terms.stk) go.textContent = 'Pay ' + money(r.amount) + ' with M-Pesa';
+                var sm2 = document.getElementById('sd-sm'); if (code && sm2 && !r.offerApplied) { sm2.className = 'sd-hint no'; sm2.textContent = 'That code does not apply here.'; }
+            });
+        };
         var st = 0, box = document.getElementById('sd-s'), sm = document.getElementById('sd-sm');
         box.oninput = function () {
             clearTimeout(st); var v = box.value.trim();
@@ -167,10 +191,11 @@ body.sd-on{padding-bottom:60px}
         var g = document.getElementById('sd-go'), err = document.getElementById('sd-err');
         if (typeof choice !== 'string') choice = '';
         var v = B.form = B.form || {};
-        if (document.getElementById('sd-n')) { v.name = document.getElementById('sd-n').value; v.phone = document.getElementById('sd-p').value; v.email = document.getElementById('sd-e').value; v.slug = document.getElementById('sd-s').value; }
+        if (document.getElementById('sd-n')) { v.name = document.getElementById('sd-n').value; v.phone = document.getElementById('sd-p').value; v.email = document.getElementById('sd-e').value; v.slug = document.getElementById('sd-s').value; v.offer = (document.getElementById('sd-o') || {}).value || ''; }
         if (err) err.textContent = ''; if (g) { g.disabled = true; g.textContent = 'Please wait\u2026'; }
-        post({ action: 'start', name: v.name, phone: v.phone, email: v.email, slug: v.slug, choice: choice }).then(function (r) {
+        post({ action: 'start', name: v.name, phone: v.phone, email: v.email, slug: v.slug, choice: choice, branchProof: choice === 'branch' ? (B.branchProof || '') : '', offer: v.offer || '', ref: myRef() }).then(function (r) {
             if (r.needChoice) { return choose(r); }
+            if (!r.__ok && r.code === 'branch_proof') { choose({ amount: (B.terms && B.terms.amount) || 0, branchAmount: (B.terms && B.terms.amount) || 0 }); var e4 = document.getElementById('sd-err'); if (e4) e4.textContent = r.error; return; }
             if (!r.__ok) { form(); var e2 = document.getElementById('sd-err'); if (e2) e2.textContent = r.error || 'Something went wrong. Please try again.'; return; }
             B.ref = { id: r.id, token: r.token, method: r.method, amount: r.amount, kind: r.kind, paymentUrl: r.paymentUrl || '', claimed: false }; refSet(B.ref);
             waiting(r.method === 'claim' ? 'pay' : 'wait');
@@ -178,11 +203,21 @@ body.sd-on{padding-bottom:60px}
     }
     // the phone number or email already has a shop of this kind: never a refusal, a question
     function choose(r) {
-        body('<h2 id="sd-buy-h">You already have a shop with us</h2><p>We found a MyDukaPOS shop with this phone number or email. <b>Optional:</b> add this new link as a <b>branch</b> of that shop, so you can see both together. Or keep it as a separate link.</p>' +
+        body('<h2 id="sd-buy-h">You may already have a shop with us</h2><p>We found a MyDukaPOS shop with this phone number or email. <b>Optional:</b> add this new link as a <b>branch</b> of it, so you can see both together. To prove the shop is yours, enter its <b>Admin password</b>. Or keep the new link separate.</p>' +
+            '<label for="sd-bp">Admin password of your existing shop</label><input id="sd-bp" type="password" autocomplete="current-password" maxlength="80">' +
+            '<p class="sd-err" id="sd-err" role="alert"></p>' +
             '<div class="sd-row" style="flex-direction:column"><button type="button" class="sd-go" id="sd-br">Add it as a branch &middot; ' + money(r.branchAmount) + '</button>' +
             '<button type="button" id="sd-sep">Keep it separate &middot; ' + money(r.amount) + '</button></div>');
-        document.getElementById('sd-br').onclick = function () { submit('branch'); };
-        document.getElementById('sd-sep').onclick = function () { submit('separate'); };
+        document.getElementById('sd-br').onclick = function () {
+            var pw = document.getElementById('sd-bp').value, e = document.getElementById('sd-err');
+            if (!pw) { e.textContent = 'Enter the Admin password of your existing shop.'; return; }
+            // the password never leaves this device: only its SHA-256 is sent, the same fingerprint the apps already use to sign in
+            crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw)).then(function (buf) {
+                B.branchProof = Array.prototype.map.call(new Uint8Array(buf), function (x) { return x.toString(16).padStart(2, '0'); }).join('');
+                submit('branch');
+            });
+        };
+        document.getElementById('sd-sep').onclick = function () { B.branchProof = ''; submit('separate'); };
     }
     function waiting(mode) {
         var r = B.ref, phone = (B.terms && B.terms.paymentPhone) || '';

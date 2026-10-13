@@ -45,6 +45,7 @@ import { deviceGuard } from './_device-auth.js';
 import { corsHeadersFor } from './_cors.js';
 import { managerGuard, secLimit, secNum } from './_sec-guard.js';
 import { ensureShopCallbackKeys } from './_callback-key.js';
+import { readSettings as getBillingSettings, enforcementOn, allowances } from './_billing-core.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -118,7 +119,7 @@ function computeBranchStats(state) {
 
 // zip 263: the creation of a branch, shared by the "Add Branch" button (below) and by "Get my own link" (get-my-link.js, when a buyer who already has a shop
 // buys another one). `record` is a permanent client already in (or about to found) a branch group; `contact` = { phone, email } of the person the branch is for.
-export async function createBranchFor(env, record, branchName, contact) {
+export async function createBranchFor(env, record, branchName, contact, opts = {}) {
   if (!record.branchGroupId) {
     record.branchGroupId = randomToken(12);
     record.isMainBranch = true;
@@ -160,6 +161,7 @@ export async function createBranchFor(env, record, branchName, contact) {
 
   const branch = await createClient(env, 'permanent', branchLabel, record.product, {
     ...(contact || {}),
+    ...(opts.id ? { id: opts.id } : {}),            // zip 267: Get my own link fixes the id so a repeated fulfilment finds the same branch
     branchGroupId: record.branchGroupId,
     isMainBranch: false,
     // Inherits the calling shop's own clientName (the owner's private
@@ -176,6 +178,16 @@ export async function createBranchFor(env, record, branchName, contact) {
   });
   await addToBranchGroup(env, record.branchGroupId, branch.id);
   await ensureShopCallbackKeys(env, branch.id);          // zip 185: the new branch starts with signed payment-callback URLs
+  // zip 267: a branch of a SUBSCRIBED shop follows the main shop's plan from its first minute (one subscription per shop), so it can never run free beside a paused main shop.
+  // A shop that predates billing has no billing record to follow: its branches stay exempt, exactly as before.
+  try {
+    const mb = mainRecordForLimit && mainRecordForLimit.billing;
+    if (mb && mb.cohort === 'new') {
+      const { history, rewards, refCode, referrals, ...core } = mb;
+      const fresh = await getLicense(env, branch.id);
+      if (fresh) { fresh.billing = { ...core, followsMain: mainRecordForLimit.id, history: [], rewards: [] }; await saveLicense(env, fresh); }
+    }
+  } catch (e) { /* the next renewal or edit of the main shop copies its plan onto every branch */ }
 
   // Seed the branch's own pos-sync record so its link opens straight to
   // the login picker (never Sign Up) with the admin as the ONLY option —
@@ -262,6 +274,16 @@ export async function onRequestPost(context) {
     // (base tier included 1 branch, KES 1,500 per additional one) that
     // returned a 402 'branch_limit' error once the group's member count
     // reached the main record's branchAllowance; that cap no longer applies.
+    // zip 267: a SUBSCRIBED shop (bought after the billing launch date) has the branches its plan includes plus any it bought; a shop that predates billing, or any
+    // shop while billing enforcement is off, is unlimited exactly as before. The owner sets the numbers in Owner Console -> Billing.
+    const bs = await getBillingSettings(env);
+    if (enforcementOn(bs)) {
+      const mainRec = await getGroupMainRecord(env, record), mb = mainRec && mainRec.billing;
+      if (mb && mb.cohort === 'new' && mb.exempt !== true && mb.comped !== true) {
+        const have = (await getBranchGroupMembers(env, record.branchGroupId)).length, cap = allowances(mb, bs).branches;
+        if (have >= cap) return jsonResponse({ error: `Your plan includes ${cap} branches and you have ${have}. Add a branch from My plan (KES ${bs.prices.extraBranch.toLocaleString('en-KE')} one-time, or ${bs.bundleBranches} for KES ${bs.prices.branchBundle.toLocaleString('en-KE')}).`, code: 'branch_limit', allowed: cap, used: have, price: bs.prices.extraBranch, bundlePrice: bs.prices.branchBundle, bundleQty: bs.bundleBranches }, 402);
+      }
+    }
     const made = await createBranchFor(env, record, String(body.branchName || '').trim().slice(0, 80));
     const branch = made.branch, branchLabel = made.branchLabel;
 

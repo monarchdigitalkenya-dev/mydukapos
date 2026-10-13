@@ -49,15 +49,15 @@ async function seed(w) {
 const HARNESS = (() => { const s = fs.readFileSync(path.join(ROOT, 'owner/index.html'), 'utf8'); const i = s.indexOf('<!-- SHOP BACKUP & RESTORE'); const j = s.indexOf('</script>', i) + 9; return '<!doctype html><html><body><div id="permanent-links-tab"></div><script>function ownerAuthHeaders(){return {Authorization:"Bearer tok"}}</script>' + s.slice(i, j) + '</body></html>'; })();
 
 async function open(browser, w, { auth = true } = {}) {
-  const ctx = await browser.newContext({ acceptDownloads: true }); const page = await ctx.newPage();
+  const ctx = await browser.newContext({ acceptDownloads: true, ignoreHTTPSErrors: true }); const page = await ctx.newPage();
   const m = await load('functions/api/owner-backup.js'); const seen = [];
-  await page.route('http://x.test/api/owner-backup', async (route) => {
+  await page.route('https://x.test/api/owner-backup', async (route) => {
     const req = route.request(); seen.push(req.postData());
     const r = await m.onRequestPost({ request: new Request('https://x.pages.dev/api/owner-backup', { method: 'POST', body: req.postData(), headers: auth ? { Authorization: 'Bearer tok' } : {} }), env: w.env });
     await route.fulfill({ status: r.status, headers: Object.fromEntries(r.headers), body: await r.text() });
   });
-  await page.route('http://x.test/', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: HARNESS }));
-  await page.goto('http://x.test/'); return { page, ctx, seen };
+  await page.route('https://x.test/', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: HARNESS }));
+  await page.goto('https://x.test/'); return { page, ctx, seen };
 }
 
 test('export from deployment A, restore into empty deployment B: shops, links, data, logins and counts match; secrets never travel; retry is safe', { skip, timeout: 240000 }, async () => {
@@ -67,6 +67,7 @@ test('export from deployment A, restore into empty deployment B: shops, links, d
     // ---------------- export (old deployment)
     const x = await open(browser, A);
     await x.page.click('#sb-export'); await x.page.waitForSelector('#sb-go');
+    await x.page.uncheck('#sb-secrets'); await x.page.uncheck('#sb-platform');       // the plain (no-secrets) backup
     const dlP = x.page.waitForEvent('download', { timeout: 60000 }); dlP.catch(() => {}); await x.page.click('#sb-go');
     await x.page.waitForSelector('#sb-final .sb-note', { timeout: 60000 }).catch(async () => { throw new Error('export did not finish: ' + (await x.page.textContent('#sb-stage')) + ' | ' + (await x.page.textContent('#sb-log'))); });
     const fin = await x.page.textContent('#sb-final'); if (!/Complete\./.test(fin)) throw new Error('export: ' + fin + ' | ' + (await x.page.textContent('#sb-log')));
@@ -76,7 +77,7 @@ test('export from deployment A, restore into empty deployment B: shops, links, d
     assert.match(await x.page.textContent('#sb-final'), /Complete\./, await x.page.textContent('#sb-final'));
     const raw = (await import('node:zlib')).gunzipSync(fs.readFileSync(file)).toString('utf8');
     const lines = raw.trim().split('\n').map((l) => JSON.parse(l));
-    assert.equal(lines[0].format, 'mydukapos-permanent-shops-backup'); assert.equal(lines[0].version, 1);
+    assert.equal(lines[0].format, 'mydukapos-permanent-shops-backup'); assert.equal(lines[0].version, 2);
     const shops = lines.filter((l) => l.t === 'shop'); assert.deepEqual(shops.map((s) => s.slug).sort(), ['alpha-hardware', 'beta-hotel']);
     assert.ok(!shops.some((s) => s.id === demo.id), 'demo shops are excluded');
     assert.equal(shops.find((s) => s.id === a.id).record.id, a.id, 'the original c code is in the record');
@@ -140,6 +141,56 @@ test('export from deployment A, restore into empty deployment B: shops, links, d
     assert.match(await d.page.textContent('#sb-prev'), /CONFLICT/); assert.equal(await d.page.isDisabled('#sb-do'), true, 'restore waits for a decision');
     fs.rmSync(file, { force: true });
   } finally { await browser.close(); fs.rmSync(path.join(ROOT, 'tests', '.tmp-backup.mdpbackup.gz'), { force: true }); }
+});
+
+test('zip 267: with a passphrase the backup carries secret keys + billing, re-sealed for a deployment with a DIFFERENT encryption key; wrong passphrase changes nothing; no plaintext in the file', { skip, timeout: 240000 }, async () => {
+  const KA = 'key-A-key-A-key-A-key-A-key-A-1234', KB = 'key-B-key-B-key-B-key-B-key-B-5678';
+  const A = await world('A'), B = await world('B'); A.env.PAYMENT_SECRETS_KEY = KA; B.env.PAYMENT_SECRETS_KEY = KB;
+  const { a, b } = await seed(A);
+  const box = await load('functions/api/_secret-box.js');
+  await A.kv.put('gateway-config:v1:' + a.id, await box.sealRecord(A.env, 'gateway|' + a.id, { provider: 'daraja', consumerKey: 'PLAIN-CONSUMER-KEY-XYZ', passkey: 'PLAIN-PASSKEY' }));
+  await A.kv.put('callback-key:c2b:' + a.id, JSON.stringify({ k: 'CALLBACKSECRET123' }));
+  await A.kv.put('device-auth:' + a.id, 'DEVICEAUTHVALUE'); await A.kv.put('staff-key:' + a.id + ':s1', 'STAFFKEYVALUE');
+  await A.kv.put('staff-sess:' + a.id + ':x', 'session');                                            // sessions still never travel
+  await A.kv.put('billing-settings:v1', JSON.stringify({ newLinkPrice: 3000 })); await A.kv.put('billing-offers:v1', JSON.stringify([{ id: 'o1' }])); await A.kv.put('billing-offer-used:o1', '4');
+  await A.kv.put('website-content', JSON.stringify({ hero: 'WEBSITE-HERO-TEXT' })); await A.kv.put('gemini-capture-config:v1', JSON.stringify({ keys: [{ id: 'g1', key: 'GEMINI-SECRET-KEY' }] })); await A.kv.put('email-config:v1', JSON.stringify({ apiKey: 'EMAIL-SECRET-APIKEY' }));
+  await B.kv.put('billing-offer-used:o1', '9'); await B.kv.put('billing-settings:v1', JSON.stringify({ newLinkPrice: 1234 }));   // target already has its own
+  const rec = JSON.parse(await A.kv.get('license:' + a.id)); rec.billing = { refCode: 'REFABC12', cohort: 'new' }; await A.kv.put('license:' + a.id, JSON.stringify(rec));
+  const browser = await chromium.launch(); const file = path.join(ROOT, 'tests', '.tmp-secret.mdpbackup.gz');
+  try {
+    const x = await open(browser, A); await x.page.click('#sb-export'); await x.page.waitForSelector('#sb-go');
+    await x.page.fill('#sb-pass', 'correct horse'); await x.page.fill('#sb-pass2', 'correct horse');
+    const dlP = x.page.waitForEvent('download', { timeout: 90000 }); dlP.catch(() => {}); await x.page.click('#sb-go');
+    await x.page.waitForSelector('#sb-final .sb-note', { timeout: 90000 }).catch(async () => { throw new Error('export: ' + (await x.page.evaluate(() => document.body.innerText.slice(0, 1500)))); });
+    assert.match(await x.page.textContent('#sb-final'), /Complete\./); await (await dlP).saveAs(file);
+    const raw = (await import('node:zlib')).gunzipSync(fs.readFileSync(file)).toString('utf8');
+    for (const plain of ['PLAIN-CONSUMER-KEY-XYZ', 'PLAIN-PASSKEY', 'CALLBACKSECRET123', 'DEVICEAUTHVALUE', 'STAFFKEYVALUE', 'WEBSITE-HERO-TEXT', 'GEMINI-SECRET-KEY', 'EMAIL-SECRET-APIKEY']) assert.ok(!raw.includes(plain), 'locked in the file: ' + plain);
+    assert.ok(!raw.includes('"session"'), 'sessions never travel');
+
+    // wrong passphrase: refused, nothing written
+    const C = await world('C'); C.env.PAYMENT_SECRETS_KEY = KB; const c = await open(browser, C); c.page.on('dialog', (d) => d.accept());
+    await c.page.click('#sb-restore'); await c.page.setInputFiles('#sb-file', file); await c.page.waitForSelector('#sb-do', { timeout: 60000 });
+    await c.page.fill('#sb-rpass', 'wrong one'); const keysBefore = C.kv.data.size; await c.page.click('#sb-do');
+    await c.page.waitForSelector('#sb-rpasserr:not(:empty)', { timeout: 30000 }).catch(() => {});
+    assert.match(await c.page.textContent('#sb-prev'), /passphrase is not right/i); assert.equal(C.kv.data.size, keysBefore, 'nothing changed');
+
+    // right passphrase into a deployment with a different key
+    const y = await open(browser, B); y.page.on('dialog', (d) => d.accept());
+    await y.page.click('#sb-restore'); await y.page.setInputFiles('#sb-file', file); await y.page.waitForSelector('#sb-do', { timeout: 60000 });
+    await y.page.fill('#sb-rpass', 'correct horse'); await y.page.click('#sb-do'); await y.page.waitForSelector('#sb-final table', { timeout: 120000 });
+    assert.match(await y.page.textContent('#sb-final'), /All restored shops verified/);
+    const gw = await box.openRecord(B.env, 'gateway|' + a.id, await B.kv.get('gateway-config:v1:' + a.id));
+    assert.ok(gw.ok && gw.value.consumerKey === 'PLAIN-CONSUMER-KEY-XYZ', 'gateway record readable with the TARGET key'); assert.ok(!(await B.kv.get('gateway-config:v1:' + a.id)).includes('PLAIN-CONSUMER'), 'sealed at rest');
+    assert.equal(await B.kv.get('callback-key:c2b:' + a.id), JSON.stringify({ k: 'CALLBACKSECRET123' }), 'payment callback address key is identical');
+    assert.equal(await B.kv.get('device-auth:' + a.id), 'DEVICEAUTHVALUE'); assert.equal(await B.kv.get('staff-key:' + a.id + ':s1'), 'STAFFKEYVALUE');
+    assert.equal(await B.kv.get('staff-sess:' + a.id + ':x'), null);
+    assert.equal(await B.kv.get('billing-settings:v1'), JSON.stringify({ newLinkPrice: 1234 }), 'target settings are not overwritten');
+    assert.equal(await B.kv.get('billing-offers:v1'), JSON.stringify([{ id: 'o1' }])); assert.equal(await B.kv.get('billing-offer-used:o1'), '9', 'the larger use count wins');
+    assert.equal(await B.kv.get('website-content'), JSON.stringify({ hero: 'WEBSITE-HERO-TEXT' }), 'website text restored'); assert.match(await B.kv.get('gemini-capture-config:v1'), /GEMINI-SECRET-KEY/); assert.match(await B.kv.get('email-config:v1'), /EMAIL-SECRET-APIKEY/);
+    assert.equal(await B.kv.get('bill-refcode:REFABC12'), a.id, 'referral code index rebuilt');
+    const lic = await load('functions/api/_license.js'); const got = await lic.getLicense(B.env, a.id); assert.equal(got.id, a.id); assert.equal(got.slug, a.slug); assert.equal(got.billing.refCode, 'REFABC12');
+    assert.equal(await B.kv.get('slug:' + a.slug), a.id, 'the permanent link maps to the same shop');
+  } finally { await browser.close(); fs.rmSync(file, { force: true }); }
 });
 
 test('only the platform owner can use the backup endpoint', async () => {

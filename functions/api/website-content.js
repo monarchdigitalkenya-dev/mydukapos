@@ -21,6 +21,7 @@
 
 import { requireOwnerAuth } from './_owner-auth.js';
 import { listProducts, getDemoDurationHours, setDemoDurationHours } from './_license.js';
+import { getSettings as getBillingSettings, publicTerms } from './_billing.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -126,6 +127,9 @@ export async function onRequestPost(context) {
     // read — this is just where the public site and Owner Console's
     // Website tab fetch it from for display/editing.
     content.demoDurationHours = await getDemoDurationHours(env);
+    // zip 267: the price and plan are NOT stored here any more: they come from the one pricing source (Owner Console -> Billing), so the public site can never disagree with checkout.
+    const bs = await getBillingSettings(env), terms = publicTerms(bs);
+    content.price = bs.prices.link; content.includedDays = terms.subscription ? bs.periodDays : 0; content.monthlyFee = terms.subscription ? bs.prices.subscription : 0; content.billing = terms;
     return jsonResponse({ content });
   }
 
@@ -137,14 +141,8 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: 'No content provided.' }, 400);
     }
 
-    const price = parseFloat(body.content.price);
-    if (isNaN(price) || price < 0) {
-      return jsonResponse({ error: 'Enter a valid price.' }, 400);
-    }
-    const includedDays = body.content.includedDays === undefined ? DEFAULT_CONTENT.includedDays : Math.floor(Number(body.content.includedDays));
-    if (!Number.isFinite(includedDays) || includedDays < 0 || includedDays > 3650) return jsonResponse({ error: 'Enter the number of days the price includes (0–3650).' }, 400);
-    const monthlyFee = body.content.monthlyFee === undefined ? DEFAULT_CONTENT.monthlyFee : Number(body.content.monthlyFee);
-    if (!Number.isFinite(monthlyFee) || monthlyFee < 0) return jsonResponse({ error: 'Enter a valid monthly fee (0 for none).' }, 400);
+    // zip 267: price, included days and the recurring fee belong to Owner Console -> Billing; whatever the old form sends for them is ignored (kept only so old saves stay readable)
+    const price = DEFAULT_CONTENT.price, includedDays = DEFAULT_CONTENT.includedDays, monthlyFee = DEFAULT_CONTENT.monthlyFee;
     const paymentPhone = String(body.content.paymentPhone || '').trim();
     if (!paymentPhone) {
       return jsonResponse({ error: 'Enter a payment phone number.' }, 400);

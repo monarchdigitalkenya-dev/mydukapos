@@ -27099,6 +27099,8 @@ function customerStatementDocHtml(L, mode) {
                             ? 'The licence server could not be reached and this device’s clock is earlier than when it was last confirmed. Check the date and time on this device — it checks again by itself.'
                             : licenseInfo.reason === 'locked'
                                 ? 'This link has been locked by the admin.'
+                                : licenseInfo.reason === 'subscription_suspended'
+                                    ? 'Your subscription has ended, so this shop is paused. Nothing has been deleted: your data, and any sales made on this device since, will be sent as soon as you renew.'
                                 : licenseInfo.reason === 'expired'
                                     ? (licenseInfo.offlineEstimate
                                         ? 'Your free trial has ended (offline estimate — connect to confirm).'
@@ -52757,6 +52759,224 @@ function msOpenPurchasesReport(days) {
 })();
 </script>
 <!-- @shared-block:till-payments:end -->
+<!-- @shared-block:my-plan:begin -->
+<!-- MY PLAN (zip 267) -------------------------------------------------------------------------------------------------------------
+     A shop's own subscription screen, shared by every POS app. Server: functions/api/billing-renew.js (prices come from the one pricing source, Owner Console -> Billing).
+       * Settings gets a "My plan" card: plan, paid-through date, renew early, add-ons, referral link and rewards. All dates are Nairobi time, worked out by the server.
+       * Overdue (grace): a thin banner above the app, never blocking. Suspended (paid period and grace both ended): a full-screen "paused" page with a way to pay.
+         Nothing is deleted and nothing queued on this device is lost: sales made offline are sent as soon as the shop is renewed.
+       * A shop that predates subscriptions sees "lifetime access" and its referral card only. A shared sample shop shows nothing.
+     Every function is guarded: a page lacking something does nothing. -->
+<style id="mp-css">
+#mp-banner{position:fixed;left:0;right:0;top:0;z-index:99990;display:none;align-items:center;gap:10px;justify-content:center;flex-wrap:wrap;padding:8px 12px;background:#fdebd0;color:#7e5109;font-size:14px;font-weight:600;border-bottom:2px solid #e67e22}
+#mp-banner.show{display:flex}body.mp-ban{padding-top:46px}#mp-banner.soft{background:#e8f4fd;color:#1b4f72;border-bottom-color:#5dade2}
+#mp-banner button{border:0;border-radius:8px;padding:6px 12px;font-weight:700;cursor:pointer;background:#e67e22;color:#fff;min-height:34px}
+#mp-banner.soft button{background:#2e86c1}#mp-banner .mp-x{background:transparent;color:inherit;padding:4px 8px}
+#mp-card{margin:0 0 14px}
+.mp-btn{border:0;border-radius:8px;padding:10px 16px;font-weight:700;font-size:14px;cursor:pointer;min-height:42px;background:#1f8a70;color:#fff}
+.mp-btn.sec{background:#ecf0f1;color:#2c3e50}.mp-btn[disabled]{opacity:.55;cursor:not-allowed}
+.mp-btn:focus-visible,.mp-in:focus-visible,.mp-x:focus-visible{outline:3px solid #1a73e8;outline-offset:2px}
+.mp-overlay{position:fixed;inset:0;z-index:100001;background:rgba(20,30,40,.6);display:none;align-items:flex-start;justify-content:center;padding:4vh 10px;overflow:auto;overscroll-behavior:contain}
+.mp-overlay.open{display:flex}
+#mp-suspended{z-index:2147483000;background:var(--card-bg,#fff);align-items:center}
+.mp-box{width:100%;max-width:560px;background:var(--card-bg,#fff);color:var(--dark,#2c3e50);border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.3);overflow:hidden}
+#mp-suspended .mp-box{box-shadow:none;max-width:520px}
+.mp-head{display:flex;align-items:center;gap:10px;padding:14px 16px;background:linear-gradient(135deg,#0f2c3a,#1f8a70);color:#fff}
+.mp-head h3{margin:0;flex:1;font-size:18px;color:#fff}.mp-x{border:0;background:rgba(255,255,255,.2);color:#fff;width:36px;height:36px;border-radius:8px;font-size:18px;cursor:pointer}
+.mp-body{padding:14px 16px 18px}
+.mp-sec{border:1px solid var(--light,#e1e5ea);border-radius:10px;padding:10px 12px;margin:0 0 10px}
+.mp-sec h4{margin:0 0 6px;font-size:15px}
+.mp-kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:14px;margin:0}.mp-kv dt{color:#6b7a86}.mp-kv dd{margin:0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+.mp-chip{display:inline-block;padding:2px 9px;border-radius:10px;font-size:12px;font-weight:800;background:#ecf0f1;color:#2c3e50}
+.mp-chip.ok{background:#d5f5e3;color:#1e8449}.mp-chip.warn{background:#fdebd0;color:#b9770e}.mp-chip.bad{background:#fadbd8;color:#922b21}
+.mp-in{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #cfd8dc;border-radius:8px;font-size:15px;margin:3px 0 8px}
+.mp-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.mp-hint{font-size:12.5px;color:#6b7a86;margin:4px 0}
+.mp-sum{border:2px solid #1f8a70;border-radius:12px;padding:10px 12px;margin:8px 0;background:rgba(31,138,112,.07)}
+.mp-sum dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:3px 12px;font-size:14px}.mp-sum dd{margin:0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+.mp-err{border-left:4px solid #e74c3c;background:#fdedec;color:#922b21;padding:8px 10px;border-radius:6px;font-size:13.5px;margin:8px 0}
+.mp-ok{border-left:4px solid #1f8a70;background:#eaf7f2;padding:8px 10px;border-radius:6px;font-size:13.5px;margin:8px 0}
+</style>
+<script>
+(function () {
+  'use strict';
+  if (window.__myPlan) return;
+  var MP = window.__myPlan = { st: null, busy: false, poll: 0 };
+
+  function esc(s) { try { if (typeof escapeHtml === 'function') return escapeHtml(s); } catch (e) { /* below */ } return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function kes(n) { return 'KES ' + Number(n || 0).toLocaleString('en-KE'); }
+  function url(p) { try { return typeof apiUrl === 'function' ? apiUrl(p) : p; } catch (e) { return p; } }
+  function api(body) {
+    return fetch(url('/api/billing-renew'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); });
+  }
+  function lic() { try { return typeof licenseInfo !== 'undefined' ? licenseInfo : null; } catch (e) { return null; } }
+  function isPermanentShop() { var l = lic(); return !!(l && l.type === 'permanent' && !l.sharedDemo && l.valid !== undefined); }
+  function chip(state) { var c = { active: 'ok', comped: 'ok', grace: 'warn', awaiting: 'warn', suspended: 'bad' }[state] || ''; var t = { grandfathered: 'lifetime access', exempt: 'exempt' }[state] || state; return '<span class="mp-chip ' + c + '">' + esc(t) + '</span>'; }
+  function saveLast(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* not remembered */ } }
+  function loadLast(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+
+  // ------------------------------------------------------------ pay box: one form for renewals, add-ons and the paused page
+  // kind: renewal | extraBranch | branchBundle | staffBlock. Shows the server's price breakdown, sends the prompt, waits for the result.
+  function payBox(host, kind, st, done) {
+    var id = 'mp-' + Math.random().toString(36).slice(2, 7), cycles = 1, qty = 1, state = { quote: null, pay: null };
+    host.innerHTML = '<div class="mp-row">' + (kind === 'renewal' ? '<label>Pay for <select id="' + id + 'c" class="mp-in" style="width:auto;display:inline-block;margin:0 4px"><option>1</option><option>2</option><option>3</option><option>6</option><option>12</option></select> period(s)</label>' : '<label>How many <input id="' + id + 'q" class="mp-in" type="number" min="1" max="20" value="1" style="width:90px;display:inline-block;margin:0 4px"></label>') + '</div>'
+      + '<label class="mp-hint" for="' + id + 'o">Discount code (optional)</label><input id="' + id + 'o" class="mp-in" type="text" name="discount-code" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="24">'
+      + '<div id="' + id + 'sum"></div><label class="mp-hint" for="' + id + 'p">M-Pesa phone number</label><input id="' + id + 'p" class="mp-in" type="tel" name="mpesa-phone" autocomplete="tel" inputmode="numeric" placeholder="0712345678" value="' + esc(loadLast('mp_phone')) + '">'
+      + '<div id="' + id + 'out"></div><div class="mp-row"><button type="button" class="mp-btn" id="' + id + 'go">' + (st.stk ? 'Pay with M-Pesa' : 'I have made this payment') + '</button></div>'
+      + (st.stk ? '' : '<p class="mp-hint">Send the amount to <b>' + esc(st.paymentPhone || '') + '</b> by M-Pesa first, then press the button. Your plan is extended when the owner confirms it.</p>');
+    var $ = function (s) { return document.getElementById(id + s); };
+    function body() { return { kind: kind, cycles: cycles, qty: qty, offer: ($('o').value || '').trim() }; }
+    function showQuote() {
+      api(Object.assign({ action: 'quote' }, body())).then(function (j) {
+        if (!j.quote) { $('sum').innerHTML = '<div class="mp-err">' + esc(j.error || 'Could not get the price.') + '</div>'; return; }
+        state.quote = j.quote; var q = j.quote;
+        $('sum').innerHTML = '<div class="mp-sum"><dl>' + q.lines.map(function (l) { return '<dt>' + esc(l.label) + '</dt><dd>' + kes(l.amount) + '</dd>'; }).join('') + (q.discount.total ? '<dt>Discount' + (q.discount.offers.length ? ' (' + esc(q.discount.offers.map(function (o) { return o.name; }).join(', ')) + ')' : q.discount.reward ? ' (referral reward)' : '') + '</dt><dd>- ' + kes(q.discount.total) + '</dd>' : '') + '<dt><b>You pay now</b></dt><dd>' + kes(q.total) + '</dd></dl></div>';
+      });
+    }
+    if ($('c')) $('c').addEventListener('change', function () { cycles = Number($('c').value) || 1; showQuote(); });
+    if ($('q')) $('q').addEventListener('input', function () { qty = Math.max(1, Math.min(20, Number($('q').value) || 1)); showQuote(); });
+    $('o').addEventListener('change', showQuote);
+    $('go').addEventListener('click', function () {
+      var btn = $('go'), out = $('out'); out.innerHTML = ''; btn.disabled = true;
+      var phone = ($('p').value || '').trim(); saveLast('mp_phone', phone);
+      api(Object.assign({ action: 'start', phone: phone }, body())).then(function (j) {
+        if (!j.id) { out.innerHTML = '<div class="mp-err" role="alert">' + esc(j.error || 'Could not start the payment.') + '</div>'; btn.disabled = false; return; }
+        state.pay = j;
+        if (j.method === 'claim') {
+          api({ action: 'claim', id: j.id, token: j.token }).then(function () { out.innerHTML = '<div class="mp-ok" role="status">Thank you. We will confirm your payment and extend your plan. You can close this page.</div>'; });
+          return;
+        }
+        out.innerHTML = '<div class="mp-ok" role="status">Check your phone and enter your M-Pesa PIN to pay ' + kes(j.amount) + '.</div>';
+        var tries = 0; clearInterval(MP.poll);
+        MP.poll = setInterval(function () {
+          tries++;
+          api({ action: 'poll', id: j.id, token: j.token }).then(function (r) {
+            if (r.status === 'paid') {
+              clearInterval(MP.poll);
+              out.innerHTML = '<div class="mp-ok" role="status">Paid.' + (r.paidThroughLabel ? ' Your plan now runs to ' + esc(r.paidThroughLabel) + '.' : '') + '</div><div class="mp-row"><button type="button" class="mp-btn sec" id="' + id + 'rc">Download receipt (PDF)</button></div>';
+              document.getElementById(id + 'rc').onclick = function () { receipt(j); };
+              if (done) done(r);
+            }
+            else if (r.status === 'failed' || r.status === 'rejected') { clearInterval(MP.poll); out.innerHTML = '<div class="mp-err" role="alert">' + esc(r.message || 'The payment was not completed.') + ' You can try again.</div>'; btn.disabled = false; }
+            else if (tries > 60) { clearInterval(MP.poll); out.innerHTML = '<div class="mp-err" role="alert">Still waiting for the payment. If you paid, it will show here shortly; otherwise try again.</div>'; btn.disabled = false; }
+          });
+        }, 3000);
+      });
+    });
+    showQuote();
+  }
+
+  // the receipt PDF for a paid renewal or add-on (money paid, discount, the new paid-through date in Nairobi time)
+  function receipt(pay) {
+    fetch(url('/api/billing-renew'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'receipt', id: pay.id, token: pay.token }) })
+      .then(function (r) { if (!r.ok) throw new Error('no receipt'); return r.blob(); })
+      .then(function (b) { var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'MyDukaPOS-receipt.pdf'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000); })
+      .catch(function () { try { if (typeof showToast === 'function') showToast('The receipt is not ready yet. Try again in a moment.', true); } catch (e) { /* cosmetic */ } });
+  }
+
+  // ------------------------------------------------------------ the paused page (suspended: paid period and grace have ended)
+  function showSuspended(sub) {
+    var o = document.getElementById('mp-suspended');
+    if (!o) {
+      o = document.createElement('div'); o.id = 'mp-suspended'; o.className = 'mp-overlay'; o.setAttribute('role', 'alertdialog'); o.setAttribute('aria-modal', 'true'); o.setAttribute('aria-labelledby', 'mp-sus-title');
+      o.innerHTML = '<div class="mp-box"><div class="mp-head"><h3 id="mp-sus-title">Your shop is paused</h3></div><div class="mp-body" id="mp-sus-body"></div></div>'; document.body.appendChild(o);
+    }
+    o.classList.add('open');
+    var body = document.getElementById('mp-sus-body'); if (body.dataset.for === (sub.paidThrough || 'x') + (sub.owner ? 'o' : '')) return; body.dataset.for = (sub.paidThrough || 'x') + (sub.owner ? 'o' : '');
+    if (sub.owner) { body.innerHTML = '<p>This shop is on hold. Please contact support to restore access.</p><p class="mp-hint">Nothing has been deleted. Your data and any sales not yet sent are safe on this device.</p><div class="mp-row"><button type="button" class="mp-btn sec" id="mp-sus-check">Check again</button></div>'; }
+    else {
+      body.innerHTML = '<p style="margin-top:0">Your subscription ended on <b>' + esc(sub.paidThroughLabel || '') + '</b>. Renew to open your shop again.</p><p class="mp-hint">Nothing has been deleted. Your data, and any sales made on this device since, are safe and will be sent as soon as you renew.</p><div id="mp-sus-pay"><p class="mp-hint">Loading…</p></div><div class="mp-row" style="margin-top:8px"><button type="button" class="mp-btn sec" id="mp-sus-check">I have paid, check again</button></div>';
+      api({ action: 'status' }).then(function (st) { var host = document.getElementById('mp-sus-pay'); if (!host) return; if (!st.renewal) { host.innerHTML = '<div class="mp-err">' + esc(st.holdMessage || st.error || 'Could not load the renewal.') + '</div>'; return; } MP.st = st; payBox(host, 'renewal', st, function () { setTimeout(recheck, 800); }); });
+    }
+    var c = document.getElementById('mp-sus-check'); if (c) c.addEventListener('click', recheck);
+  }
+  function recheck() { try { if (typeof checkLicenseStatus === 'function') checkLicenseStatus(); } catch (e) { /* the 30 s check does it */ } }
+  function hideSuspended() { var o = document.getElementById('mp-suspended'); if (o) { o.classList.remove('open'); var b = document.getElementById('mp-sus-body'); if (b) delete b.dataset.for; } }
+
+  // ------------------------------------------------------------ banner: overdue (grace) or due very soon. Never blocks.
+  function banner(sub) {
+    var b = document.getElementById('mp-banner');
+    if (!sub || (sub.state !== 'grace' && !(sub.state === 'active' && sub.daysLeft != null && sub.daysLeft <= 3))) { if (b) b.classList.remove('show'); document.body.classList.remove('mp-ban'); return; }
+    var soft = sub.state === 'active', key = 'mp_dismiss_' + (sub.paidThrough || 0);
+    if (soft && loadLast(key)) { if (b) b.classList.remove('show'); document.body.classList.remove('mp-ban'); return; }
+    if (!b) { b = document.createElement('div'); b.id = 'mp-banner'; b.setAttribute('role', 'status'); document.body.appendChild(b); }
+    b.className = 'show' + (soft ? ' soft' : ''); document.body.classList.add('mp-ban');
+    b.innerHTML = '<span>' + (soft ? 'Your subscription renews on <b>' + esc(sub.nextRenewalLabel) + '</b> (Nairobi time).' : 'Your subscription payment is overdue. Renew by <b>' + esc(sub.graceEndsLabel) + '</b> to keep your shop online.') + '</span><button type="button" id="mp-ban-go">Renew</button>' + (soft ? '<button type="button" class="mp-x" id="mp-ban-x" aria-label="Dismiss">✕</button>' : '');
+    document.getElementById('mp-ban-go').onclick = openPlan;
+    var x = document.getElementById('mp-ban-x'); if (x) x.onclick = function () { saveLast(key, '1'); b.classList.remove('show'); document.body.classList.remove('mp-ban'); };
+  }
+
+  // ------------------------------------------------------------ the My plan window
+  function shell() {
+    var o = document.getElementById('mp-overlay'); if (o) return o;
+    o = document.createElement('div'); o.id = 'mp-overlay'; o.className = 'mp-overlay'; o.setAttribute('role', 'dialog'); o.setAttribute('aria-modal', 'true'); o.setAttribute('aria-labelledby', 'mp-title');
+    o.innerHTML = '<div class="mp-box"><div class="mp-head"><h3 id="mp-title">My plan</h3><button type="button" class="mp-x" id="mp-close" aria-label="Close">✕</button></div><div class="mp-body" id="mp-body"></div></div>';
+    document.body.appendChild(o);
+    o.addEventListener('click', function (e) { if (e.target === o) closePlan(); });
+    document.getElementById('mp-close').addEventListener('click', closePlan);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && o.classList.contains('open')) closePlan(); });
+    return o;
+  }
+  function openPlan() { MP.opener = document.activeElement; shell().classList.add('open'); clearInterval(MP.poll); load(); setTimeout(function () { var c = document.getElementById('mp-close'); if (c) c.focus(); }, 0); }
+  function closePlan() { var o = document.getElementById('mp-overlay'); if (o) o.classList.remove('open'); clearInterval(MP.poll); recheck(); try { if (MP.opener && MP.opener.focus) MP.opener.focus(); } catch (e) { /* cosmetic */ } }
+  function load() {
+    var body = document.getElementById('mp-body'); body.innerHTML = '<p class="mp-hint">Loading…</p>';
+    api({ action: 'status' }).then(function (st) {
+      if (!st.plan) { body.innerHTML = '<div class="mp-err">' + esc(st.error || 'Could not load your plan.') + '</div>'; return; }
+      MP.st = st; render(st);
+    }).catch(function () { body.innerHTML = '<div class="mp-err">Could not reach the server. Check your connection and try again.</div>'; });
+  }
+  function render(st) {
+    var p = st.plan, body = document.getElementById('mp-body'), sub = p.cohort === 'new', h = '';
+    h += '<div class="mp-sec"><h4>' + esc(st.shop.label) + ' ' + chip(p.state) + '</h4>';
+    if (!sub) h += '<p class="mp-hint" style="margin:0">Your shop was set up before subscriptions began, so it has <b>lifetime access</b>. Nothing to pay.</p>';
+    else h += '<dl class="mp-kv"><dt>Paid through</dt><dd>' + esc(p.paidThroughLabel) + '</dd><dt>Next renewal</dt><dd>' + esc(p.nextRenewalLabel) + '</dd><dt>Grace period ends</dt><dd>' + esc(p.graceEndsLabel) + '</dd><dt>Your price</dt><dd>' + kes(p.price) + ' every ' + esc(p.periodDays) + ' days</dd>' + (p.allowance ? '<dt>Branches</dt><dd>' + p.usage.branches + ' of ' + p.allowance.branches + '</dd><dt>Staff places</dt><dd>' + p.allowance.staff + ' (' + p.allowance.extraBranches + ' extra branches, ' + p.allowance.staffBlocks + ' staff blocks bought)</dd>' : '') + '</dl>' + (p.claimPending ? '<p class="mp-hint">A payment you made is waiting for the owner to confirm.</p>' : '') + '<p class="mp-hint">Times are Nairobi time. Renewing early adds to the end of your paid period; it never shortens it.</p>';
+    h += '</div>';
+    if (st.holdMessage) h += '<div class="mp-err">' + esc(st.holdMessage) + '</div>';
+    if (sub && st.canPay) {
+      h += '<div class="mp-sec"><h4>Renew</h4><div id="mp-renew"></div></div>';
+      h += '<div class="mp-sec"><h4>Add more</h4><div class="mp-row"><button type="button" class="mp-btn sec" data-add="extraBranch">One extra branch ' + kes(st.terms.addons.extraBranch.amount) + '</button><button type="button" class="mp-btn sec" data-add="branchBundle">' + st.terms.addons.branchBundle.qty + ' branches ' + kes(st.terms.addons.branchBundle.amount) + '</button><button type="button" class="mp-btn sec" data-add="staffBlock">' + st.terms.addons.staffBlock.qty + ' staff places ' + kes(st.terms.addons.staffBlock.amount) + '</button></div><p class="mp-hint">One-time charges. Staff places are shared across all your branches.</p><div id="mp-addbox"></div></div>';
+    }
+    var r = st.referral;
+    if (r && r.enabled) {
+      h += '<div class="mp-sec"><h4>Refer a shop</h4><p class="mp-hint" style="margin-top:0">' + (r.rule ? 'When a shop you refer pays for its link, you earn ' + (r.rule.type === 'percent' ? r.rule.value + '% off' : kes(r.rule.value) + ' off') + ' ' + (r.rule.appliesTo.indexOf('renewal') >= 0 ? 'your next renewal' : 'an add-on') + '. A click or an unpaid request earns nothing.' : '') + '</p>'
+        + '<input class="mp-in" id="mp-reflink" readonly value="' + esc(r.link) + '" aria-label="Your referral link"><div class="mp-row"><button type="button" class="mp-btn sec" id="mp-copy">Copy link</button><span class="mp-hint">Code <b>' + esc(r.code) + '</b></span></div>'
+        + (r.rewards.length ? '<p style="margin:10px 0 4px"><b>Your rewards</b></p>' + r.rewards.map(function (w) { var c = { available: 'ok', reserved: 'warn', used: '', void: 'bad', review: 'warn', expired: 'bad' }[w.status] || ''; return '<div class="mp-row" style="justify-content:space-between"><span>' + (w.type === 'percent' ? w.value + '% off' : kes(w.value) + ' off') + '</span><span class="mp-chip ' + c + '">' + esc(w.status === 'review' ? 'being checked' : w.status) + '</span></div>'; }).join('') : '<p class="mp-hint">No rewards yet.</p>') + '</div>';
+    }
+    if (p.history && p.history.length) h += '<div class="mp-sec"><h4>Payments</h4>' + p.history.slice(0, 6).map(function (x) { return '<div class="mp-row" style="justify-content:space-between;font-size:13.5px"><span>' + esc(x.label) + ' · ' + esc(x.kind) + (x.cycles ? ' x' + x.cycles : '') + '</span><b>' + kes(x.amount) + '</b></div>'; }).join('') + '</div>';
+    body.innerHTML = h;
+    var rn = document.getElementById('mp-renew'); if (rn) payBox(rn, 'renewal', st, function () { setTimeout(load, 600); recheck(); });
+    body.querySelectorAll('[data-add]').forEach(function (b) { b.addEventListener('click', function () { payBox(document.getElementById('mp-addbox'), b.getAttribute('data-add'), st, function () { setTimeout(load, 600); }); }); });
+    var cp = document.getElementById('mp-copy'); if (cp) cp.addEventListener('click', function () { var i = document.getElementById('mp-reflink'); try { navigator.clipboard.writeText(i.value).then(function () { cp.textContent = 'Copied'; }); } catch (e) { i.select(); } });
+  }
+
+  // ------------------------------------------------------------ the Settings card, and reacting to every licence check
+  function ensureCard() {
+    var t = document.getElementById('settings-tab'); if (!t || !isPermanentShop()) return;
+    var c = document.getElementById('mp-card');
+    if (!c) { c = document.createElement('div'); c.id = 'mp-card'; c.className = 'panel'; t.insertBefore(c, t.firstChild); }
+    var l = lic(), sub = l.subscription;
+    c.innerHTML = '<h3>💳 My plan</h3><p class="settings-hint" style="margin:0 0 8px">' + (sub ? 'Subscription ' + chip(sub.state) + ' &middot; paid through <b>' + esc(sub.paidThroughLabel) + '</b> (Nairobi time).' : 'Lifetime access. Your shop was set up before subscriptions began.') + '</p><button type="button" class="mp-btn" id="mp-open">' + (sub ? 'Renew, add-ons and referrals' : 'Referrals') + '</button>';
+    document.getElementById('mp-open').onclick = openPlan;
+  }
+  MP.onLicense = function () {
+    var l = lic();
+    if (!l || l.sharedDemo || l.type !== 'permanent') { hideSuspended(); banner(null); return; }
+    var sub = l.subscription || null;
+    if (l.valid === false && l.reason === 'subscription_suspended' && sub) { showSuspended(sub); banner(null); return; }
+    hideSuspended(); banner(sub); ensureCard();
+  };
+  try {
+    var _a = window.applyLicenseUI;
+    if (typeof _a === 'function' && !_a.__mp) { var w = function () { var r = _a.apply(this, arguments); try { MP.onLicense(); } catch (e) { /* cosmetic */ } return r; }; w.__mp = true; window.applyLicenseUI = w; }
+  } catch (e) { /* the page keeps working without it */ }
+  window.openMyPlan = openPlan;
+  try { document.addEventListener('click', function (e) { if (e.target && e.target.id === 'settings-tab-btn') setTimeout(ensureCard, 50); }); } catch (e) { /* cosmetic */ }
+  setTimeout(function () { try { MP.onLicense(); } catch (e) { /* cosmetic */ } }, 1500);
+})();
+</script>
+<!-- @shared-block:my-plan:end -->
 <!-- @shared-block:shared-demo:begin -->
 <!-- SHARED DEMO MODE (zip 262) ---------------------------------------------------------------------------------------------------
      The public demos are ONE fixed, pre-loaded shop per product (see functions/api/_shared-demos.js). Nobody gets a shop of their own:
@@ -52792,6 +53012,9 @@ body.sd-on{padding-bottom:60px}
 #sd-buy .sd-close{position:absolute;top:10px;right:10px;flex:none;width:40px;min-height:40px;border:0;font-size:20px;border-radius:50%}
 #sd-buy .sd-hint{margin:6px 0 0;font-size:13px;min-height:19px;font-weight:600;color:var(--muted,#5b6d70)}
 #sd-buy .sd-hint.ok{color:var(--tint-success-text,#1e8449)}
+#sd-buy .sd-sum{border:2px solid var(--accent,#0b7a5f);border-radius:12px;padding:10px 12px;margin:8px 0 6px}
+#sd-buy .sd-sum dl{margin:0;display:grid;grid-template-columns:1fr auto;gap:3px 12px;font-size:14.5px}
+#sd-buy .sd-sum dd{margin:0;text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
 #sd-buy .sd-hint.no{color:#c93a3a}
 #sd-buy .sd-addr{display:flex;align-items:center;gap:6px}
 #sd-buy .sd-addr input{flex:1;min-width:0}
@@ -52885,28 +53108,49 @@ body.sd-on{padding-bottom:60px}
     }
     function body(html) { var b = document.getElementById('sd-buy-body'); b.innerHTML = html; return b; }
     function money(n) { return 'KES ' + Number(n || 0).toLocaleString('en-KE'); }
+    // zip 267: a referral code arrives as ?ref=CODE (the public site adds it to the demo link); kept for this visit and sent with the request, where the SERVER checks it
+    function myRef() {
+        try { var q = new URLSearchParams(location.search).get('ref'); if (q && /^[A-Za-z0-9]{6,12}$/.test(q)) sessionStorage.setItem('sd_ref', q.toUpperCase()); return sessionStorage.getItem('sd_ref') || ''; } catch (e) { return ''; }
+    }
+    // the price box: every number comes from the server's quote (one pricing source), never from this page
+    function priceBox(t) {
+        var q = t.quote; if (!q) return '<p>Your own shop on your own web address, with your own data. One payment of <b>' + money(t.amount) + '</b>.</p>';
+        var rows = q.lines.map(function (l) { return '<dt>' + esc(l.label) + ' <span class="sd-hint" style="display:inline">(paid once)</span></dt><dd>' + money(l.amount) + '</dd>'; }).join('');
+        if (q.discount && q.discount.total) rows += '<dt>Discount' + (q.discount.offers.length ? ' (' + esc(q.discount.offers.map(function (o) { return o.name; }).join(', ')) + ')' : '') + '</dt><dd>- ' + money(q.discount.total) + '</dd>';
+        return '<p>Your own shop on your own web address, with your own data. Your link is created as soon as the payment is confirmed.</p><div class="sd-sum" aria-live="polite"><dl>' + rows + '<dt><b>You pay now</b></dt><dd>' + money(q.total) + '</dd></dl>' + (q.recurringNote ? '<p class="sd-hint" style="margin:6px 0 0">' + esc(q.recurringNote.text) + '</p>' : '') + (t.referralApplied ? '<p class="sd-hint ok" style="margin:6px 0 0">\u2713 You were referred by a MyDukaPOS shop.</p>' : '') + '</div>';
+    }
     function openBuy() {
         shell().classList.add('on');
         B.ref = refGet();
         if (B.ref && B.ref.paid && B.ref.link) { ready(B.ref); return; }
         if (B.ref && B.ref.id) { waiting(B.ref.method === 'claim' && !B.ref.claimed ? 'pay' : 'wait'); return; }
         body('<p><span class="sd-spin"></span>One moment&hellip;</p>');
-        post({ action: 'options' }).then(function (t) { if (!t.__ok) throw new Error(t.error || 'Not available right now.'); B.terms = t; form(); })
+        post({ action: 'options', ref: myRef() }).then(function (t) { if (!t.__ok) throw new Error(t.error || 'Not available right now.'); B.terms = t; form(); })
             .catch(function (e) { body('<h2 id="sd-buy-h">Get my own link</h2><p class="sd-err" role="alert">' + esc(e.message || 'Could not load. Please try again.') + '</p>'); });
     }
     function form() {
         var t = B.terms;
-        body('<h2 id="sd-buy-h">Get your own link</h2><p>Your own shop on your own web address, with your own data. One payment of <b>' + money(t.amount) + '</b>. Your link is created as soon as the payment is confirmed.</p>' +
+        body('<h2 id="sd-buy-h">Get your own link</h2><div id="sd-pricebox">' + priceBox(t) + '</div>' +
             '<label for="sd-n">Your name</label><input id="sd-n" autocomplete="name" maxlength="80">' +
             '<label for="sd-p">Phone number</label><input id="sd-p" type="tel" inputmode="tel" autocomplete="tel" placeholder="0712 345 678" maxlength="20">' +
             '<label for="sd-e">Email <span style="font-weight:500;color:var(--muted,#5b6d70)">(optional)</span></label><input id="sd-e" type="email" autocomplete="email" maxlength="120" placeholder="you@example.com">' +
             '<label for="sd-s">Your web address <span style="font-weight:500;color:var(--muted,#5b6d70)">(optional)</span></label><div class="sd-addr"><input id="sd-s" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="40" placeholder="your-shop"><span>.' + esc(t.root || 'mydukapos.store') + '</span></div>' +
             '<p class="sd-hint" id="sd-sm" role="status" aria-live="polite">Leave it empty and we use your name.</p>' +
+            '<label for="sd-o">Discount code <span style="font-weight:500;color:var(--muted,#5b6d70)">(optional)</span></label><div class="sd-addr"><input id="sd-o" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="24" placeholder="e.g. LAUNCH20"><button type="button" id="sd-oc" style="margin-left:6px;white-space:nowrap">Apply</button></div>' +
             '<p class="sd-err" id="sd-err" role="alert"></p>' +
             '<div class="sd-row"><button type="button" class="sd-go" id="sd-go">' + (t.stk ? 'Pay ' + money(t.amount) + ' with M-Pesa' : 'Continue') + '</button></div>');
-        if (B.form) { document.getElementById('sd-n').value = B.form.name || ''; document.getElementById('sd-p').value = B.form.phone || ''; document.getElementById('sd-e').value = B.form.email || ''; document.getElementById('sd-s').value = B.form.slug || ''; }
+        if (B.form) { document.getElementById('sd-o').value = B.form.offer || ''; document.getElementById('sd-n').value = B.form.name || ''; document.getElementById('sd-p').value = B.form.phone || ''; document.getElementById('sd-e').value = B.form.email || ''; document.getElementById('sd-s').value = B.form.slug || ''; }
         document.getElementById('sd-n').focus();
         document.getElementById('sd-go').onclick = function () { submit(''); };
+        document.getElementById('sd-oc').onclick = function () {
+            var code = (document.getElementById('sd-o').value || '').trim(), pb = document.getElementById('sd-pricebox'), go = document.getElementById('sd-go');
+            B.form = B.form || {}; B.form.offer = code;
+            post({ action: 'quote', offer: code, ref: myRef() }).then(function (r) {
+                if (!r.__ok || !r.quote) return; B.terms = Object.assign({}, B.terms, { quote: r.quote, amount: r.amount, referralApplied: r.referralApplied });
+                pb.innerHTML = priceBox(B.terms); if (go && B.terms.stk) go.textContent = 'Pay ' + money(r.amount) + ' with M-Pesa';
+                var sm2 = document.getElementById('sd-sm'); if (code && sm2 && !r.offerApplied) { sm2.className = 'sd-hint no'; sm2.textContent = 'That code does not apply here.'; }
+            });
+        };
         var st = 0, box = document.getElementById('sd-s'), sm = document.getElementById('sd-sm');
         box.oninput = function () {
             clearTimeout(st); var v = box.value.trim();
@@ -52927,10 +53171,11 @@ body.sd-on{padding-bottom:60px}
         var g = document.getElementById('sd-go'), err = document.getElementById('sd-err');
         if (typeof choice !== 'string') choice = '';
         var v = B.form = B.form || {};
-        if (document.getElementById('sd-n')) { v.name = document.getElementById('sd-n').value; v.phone = document.getElementById('sd-p').value; v.email = document.getElementById('sd-e').value; v.slug = document.getElementById('sd-s').value; }
+        if (document.getElementById('sd-n')) { v.name = document.getElementById('sd-n').value; v.phone = document.getElementById('sd-p').value; v.email = document.getElementById('sd-e').value; v.slug = document.getElementById('sd-s').value; v.offer = (document.getElementById('sd-o') || {}).value || ''; }
         if (err) err.textContent = ''; if (g) { g.disabled = true; g.textContent = 'Please wait\u2026'; }
-        post({ action: 'start', name: v.name, phone: v.phone, email: v.email, slug: v.slug, choice: choice }).then(function (r) {
+        post({ action: 'start', name: v.name, phone: v.phone, email: v.email, slug: v.slug, choice: choice, branchProof: choice === 'branch' ? (B.branchProof || '') : '', offer: v.offer || '', ref: myRef() }).then(function (r) {
             if (r.needChoice) { return choose(r); }
+            if (!r.__ok && r.code === 'branch_proof') { choose({ amount: (B.terms && B.terms.amount) || 0, branchAmount: (B.terms && B.terms.amount) || 0 }); var e4 = document.getElementById('sd-err'); if (e4) e4.textContent = r.error; return; }
             if (!r.__ok) { form(); var e2 = document.getElementById('sd-err'); if (e2) e2.textContent = r.error || 'Something went wrong. Please try again.'; return; }
             B.ref = { id: r.id, token: r.token, method: r.method, amount: r.amount, kind: r.kind, paymentUrl: r.paymentUrl || '', claimed: false }; refSet(B.ref);
             waiting(r.method === 'claim' ? 'pay' : 'wait');
@@ -52938,11 +53183,21 @@ body.sd-on{padding-bottom:60px}
     }
     // the phone number or email already has a shop of this kind: never a refusal, a question
     function choose(r) {
-        body('<h2 id="sd-buy-h">You already have a shop with us</h2><p>We found a MyDukaPOS shop with this phone number or email. <b>Optional:</b> add this new link as a <b>branch</b> of that shop, so you can see both together. Or keep it as a separate link.</p>' +
+        body('<h2 id="sd-buy-h">You may already have a shop with us</h2><p>We found a MyDukaPOS shop with this phone number or email. <b>Optional:</b> add this new link as a <b>branch</b> of it, so you can see both together. To prove the shop is yours, enter its <b>Admin password</b>. Or keep the new link separate.</p>' +
+            '<label for="sd-bp">Admin password of your existing shop</label><input id="sd-bp" type="password" autocomplete="current-password" maxlength="80">' +
+            '<p class="sd-err" id="sd-err" role="alert"></p>' +
             '<div class="sd-row" style="flex-direction:column"><button type="button" class="sd-go" id="sd-br">Add it as a branch &middot; ' + money(r.branchAmount) + '</button>' +
             '<button type="button" id="sd-sep">Keep it separate &middot; ' + money(r.amount) + '</button></div>');
-        document.getElementById('sd-br').onclick = function () { submit('branch'); };
-        document.getElementById('sd-sep').onclick = function () { submit('separate'); };
+        document.getElementById('sd-br').onclick = function () {
+            var pw = document.getElementById('sd-bp').value, e = document.getElementById('sd-err');
+            if (!pw) { e.textContent = 'Enter the Admin password of your existing shop.'; return; }
+            // the password never leaves this device: only its SHA-256 is sent, the same fingerprint the apps already use to sign in
+            crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw)).then(function (buf) {
+                B.branchProof = Array.prototype.map.call(new Uint8Array(buf), function (x) { return x.toString(16).padStart(2, '0'); }).join('');
+                submit('branch');
+            });
+        };
+        document.getElementById('sd-sep').onclick = function () { B.branchProof = ''; submit('separate'); };
     }
     function waiting(mode) {
         var r = B.ref, phone = (B.terms && B.terms.paymentPhone) || '';
@@ -56048,7 +56303,7 @@ body.sd-on{padding-bottom:60px}
         GROUPS = [
             { id: 'o-clients', label: 'Clients & Links', icon: '🔗', tabs: ['sales-tab', 'demo-links-tab', 'permanent-links-tab', 'trash-tab'] },
             { id: 'o-money', label: 'Money', icon: '💰', tabs: ['daily-sales-tab', 'profits-tab', 'bills-tab'] },
-            { id: 'o-content', label: 'Content', icon: '🛍️', tabs: ['website-tab', 'owner-catalog-tab', 'prices-tab', 'owner-offers-tab', 'owner-messages-tab', 'tables-rooms-tab'] },
+            { id: 'o-content', label: 'Content', icon: '🛍️', tabs: ['website-tab', 'owner-catalog-tab', 'billing-tab', 'owner-offers-tab', 'owner-messages-tab', 'tables-rooms-tab'] },
             { id: 'o-watch', label: 'Monitoring', icon: '🩺', tabs: ['health-tab', 'errors-tab', 'storage-tab'] },
             { id: 'o-team', label: 'Team', icon: '👥', tabs: ['staff-tab'] },
             { id: 'o-sys', label: 'System', icon: '⚙️', tabs: ['owner-apps-tab', 'settings-tab'] }

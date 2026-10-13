@@ -9,13 +9,20 @@
 //   R2   pictures (shop/<id>/<kind>/<file>) in the MEDIA bucket (or in KV on a deployment without R2)
 //   KV   the website sign-in account of each shop owner (demo-account:<email>: salt + password HASH; sessions are separate keys and not exported)
 //
-// NEVER EXPORTED (secrets / sessions / things that only work with the old account's secrets): payment-gateway, SMS, SHA, eTIMS and e-mail
-// credentials, callback keys, device pairing, staff sessions and keys, owner sessions, OTPs, rate-limit counters, tokens, daily KV snapshot copies.
-// They are listed (counted) in the package so nothing is silently missing; the shop re-enters its payment credentials in the new deployment.
+// SECRETS (zip 267, optional, only into a passphrase-protected package): each shop's payment-gateway, SMS, SHA, eTIMS and image-search credentials, its callback keys
+// (so payment addresses already given to Safaricom / Paywave keep working), device pairing and staff signing keys. The gateway and SMS records are sealed in KV with this
+// deployment's PAYMENT_SECRETS_KEY, so they are exported OPENED (the console then locks the whole package with the owner's passphrase) and SEALED AGAIN with the target
+// deployment's key on restore: a restore into a deployment with a different key still works.
+// PLATFORM BILLING (zip 267, optional): the Billing settings, discounts and their use counts, and the owner's payment ledger / audit trail / payment markers. A restore never
+// overwrites what the target already has. The referral-code index is rebuilt from each shop's own record.
+//
+// NEVER EXPORTED (sessions and caches, and the platform owner's own sign-in): staff and website sessions, owner sessions and the owner account, OTPs, pairing codes,
+// rate-limit counters, tokens, daily KV snapshot copies. They are listed (counted) in the package so nothing is silently missing.
 //
 // Every operation here is STATELESS and bounded (one page / one batch per call) so a large shop never has to fit in one request; the
 // owner console drives the loop and assembles the package in the browser.
 import { listClientSummaries, getLicense, saveLicense, claimSlug, productPath, clientLink, getRootDomain, shopDbAnswers, getBranchGroupMembers } from './_license.js';
+import { openRecord, sealRecord } from './_secret-box.js';
 import { shopMode, shopCall, MODE_PREFIX, forgetShopMode } from './_state-store.js';
 import { getOwnerAccount } from './_owner-auth.js';
 import { readIndex as readAccountIndex, getAccount, saveAccount } from './_account.js';
@@ -41,6 +48,20 @@ export const DENY_PREFIXES = [
   'pos-data:backup:', 'pos-data:sizealert:', 'pay-change-log:',
 ];
 export const denied = (key) => DENY_PREFIXES.some((p) => key.startsWith(p));
+
+// The per-shop secrets that can travel (a subset of DENY_PREFIXES; sessions, OTPs, pairing codes and caches never do).
+export const SECRET_PREFIXES = ['gateway-config:', 'sms-config:', 'sha-config:', 'sha-token:', 'etims-config:', 'payment-accounts:', 'image-search-config:', 'callback-key:', 'device-auth:', 'staff-key:', 'staff-auth-mode:'];
+export const isSecretKey = (key) => SECRET_PREFIXES.some((p) => String(key).startsWith(p));
+// Platform billing keys (not tied to one shop). Restored only where the target has nothing yet.
+export const PLATFORM_PREFIXES = ['billing-settings:', 'billing-offers:', 'billing-offer-used:', 'bill-evt:', 'bill-aud:', 'bill-ref:', 'bill-pay:', 'bill-pay-index:'];
+// Platform-wide settings of the whole deployment (website text, catalogue, app releases, messages ...). Plain; put only where the target has nothing yet.
+export const PLATFORM_SETTING_KEYS = ['website-content', 'website-marketing', 'catalog:v1', 'offers:v1', 'app-releases:v1', 'config:demo-duration-hours', 'storage_settings', 'owner-messages:v1', 'leads-whatsapp-ad-numbers', 'buy-index:v1'];
+// Platform-wide secrets (Gemini key pool, e-mail sender): exported ONLY into a passphrase-locked package.
+export const PLATFORM_SECRET_KEYS = ['gemini-capture-config:v1', 'email-config:v1'];
+export const isPlatformKey = (key) => PLATFORM_PREFIXES.concat(PLATFORM_SETTING_KEYS, PLATFORM_SECRET_KEYS).some((p) => String(key).startsWith(p));
+const SEALED_KINDS = { 'gateway-config:': { kind: 'gateway', aad: (id) => 'gateway|' + id }, 'sms-config:': { kind: 'sms', aad: (id) => 'sms|' + id } };
+const sealedKind = (key) => { const p = Object.keys(SEALED_KINDS).find((x) => String(key).startsWith(x)); return p ? SEALED_KINDS[p] : null; };
+const lastSegment = (key) => keySegments(key).pop();
 const SHOP_ID_RE = /^[A-Za-z0-9_-]{4,40}$/;
 const keySegments = (key) => String(key).split(/[:/]/);
 export function shopOfKey(key, idSet) { for (const s of keySegments(key)) if (idSet.has(s)) return s; return ''; }
@@ -94,6 +115,48 @@ export async function exportKvScan(env, { cursor, ids }) {
     keys.push({ k: k.name, shop });
   }
   return { ok: true, keys, excluded, cursor: page.list_complete ? '' : page.cursor, done: !!page.list_complete };
+}
+
+// The secret keys of the given shops (names only; the values come from exportSecretGet).
+export async function exportSecretScan(env, { cursor, ids }) {
+  const idSet = new Set((ids || []).filter((i) => SHOP_ID_RE.test(i)));
+  const page = await env.mydukapos_kv.list({ cursor: cursor || undefined, limit: 1000 });
+  const keys = [];
+  for (const k of page.keys) { if (!isSecretKey(k.name)) continue; const shop = shopOfKey(k.name, idSet); if (shop) keys.push({ k: k.name, shop }); }
+  return { ok: true, keys, cursor: page.list_complete ? '' : page.cursor, done: !!page.list_complete };
+}
+// The values, with the gateway and SMS records OPENED (plain JSON) so they can be sealed again with the target's key. A record that cannot be opened here (the key it was sealed with is
+// gone) is exported as stored and flagged: it only works where that same key is set.
+export async function exportSecretGet(env, { keys }) {
+  const items = [];
+  for (const key of (keys || []).slice(0, 60)) {
+    if (!isSecretKey(key)) continue;
+    const raw = await env.mydukapos_kv.get(key);
+    if (raw == null) continue;
+    const sk = sealedKind(key);
+    if (sk) {
+      const id = lastSegment(key), r = await openRecord(env, sk.aad(id), raw);
+      if (r.ok) { items.push({ key, kind: sk.kind, value: JSON.stringify(r.value) }); continue; }
+      items.push({ key, kind: 'raw', value: raw, unreadable: true }); continue;
+    }
+    items.push({ key, kind: 'raw', value: raw });
+  }
+  return { ok: true, items };
+}
+// Platform billing data, one bounded page per call: { p: index of the prefix, cursor } in, the next position out.
+export async function exportPlatform(env, { p = 0, cursor, secrets }) {
+  const items = []; let bytes = 0;
+  const prefixes = PLATFORM_PREFIXES.concat(PLATFORM_SETTING_KEYS, secrets ? PLATFORM_SECRET_KEYS : []);
+  while (p < prefixes.length) {
+    const page = await env.mydukapos_kv.list({ prefix: prefixes[p], cursor: cursor || undefined, limit: 200 });
+    for (const k of page.keys) {
+      const v = await env.mydukapos_kv.get(k.name); if (v == null) continue;
+      items.push({ key: k.name, value: v }); bytes += v.length;
+    }
+    if (page.list_complete) { p++; cursor = ''; } else cursor = page.cursor;
+    if (bytes >= RESPONSE_BYTES / 2) break;
+  }
+  return { ok: true, items, p, cursor: cursor || '', done: p >= prefixes.length };
 }
 
 export async function exportKvGet(env, { keys }) {
@@ -205,6 +268,8 @@ export async function restoreShop(env, { record, resolution }) {
   const rec = { ...record }; delete rec.deleted; delete rec.deletedAt;
   await saveLicense(env, rec);
   if (rec.slug) await claimSlug(env, rec.slug, rec.id);
+  // the shop's referral code lives in its record; the code -> shop index is rebuilt from it so a shared referral link keeps working after a migration
+  if (rec.billing && /^[A-Z0-9]{6,12}$/.test(String(rec.billing.refCode || ''))) await env.mydukapos_kv.put('bill-refcode:' + rec.billing.refCode, rec.id);
   return { ok: true };
 }
 
@@ -221,6 +286,36 @@ export async function restoreKv(env, { items, ids }) {
     } catch (e) { errors.push({ key: it.key, error: String((e && e.message) || e).slice(0, 160) }); }
   }
   return { ok: !errors.length, put, errors };
+}
+// Secrets back where they belong: only for shops in the package, only the allowed key families. Gateway / SMS records are SEALED with THIS deployment's key.
+export async function restoreSecrets(env, { items, ids }) {
+  const idSet = new Set(ids || []); let put = 0, sealed = 0; const errors = [];
+  for (const it of items || []) {
+    try {
+      const key = String(it.key || '');
+      if (!isSecretKey(key) || !shopOfKey(key, idSet)) { errors.push({ key, error: 'not an allowed secret for this package' }); continue; }
+      const sk = sealedKind(key);
+      if (sk && it.kind === sk.kind) { await env.mydukapos_kv.put(key, await sealRecord(env, sk.aad(lastSegment(key)), JSON.parse(it.value))); sealed++; }
+      else await env.mydukapos_kv.put(key, String(it.value));
+      put++;
+    } catch (e) { errors.push({ key: it.key, error: String((e && e.message) || e).slice(0, 160) }); }
+  }
+  return { ok: !errors.length, put, sealed, errors };
+}
+// Platform billing data: never over what the target already has (settings, discounts, ledger lines and markers are put only when absent; use counts keep the larger number).
+export async function restorePlatform(env, { items }) {
+  let put = 0, kept = 0; const errors = [];
+  for (const it of items || []) {
+    try {
+      const key = String(it.key || '');
+      if (!isPlatformKey(key)) { errors.push({ key, error: 'not an allowed key for this package' }); continue; }
+      const have = await env.mydukapos_kv.get(key);
+      if (key.startsWith('billing-offer-used:')) { if (Number(it.value) > (Number(have) || 0)) { await env.mydukapos_kv.put(key, String(Number(it.value) || 0)); put++; } else kept++; continue; }
+      if (have != null) { kept++; continue; }
+      await env.mydukapos_kv.put(key, String(it.value)); put++;
+    } catch (e) { errors.push({ key: it.key, error: String((e && e.message) || e).slice(0, 160) }); }
+  }
+  return { ok: !errors.length, put, kept, errors };
 }
 export async function restoreBranchGroup(env, { key, value }) {
   if (!/^branch-group:[A-Za-z0-9_-]{4,60}$/.test(String(key))) return { ok: false, error: 'bad key' };

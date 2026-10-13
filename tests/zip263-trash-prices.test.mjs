@@ -7,7 +7,7 @@ import { createAccount, getAccount, resolveLoginId, saveAccount } from '../funct
 import { saveGatewayConfig } from '../functions/api/_gateway-config.js';
 import { SHARED_DEMOS, ensureSharedDemo } from '../functions/api/_shared-demos.js';
 import { onRequestPost as lock } from '../functions/api/owner-lock.js';
-import { onRequestPost as prices } from '../functions/api/product-prices.js';
+import { onRequestPost as billing } from '../functions/api/owner-billing.js';
 import { onRequestPost as gml } from '../functions/api/get-my-link.js';
 
 // zip 263 - Empty trash frees the person's phone and email; product prices are the owner's to edit (nothing fixed in code).
@@ -59,17 +59,15 @@ test('a "Get my own link" request disappears with the link it created', async ()
   assert.deepEqual((await w.post(gml, { action: 'list' })).j.requests, []);
 });
 
-test('prices are the owner\'s: per product, a branch price that defaults to the same, nothing fixed in code', async () => {
+test('prices are the owner\'s (zip 267: one source, Owner Console -> Billing): per-product link price, a branch costs the same, nothing fixed in code', async () => {
   const w = await world();
   await ensureSharedDemo(w.env, SHARED_DEMOS.find((d) => d.key === 'retail'));
   const opts = () => gml({ env: w.env, request: new Request('https://x.pages.dev/api/get-my-link?c=demo_retail', { method: 'POST', body: JSON.stringify({ action: 'options' }) }) }).then((r) => r.json());
-  assert.equal((await opts()).amount, 3000, 'no price saved: the website price (3,000 by default)');
-  assert.equal((await w.post(prices, { action: 'get' })).j.websitePrice, 3000);
-  let p = await w.post(prices, { action: 'set', prices: { shop: 3500, hotel: '5000', bogus: 9 }, branchPrices: { shop: 2000 } });
-  assert.deepEqual(p.j.prices, { shop: 3500, hotel: 5000 }); assert.deepEqual(p.j.branchPrices, { shop: 2000 }); assert.equal(p.j.products.length >= 7, true);
-  const o = await opts(); assert.equal(o.amount, 3500); assert.equal(o.branchAmount, 2000);
-  p = await w.post(prices, { action: 'set', prices: { shop: 3500 }, branchPrices: {} });
-  assert.equal((await opts()).branchAmount, 3500, 'no branch price: same as the product');
-  assert.equal((await gml({ env: w.env, request: new Request('https://x.pages.dev/api/x', { method: 'POST', body: JSON.stringify({ action: 'get' }) }) }).then((r) => r.status)) >= 400, true);
-  assert.equal((await prices({ env: w.env, request: new Request('https://x.pages.dev/api/x', { method: 'POST', body: JSON.stringify({ action: 'get' }) }) })).status, 401, 'owner only');
+  assert.equal((await opts()).amount, 3000, 'nothing saved: the default KES 3,000');
+  let p = await w.post(billing, { action: 'settings-save', patch: { linkPrices: { shop: 3500, hotel: '5000', bogus: 9 } } });
+  assert.deepEqual(p.j.settings.linkPrices, { shop: 3500, hotel: 5000 }, 'only known products');
+  const o = await opts(); assert.equal(o.amount, 3500); assert.equal(o.branchAmount, 3500, 'a link is the same price as a branch');
+  p = await w.post(billing, { action: 'settings-save', patch: { linkPrices: { shop: '' }, prices: { link: 2800 } } });
+  assert.equal((await opts()).amount, 2800, 'no product price: the general link price');
+  assert.equal((await billing({ env: w.env, request: new Request('https://x.pages.dev/api/x', { method: 'POST', body: JSON.stringify({ action: 'get' }) }) })).status, 401, 'owner only');
 });

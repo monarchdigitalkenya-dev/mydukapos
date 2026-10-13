@@ -12,9 +12,9 @@ const reply = (o, s = 200) => new Response(JSON.stringify(o), { status: s, heade
 
 const OPS = {
   'x-shops': B.exportShops, 'x-schema': B.exportSchema, 'x-kv-scan': B.exportKvScan, 'x-kv-get': B.exportKvGet, 'x-rows': B.exportRows,
-  'x-do': B.exportDoSlice, 'x-media-list': B.exportMediaList, 'x-media-get': B.exportMediaGet, 'x-accounts': B.exportAccounts, 'x-branches': B.exportBranchGroups,
+  'x-do': B.exportDoSlice, 'x-secret-scan': B.exportSecretScan, 'x-secret-get': B.exportSecretGet, 'x-platform': B.exportPlatform, 'x-media-list': B.exportMediaList, 'x-media-get': B.exportMediaGet, 'x-accounts': B.exportAccounts, 'x-branches': B.exportBranchGroups,
   'r-check': B.restoreCheck, 'r-schema': B.restoreSchema, 'r-shop': B.restoreShop, 'r-kv': B.restoreKv, 'r-branch': B.restoreBranchGroup, 'r-rows': B.restoreRows,
-  'r-do': B.restoreDo, 'r-media': B.restoreMedia, 'r-accounts': B.restoreAccounts, 'r-verify': B.restoreVerify,
+  'r-do': B.restoreDo, 'r-secrets': B.restoreSecrets, 'r-platform': B.restorePlatform, 'r-media': B.restoreMedia, 'r-accounts': B.restoreAccounts, 'r-verify': B.restoreVerify,
 };
 
 export async function onRequestOptions() { return new Response(null, { status: 204, headers: { Allow: 'POST', 'Cache-Control': 'no-store' } }); }

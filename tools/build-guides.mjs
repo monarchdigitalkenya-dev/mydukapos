@@ -696,7 +696,7 @@ MODS.owner = {
   name: 'Owner Console', title: 'Owner Console — User Guide', tagline: 'For the owner of the software business — create and manage client links, watch their health, and run your own shop.',
   itemsPlural: 'items', itemWord: 'item', addTab: 'the Inventory', restockTab: 'Restock', noPastSale: true,
   overrides: { offline: 'ownerOffline', trouble: 'ownerTrouble', hardware: false },
-  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '🛍️ Catalogue', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '🩺 Health', '📣 Messages', '🏷️ Offers', '📦 Apps & Versions', '⚙️ Settings', '☰ More'],
+  tabs: ['📊 Dashboard', '🔗 Generate Link', '🕐 Demo', '✅ Permanent', '🗑️ Trash', '🍽️🛏️ Tables & Rooms', '🌐 Website', '🛍️ Catalogue', '🧾 Bills', '🧾 Daily Sales', '💰 Profits & Expenses', '👥 Staff', '🐞 Errors', '💾 Storage', '🩺 Health', '📣 Messages', '🏷️ Offers', '💳 Billing', '📦 Apps & Versions', '⚙️ Settings', '☰ More'],
   tabText: {
     'Messages': 'Send announcements, app updates, installation offers, maintenance or security notices to all shops, chosen apps or chosen shops — optionally only on the browser, Android or Windows app and certain app versions, from / until a date. Shops see them in their app (one at a time, and under Settings ▸ Install App); a device that is offline gets them when it reconnects.',
     'Apps & Versions': 'The Android (APK) and Windows (EXE / MSI) apps of each product: add a version, upload the real file (the server records its size and SHA-256), publish, withdraw. A shop is offered only its own app under Settings ▸ Install App.',
@@ -706,7 +706,8 @@ MODS.owner = {
     'Demo': 'Every demo link across all products, grouped by client.',
     'Permanent': 'Every permanent (paid) client: manage, record income, remind, storage.',
     'Trash': 'Deleted links, restorable for 30 days before they\u2019re removed for good.',
-    'Website': 'Edit the public website, pricing, payment methods and testimonials.',
+    'Website': 'Edit the public website, payment methods and testimonials. Prices and the subscription are set under Billing.',
+    'Billing': 'One place for every price and the subscription: Pricing (new link, add-ons, subscription, grace), Launch & exempt shops (the start date, the switch that blocks overdue shops, who is affected), Discounts, Referrals (rewards for shops that bring a paying customer), Shops (each shop\u2019s plan, paid-through date, allowances, suspend / reactivate / complimentary, payment history, audit trail) and Payments (renewals waiting for you, the ledger, reversals). Existing shops stay exempt. Every price on the website, sample shops, checkout and receipts comes from here.',
     'Catalogue': 'The products, complete systems, categories, prices, offers and pictures shown on the public /shop page and home page.',
     'Offers': 'Timed offers for the public website: write the offer, set the start and end in Nairobi time, then Publish. The website judges the countdown by the server clock; Pause, Back to draft or Archive hide it. Every change is logged.',
     'Bills': 'What clients owe you (permanent-link balances) — settle or remind.',

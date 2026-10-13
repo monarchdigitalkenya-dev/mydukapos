@@ -469,6 +469,11 @@ if(end){var c=document.getElementById('offer-strip-count');(function t(){var l=e
     </div>
 </section>
 
+<script>
+/* zip 267: a referral link (?ref=CODE) is remembered here for 30 days and goes with every "try the demo" link, so the referral survives the trip into a sample shop */
+(function(){try{var q=new URLSearchParams(location.search).get('ref');if(q&&/^[A-Za-z0-9]{6,12}$/.test(q))localStorage.setItem('mdp_ref',JSON.stringify({c:q.toUpperCase(),t:Date.now()}));}catch(e){}})();
+window.mdpWithRef=function(u){try{var r=JSON.parse(localStorage.getItem('mdp_ref')||'null');if(!r||Date.now()-r.t>30*86400000)return u;return u+(u.indexOf('?')<0?'?':'&')+'ref='+encodeURIComponent(r.c);}catch(e){return u;}};
+</script>
 <section id="demos" class="demo-gallery">
     <style>
     .demo-gallery{padding:88px 0 80px;background:var(--ink);color:var(--paper)}
@@ -511,7 +516,7 @@ if(end){var c=document.getElementById('offer-strip-count');(function t(){var l=e
         window.copyDemoPw=function(btn){var t='0000';try{navigator.clipboard.writeText(t).then(function(){btn.textContent='Copied!'},function(){throw 0});}catch(e){var i=document.createElement('input');i.value=t;document.body.appendChild(i);i.select();try{document.execCommand('copy');btn.textContent='Copied!'}catch(x){btn.textContent='0000'}i.remove();}setTimeout(function(){btn.textContent='Copy'},1800);};
         fetch('/api/shared-demos').then(function(r){return r.json()}).then(function(j){
             var d=(j&&j.demos)||[]; if(!d.length){grid.innerHTML='';return;}
-            grid.innerHTML=d.map(function(x){return '<article class="dg-card"><img src="'+esc(x.image)+'" alt="'+esc(x.title)+' demo" loading="lazy" width="480" height="270"><div class="dg-body"><span class="dg-tag">'+esc(x.tag)+'</span><h3>'+esc(x.title)+'</h3><p>'+esc(x.blurb)+'</p><ul>'+(x.features||[]).slice(0,5).map(function(f){return '<li>'+esc(f)+'</li>'}).join('')+'</ul><div class="dg-login"><span>Admin password</span><code>'+esc(x.password)+'</code><button type="button" onclick="copyDemoPw(this)" aria-label="Copy demo password">Copy</button></div><a class="dg-go" href="'+esc(x.openUrl)+'" target="_blank" rel="noopener">Try live demo</a></div></article>';}).join('');
+            grid.innerHTML=d.map(function(x){return '<article class="dg-card"><img src="'+esc(x.image)+'" alt="'+esc(x.title)+' demo" loading="lazy" width="480" height="270"><div class="dg-body"><span class="dg-tag">'+esc(x.tag)+'</span><h3>'+esc(x.title)+'</h3><p>'+esc(x.blurb)+'</p><ul>'+(x.features||[]).slice(0,5).map(function(f){return '<li>'+esc(f)+'</li>'}).join('')+'</ul><div class="dg-login"><span>Admin password</span><code>'+esc(x.password)+'</code><button type="button" onclick="copyDemoPw(this)" aria-label="Copy demo password">Copy</button></div><a class="dg-go" href="'+esc(window.mdpWithRef(x.openUrl))+'" target="_blank" rel="noopener">Try live demo</a></div></article>';}).join('');
         }).catch(function(){grid.innerHTML='<p style="color:#fecaca">Demos could not load. Please refresh the page.</p>';});
     })();
     </script>
@@ -878,15 +883,16 @@ if(end){var c=document.getElementById('offer-strip-count');(function t(){var l=e
             });
             // zip 148: the plan as the owner set it (Owner Console ▸ Website ▸ Pricing) — never "no monthly bill" when there is one
             const monthly = Number(data.content.monthlyFee || 0), days = Number(data.content.includedDays || 0);
+            const per = (data.content.billing && data.content.billing.subscription && data.content.billing.subscription.periodDays) || 31;      // zip 267: the billing period the owner set, not "a month"
             if (monthly > 0) {
-                const planText = `KES ${priceFormatted} to install${days ? ` — includes ${days} days` : ''}, then KES ${monthly.toLocaleString('en-KE')} a month.`;
-                const sub = document.querySelector('.price-sub'); if (sub) sub.textContent = `INSTALLATION${days ? ` + ${days} DAYS` : ''}, THEN KES ${monthly.toLocaleString('en-KE')}/MONTH`;
+                const planText = `KES ${priceFormatted} to install${days ? ` — includes ${days} days` : ''}, then KES ${monthly.toLocaleString('en-KE')} every ${per} days.`;
+                const sub = document.querySelector('.price-sub'); if (sub) sub.textContent = `INSTALLATION${days ? ` + ${days} DAYS` : ''}, THEN KES ${monthly.toLocaleString('en-KE')} EVERY ${per} DAYS`;
                 const badge = document.querySelector('.pricing-badge'); if (badge) badge.textContent = 'Installation';
                 const desc = document.getElementById('ws-2-desc'); if (desc) desc.textContent = planText;
                 // zip 177: the page's fixed "no monthly fee" claims must never contradict the plan the owner set
                 const pf = document.getElementById('proof-fees'); if (pf) pf.innerHTML = '<span>KES ' + monthly.toLocaleString('en-KE') + '</span> a month after setup';
-                const bf = document.getElementById('brag-fees'); if (bf) bf.innerHTML = '<div class="num">KES ' + priceFormatted + '</div><div class="label">To install. Then KES ' + monthly.toLocaleString('en-KE') + ' a month</div>';
-                const lf = document.getElementById('li-fees'); if (lf) lf.textContent = 'KES ' + monthly.toLocaleString('en-KE') + ' a month after the installation period';
+                const bf = document.getElementById('brag-fees'); if (bf) bf.innerHTML = '<div class="num">KES ' + priceFormatted + '</div><div class="label">To install. Then KES ' + monthly.toLocaleString('en-KE') + ' every ' + per + ' days</div>';
+                const lf = document.getElementById('li-fees'); if (lf) lf.textContent = 'KES ' + monthly.toLocaleString('en-KE') + ' every ' + per + ' days after the installation period';
             }
 
             // Demo duration — one owner-set value (Owner Console → 🌐 Public

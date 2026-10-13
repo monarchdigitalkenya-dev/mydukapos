@@ -8,10 +8,12 @@ const enc = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0) & 255);
 const clean = (v) => String(v == null ? '' : v).replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/[\u2013\u2014]/g, '-').replace(/[^\x20-\x7E\xA0-\xFF]/g, '?');
 const esc = (v) => clean(v).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 const money = (n) => 'KES ' + Number(n || 0).toLocaleString('en-US');
-const day = (t) => new Date(t).toISOString().slice(0, 10);
+const day = (t) => { try { return new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(t)); } catch (e) { return new Date(t).toISOString().slice(0, 10); } };   // Nairobi date (zip 267)
 
 // rows: [label, value]. Returns the PDF as bytes.
-export function buildLicencePdf({ licenceNo, holder, phone, email, productLabel, kindLabel, link, amount, paidAt, method, reference, issuer }) {
+// zip 267: also builds the PAYMENT RECEIPT for a renewal or add-on (heading 'Payment receipt'). Optional: lines = [{ label, amount }] (the breakdown, discount as a negative amount),
+// renewalNote = a sentence about the next renewal (Nairobi time). Without them the page is the same as before.
+export function buildLicencePdf({ licenceNo, holder, phone, email, productLabel, kindLabel, link, amount, paidAt, method, reference, issuer, heading, subheading, lines, renewalNote }) {
   const W = 595, H = 842, M = 48;
   const ops = [];
   const text = (x, y, size, str, bold, rgb) => ops.push(`BT ${(rgb || [0.08, 0.16, 0.17]).join(' ')} rg /${bold ? 'F2' : 'F1'} ${size} Tf ${x} ${y} Td (${esc(str)}) Tj ET`);
@@ -21,11 +23,11 @@ export function buildLicencePdf({ licenceNo, holder, phone, email, productLabel,
   rect(M - 14, H - 150, W - 2 * (M - 14), 136, [0.063, 0.153, 0.165]);                       // header band (the brand's deep teal)
   rect(M - 14, H - 154, W - 2 * (M - 14), 4, [0.94, 0.64, 0.04]);                            // amber rule under it
   text(M, H - 76, 13, (issuer || 'MyDukaPOS').toUpperCase(), true, [0.94, 0.64, 0.04]);
-  text(M, H - 112, 30, 'Software Licence', true, [1, 1, 1]);
-  text(M, H - 134, 11, 'Permanent licence certificate', false, [0.78, 0.86, 0.85]);
+  text(M, H - 112, 30, heading || 'Software Licence', true, [1, 1, 1]);
+  text(M, H - 134, 11, subheading || 'Permanent licence certificate', false, [0.78, 0.86, 0.85]);
 
   let y = H - 200;
-  text(M, y, 10, 'LICENCE NUMBER', true, [0.36, 0.43, 0.44]); text(M, y - 22, 20, licenceNo, true); y -= 62;
+  text(M, y, 10, heading ? 'RECEIPT NUMBER' : 'LICENCE NUMBER', true, [0.36, 0.43, 0.44]); text(M, y - 22, 20, licenceNo, true); y -= 62;
   const row = (label, value) => {
     if (!value) return;
     text(M, y, 9.5, label.toUpperCase(), true, [0.36, 0.43, 0.44]);
@@ -39,6 +41,11 @@ export function buildLicencePdf({ licenceNo, holder, phone, email, productLabel,
   row('Licence', kindLabel);
   row('Your link', link);
   const linkTop = y;                                                                       // (remembered only to place the clickable area below)
+  if (Array.isArray(lines) && lines.length) {                                              // the price breakdown: what was quoted, any discount, and what was paid
+    text(M, y, 9.5, 'WHAT YOU PAID FOR', true, [0.36, 0.43, 0.44]); y -= 16;
+    for (const l of lines.slice(0, 8)) { text(M, y, 11.5, String(l.label).slice(0, 62), false); text(W - M - 110, y, 11.5, (l.amount < 0 ? '- ' : '') + money(Math.abs(l.amount)), false); y -= 16; }
+    y -= 10;
+  }
 
   rect(M, y - 74, W - 2 * M, 84, [0.91, 0.96, 0.93]);                                      // the payment box
   text(M + 16, y - 20, 9.5, 'PAID IN FULL', true, [0.07, 0.5, 0.3]);
@@ -48,7 +55,8 @@ export function buildLicencePdf({ licenceNo, holder, phone, email, productLabel,
   if (reference) text(M + 250, y - 54, 10.5, 'Reference: ' + reference, false);
   y -= 110;
 
-  text(M, y, 10.5, 'This licence is issued for the link above.', false, [0.3, 0.37, 0.38]);
+  if (renewalNote) { text(M, y, 10.5, renewalNote, false, [0.3, 0.37, 0.38]); y -= 16; }
+  text(M, y, 10.5, heading ? 'Keep this receipt for your records.' : 'This licence is issued for the link above.', false, [0.3, 0.37, 0.38]);
   text(M, y - 16, 10.5, 'Keep this page and your link safe. Anyone with the link can open the shop, so share it only with your staff.', false, [0.3, 0.37, 0.38]);
   text(M, 70, 9, 'Issued ' + day(Date.now()) + ' by ' + (issuer || 'MyDukaPOS') + '. This document was generated automatically and is valid without a signature.', false, [0.5, 0.55, 0.55]);
 

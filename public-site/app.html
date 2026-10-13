@@ -508,6 +508,9 @@
         try { navigator.clipboard.writeText('0000').then(done, () => { throw 0; }); }
         catch (e) { const i = document.createElement('input'); i.value = '0000'; document.body.appendChild(i); i.select(); try { document.execCommand('copy'); done(); } catch (x) { btn.textContent = '0000'; } i.remove(); }
     }
+/* zip 267: a referral link (?ref=CODE) is remembered here for 30 days and goes with every "try the demo" link, so the referral survives the trip into a sample shop */
+(function(){try{var q=new URLSearchParams(location.search).get('ref');if(q&&/^[A-Za-z0-9]{6,12}$/.test(q))localStorage.setItem('mdp_ref',JSON.stringify({c:q.toUpperCase(),t:Date.now()}));}catch(e){}})();
+window.mdpWithRef=function(u){try{var r=JSON.parse(localStorage.getItem('mdp_ref')||'null');if(!r||Date.now()-r.t>30*86400000)return u;return u+(u.indexOf('?')<0?'?':'&')+'ref='+encodeURIComponent(r.c);}catch(e){return u;}};
     async function loadLiveDemos() {
         const box = document.getElementById('live-demos');
         const keys = DEMO_KEYS[productKey] || [];
@@ -516,7 +519,7 @@
             const res = await fetch('/api/shared-demos');
             const data = await res.json();
             const list = (data.demos || []).filter(d => keys.includes(d.key));
-            box.innerHTML = list.map(d => `<a class="btn btn-primary" style="width:100%;justify-content:center;" href="${escapeHtml(d.openUrl)}" target="_blank" rel="noopener">Try Live Demo &middot; ${escapeHtml(d.title)} &rarr;</a>`).join('') || '';
+            box.innerHTML = list.map(d => `<a class="btn btn-primary" style="width:100%;justify-content:center;" href="${escapeHtml(window.mdpWithRef ? window.mdpWithRef(d.openUrl) : d.openUrl)}" target="_blank" rel="noopener">Try Live Demo &middot; ${escapeHtml(d.title)} &rarr;</a>`).join('') || '';
         } catch (e) { box.innerHTML = '<p class="demo-error" style="display:block">Demos could not load. Please refresh the page.</p>'; }
     }
     loadLiveDemos();
